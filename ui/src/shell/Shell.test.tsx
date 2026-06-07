@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach } from "vitest";
-import { cleanup, render, screen, fireEvent } from "@testing-library/react";
+import { act, cleanup, render, screen, fireEvent } from "@testing-library/react";
 import { Shell } from "./Shell";
 import { MockGatewayPort } from "../gateway-client/mock";
 import { BoundaryValidationError } from "../gateway-client/boundary";
@@ -29,6 +29,9 @@ const rejectingGateway: GatewayPort = {
   },
   get_capabilities: () =>
     Promise.resolve({ protocol_version: 1, contract_version: "0.5.0" }),
+  getConnectionState: () => "connected",
+  onConnectionChange: () => () => {},
+  reconnect: () => {},
 };
 
 describe("Shell", () => {
@@ -67,5 +70,19 @@ describe("Shell", () => {
     // here — this pins that the kit's token-driven styling is wired, not that a
     // computed color came back).
     expect(container.querySelector('[style*="var(--"]')).not.toBeNull();
+  });
+
+  it("shell_connection_change_drives_degraded_banner", async () => {
+    // Exercises the REAL subscription path (onConnectionChange → Shell state →
+    // banner), not just a prop rerender.
+    const mock = new MockGatewayPort();
+    render(<Shell gateway={mock} />);
+    await screen.findByText(projectActivityFixture.rows[0]!.name);
+    expect(screen.queryByRole("alert")).toBeNull(); // connected + compatible → no banner
+
+    act(() => {
+      mock.setConnectionState("disconnected");
+    });
+    expect(await screen.findByRole("alert")).toBeTruthy(); // degraded banner shown
   });
 });

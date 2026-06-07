@@ -12,6 +12,7 @@ import type {
   ProjectionName,
   ProjectionPageByName,
 } from "../contracts/index";
+import type { ConnectionState } from "../connection/state";
 
 /** Scope filter for a projection query (provisional; widens with §6.1). */
 export interface ProjectionScope {
@@ -39,4 +40,11 @@ export interface GatewayPort {
   ): Promise<ProjectionPageByName[K]>;
   subscribe(params: SubscribeParams): AsyncIterable<ProjectionDelta>;
   get_capabilities(): Promise<Capabilities>;
+
+  // Connection management (transport liveness; §11.4). These are UI-client
+  // transport concerns, NOT part of the frozen §6.1 RPC method surface.
+  getConnectionState(): ConnectionState;
+  onConnectionChange(cb: (state: ConnectionState) => void): () => void;
+  /** Attempt to (re)establish the transport — the Retry/Repair action. */
+  reconnect(): void;
 }

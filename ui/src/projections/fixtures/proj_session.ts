@@ -30,6 +30,20 @@ export const sessionPageFixture: SessionProjectionPage = {
       title: "Fix flaky integration test",
       project_id: "project_fixture_2",
     },
+    {
+      // terminal session — excluded from activeSessions counts (non-terminal filter).
+      session_id: "session_fixture_4",
+      status: "completed",
+      title: "Bump dependencies",
+      project_id: "project_fixture_1",
+    },
+    {
+      // waiting_on_human_input — exercises the second WAITING_SESSION state.
+      session_id: "session_fixture_5",
+      status: "waiting_on_human_input",
+      title: "Confirm migration plan",
+      project_id: "project_fixture_2",
+    },
   ],
   cursor: null,
 };

@@ -17,6 +17,9 @@
     "forceConsistentCasingInFileNames": true,
     "useDefineForClassFields": true,
     "noEmit": true,
+    "paths": {
+      "@ui-kit/*": ["../NexusOps-ui-kit/components/*"]
+    },
     "types": ["node"]
   },
   "include": ["src", "vite.config.ts", "vitest.config.ts"]

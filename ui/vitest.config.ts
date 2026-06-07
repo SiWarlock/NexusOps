@@ -1,13 +1,17 @@
-import { defineConfig } from "vitest/config";
-import react from "@vitejs/plugin-react";
+import { defineConfig, mergeConfig } from "vitest/config";
+import viteConfig from "./vite.config";
 
-// 6.1a tests are pure-TS (contract layer + boundary + mock); no DOM is needed,
-// so the node environment is sufficient. Component tests (6.1b+) will add jsdom.
-export default defineConfig({
-  plugins: [react()],
-  test: {
-    environment: "node",
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
-    globals: false,
-  },
-});
+// Inherit the app config (React plugin + the @ui-kit alias + fs.allow) so tests
+// resolve kit components exactly as the app does. Pure-logic tests run in the
+// node env (fast); the .tsx render tests opt into jsdom via a per-file
+// `// @vitest-environment jsdom` docblock.
+export default mergeConfig(
+  viteConfig,
+  defineConfig({
+    test: {
+      environment: "node",
+      include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+      globals: false,
+    },
+  }),
+);

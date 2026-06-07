@@ -9,7 +9,8 @@
 import type {
   Capabilities,
   ProjectionDelta,
-  ProjectionPage,
+  ProjectionName,
+  ProjectionPageByName,
 } from "../contracts/index";
 
 /** Scope filter for a projection query (provisional; widens with §6.1). */
@@ -31,11 +32,11 @@ export interface SubscribeParams {
 
 /** The read surface of the §6.1 GatewayPort contract. */
 export interface GatewayPort {
-  get_projection(
-    name: string,
+  get_projection<K extends ProjectionName>(
+    name: K,
     scope?: ProjectionScope,
     page?: ProjectionPageParams,
-  ): Promise<ProjectionPage>;
+  ): Promise<ProjectionPageByName[K]>;
   subscribe(params: SubscribeParams): AsyncIterable<ProjectionDelta>;
   get_capabilities(): Promise<Capabilities>;
 }

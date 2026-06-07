@@ -11,7 +11,11 @@
 // branch into read-only / degraded mode with structured context.
 import type { ZodError } from "zod";
 import {
+  ApprovalQueuePage,
+  AuditTrailPage,
+  ProjectActivityPage,
   ProjectionDelta,
+  PullRequestProjectionPage,
   SessionProjectionPage,
   type ProjectionPage,
 } from "../contracts/index";
@@ -30,9 +34,13 @@ export class BoundaryValidationError extends Error {
   }
 }
 
-/** Provisional registry: projection name → its boundary schema. Only Session in 6.1a. */
+/** Provisional registry: projection name → its boundary schema. */
 const PAGE_SCHEMAS = {
   Session: SessionProjectionPage,
+  ProjectActivity: ProjectActivityPage,
+  PullRequest: PullRequestProjectionPage,
+  ApprovalQueue: ApprovalQueuePage,
+  AuditTrail: AuditTrailPage,
 } as const;
 
 /**

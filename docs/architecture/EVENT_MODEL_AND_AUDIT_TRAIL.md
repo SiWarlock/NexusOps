@@ -466,9 +466,11 @@ local_runner
 session_adapter
 integration_syncer
 system
-remote_device
+remote_client
 automation_policy
 ```
+
+> **[RECONCILED 2026-06-07 — R-2, ARCHITECTURE.md §7.1; frozen in `shared/src/actor.rs`]** the legacy `remote_device` actor token is unified to **`remote_client`** (in the enum above and the §7.1 example below). The canonical **10-value** audit actor enum is frozen in `shared/` (Option-A SoT, §5.0). Request-time `requester_type` aliases (`agent_session→session_adapter`, etc.) are a separate binding mapping (Appendix A).
 
 ### 7.1 Actor examples
 
@@ -482,7 +484,7 @@ automation_policy
 
 ```json
 {
-  "actor_type": "remote_device",
+  "actor_type": "remote_client",
   "actor_id": "ios_cody_iphone",
   "display_name": "Cody's iPhone"
 }

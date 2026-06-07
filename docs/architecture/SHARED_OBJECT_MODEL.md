@@ -4,6 +4,8 @@
 > **Date:** 2026-06-06  
 > **Naming:** Open. Uses neutral working labels.
 
+> **[RECONCILED 2026-06-07 — Phase-0-exit `/arch-finalize`]** For the **status state machines, the audit actor enum, and the R-5/R-6/R-8 reconciliations**, the binding authority is now **`ARCHITECTURE.md` §5.1 / §7.1** — 10 machines (+ **ActionRequest** [R-5], + **AgentTeam** [R-6]; Task/PlanTask = one superset [R-8]; actor `remote_device`→`remote_client` [R-2]), frozen in `shared/` (Option-A SoT, §5.0; **ExecutionProfile** status held → 0.5b). The object *definitions* below stand; where a status enum or actor token here differs from §5.1/§7.1, the **frozen contract wins**.
+
 ---
 
 ## 1. Purpose

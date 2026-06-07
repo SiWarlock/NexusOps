@@ -20,7 +20,7 @@
 
 **PHASE 0 — DETERMINISTIC WORK COMPLETE (2026-06-07).** All 4 spikes landed (`docs/spikes/*.md`) + the **0.5 contract freeze landed (06f9576)** — the serial neck. Single-writer holds (0.4 → §18 written MEASURED); git2 reads relative-worktrees (0.3 → §9 corrected); #27203 confirmed, bg subagents forbidden (0.1); shared/ contracts frozen Option-A (0.5, §5.0). Toolchain RESOLVED (Lesson §1).
 
-**PHASE BOUNDARY — awaiting direction (surfaced to lead):** the fan-out trigger is met. Decision forks: **(a)** user-invoked **Phase-0-exit `/arch-finalize` re-validation** (reconcile upstream planning drift — DATA_MODEL §4/§6.4, EM §7 — before Phase 1 binds); **(b)** open the **ui track** (now unblocked by the frozen contracts); **(c)** next daemon-core slice = **Phase 1 / 1.1** (event store; deps 0.4+0.5 met). Recommend `/orchestrate-end` first (commit + push the accumulated Phase-0 round) so any `/arch-finalize` runs against a clean state.
+**PHASE BOUNDARY — ✅ Phase-0-exit `/arch-finalize` re-validation COMPLETE (2026-06-07).** Fork (a) resolved: the upstream planning + spec drift was swept FORWARD to the binding `ARCHITECTURE.md` (DECISIONS ADR-007/004, DATA_MODEL §2.3/§2.9/§4/§5/§6.4/§8, EM §7, SHARED_OBJECT_MODEL, OPEN_QUESTIONS, UI_RECONCILIATION) + §5.1 header reconciled to **Ten** + **§5.0 ratified**. **A 5-dim adversarial gap audit confirmed NO frozen `shared/` contract moved (0 release-blockers) → no 0.5b reconciliation forced; the UI track is NOT gated by drift.** Hold can be released → both arms unblocked against the frozen contracts: **(b)** open the **ui track** ∥ **(c)** **Phase 1 / 1.1** (event store, daemon-core). cat-4 (SDK-vs-PTY) + D14 (demo-viability) remain correctly **tracked-open** (unchanged). Audit detail: `docs/gap-audits/R2-phase0-exit-revalidation.json`.
 
 **Still open (non-blocking for Phase 1):** HITL — notarization run (0.2, Apple creds), credit-pool drain ≥6/15 (0.1) → then cat-4 SDK-vs-PTY + **0.5b** (re-freeze ExecutionProfile).
 
@@ -141,7 +141,7 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 - [x] Cross-doc invariant: none (§18 numbers written into `ARCHITECTURE.md §18` — MEASURED + §14 CI guards committed).
 
 ### 0.5 — Contract freeze: enums, IDs, gap objects (OQ-DATA-SPIKE-5) — ✅ **LANDED 06f9576** (Option A, §5.0)
-- [x] Freeze the canonical enums (§5.1 nine machines), the 22 shared IDs + prefixed-ULID format (§5.2), the actor enum (R-2), and the 4 desktop-addendum objects (§5.3) as `shared/` constants; reconcile into SOM. — **ExecutionProfile runtime-state enum HELD for 0.5b** (cat-4); everything else frozen.
+- [x] Freeze the canonical enums (nine of §5.1's ten machines — ExecutionProfile held → 0.5b), the 22 shared IDs + prefixed-ULID format (§5.2), the actor enum (R-2), and the 4 desktop-addendum objects (§5.3) as `shared/` constants; reconcile into SOM. — **ExecutionProfile runtime-state enum HELD for 0.5b** (cat-4); everything else frozen.
 - [x] Files: `shared/` Rust authority crate (status/actor/ids/objects/schema + emit_schema bin + contract tests) + `contracts/schema/nexusops-contract.schema.json` (published) + `contracts/verify/` (3-way harness). 14 files.
 - [x] Cross-doc invariant: Appendix A annotated (frozen-in-`shared/` + prefix map) + `daemon/CLAUDE.md` cross-doc rows + LESSONS §2. (Orchestrator-written; rides the round commit.)
 - [x] Tests: 11 Rust contract tests + the 3-way (Rust/Zod/Pydantic) equality harness + schema-diff gate — all green; clippy `-D warnings` clean.
@@ -366,7 +366,7 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 - [ ] Tests: happy (shell renders from projections); edge (daemon disconnected → read-only mode disables approve/dispatch/commit); error (version-skew → "update required"); integration (UI never writes the DB; reconnect restores live state).
 
 ### 6.2 — Status rendering binding + attention-rank table
-- [ ] StatusPill keys == §5.1 enum strings (all 9 machines, incl. 17 Session states + `changes_ready`); one canonical status→attention-rank table (no fall-through to idle) driving sidebar weight + queue membership + sort; four-channel "never color alone"; Approval vs ActionRequest as two surfaces.
+- [ ] StatusPill keys == §5.1 enum strings (all 10 machines, incl. 17 Session states + `changes_ready`); one canonical status→attention-rank table (no fall-through to idle) driving sidebar weight + queue membership + sort; four-channel "never color alone"; Approval vs ActionRequest as two surfaces.
 - [ ] Files: `ui/src/status/` (extended from kit), `shared/contracts/attention.ts` (NEW)
 - [ ] Cross-doc invariant: extended — the 9 status enums (Appendix A, §5.1)
 - [ ] Tests: happy (one pill per state of each machine); edge (waiting_on_permission/conflict/stale enter "Needs my attention"); error (unknown status → visible, not idle); integration (attention ordering matches PRD §5.2).
@@ -384,7 +384,7 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 - [ ] Tests: happy (usage labels render; Codex shows "unknown"); edge (every drag has a button/menu path — TASK-5; focus ring on all controls); error (credit-pool near-exhaustion + hard-stop states); integration (recovery banner after restart; audit-integrity alert renders).
 
 ### Acceptance criteria (6)
-- [ ] Projection-driven UI; read-only degraded mode works; status binding covers all 9 machines.
+- [ ] Projection-driven UI; read-only degraded mode works; status binding covers all 10 machines.
 - [ ] Accessibility MUSTs pass (graph list fallback, focus ring, drag→non-drag) — frontend merge-gate tests green.
 
 ---
@@ -549,13 +549,21 @@ Applied this round (2026-06-07), committed atomically with the round commit:
 - [x] **OQ-HARN-SPIKE numbering reconciled.** Canonical = **`-7`** (used across the finalized artifacts: gap-audits/D06, ui-review/E-netnew, MVP_TASKS, the spike file). `OPEN_QUESTIONS.md` `-2` (legacy /arch-draft) cross-ref'd to `-7`. `(P0.1)`
 - [x] **Appendix A + `daemon/CLAUDE.md` cross-doc rows + LESSONS §2** — the 0.5 frozen contracts recorded (cross-doc invariant routing). `(P0.5)`
 
-**Upstream PLANNING-doc reconciles for the user-invoked Phase-0-exit `/arch-finalize`** (the binding `ARCHITECTURE.md` is already correct; these are /arch-draft drafts the re-validation should sweep — do NOT hot-edit planning artifacts):
-- [ ] `docs/planning/DECISIONS.md` **ADR-007** still carries the stale "libgit2 can't do relativeworktrees (fix unreleased)" premise → reconcile to the §9 correction. `(P0.3)`
-- [ ] `docs/planning/DATA_MODEL.md` **§4** (rough draft) is superseded by §5.1 (LOCKED): `ready_for_team_mode`→`ready_for_team_run`; Approval predates the R-5 split; lacks ActionRequest/AgentTeam machines. `(P0.5)`
-- [ ] `DATA_MODEL.md` **EM §7** actor enum `remote_device` → unify on **`remote_client`** (§7.1/R-2; DATA_MODEL §6 line 576 already recommends this). `(P0.5)`
-- [ ] `DATA_MODEL.md` **§6.4** EventProjection prefix `prj_` → **`eprj_`** (frozen value, de-collided from `proj_`). `(P0.5)`
-- [ ] **Ratify `§5.0`** (it's `[LOCKED — owner]`, recorded as a direct edit; the re-validation should scrutinize it like any anchor). `(P0.5)`
-- [ ] **`ARCHITECTURE.md §5.1` header/table count mismatch** — prose says "**Nine** machines (the 8 of the draft + ActionRequest)" but the table lists **10** (the 10th appears to be **AgentTeam**, R-6). Reconcile the header to 10 + correct the parenthetical (not direct-fixed — header framing inferred, left for the re-validation to confirm authoritatively). `(P0.5)`
+**Upstream PLANNING-doc reconciles — ✅ SWEPT at the Phase-0-exit `/arch-finalize` re-validation (2026-06-07).** The binding `ARCHITECTURE.md` was already correct + AHEAD; these /arch-draft + upstream-spec drafts were swept FORWARD to match it. **A 5-dim adversarial gap audit confirmed NO frozen `shared/` contract moved (0 release-blockers) → no 0.5b forced; the UI track is NOT gated by drift** (`docs/gap-audits/R2-phase0-exit-revalidation.json`).
+- [x] `docs/planning/DECISIONS.md` **ADR-007** — stale "libgit2 can't do relativeworktrees (fix unreleased)" premise reconciled to the §9 correction (git2 ≥1.9.4 reads `relativeWorktrees`; sparse-checkout misreport is the only retained CLI-read fallback; mutations CLI-only regardless). `(P0.3)`
+- [x] `docs/planning/DATA_MODEL.md` **§4** marked SUPERSEDED → §5.1 (10 machines): `ready_for_team_mode`→`ready_for_team_run` (R-7); §4.2 Task-vs-PlanTask resolved (R-8); §4.7 Approval R-5 split noted (ActionRequest = the new execution machine). `(P0.5)`
+- [x] **EM §7** (`docs/architecture/EVENT_MODEL_AND_AUDIT_TRAIL.md:469,485`) actor enum **and** example `remote_device` → **`remote_client`** (R-2) + reconciliation note; DATA_MODEL §6/§8-Q5 flag resolved. `(P0.5)`
+- [x] `DATA_MODEL.md` **§6.4** EventProjection prefix `prj_` → **`eprj_`** (frozen value, de-collided from `proj_`). `(P0.5)`
+- [x] **Ratify `§5.0`** — re-scrutinized + **upheld unchanged**; the frozen `shared/` crate matches it byte-for-value (CI schema-diff gate green); ratification stamp added to §5.0 + Appendix A flag resolved. `(P0.5)`
+- [x] **`ARCHITECTURE.md §5.1` header** reconciled "Nine" → "**Ten** machines (8 draft + **ActionRequest** [R-5] + **AgentTeam** [R-6])". ⚠️ The count has **two meanings** — **9 = frozen in 0.5** (ExecutionProfile held) · **10 = canonical §5.1 / UI-binding set** — so this was swept **per-occurrence, NOT uniformly**: §11.3 + the Phase-6 UI lines (6.2/AC-6) + UI_RECONCILIATION → **10**; freeze-scoped refs (0.5 line, briefs/002 freeze test) **stay 9**. `(P0.5)`
+
+**Additional stragglers the 6-item list missed (found + swept by the re-validation gap audit):**
+- [x] **DATA_MODEL §2.3 + §6.4** "8 MVP projections" → **10** (added PullRequest §7.2 + AgentTeam R-6). `(STR-02/03)`
+- [x] **DATA_MODEL §2.9** `action_requests.status` column comment was pre-R-5 → corrected to the frozen 15-value ActionRequest set. `(STR-01)`
+- [x] **DECISIONS.md ADR-004** "newline-framed JSON-RPC" → length-prefixed only (§6.4); "SO_PEERCRED" → `getpeereid()` (macOS; SO_PEERCRED is Linux-only — CLAUDE.md safety rule #7). `(STR-04)`
+- [x] **DATA_MODEL §5** ID-format `[PROPOSED]`→`[LOCKED]`; **§8 Q1/Q5/Q7** + **OPEN_QUESTIONS** OQ-DATA-SPIKE-5/OQ-DATA-6 (→ frozen 06f9576), OQ-INT-SPIKE-6/OQ-INT-9 (→ libgit2 read-path resolved; octocrab spot-check still open), OQ-DATA-7 (→ R-8). `(STR-05/06/07)`
+- [x] **SHARED_OBJECT_MODEL.md** supersession pointer added (§5.1/§7.1 authoritative for state machines + actor enum); **UI_RECONCILIATION.md** "9"→"10". `(COMP-1/COMP-3)`
+- [ ] _Intentionally LEFT (historical, non-binding — tasks-gen binds to `ARCHITECTURE.md`):_ `ARCHITECTURE_DRAFT.md` + `PRESEARCH.md` (Brain-1 rough drafts, self-labeled non-binding) + `docs/ui-review/B-status.json` (point-in-time audit record). `(STR-08/09)`
 
 ---
 

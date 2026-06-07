@@ -1,0 +1,54 @@
+{
+  "audit": "Phase-0-exit /arch-finalize re-validation (round 2)",
+  "date": "2026-06-07",
+  "scope": "Re-validation re-run at the Phase-0/Phase-1 boundary. ARCHITECTURE.md is BINDING + AHEAD; planning/spec docs swept FORWARD. Method: 5-dimension adversarial workflow fan-out (frozen-fidelity, Option-A/§5.0 consistency, drift-stragglers, PRD-scoped, completeness-critic) + orchestrator inline verification.",
+  "base_commit": "ec65bd6",
+  "freeze_commit": "06f9576",
+  "contract_version": "0.5.0",
+  "headline": {
+    "frozen_contract_moved_any": false,
+    "frozen_moved_dims": [],
+    "release_blockers": 0,
+    "verdict": "RELEASE THE HOLD. No frozen shared/ contract surface differs between shared/src code and ARCHITECTURE.md. No 0.5b reconciliation forced. UI track NOT gated by drift. cat-4 (SDK-vs-PTY) + D14 (demo-viability) correctly left tracked-open."
+  },
+  "dimension_verdicts": [
+    { "key": "frozen-fidelity", "verdict": "consistent", "note": "All 9 frozen status machines (Session 17, Task 17, WorktreeGit 6, WorktreeOverlay 6, PullRequest 11, WorkflowInstance 12, ProjectBrain 10, Approval 10, ActionRequest 15, AgentTeam 9) + 22 IDs/16 prefixes + 10-value actor enum (remote_client) + 4 desktop objects (lr_/eprj_/dev_/rc_) byte-for-value match §5.1/§5.2/§7.1/§5.3 + the published JSON-Schema. ExecutionProfile correctly HELD (EXECUTION_PROFILE_STATUS_HELD). cargo test → 11 passed; CI diff-gate green." },
+    { "key": "optionA-consistency", "verdict": "consistent", "note": "§5.0 mechanism stated consistently across §5.0/§6.4/§9.1/Appendix A/daemon CLAUDE.md/LESSONS §2 and matches schema.rs+lib.rs+verify harness. No surviving external-IDL/throwaway-output contradiction. §5.0 RATIFIED as-written by this re-validation." },
+    { "key": "drift-stragglers", "verdict": "drift_found", "note": "9 new stragglers beyond the 6-item list (STR-01..10); none block release. All swept except the 2 non-binding Brain-1 drafts (STR-08/09)." },
+    { "key": "prd-adversarial", "verdict": "consistent", "note": "All 4 Phase-0 changes still satisfy the PRD + don't contradict each other. Dual-git chokepoint unchanged (libgit2 widens READ scope only; mutations CLI-only). §18 numbers internally consistent. cat-4 + D14 correctly TRACKED-OPEN (not resolved by accident)." },
+    { "key": "completeness-critic", "verdict": "gap_found", "note": "Missed TIER: docs/architecture/ (EM+SOM) carry the same stale values as the named planning drafts but were unlisted (COMP-1). Missed RIPPLE: the Nine→Ten count fix is NOT a uniform 9→10 replace — 9=frozen-in-0.5, 10=canonical/UI set (COMP-2). Held-ExecutionProfile tracking verified COMPLETE (COMP-4)." }
+  ],
+  "resolved_drift_list_items": [
+    { "id": 1, "item": "DECISIONS.md ADR-007 stale libgit2 premise", "status": "SWEPT", "file": "docs/planning/DECISIONS.md ADR-007" },
+    { "id": 2, "item": "DATA_MODEL §4 enums superseded by §5.1", "status": "SWEPT (marked SUPERSEDED + ready_for_team_run + R-5/R-8 notes)", "file": "docs/planning/DATA_MODEL.md §4" },
+    { "id": 3, "item": "DATA_MODEL §6.4 prj_ → eprj_", "status": "SWEPT", "file": "docs/planning/DATA_MODEL.md §6.4" },
+    { "id": 4, "item": "EM §7 remote_device → remote_client", "status": "SWEPT (enum line 469 + example line 485 + note)", "file": "docs/architecture/EVENT_MODEL_AND_AUDIT_TRAIL.md §7" },
+    { "id": 5, "item": "§5.1 Nine-vs-Ten header/table count", "status": "SWEPT (header → Ten; per-occurrence ripple per COMP-2)", "file": "ARCHITECTURE.md §5.1 + §11.3" },
+    { "id": 6, "item": "Ratify §5.0", "status": "RATIFIED unchanged + stamp added", "file": "ARCHITECTURE.md §5.0 + Appendix A" }
+  ],
+  "stragglers_swept": [
+    { "id": "STR-01", "sev": "important", "fix": "DATA_MODEL §2.9 action_requests.status comment → frozen 15-value ActionRequest set" },
+    { "id": "STR-02/03", "sev": "important", "fix": "DATA_MODEL §2.3 + §6.4 '8 MVP projections' → 10 (added PullRequest + AgentTeam)" },
+    { "id": "STR-04", "sev": "important", "fix": "DECISIONS.md ADR-004 newline-framing dropped + SO_PEERCRED → getpeereid() (macOS)" },
+    { "id": "STR-05", "sev": "important", "fix": "OPEN_QUESTIONS OQ-DATA-SPIKE-5/OQ-DATA-6 → RESOLVED (0.5 freeze)" },
+    { "id": "STR-06", "sev": "nice", "fix": "OPEN_QUESTIONS OQ-INT-SPIKE-6/OQ-INT-9 → libgit2 read-path RESOLVED; octocrab spot-check still open" },
+    { "id": "STR-07", "sev": "nice", "fix": "OPEN_QUESTIONS OQ-DATA-7 + DATA_MODEL §8 Q1 → RESOLVED (R-8 superset)" },
+    { "id": "COMP-1", "sev": "important", "fix": "SHARED_OBJECT_MODEL.md supersession pointer (§5.1/§7.1 authoritative)" },
+    { "id": "COMP-3", "sev": "nice", "fix": "UI_RECONCILIATION.md 'all 9 machines' → 10" }
+  ],
+  "intentionally_left": [
+    { "id": "STR-08", "file": "docs/planning/ARCHITECTURE_DRAFT.md", "reason": "Brain-1 rough draft, self-labeled NOT binding; tasks-gen binds to ARCHITECTURE.md. Editing rewrites the planning-chain record." },
+    { "id": "STR-09", "file": "docs/planning/PRESEARCH.md", "reason": "Brain-1 intake artifact, non-binding historical." },
+    { "id": "COMP-3-b", "file": "docs/ui-review/B-status.json", "reason": "Point-in-time gap-audit lens record; not a living contract doc." }
+  ],
+  "tracked_open_unchanged": [
+    { "id": "cat-4", "item": "SDK-vs-PTY primary driver for Claude (O-4 / ADR-006)", "gate": "≥2026-06-15 credit-pool drain (HITL)", "blocks": "0.5b ExecutionProfile re-freeze" },
+    { "id": "D14", "item": "demo-viability contradiction (Brain-optional vs demo-mandatory vs SDK-credit-halt)", "gate": "Phase 10 integration/deploy" }
+  ],
+  "spike_corrections_intact": {
+    "section_5_0": "intact + ratified",
+    "section_9": "intact (libgit2 correction preserved)",
+    "section_18": "intact (MEASURED perf numbers preserved)",
+    "appendix_A": "intact (frozen-in-code annotations preserved; transient §5.1 flag note resolved)"
+  }
+}

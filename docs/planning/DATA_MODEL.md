@@ -105,9 +105,9 @@ CREATE INDEX ix_object_refs_obj ON object_refs(object_type, object_id);
 ```
 This table is the backbone of the **ProjectGraph** projection and every per-object timeline. It is itself a projection (rebuildable from `events.payload_json`), but written in the same txn as the event for read consistency `[PROPOSED]`.
 
-### 2.3 Projection tables — the 8 MVP projections `[LOCKED — EM §13.1]`
+### 2.3 Projection tables — the 10 MVP projections `[LOCKED — EM §13.1; reconciled to ARCHITECTURE.md §7]`
 
-The raw `events` log is for correctness/audit; the UI reads **projections** (EM `§4.6`, `§13`). All 8 are rebuildable from `events` (EM `§13.2`) and tracked by `projection_offsets` (§2.4). Sketches below are read-model shapes, not normalized truth.
+The raw `events` log is for correctness/audit; the UI reads **projections** (EM `§4.6`, `§13`). All **10** are rebuildable from `events` (EM `§13.2`) and tracked by `projection_offsets` (§2.4). **[RECONCILED 2026-06-07 — §7]** the binding set adds **PullRequest** (§7.2) and **AgentTeam** (R-6) to the 8 sketched below: ProjectActivity, Session, ApprovalQueue, Worktree, **PullRequest**, PlanProgress, ProjectGraph, **AgentTeam**, AuditTrail, UsageLedger. Sketches below are read-model shapes, not normalized truth.
 
 ```sql
 -- 1. ProjectActivity (EM §13.1) — one row per project, the sidebar/Command-Center counters
@@ -434,7 +434,7 @@ CREATE TABLE action_requests (
   risk_level      INTEGER NOT NULL,    -- AG §7 risk 0–4
   idempotency_key TEXT,                -- AG §16.1
   fencing_token   INTEGER,             -- the lease token this execution must present (§2.6)
-  status          TEXT NOT NULL,       -- requested|previewed|policy_decided|awaiting_approval|executing|succeeded|failed|rolled_back
+  status          TEXT NOT NULL,       -- ActionRequest (R-5, §5.1; frozen 15): submitted|previewed|policy_decided|awaiting_approval|approved|denied|queued|executing|succeeded|failed|partially_succeeded|rolled_back|rollback_failed|cancelled|expired
   preview_json    TEXT,                -- AG §13
   created_at      TEXT NOT NULL
 );
@@ -488,7 +488,9 @@ Every piece of state has exactly **one** authoritative source. The daemon must n
 
 ---
 
-## 4. The 8 status state machines
+## 4. Status state machines `[SUPERSEDED — see ARCHITECTURE.md §5.1 (LOCKED — R-4..R-9; 10 machines)]`
+
+> **SUPERSEDED (2026-06-07, Phase-0-exit `/arch-finalize`).** This rough-draft section enumerated **8** machines; the binding, reconciled contract is **`ARCHITECTURE.md` §5.1 — 10 machines**: the 8 below **+ ActionRequest** (R-5 split: approval-decision axis vs execution axis) **+ AgentTeam** (R-6 promoted to first-class). The §5.1 enums are frozen in `shared/` (0.5; **ExecutionProfile** held → 0.5b). Where the values below differ, **§5.1 wins**; kept for provenance.
 
 Canonical enum values below come from SOM object lifecycles and UX `§8.1`–`§8.8` (the two must stay in sync; finalize should reconcile any drift). `[PROPOSED]` Each is stored as a `TEXT status` on its projection/registry row; transitions are driven by events and validated by the projector (illegal transitions emit a degraded-state marker, EM `§22`/`§23`, not a silent overwrite).
 
@@ -496,7 +498,7 @@ Canonical enum values below come from SOM object lifecycles and UX `§8.1`–`§
 `creating → starting → active`; runtime sub-states `thinking | running_command | editing_files | running_tests`; waiting sub-states `waiting_on_permission | waiting_on_human_input | waiting_on_external_service`; `idle → stale`; terminal `failed | completed | archived | killed`. Driven by `SessionStarted`, `SessionStatusChanged`, `SessionHeartbeatReceived` (heartbeat from `statusLine` for Claude / `push status` for Codex, ADR-006), `SessionWaitingOn*`, `SessionFailed/Completed/Killed`. `stale` is derived by the daemon when `now - last_heartbeat_at > threshold` (no event needed — a *time-derived* transition `[PROPOSED]`).
 
 ### 4.2 Task / PlanTask `[LOCKED — SOM §9/§11, UX §8.2]` (event-derived → `proj_plan_progress.status`)
-`unassigned → queued → assigned → in_progress`; `blocked | needs_clarification`; `changes_ready → pr_opened → needs_review → requested_changes`; terminal `merged | closed | abandoned`. **Open:** whether Task and PlanTask share one machine or PlanTask is a subtype (§8, SOM §37 Q2).
+`unassigned → queued → assigned → in_progress`; `blocked | needs_clarification`; `changes_ready → pr_opened → needs_review → requested_changes`; terminal `merged | closed | abandoned`. **[RESOLVED — R-8, §5.1]** Task and PlanTask are **one `tasks` table** with `kind ∈ {plan_task, external_task}` over a **superset** machine (kind-scoped subsets render per view) — not two objects (ADR-012).
 
 ### 4.3 Worktree `[LOCKED — SOM §7, UX §8.3]` (**DERIVED**, not stored as truth — §3)
 `creating | clean | dirty | untracked_files | conflicts | behind_base | ahead_of_base | pr_open | merged | prunable | locked | deleted`. Computed from live git2 read + event hints; `proj_worktree.status` is a cache stamped with `git_checked_at`.
@@ -505,13 +507,13 @@ Canonical enum values below come from SOM object lifecycles and UX `§8.1`–`§
 `draft | open | checks_pending | checks_failing | needs_review | changes_requested | approved | mergeable | conflict | merged | closed`. Driven by `PullRequest*` events sourced from the GitHub syncer; **remote authority is GitHub** — local row is a synced cache.
 
 ### 4.5 WorkflowInstance `[LOCKED — SOM §17, UX §8.5]` (durable row `workflow_instances.status`, churned by events)
-`not_detected | pack_available | needs_personalization | personalization_in_progress | generated_review_required | active | ready_for_team_mode | degraded | drift_detected | upgrade_available | archived | detached`.
+`not_detected | pack_available | needs_personalization | personalization_in_progress | generated_review_required | active | ready_for_team_run | degraded | drift_detected | upgrade_available | archived | detached`. _(R-7: `ready_for_team_mode`→`ready_for_team_run`; team-run-in-progress is tracked on AgentTeam, not the instance.)_
 
 ### 4.6 ProjectBrain `[LOCKED — SOM §23, UX §8.6]` (reported by sidecar via MCP notifications → events; Brain owns the underlying index, §1)
 `not_configured | indexing | ready | partial_index | stale | graph_degraded | transcript_ingestion_off | transcript_ingestion_active | reindex_required | error`. The daemon stores the *last reported* status; the Brain's store is authoritative for its own index.
 
-### 4.7 Approval `[LOCKED — AG §8, UX §8.7]` (event-derived → `proj_approval_queue.status` + durable `approvals.status`)
-`requested → previewed → awaiting_approval → approved | denied | expired | cancelled → executing → succeeded | failed`. The authoritative `Action*`/`Approval*` events are emitted **only** by the gateway (ADR-004, EM §16).
+### 4.7 Approval `[LOCKED — AG §8, UX §8.7; SPLIT per R-5 — see §5.1]` (event-derived → `proj_approval_queue.status` + durable `approvals.status`)
+**[RECONCILED — R-5, §5.1]** This draft conflated approval + execution into one machine; **R-5 split them into two**: **Approval** = the decision axis `{requested, previewed, awaiting_approval, approved, denied, edited, auto_approved_by_policy, expired, cancelled, escalated}` (10), and the execution states (`queued → executing → succeeded | failed | partially_succeeded | rolled_back | rollback_failed`) moved to the **new ActionRequest** machine (15, §5.1). The authoritative `Action*`/`Approval*` events are emitted **only** by the gateway (ADR-004, EM §16).
 
 ### 4.8 ExecutionProfile `[LOCKED — SOM §15, UX §8.8]` (durable row `execution_profiles.status`)
 `available | active | in_use | rate_limited | auth_expired | misconfigured | disabled | unknown`. `rate_limited`/`auth_expired` set by adapter telemetry + keychain self-test (ADR-007/011).
@@ -522,7 +524,7 @@ Canonical enum values below come from SOM object lifecycles and UX `§8.1`–`§
 
 `[LOCKED — PBI §3]` Adopt the **22 shared IDs** from PBI §3 as the cross-product contract between the platform and Project Brain: `workspace_id, project_id, repo_id, worktree_id, branch_name, commit_sha, session_id, agent_team_id, execution_profile_id, workflow_pack_id, workflow_instance_id, workflow_command_id, implementation_plan_id, plan_task_id, architecture_anchor, linear_issue_id, github_issue_number, pr_number, action_request_id, event_id, artifact_id, evidence_item_id`. Every event `object_ref`, every Brain evidence chip, and every gateway `ResourceRef` (AG §9.8) uses these exact IDs.
 
-**ID format recommendation** `[PROPOSED]`: **prefixed ULIDs** for platform-minted IDs — `<prefix>_<ULID>` (e.g. `sess_01JZ...`, `evt_01JZ...`, `wt_01JZ...`). Rationale:
+**ID format** `[LOCKED — R-1, §5.2; frozen 0.5 in `shared/src/ids.rs` as newtypes]`: **prefixed ULIDs** for platform-minted IDs — `<prefix>_<ULID>` (e.g. `sess_01JZ...`, `evt_01JZ...`, `wt_01JZ...`). Rationale:
 - ULIDs are lexicographically sortable (Crockford base32) → `seq`-aligned event ordering and natural sidebar ordering without extra columns.
 - Type-prefixes make IDs self-describing in logs, audit headlines, and Brain citations (matches EM §6 examples `evt_`, `proj_`, `sess_`, `wt_`).
 - Monotonic-ish creation time embedded → cheap "recent" queries.
@@ -573,7 +575,7 @@ CREATE TABLE devices (
 **Purpose:** an authenticated *remote* connection/session on a non-host Device that submits redacted-projection reads and **remote ActionRequests** through the gateway (DFR §6 hard boundary: never a remote shell). One Device may have multiple RemoteClient sessions over time.
 **Key fields:** `remote_client_id` (`rc_`+ULID), `device_id` (FK → devices), `capability_scope_json` (redaction policy + allowed action risk ceiling, EM §20), `network_path` (`relay` | `tunnel` — DFR §6, EM §19), `paired_at`, `last_active_at`, `revoked_at?`.
 **Lifecycle:** `pairing → paired/active → revoked`.
-**Mapping to gateway/event (the key contract):** when a RemoteClient submits an action, it becomes `action_requests.requester_type = 'remote_client'` and `requester_id = remote_client_id`; the resulting events carry **`actor_type = 'remote_client'`**, `actor_id = remote_client_id`. This **extends** the AG §9.7 ActorRef union and EM §7 actor enum with `remote_client` (EM §7 currently has the looser `remote_device`; finalize should unify on one name — `[OPEN]`, recommend `remote_client`). All remote mutations therefore flow `RemoteClient → gateway → daemon executor`, never touching the DB/PTY directly (DFR §5/§6, locked by ADR-004).
+**Mapping to gateway/event (the key contract):** when a RemoteClient submits an action, it becomes `action_requests.requester_type = 'remote_client'` and `requester_id = remote_client_id`; the resulting events carry **`actor_type = 'remote_client'`**, `actor_id = remote_client_id`. This **extends** the AG §9.7 ActorRef union and EM §7 actor enum with `remote_client` (**[RESOLVED 2026-06-07 — R-2, §7.1]** EM §7's legacy `remote_device` was swept forward to `remote_client`; the 10-value audit enum is frozen in `shared/src/actor.rs`). All remote mutations therefore flow `RemoteClient → gateway → daemon executor`, never touching the DB/PTY directly (DFR §5/§6, locked by ADR-004).
 ```sql
 CREATE TABLE remote_clients (
   remote_client_id TEXT PRIMARY KEY,
@@ -602,8 +604,8 @@ CREATE TABLE local_runners (
 `[PROPOSED]` add `local_runner_id` to `proj_session` (nullable) so a session records which runner instance executed it — useful for the resume path (ADR-010) and audit.
 
 ### 6.4 EventProjection `[PROPOSED]`
-**Purpose:** the first-class catalog/metadata object for each projection (EM §4.6, the SOM gap noted in the prompt). It is the registry *describing* the 8 projections (§2.3) plus future ones, including for redacted **remote** projections the iOS companion would consume (EM §19/§20). `projection_offsets` (§2.4) is its per-instance progress; this is its definition/metadata.
-**Key fields:** `event_projection_id` (`prj_`+ULID), `name` (matches `projection_offsets.projection_name`), `projector_version`, `redaction_policy_id?` (for remote variants), `target` (`local_ui` | `remote_companion` `[DEFERRED]`), `state` (`healthy` | `rebuilding` | `degraded`), `last_seq`.
+**Purpose:** the first-class catalog/metadata object for each projection (EM §4.6, the SOM gap noted in the prompt). It is the registry *describing* the 10 projections (§2.3) plus future ones, including for redacted **remote** projections the iOS companion would consume (EM §19/§20). `projection_offsets` (§2.4) is its per-instance progress; this is its definition/metadata.
+**Key fields:** `event_projection_id` (`eprj_`+ULID — frozen 0.5, de-collided from `proj_`), `name` (matches `projection_offsets.projection_name`), `projector_version`, `redaction_policy_id?` (for remote variants), `target` (`local_ui` | `remote_companion` `[DEFERRED]`), `state` (`healthy` | `rebuilding` | `degraded`), `last_seq`.
 **Lifecycle:** `defined → building → healthy ↔ rebuilding/degraded`. Bumping `projector_version` triggers a rebuild (§7).
 ```sql
 CREATE TABLE event_projections (
@@ -644,11 +646,11 @@ EM §27 asks: SQLite-only, or SQLite + append-only JSONL mirror? `[PROPOSED]` SQ
 
 These are unresolved data-modeling decisions for the adversarial finalize pass; record/track in the sibling `docs/planning/OPEN_QUESTIONS.md` (this planning chain). All `[OPEN]`, cross-referenced to SOM §37.
 
-1. **Task vs PlanTask subtype** (SOM §37 Q2): one `tasks` table with a `kind` discriminator, or separate `plan_tasks` + `tasks`? This draft used `plan_tasks` (§2.8) + a shared §4.2 state machine; finalize must decide whether external `tasks` (Linear/GitHub) and `plan_tasks` are one table or two.
+1. **Task vs PlanTask subtype** (SOM §37 Q2): **[RESOLVED — R-8, §5.1]** one `tasks` table, `kind ∈ {plan_task, external_task}`, **superset** state machine (ADR-012); Plan View renders the plan-task subset, external tasks render the GitHub/Linear subset. _(Draft used `plan_tasks` (§2.8) + a shared §4.2 machine — superseded.)_
 2. **Worktree ↔ Repo cardinality / multi-repo** (SOM §37 Q1): `proj_worktree.repo_id` is currently 1:1 → one repo. Multi-repo projects / virtual worktrees would need a join table (`worktree_repos`). Mark schema extension point.
 3. **Branch co-ownership** (SOM §37 Q3): `leases.lease_kind='shared'` is reserved (§2.6) but the semantics for two sessions on one branch are undefined. Resolve before any multi-agent-on-one-branch flow.
 4. **AgentTeam PR reconciliation** (SOM §37 Q4): one PR vs many PRs per team — affects whether `proj_worktree`/`linked_pr_id` is 1:1 with a team or fans out. Schema currently assumes per-worktree PR.
-5. **Actor enum unification** (this artifact, §6.2): EM §7 has `remote_device`; AG §9.7 ActorRef lacks any remote member; this draft proposes `remote_client`. Pick one canonical token across events + gateway.
+5. **Actor enum unification** (this artifact, §6.2): **[RESOLVED — R-2, §7.1; frozen in `shared/src/actor.rs`]** canonical audit actor = **`remote_client`** (EM §7 `remote_device` swept forward; request-time `requester_type` aliases map per Appendix A). The 10-value audit enum is frozen.
 6. **Hash-chain activation** (EM §27): `payload_hash`/`previous_event_hash` reserved (§2.1) — decide if/when to turn on tamper-evidence (post-MVP per ADR-003).
-7. **ID format** (this artifact, §5): confirm prefixed-ULID recommendation vs UUIDv7 before any schema is frozen.
+7. **ID format** (this artifact, §5): **[RESOLVED — R-1, §5.2; frozen 0.5]** prefixed-ULID adopted + frozen in `shared/src/ids.rs` (16 minted prefixes + 6 external natives); UUIDv7 not taken.
 8. Plus the harness-state-capture reliability and EpisodeCard generation-timing questions (SOM §37 Q6/Q7) that bound what the `artifacts`/`proj_session` tables can safely persist.

@@ -18,9 +18,11 @@
 
 ## Currently in progress
 
-**Bootstrap session.** Scaffolding not yet generated; first `/tdd` slice not yet started.
+**PHASE 0 — DETERMINISTIC WORK COMPLETE (2026-06-07).** All 4 spikes landed (`docs/spikes/*.md`) + the **0.5 contract freeze landed (06f9576)** — the serial neck. Single-writer holds (0.4 → §18 written MEASURED); git2 reads relative-worktrees (0.3 → §9 corrected); #27203 confirmed, bg subagents forbidden (0.1); shared/ contracts frozen Option-A (0.5, §5.0). Toolchain RESOLVED (Lesson §1).
 
-**Next session target:** Phase 0 (spikes) → then 1.1.
+**PHASE BOUNDARY — awaiting direction (surfaced to lead):** the fan-out trigger is met. Decision forks: **(a)** user-invoked **Phase-0-exit `/arch-finalize` re-validation** (reconcile upstream planning drift — DATA_MODEL §4/§6.4, EM §7 — before Phase 1 binds); **(b)** open the **ui track** (now unblocked by the frozen contracts); **(c)** next daemon-core slice = **Phase 1 / 1.1** (event store; deps 0.4+0.5 met). Recommend `/orchestrate-end` first (commit + push the accumulated Phase-0 round) so any `/arch-finalize` runs against a clean state.
+
+**Still open (non-blocking for Phase 1):** HITL — notarization run (0.2, Apple creds), credit-pool drain ≥6/15 (0.1) → then cat-4 SDK-vs-PTY + **0.5b** (re-freeze ExecutionProfile).
 
 ---
 
@@ -28,7 +30,13 @@
 
 Items the orchestrator MUST fold into upcoming slice briefs. **Triaged at every `/orchestrate-end`** — NOT append-only. New entries carry `(origin: YYYY-MM-DD <slice-id>)`.
 
-_(Empty at project start.)_
+_(Empty for next-brief purposes — 1.1 has no carry-forward dependencies; it binds to the frozen `shared/` contracts + `ARCHITECTURE.md` directly. 0.5b inlined as a Phase-0 task. Two cross-track op-items spread to their consumer slices below.)_
+
+**Spread (kept; auto-resolve at the consumer slice):**
+- **ui track generates Zod from `contracts/schema/`** (`pnpm` broken → use `npx json-schema-to-zod`, per the 0.3 env note). `last-consumer-slice: ui-track open (Phase 6)` `(origin: 2026-06-07 P0.5)`
+- **Wire the §5.0 contract gates into CI** — schema-diff (test 9) + 3-way verify (test 8) + the Codex schema gate — no `.github/workflows/` exists yet; they run in `cargo test`/harness locally meanwhile. `last-consumer-slice: Phase 10 (release infra), or earlier if CI is stood up` `(origin: 2026-06-07 P0.5)`
+
+_(LOCKED-text corrections + planning-doc reconciles are tracked in "Architecture-doc corrections" + the Phase-0-exit `/arch-finalize` reconcile list below.)_
 
 ---
 
@@ -111,36 +119,42 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 **Track / deps:** `shared` (the serial neck — one team). **Deps:** none. **Parallel:** the 6 spikes run concurrently; **0.5 (contract freeze) is gated on 0.1 + 0.3** and is what unlocks every downstream track.
 
 ### 0.1 — Claude supervision-mode spike (O-4) — *gates Phase 3 Claude adapter*
-- [ ] Empirically map `can_use_tool` coverage across direct bash/Write/Edit, MCP tools, Task subagents (fg/bg), and each permission mode; confirm the #27203 background-subagent gap.
-- [ ] Measure Agent-SDK credit-pool behavior (2026-06-15) vs interactive-PTY; decide SDK-driven vs interactive-PTY-primary; record the criterion + decision.
-- [ ] Files: `docs/spikes/OQ-HARN-SPIKE-7.md` (NEW)
-- [ ] Cross-doc invariant: none (resolves O-4; if it changes §9.1, re-run `/arch-finalize`)
+- [x] Empirically map `can_use_tool` coverage across direct bash/Write/Edit, MCP tools, Task subagents (fg/bg), and each permission mode; confirm the #27203 background-subagent gap. — **#27203 CONFIRMED present on CC 2.1.168** (closed won't-fix); bg subagents stay forbidden (matches §9.1, no change).
+- [ ] Measure Agent-SDK credit-pool behavior (2026-06-15) vs interactive-PTY; decide SDK-driven vs interactive-PTY-primary; record the criterion + decision. — **PARTIAL:** criterion + both branches recorded (`OQ-HARN-SPIKE-7.md §3`); drain measurement = HITL checklist (§5), user runs ≥ 2026-06-15. **Decision NOT made (cat-4 — see Decisions tabled).**
+- [x] Files: `docs/spikes/OQ-HARN-SPIKE-7.md` (NEW)
+- [x] Cross-doc invariant: none (resolves O-4; #27203 confirmed → §9.1 unchanged)
 
 ### 0.2 — macOS sidecar notarization spike (OQ-PLAT-SPIKE-1) — *gates Phase 10 packaging / Phase 8 Brain bundling*
-- [ ] Validate deep-signing + notarizing a bundled PyInstaller sidecar via Tauri `externalBin` (#11992) on a real signed build; if blocked, confirm the loopback-HTTP Brain fallback (§13.1).
-- [ ] Files: `docs/spikes/OQ-PLAT-SPIKE-1.md` (NEW)
-- [ ] Cross-doc invariant: none
+- [ ] Validate deep-signing + notarizing a bundled PyInstaller sidecar via Tauri `externalBin` (#11992) on a real signed build; if blocked, confirm the loopback-HTTP Brain fallback (§13.1). — **PARTIAL:** turnkey checklist + loopback-HTTP fallback decision tree drafted (`OQ-PLAT-SPIKE-1.md`); **HITL run pending** (user's Developer ID / notary creds).
+- [x] Files: `docs/spikes/OQ-PLAT-SPIKE-1.md` (NEW)
+- [x] Cross-doc invariant: none
 
 ### 0.3 — Codex app-server schema-pin + git2/octocrab spot-check (OQ-HARN-SPIKE-4, OQ-INT-SPIKE-6) — *gates Phase 3 Codex / Phase 5 git / Phase 7 GitHub*
-- [ ] Pin the Codex version; generate + diff the app-server JSON-RPC schema bundle; confirm the stable method set + modern/legacy approval shapes; wire the CI schema-diff gate.
-- [ ] Verify git2 read-path survives `extensions.relativeworktrees` repos (else CLI-read fallback); spot-check `octocrab` `pulls().merge()` + GitHub-App token flow.
-- [ ] Files: `docs/spikes/OQ-HARN-SPIKE-4.md`, `docs/spikes/OQ-INT-SPIKE-6.md` (NEW)
-- [ ] Cross-doc invariant: none
+- [ ] Pin the Codex version; generate + diff the app-server JSON-RPC schema bundle; confirm the stable method set + modern/legacy approval shapes; wire the CI schema-diff gate. — **PARTIAL:** codex CLI absent locally → pin procedure + CI schema-diff gate scaffolded (`OQ-HARN-SPIKE-4.md`); **live schema capture is HITL** (run once codex installed).
+- [x] Verify git2 read-path survives `extensions.relativeworktrees` repos (else CLI-read fallback); spot-check `octocrab` `pulls().merge()` + GitHub-App token flow. — git2 1.9.4 **CAN** read relative-worktree repos (ADR-007 premise stale → cross-doc flag); octocrab 0.53 merge + `gh auth token` adequate (`OQ-INT-SPIKE-6.md`).
+- [x] Files: `docs/spikes/OQ-HARN-SPIKE-4.md`, `docs/spikes/OQ-INT-SPIKE-6.md` (NEW)
+- [ ] Cross-doc invariant: ~~none~~ → **libgit2 relative-worktree read-gap closed (libgit2 ≥ 1.9.4)** contradicts LOCKED ADR-007 + §9 aside → route `/arch-finalize` (see Carry-forward; escalated to lead).
 
 ### 0.4 — SQLite single-writer load test (OQ-DATA-SPIKE-3) — *gates Phase 1 event-store freeze*
-- [ ] Load-test the single-writer event-store path at N=20 concurrent mutating agents; record intent-commit p95 + reader latency; confirm/adjust the §18 budgets; document the ceiling.
-- [ ] Files: `docs/spikes/OQ-DATA-SPIKE-3.md` (NEW)
-- [ ] Cross-doc invariant: none (confirms §18 numbers)
+- [x] Load-test the single-writer event-store path at N=20 concurrent mutating agents; record intent-commit p95 + reader latency; confirm/adjust the §18 budgets; document the ceiling. — single-writer **holds** (p95 5.35 ms fresh / 8.44 ms @1M; reader ≤ 0.38 ms; ceiling > N=100).
+- [x] Files: `docs/spikes/OQ-DATA-SPIKE-3.md` (NEW)
+- [x] Cross-doc invariant: none (§18 numbers written into `ARCHITECTURE.md §18` — MEASURED + §14 CI guards committed).
 
-### 0.5 — Contract freeze: enums, IDs, gap objects (OQ-DATA-SPIKE-5)
-- [ ] Freeze the canonical enums (§5.1 nine machines), the 22 shared IDs + prefixed-ULID format (§5.2), the actor enum (R-2), and the 4 desktop-addendum objects (§5.3) as `shared/` constants; reconcile into SOM.
-- [ ] Files: `shared/contracts/` (NEW — enums, ID kinds, actor enum)
-- [ ] Cross-doc invariant: NEW — Appendix A (9 state machines, 22 shared IDs, Desktop-addendum objects, Actor enum)
-- [ ] Tests: happy (every enum value present + serializes); edge (unknown value rejected); integration (Rust + TS + Python read the same constants).
+### 0.5 — Contract freeze: enums, IDs, gap objects (OQ-DATA-SPIKE-5) — ✅ **LANDED 06f9576** (Option A, §5.0)
+- [x] Freeze the canonical enums (§5.1 nine machines), the 22 shared IDs + prefixed-ULID format (§5.2), the actor enum (R-2), and the 4 desktop-addendum objects (§5.3) as `shared/` constants; reconcile into SOM. — **ExecutionProfile runtime-state enum HELD for 0.5b** (cat-4); everything else frozen.
+- [x] Files: `shared/` Rust authority crate (status/actor/ids/objects/schema + emit_schema bin + contract tests) + `contracts/schema/nexusops-contract.schema.json` (published) + `contracts/verify/` (3-way harness). 14 files.
+- [x] Cross-doc invariant: Appendix A annotated (frozen-in-`shared/` + prefix map) + `daemon/CLAUDE.md` cross-doc rows + LESSONS §2. (Orchestrator-written; rides the round commit.)
+- [x] Tests: 11 Rust contract tests + the 3-way (Rust/Zod/Pydantic) equality harness + schema-diff gate — all green; clippy `-D warnings` clean.
+
+### 0.5b — Re-freeze the ExecutionProfile runtime-state enum — ⏳ **GATED (cat-4, ≥2026-06-15)**
+- [ ] Re-freeze the `ExecutionProfile` runtime-state enum (held out of 0.5 — credit-pool-adjacent: `rate_limited`/`auth_expired` + possible SDK-credit-exhaustion value) into `shared/` via the same Option-A mechanism (§5.0); regenerate schema + Zod/Pydantic consumers; extend the 3-way verify.
+- [ ] **Gate:** the cat-4 SDK-vs-PTY decision (see Decisions tabled) — needs the ≥6/15 Claude credit-pool drain data first.
+- [ ] Also narrow the deferred `#[allow(unreachable_patterns)]` in `shared/src/status.rs` (0.5 code-quality low) while touching the crate.
+- [ ] Cross-doc invariant: add the ExecutionProfile machine to Appendix A's frozen set + the `daemon/CLAUDE.md` cross-doc row (flip "10 total: 9 frozen + ExecutionProfile held" → "10 frozen").
 
 ### Acceptance criteria (0)
-- [ ] All 0.X spikes resolved with a recorded decision; any architecture change routed back through `/arch-finalize` (not invented here).
-- [ ] Shared contracts frozen in `shared/`; Appendix A models codified.
+- [x] All 0.X spikes resolved with a recorded decision (`docs/spikes/*.md`). _Architecture changes recorded as direct anchored edits (§5.0, §9, §18) — a **user-invoked Phase-0-exit `/arch-finalize` re-validation** is the natural gate to reconcile the upstream planning-doc drift (DATA_MODEL §4/§6.4, EM §7) before Phase 1 binds._ **HITL executions still open** (notarization run; credit-pool drain ≥6/15) — staged, non-blocking for Phase 1.
+- [x] Shared contracts frozen in `shared/` (06f9576); Appendix A models codified + annotated. (ExecutionProfile held → 0.5b.)
 
 ---
 
@@ -518,7 +532,30 @@ Deferred items with come-back guidance. (Seeded from `ARCHITECTURE.md §19.2`; e
 
 Open scope/design questions awaiting resolution.
 
-_(Empty at project start. The Phase 0 spikes will populate O-4 (Claude mode), the §18 perf numbers, and the §13.1 Brain transport on resolution.)_
+- **[RESOLVED 2026-06-07 — cat-4, user-locked] Cross-language contract source-of-truth = Option A.** Rust `shared` crate = native authority (newtypes, serde-closed enums); `schemars` → **JSON Schema as a first-class, versioned, CI-diff-gated published artifact** (`shared/contracts/schema/`, `CONTRACT_VERSION`); TS Zod + Python Pydantic generated from it (drift-caught); reject-unknown end-to-end. Documented at **`ARCHITECTURE.md §5.0`** (direct anchored edit, owner-locked). This is the mechanism for ALL contract surfaces, not just 0.5. `(origin: 2026-06-07 P0.5)`
+- **[cat-4 / load-bearing — PENDING ≥6/15 DRAIN] SDK-vs-PTY primary driver for Claude (O-4 / ADR-006).** The 2026-06-15 Anthropic policy gives SDK/`-p` a separate **capped** Agent-SDK credit pool that **hard-stops with no fallback**; the interactive terminal is exempt (`RESEARCH.md:65` [VERIFIED]). This **may invert ADR-006**'s Option-C-Hybrid lean (SDK-driven primary). **Not decided agent-only.** Phase-0 0.1 LANDED the measurable half: **decision criterion + both branches recorded** (`docs/spikes/OQ-HARN-SPIKE-7.md §3`); **#27203 confirmed** present on CC 2.1.168 (bg subagents stay forbidden — §9.1 unchanged). **Still open:** the deciding **drain measurement = HITL checklist** (`§5`), user runs ≥ 6/15**. Orchestrator carries the resolved call back to the lead/user with the drain data. **Blocks** freezing any 0.5 supervision-touching contract surface. `(origin: 2026-06-07 P0.1)`
+- **[tracked — Phase 10, not blocking] D14 demo-viability contradiction.** Brain-optional (design) vs demo-mandatory (PRD §25) vs SDK-can-halt (credit-pool) are in tension for the end-to-end demo. Carry as a known Phase-10 concern; resolve before the integration/deploy gate. `(origin: 2026-06-07, D14 audit)`
+- _(Phase 0 also populated §18 perf numbers (0.4 → written into `ARCHITECTURE.md §18`). §13.1 Brain transport still resolves later.)_
+
+---
+
+## Architecture-doc corrections (applied as direct edits)
+
+> **`/arch-finalize` is user-invoked, on-demand — NOT an auto-recurring batch** (user, 2026-06-07). It produced the binding `ARCHITECTURE.md`; there is no scheduled "next run" to queue work into. Locked-decision records + factual corrections + numbering fixes land as **direct atomic anchored edits** (Step-9 arch-doc-note hot-routing), committed with the round. A full `/arch-finalize` **re-validation** is a deliberate user-invoked gate, natural at **Phase-0 exit before Phase 1**.
+
+Applied this round (2026-06-07), committed atomically with the round commit:
+- [x] **`ARCHITECTURE.md §5.0` — Contract source-of-truth & propagation** written (Option A, owner-locked). The contract *format* is now itself contracted. `(P0.5)`
+- [x] **`ARCHITECTURE.md §9` — libgit2 relative-worktree read-gap CLOSED.** Empirical (0.3 / `OQ-INT-SPIKE-6.md`): libgit2 ≥ 1.9.4 (git2 0.21) **CAN** fully read `extensions.relativeWorktrees` repos; the §9 aside corrected. Dual-git posture UNCHANGED (CLI for ALL mutations + the sparse-checkout fallback retained). `(P0.3)`
+- [x] **OQ-HARN-SPIKE numbering reconciled.** Canonical = **`-7`** (used across the finalized artifacts: gap-audits/D06, ui-review/E-netnew, MVP_TASKS, the spike file). `OPEN_QUESTIONS.md` `-2` (legacy /arch-draft) cross-ref'd to `-7`. `(P0.1)`
+- [x] **Appendix A + `daemon/CLAUDE.md` cross-doc rows + LESSONS §2** — the 0.5 frozen contracts recorded (cross-doc invariant routing). `(P0.5)`
+
+**Upstream PLANNING-doc reconciles for the user-invoked Phase-0-exit `/arch-finalize`** (the binding `ARCHITECTURE.md` is already correct; these are /arch-draft drafts the re-validation should sweep — do NOT hot-edit planning artifacts):
+- [ ] `docs/planning/DECISIONS.md` **ADR-007** still carries the stale "libgit2 can't do relativeworktrees (fix unreleased)" premise → reconcile to the §9 correction. `(P0.3)`
+- [ ] `docs/planning/DATA_MODEL.md` **§4** (rough draft) is superseded by §5.1 (LOCKED): `ready_for_team_mode`→`ready_for_team_run`; Approval predates the R-5 split; lacks ActionRequest/AgentTeam machines. `(P0.5)`
+- [ ] `DATA_MODEL.md` **EM §7** actor enum `remote_device` → unify on **`remote_client`** (§7.1/R-2; DATA_MODEL §6 line 576 already recommends this). `(P0.5)`
+- [ ] `DATA_MODEL.md` **§6.4** EventProjection prefix `prj_` → **`eprj_`** (frozen value, de-collided from `proj_`). `(P0.5)`
+- [ ] **Ratify `§5.0`** (it's `[LOCKED — owner]`, recorded as a direct edit; the re-validation should scrutinize it like any anchor). `(P0.5)`
+- [ ] **`ARCHITECTURE.md §5.1` header/table count mismatch** — prose says "**Nine** machines (the 8 of the draft + ActionRequest)" but the table lists **10** (the 10th appears to be **AgentTeam**, R-6). Reconcile the header to 10 + correct the parenthetical (not direct-fixed — header framing inferred, left for the re-validation to confirm authoritatively). `(P0.5)`
 
 ---
 
@@ -526,4 +563,12 @@ _(Empty at project start. The Phase 0 spikes will populate O-4 (Claude mode), th
 
 Append-only, date-stamped, the orchestrator's framing of each round.
 
-_(Empty at project start; populated at every `/orchestrate-end`.)_
+### 2026-06-07 — Phase 0: spikes + 0.5 contract freeze (the serial neck)
+
+- **Completed:** all 4 Phase-0 spikes (0.1–0.4) resolved with recorded decisions (`docs/spikes/*.md`); **0.5 shared-contract freeze landed (06f9576)** — the serial neck. Single-writer holds (§18 written MEASURED, 12–19× headroom); git2 reads relative-worktrees (§9 corrected); #27203 confirmed (bg subagents stay forbidden); contracts frozen Option-A in `shared/` (9 status machines, 22 IDs + prefix map, actor enum, 4 desktop objects).
+- **Decisions made:** **contract SoT = Option A** (cat-4, user-locked) — Rust authority → first-class versioned CI-diff-gated JSON Schema → generated Zod/Pydantic (recorded `§5.0`). 10 new ID prefixes defined + ratified (orchestrator TWEAK de-collided `art_`→`artf_`, `prj_`→`eprj_`). §18 budgets MEASURED + committed (+ §14 CI guards).
+- **Scope shifts:** **ExecutionProfile runtime-state enum held → 0.5b** (excluded from the freeze pending cat-4). HITL items staged (notarization, credit-pool drain ≥6/15, codex schema capture) — none block Phase 1.
+- **New blockers / open questions:** cat-4 **SDK-vs-PTY** pending the ≥6/15 credit-pool drain; **D14 demo-viability** contradiction tracked for Phase 10.
+- **Convention fixes:** `cargo fmt --check` added to the daemon preflight gate (Step-8 was clippy-only → 06f9576 needed fmt follow-up 407be7c). Banked LESSONS §1 (broken cargo shims) + §2 (wire-value-is-contract / §5.0 SoT pattern). Architecture corrections direct-edited (§5.0, §9, §18, Appendix A); planning-doc reconciles queued for the Phase-0-exit `/arch-finalize`.
+- **Next session target:** **user-invoked Phase-0-exit `/arch-finalize` re-validation** (sweep the planning-doc reconciles) → then fan-out: **Phase 1 / 1.1** (event store, daemon-core) ∥ **ui track**. **HELD on 1.1** until the re-validation completes + any moved contracts are reconciled into `shared/` (a 0.5b if frozen enums/IDs/§5.0 shifted).
+- **Reference:** implementer session doc `001-2026-06-07-phase0-spikes-and-contract-freeze.md`; commits 06f9576 (0.5) + 407be7c/94e4894/2bf198d/4f572dc (close-out).

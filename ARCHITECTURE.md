@@ -126,6 +126,16 @@ A PTY child dies (SIGHUP) when its owner exits, so "agents survive UI quit" (`PR
 
 Authoritative object catalog: `SOM` (~30 objects). Persistence: §7, `docs/planning/DATA_MODEL.md`. Four canonical chains (`SOM §35`) are invariants the event/data model keeps traceable: ticket→merge, plan→implementation, brain-action, workflow-personalization.
 
+### §5.0 — Contract source-of-truth & propagation `[LOCKED — owner 2026-06-07; OQ-DATA-SPIKE-5]`
+The cross-language representation of every shared contract (the §5.1 status enums, the §5.2 IDs + ULID format, the §7.1 actor/source enums, §6.1/§6.4 GatewayPort + wire schemas, the §7.1 `EventTypeRegistry`, the §6.3 `ActionTypeCatalog`, Appendix A models) follows **one mechanism** — **Option A**, locked by the owner (Phase 0.5 / `OQ-DATA-SPIKE-5`):
+
+1. **Rust `shared` crate = the native contract authority.** The trust core owns its own types as idiomatic Rust (load-bearing IDs are **newtypes**, enums are `serde`-closed). No type in the trust core is generated; the daemon, as the single authority + sole mutator, authors the contract.
+2. **`schemars` → JSON Schema = a first-class, published, versioned interchange artifact** (not a throwaway build output): checked into `shared/contracts/schema/`, stamped with `CONTRACT_VERSION`, regenerated from the Rust authority, and **CI-diff-gated** (a test fails when the checked-in schema ≠ what Rust emits — the same drift-gate pattern as the Codex app-server schema, `OQ-HARN-SPIKE-4`). This neutral artifact is what the **sibling Python Brain** and any external consumer bind to (no Rust import).
+3. **TS (Zod) + Python (Pydantic) are generated, drift-caught consumers** of the published schema; the UI's "parse, don't trust" boundary uses the generated Zod validators.
+4. **Closed-enum / reject-unknown end-to-end** — unknown contract values are rejected at every language boundary (`serde` closed enums → JSON-Schema `enum` → `z.enum` → Pydantic), preserving the fail-closed posture (§15/§17).
+
+Rationale (single-authority thesis · preserves the newtype typing posture · schemars is already the IPC-schema mechanism · the reject-unknown safety property maps cleanly; an external IDL/codegen-into-the-trust-core was rejected as inverting authority + generating bare types in the safety-critical module). Recorded as a direct architecture-doc note on the owner's lock; a user-invoked `/arch-finalize` re-validation (natural at Phase-0 exit) would re-scrutinize it like any other anchor.
+
 ### §5.1 — Status state machines (canonical, reconciled) `[LOCKED — R-4..R-9]`
 Nine machines (the "8" of the draft + ActionRequest). Enums are binding; each declares terminal states; illegal transitions → degraded marker (R-9, §17). Stored as `TEXT status` on the named projection/registry row.
 
@@ -241,7 +251,7 @@ Authoritative: `PRD §9` (14 flows) + `UX §10` (A-M). Each MVP requirement maps
 
 ## §9 — Integration architecture
 
-`[LOCKED — ADR-007]`. **Git:** `git2-rs` for hot structured reads (status/diff/log/branch/worktree-list); **git CLI for ALL mutations + worktree lifecycle** (terminal parity + single chokepoint; libgit2 can't do `extensions.relativeworktrees` and misreports sparse-checkout — `OQ-INT-SPIKE-6` re-verifies whether git2 *reads* even survive on relative-worktree repos; if not, those repos fall back to CLI reads). **GitHub:** `octocrab` (typed REST+GraphQL) for issues/PRs/checks/merges; auth bootstrap = reuse `gh auth token` else OAuth Device Flow. **Linear:** `@linear/sdk`/GraphQL; auth-code+PKCE (loopback) or pasted key; 24h refresh; budget query complexity. **Integration-failure contract** (§17): transient (429 Retry-After / 5xx → outbox backoff) vs terminal (401/403 → `*SyncFailed` + profile→auth_expired + "re-authenticate" card; keychain-unavailable → hard fail). Staged sync (inherited): link (P0) → one-way (P1) → bidirectional (P2). **Credentials:** `keyring` crate (covers iOS future), explicit per-OS feature flags + startup self-test; macOS keychain ACLs need a stable Developer ID (§16).
+`[LOCKED — ADR-007]`. **Git:** `git2-rs` for hot structured reads (status/diff/log/branch/worktree-list); **git CLI for ALL mutations + worktree lifecycle** (terminal parity + single chokepoint). `OQ-INT-SPIKE-6` (2026-06-07) **resolved the relative-worktree read question empirically: libgit2 ≥ 1.9.4 (git2 0.21) CAN fully read `extensions.relativeWorktrees` repos** (open/statuses/branches/head/worktree-list/find_worktree/diff) — the earlier ADR-007 "fix unreleased" premise is superseded; relative-worktree repos **no longer force CLI reads**. The CLI-read fallback is **retained** only for the separate, still-unverified **sparse-checkout misreport** gap. Mutations remain CLI-only regardless (the chokepoint invariant, not a libgit2 limitation). **GitHub:** `octocrab` (typed REST+GraphQL) for issues/PRs/checks/merges; auth bootstrap = reuse `gh auth token` else OAuth Device Flow. **Linear:** `@linear/sdk`/GraphQL; auth-code+PKCE (loopback) or pasted key; 24h refresh; budget query complexity. **Integration-failure contract** (§17): transient (429 Retry-After / 5xx → outbox backoff) vs terminal (401/403 → `*SyncFailed` + profile→auth_expired + "re-authenticate" card; keychain-unavailable → hard fail). Staged sync (inherited): link (P0) → one-way (P1) → bidirectional (P2). **Credentials:** `keyring` crate (covers iOS future), explicit per-OS feature flags + startup self-test; macOS keychain ACLs need a stable Developer ID (§16).
 
 ### §9.1 — Harness adapter layer `[LOCKED — ADR-006; Claude mode PENDING-SPIKE]`
 One **`HarnessAdapter` trait** — `{launch, stream_status, intercept_mutation, read_transcript, telemetry_heartbeat, resume, capabilities}` — with **normalized return types** (Appendix A): `NormalizedStatus` (the 17 Session states), `TelemetrySample{tokens_in,tokens_out,context_pct:Option<f32>,cost,quality}`, `MutationIntercept{tool,params,decision_sink}` (both Claude `can_use_tool` and Codex `requestApproval` implement it), `TranscriptRef{path,hash,is_in_place}`, `ResumeResult`, and a **`HarnessCapabilities`** struct (PRD HARN-5's 10 fields: supportsTerminal/Resume/TranscriptRead/ToolCallParsing/UsageMetadata/ContextMetadata/CommandInjection/Subagents/Hooks/CloudTasks) driving per-capability UI degradation (e.g. `supportsContextMetadata=false` for Codex → render "unknown").
@@ -384,7 +394,7 @@ The single consolidated table (extends EM §23) — each row has an **owning mod
 
 ## §18 — Performance / non-functional budgets
 
-PRD §19.6 success metrics get committed budgets, an owning module, and a §14 performance-tier assertion (numbers are MVP targets; `[OPEN]` exact values confirmed by the §14 load test + a measurement spike):
+PRD §19.6 success metrics get committed budgets, an owning module, and a §14 performance-tier assertion (numbers are MVP targets; remaining `[OPEN]` exact values confirmed by the §14 load test + a measurement spike). The **event-store rows below are MEASURED + committed** by the single-writer load test `OQ-DATA-SPIKE-3` (resolved 2026-06-07; `docs/spikes/OQ-DATA-SPIKE-3.md`).
 | Metric | Budget (MVP target) | Owner |
 |---|---|---|
 | App launch time | < 2 s to interactive shell | UI + daemon bootstrap |
@@ -392,9 +402,22 @@ PRD §19.6 success metrics get committed budgets, an owning module, and a §14 p
 | Terminal attach latency | < 250 ms | `terminal`/`ipc` |
 | Graph render time | < 500 ms for a typical project graph | UI/`projections` |
 | Diff open latency | < 500 ms | `git`(git2)/UI |
-| Event write latency (intent→committed) | p95 < 100 ms at N=20 concurrent agents | `eventstore`/`gateway` |
+| Event write latency (intent→committed) | p95 < 100 ms at N=20 concurrent agents (SLO) — **MEASURED 5.35 ms fresh / 8.44 ms @1M events** | `eventstore`/`gateway` |
+| Reader latency under write load | p95 < 100 ms at N=20 (SLO) — **MEASURED ≤ 0.38 ms** | `eventstore`/`projections` |
 | Brain drawer response latency | < 1.5 s first token (Brain-bound) | `brainclient`/Brain |
 The event-write and drawer budgets bound the central performance bet of the projection-driven UDS + single-writer design (§14 load test quantifies the single-writer ceiling).
+
+**Event-store load test — committed thresholds (`OQ-DATA-SPIKE-3`, resolved 2026-06-07).** The single writer holds at the N=20 design target with ~12–19× headroom; p95 stays < 100 ms through **N=100** (5× target), so the single writer is not the bottleneck at any realistic local-agent count. The user-facing SLO stays at the PRD number; tighter **§14 CI regression guards** sit at the measured baseline + margin so a regression surfaces long before the 100 ms ceiling:
+
+| §14 CI regression guard | Committed threshold | Basis (measured) |
+|---|---|---|
+| Event-write p95 @ N=20 | < 30 ms | 5.35 ms fresh / 8.44 ms @1M (catches ~4× regression) |
+| Event-write p99 @ N=20 | < 75 ms | ~47 ms @1M incl. WAL-checkpoint stalls |
+| Reader p95 under write load @ N=20 | < 10 ms | ≤ 0.38 ms |
+| Sustained single-writer throughput | floor ≥ 1,500 commits/s | ~4,000/s @1M, ~5,350/s fresh |
+| Documented single-writer ceiling | p95 < 100 ms holds through ≥ N=100 | sweep, not saturated at 5× target |
+
+WAL config confirmed: `synchronous=NORMAL`, `fullfsync=OFF` (ADR-003). **Phase-1 (1.1) implementation note:** the p99/max tail is the inline `wal_autocheckpoint` (not lock contention) — consider a background-checkpoint thread (`wal_autocheckpoint=0` + periodic manual `PASSIVE` checkpoint off the hot path) to flatten it; not a blocker. Caveat: macOS `fsync()` ≠ `F_FULLFSYNC`, so power-loss could lose the last WAL frames since the previous checkpoint (durable against app/OS crash; hash-chain tamper-evidence is post-MVP).
 
 ---
 
@@ -456,6 +479,8 @@ Other `[OPEN]`: redaction engine specifics (`OQ-SEC-2`, MVP answer in §15), eve
 
 The canonical home for every cross-doc-invariant model — mirrored in the area `CLAUDE.md` cross-doc-invariants table. A field change on any model here requires editing this appendix **and** the model's `§` section in the same commit round.
 
+> **Frozen in code (0.5 / `OQ-DATA-SPIKE-5`, 2026-06-07).** The four foundational contract surfaces below — the status state machines (§5.1), the 22 shared IDs + prefix map (§5.2), the actor enum (§7.1/R-2), and the desktop-addendum objects (§5.3) — are now codified in the `shared/` Rust authority crate per the **§5.0 Option-A** mechanism (Rust = authority → schemars JSON-Schema artifact → generated Zod/Pydantic). **Exception:** the **ExecutionProfile** runtime-state enum is deliberately **held for 0.5b** (pending the cat-4 SDK-vs-PTY call) — frozen everything else.
+
 | Model | Section | Fields (summary) |
 |---|---|---|
 | **Event envelope** | §7.1 | event_id, seq, event_type, event_version, occurred_at, recorded_at, workspace_id, actor_type, actor_id, source_type, source_id, correlation_id, causation_id?, action_request_id?, approval_id?, session_id?, agent_team_id?, workflow_run_id?, idempotency_key?, sensitivity, visibility, payload_json, payload_hash?(rsvd), previous_event_hash?(rsvd), schema_version, app_version |
@@ -471,8 +496,8 @@ The canonical home for every cross-doc-invariant model — mirrored in the area 
 | **HarnessAdapter trait + normalized types** | §9.1 | methods{launch,stream_status,intercept_mutation,read_transcript,telemetry_heartbeat,resume,capabilities}; NormalizedStatus(17), TelemetrySample{…,context_pct:Option}, MutationIntercept, TranscriptRef, ResumeResult |
 | **HarnessCapabilities** | §9.1 | 10 fields (PRD HARN-5) |
 | **Per-harness mutation-coverage matrix** | §9.1 | tool-category × harness → guaranteed|best-effort|unsupported |
-| **9 status state machines** | §5.1 | Session(17), Task(superset), Worktree(derived), PullRequest, WorkflowInstance, ProjectBrain, Approval(10), ActionRequest(15), ExecutionProfile, AgentTeam |
-| **22 shared IDs + ID format** | §5.2 | the 22 IDs; prefixed-ULID format; harness_session_map{session_id,harness,harness_native_id,cwd,rollout_path} |
+| **Status state machines (10 total)** | §5.1 | Session(17), Task(superset), Worktree(2-axis: git+overlay, derived), PullRequest, WorkflowInstance, ProjectBrain, Approval(10), ActionRequest(15), AgentTeam — **9 frozen in `shared/` (0.5)**; the 10th, **ExecutionProfile, is HELD for 0.5b** (cat-4). _(§5.1 prose header still says "Nine" — header/table count mismatch flagged for the Phase-0-exit /arch-finalize.)_ |
+| **22 shared IDs + ID format** | §5.2 | the 22 IDs; prefixed-ULID newtypes; **canonical id_kind prefix map (frozen 0.5)** — 16 platform-minted: `ws_ proj_ repo_ wt_ sess_ team_ prof_ pack_ wfi_ cmd_ plan_ task_ act_ evt_ artf_ evid_`; 4 desktop: `dev_ rc_ lr_ eprj_`; 6 external (branch_name, commit_sha, architecture_anchor, linear_issue_id, github_issue_number, pr_number) = native, no prefix. harness_session_map{session_id,harness,harness_native_id,cwd,rollout_path} |
 | **Desktop-addendum objects** | §5.3 | LocalRunner, EventProjection (MVP); Device, RemoteClient (deferred) |
 | **BrainEventMapping** | §13.1 | MCP signal → platform event_type + read-back call + actor stamping |
 | **Version-compatibility matrix** | §16 | app_version ↔ IPC handshake range ↔ DB user_version range ↔ event-envelope version ↔ agent-CLI/SDK tuple |

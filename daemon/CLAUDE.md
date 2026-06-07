@@ -84,7 +84,8 @@ cargo fmt --check
 cargo check --all-targets
 
 # Preflight (use before saying "done" with a feature)
-cargo clippy --all-targets -- -D warnings && cargo check --all-targets && cargo test
+# fmt-check is FIRST — /tdd Step 8 was clippy-only, which let 0.5 (06f9576) land unformatted (needed style follow-up 407be7c). fmt is part of the gate.
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo check --all-targets && cargo test
 ```
 
 ## TDD protocol
@@ -116,9 +117,14 @@ Several typed models in this codebase are **contracts** mirrored in `ARCHITECTUR
 
 | Model | `ARCHITECTURE.md` section | Notes |
 |---|---|---|
-| `ActionRequest` | §X | typed mutation envelope; risk class + approval state (populate when the model lands) |
+| Status state machines (10 total) | §5.1 / Appendix A | **9 frozen in `shared/` (0.5):** Session(17), Task, Worktree(2-axis), PullRequest, WorkflowInstance, ProjectBrain, Approval(10), ActionRequest(15), AgentTeam. Wire = snake_case `TEXT`. The 10th, **ExecutionProfile, HELD for 0.5b** (cat-4 SDK-vs-PTY). |
+| 22 shared IDs + prefix map | §5.2 / Appendix A | **Frozen in `shared/` (0.5)** as prefixed-ULID newtypes. 16 platform: `ws_ proj_ repo_ wt_ sess_ team_ prof_ pack_ wfi_ cmd_ plan_ task_ act_ evt_ artf_ evid_`; 4 desktop: `dev_ rc_ lr_ eprj_`; 6 external = native. `parse()` fail-closes on wrong-prefix/bad-ULID (§15). |
+| Actor enum (R-2) | §7.1 / §5.3 / Appendix A | **Frozen in `shared/` (0.5).** 10 values incl. `remote_client` (legacy EM §7 `remote_device` superseded). |
+| Desktop-addendum objects (4) | §5.3 / Appendix A | **Frozen in `shared/` (0.5).** LocalRunner + EventProjection (MVP-live); Device + RemoteClient (deferred iOS scaffolding). |
+| Contract SoT mechanism | §5.0 | Option A: Rust authority → schemars JSON-Schema (`shared/contracts/schema/`, versioned, diff-gated) → generated Zod/Pydantic. The pattern for every future contract addition. |
+| `ActionRequest` | §6.2 | typed mutation envelope; risk class + approval state. Lands Phase 2 (2.1). |
 
-<!-- Starts empty (or with the first model if one exists). Populated as contract models land. -->
+<!-- Populated as contract models land. The four 0.5 rows above are the frozen foundation (the serial neck). -->
 
 ## Module organization
 
@@ -179,7 +185,8 @@ Lessons start at §1.
 
 | # | Date | Topic | Rule (one-liner) |
 |--:|---|---|---|
-| | | | |
+| 1 | 2026-06-07 | [Broken cargo shims](LESSONS.md#1) | `rustup default stable` won't fix *broken* (vs missing) `~/.cargo/bin` proxies — repoint each to the `rustup` binary, then verify with plain shims |
+| 2 | 2026-06-07 | [Wire value is the contract; SoT = §5.0](LESSONS.md#2) | Freeze the snake_case wire value (not the identifier; pin with a round-trip test); author every contract in Rust `shared/` per §5.0, regenerating the published schema + consumers — never hand-write a consumer or invert the authority |
 
 <!-- Starts empty. Each row links to its `LESSONS.md` anchor. Populate as the project accretes. -->
 

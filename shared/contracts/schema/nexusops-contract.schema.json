@@ -1,0 +1,292 @@
+{
+  "$defs": {
+    "ActionRequest": {
+      "description": "ActionRequest (15, R-5, NEW) — the execution-lifecycle axis.",
+      "enum": [
+        "submitted",
+        "previewed",
+        "policy_decided",
+        "awaiting_approval",
+        "approved",
+        "denied",
+        "queued",
+        "executing",
+        "succeeded",
+        "failed",
+        "partially_succeeded",
+        "rolled_back",
+        "rollback_failed",
+        "cancelled",
+        "expired"
+      ],
+      "type": "string"
+    },
+    "ActorType": {
+      "description": "The 10 canonical audit actors (R-2). Serialized as snake_case `TEXT`.",
+      "enum": [
+        "user",
+        "project_brain",
+        "action_gateway",
+        "workflow_runtime",
+        "local_runner",
+        "session_adapter",
+        "integration_syncer",
+        "system",
+        "remote_client",
+        "automation_policy"
+      ],
+      "type": "string"
+    },
+    "AgentTeam": {
+      "description": "AgentTeam (9, R-6).",
+      "enum": [
+        "draft",
+        "starting",
+        "active",
+        "waiting_on_human",
+        "blocked",
+        "reconciling_outputs",
+        "completed",
+        "failed",
+        "archived"
+      ],
+      "type": "string"
+    },
+    "Approval": {
+      "description": "Approval (10, R-5) — split from ActionRequest; the human/policy decision axis.",
+      "enum": [
+        "requested",
+        "previewed",
+        "awaiting_approval",
+        "approved",
+        "denied",
+        "edited",
+        "auto_approved_by_policy",
+        "expired",
+        "cancelled",
+        "escalated"
+      ],
+      "type": "string"
+    },
+    "DesktopObjectKind": {
+      "description": "The 4 desktop-addendum object kinds (§5.3). Serialized snake_case.",
+      "enum": [
+        "local_runner",
+        "event_projection",
+        "device",
+        "remote_client"
+      ],
+      "type": "string"
+    },
+    "IdKind": {
+      "description": "The 22 shared ID kinds (§5.2). Serialized snake_case (== the ID field name).",
+      "enum": [
+        "workspace_id",
+        "project_id",
+        "repo_id",
+        "worktree_id",
+        "branch_name",
+        "commit_sha",
+        "session_id",
+        "agent_team_id",
+        "execution_profile_id",
+        "workflow_pack_id",
+        "workflow_instance_id",
+        "workflow_command_id",
+        "implementation_plan_id",
+        "plan_task_id",
+        "architecture_anchor",
+        "linear_issue_id",
+        "github_issue_number",
+        "pr_number",
+        "action_request_id",
+        "event_id",
+        "artifact_id",
+        "evidence_item_id"
+      ],
+      "type": "string"
+    },
+    "ProjectBrain": {
+      "description": "ProjectBrain (10) — daemon-cached last-reported sidecar status (§7.2).",
+      "enum": [
+        "not_configured",
+        "indexing",
+        "ready",
+        "partial_index",
+        "stale",
+        "graph_degraded",
+        "transcript_ingestion_off",
+        "transcript_ingestion_active",
+        "reindex_required",
+        "error"
+      ],
+      "type": "string"
+    },
+    "PullRequest": {
+      "description": "PullRequest (11) — GitHub-authoritative cache (§7.2).",
+      "enum": [
+        "draft",
+        "open",
+        "checks_pending",
+        "checks_failing",
+        "needs_review",
+        "changes_requested",
+        "approved",
+        "mergeable",
+        "conflict",
+        "merged",
+        "closed"
+      ],
+      "type": "string"
+    },
+    "Session": {
+      "description": "Session lifecycle (17, R-4) — the driver-agnostic normalized vocabulary the\n§9.1 harness adapters map INTO. `stale` is time-derived (§5.1).",
+      "enum": [
+        "creating",
+        "starting",
+        "active",
+        "thinking",
+        "running_command",
+        "editing_files",
+        "running_tests",
+        "waiting_on_permission",
+        "waiting_on_human_input",
+        "waiting_on_external_service",
+        "idle",
+        "stale",
+        "changes_ready",
+        "failed",
+        "completed",
+        "archived",
+        "killed"
+      ],
+      "type": "string"
+    },
+    "Task": {
+      "description": "Task / PlanTask superset (17, R-8).",
+      "enum": [
+        "unassigned",
+        "queued",
+        "assigned",
+        "ready",
+        "in_progress",
+        "blocked",
+        "needs_clarification",
+        "in_review",
+        "changes_ready",
+        "pr_opened",
+        "needs_review",
+        "requested_changes",
+        "done",
+        "deferred",
+        "merged",
+        "closed",
+        "abandoned"
+      ],
+      "type": "string"
+    },
+    "WorkflowInstance": {
+      "description": "WorkflowInstance (12, R-7).",
+      "enum": [
+        "not_detected",
+        "pack_available",
+        "needs_personalization",
+        "personalization_in_progress",
+        "generated_review_required",
+        "active",
+        "ready_for_team_run",
+        "degraded",
+        "drift_detected",
+        "upgrade_available",
+        "archived",
+        "detached"
+      ],
+      "type": "string"
+    },
+    "WorktreeGit": {
+      "description": "Worktree git-sync axis (R-7). No terminal states (the overlay axis carries\nthe terminal `deleted`).",
+      "enum": [
+        "clean",
+        "dirty",
+        "untracked_files",
+        "conflicts",
+        "behind_base",
+        "ahead_of_base"
+      ],
+      "type": "string"
+    },
+    "WorktreeOverlay": {
+      "description": "Worktree lifecycle-overlay axis (R-7).",
+      "enum": [
+        "creating",
+        "locked",
+        "pr_open",
+        "merged",
+        "prunable",
+        "deleted"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Bundles every frozen contract type so one `schema_for!` captures all value\nsets under `$defs`. Never instantiated — it exists only to drive schema gen.",
+  "properties": {
+    "action_request": {
+      "$ref": "#/$defs/ActionRequest"
+    },
+    "actor_type": {
+      "$ref": "#/$defs/ActorType"
+    },
+    "agent_team": {
+      "$ref": "#/$defs/AgentTeam"
+    },
+    "approval": {
+      "$ref": "#/$defs/Approval"
+    },
+    "desktop_object_kind": {
+      "$ref": "#/$defs/DesktopObjectKind"
+    },
+    "id_kind": {
+      "$ref": "#/$defs/IdKind"
+    },
+    "project_brain": {
+      "$ref": "#/$defs/ProjectBrain"
+    },
+    "pull_request": {
+      "$ref": "#/$defs/PullRequest"
+    },
+    "session": {
+      "$ref": "#/$defs/Session"
+    },
+    "task": {
+      "$ref": "#/$defs/Task"
+    },
+    "workflow_instance": {
+      "$ref": "#/$defs/WorkflowInstance"
+    },
+    "worktree_git": {
+      "$ref": "#/$defs/WorktreeGit"
+    },
+    "worktree_overlay": {
+      "$ref": "#/$defs/WorktreeOverlay"
+    }
+  },
+  "required": [
+    "session",
+    "task",
+    "worktree_git",
+    "worktree_overlay",
+    "pull_request",
+    "workflow_instance",
+    "project_brain",
+    "approval",
+    "action_request",
+    "agent_team",
+    "actor_type",
+    "id_kind",
+    "desktop_object_kind"
+  ],
+  "title": "nexusops-contract",
+  "type": "object",
+  "x-contract-version": "0.5.0"
+}

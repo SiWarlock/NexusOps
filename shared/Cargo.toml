@@ -1,0 +1,22 @@
+# nexusops-shared — the cross-language contract AUTHORITY (Option A, §5.0).
+# The Rust trust core owns these types natively (newtype IDs, serde-closed enums);
+# `schemars` emits the versioned JSON Schema in shared/contracts/schema/ that the
+# Python Brain + TS UI bind to (generated, drift-caught). Phase 0.5 / OQ-DATA-SPIKE-5.
+[package]
+name = "nexusops-shared"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+schemars = "1.2"
+ulid = "1.2"
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[[bin]]
+name = "emit_schema"
+path = "src/bin/emit_schema.rs"

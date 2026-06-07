@@ -1,0 +1,27 @@
+# THROWAWAY SPIKE HARNESS — OQ-DATA-SPIKE-3 (MVP task 0.4).
+# Measurement scaffolding ONLY. NOT the real event store, NOT a load-bearing
+# import. Its own `[workspace]` root so it is never pulled into the (future)
+# daemon cargo workspace. Safe to delete once §18 budgets are committed.
+[package]
+name = "sqlite-loadtest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "sqlite-loadtest"
+path = "src/main.rs"
+
+[dependencies]
+# bundled = compile vendored SQLite (matches daemon tech stack: "rusqlite WAL bundled").
+# Pinned 0.32: rusqlite 0.40's libsqlite3-sys 0.38 build.rs uses the still-unstable
+# `cfg_select` (won't compile on stable 1.93). 0.32 → libsqlite3-sys 0.28 (vendored
+# SQLite ~3.46). Immaterial for a write-throughput measurement; the daemon will use
+# whatever current rusqlite — this is throwaway scaffolding.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.release]
+opt-level = 3
+
+# Standalone workspace root — isolation guardrail (see header).
+[workspace]

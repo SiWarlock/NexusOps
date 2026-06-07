@@ -1,0 +1,22 @@
+# THROWAWAY SPIKE HARNESS — OQ-INT-SPIKE-6 (MVP task 0.3).
+# Re-checks whether libgit2 (via git2-rs) can READ a git repo that uses
+# `extensions.relativeWorktrees` (git >= 2.48). ADR-007 assumes it cannot
+# ("fix unreleased") and routes such repos to the git-CLI read fallback.
+# NOT load-bearing; own [workspace] root; safe to delete.
+[package]
+name = "git2-worktree-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "git2-worktree-check"
+path = "src/main.rs"
+
+[dependencies]
+# vendored-libgit2 = bundled libgit2 (known version, matches what the daemon
+# will ship). default-features off to skip ssh/https/openssl — we only read
+# a local repo, so no network transport is needed (faster, no openssl build).
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
+
+[workspace]

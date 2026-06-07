@@ -1,0 +1,97 @@
+{
+  "dimension": "D01-flows — Missing user/lifecycle flows",
+  "verdict": "material-gaps",
+  "findings": [
+    {
+      "severity": "critical",
+      "finding": "The First-Time Setup / Setup Wizard flow is entirely unmapped to architecture components. ARCHITECTURE_DRAFT §8 maps only 6 demo-critical flows; the very first beat of the PRD §25 demo (open app → create execution profile, demo steps 1 & 4) and the entire setup lifecycle (PRD §9.1, UX Flow A, Screen 1, DESK-1) have no component path. PRD §9.1 explicitly requires setup be idempotent, reversible, consented, with visible degraded states and skippable optional integrations — none of which is mapped to the gateway/registry/policy modules. Runtime/tool detection (Claude/Codex/git/shell), GitHub/Linear auth bootstrap, and Project Brain setup-state are first-launch concerns the §8 'Add local project' row does not cover.",
+      "evidence": "PRD §9.1 + §7.1 + DESK-1 require a setup wizard with idempotent/reversible/consented properties; UX §10 Flow A and Screen 1 detail 9 steps; ARCHITECTURE_DRAFT §8 table has no 'First-time setup' row and §11 only lists it as a deferred [MVP-SIMP] screen. Demo step 4 ('create execution profile') has no flow; §18.1 step 5 builds 'Execution Profiles' but no flow shows how the user reaches/operates that surface on first launch.",
+      "proposed_fix": "Add a 'First-time setup' row to ARCHITECTURE.md §8 mapping: UI wizard → gateway intents → detection executors (git/harness/shell probes in `harness`+`git`), `integrations`(gh/Linear auth bootstrap), `brainclient`(status ping), `policy`(approval-policy defaults), `eventstore`(setup events). Explicitly state which steps are idempotent/reversible/skippable and which emit consent events. Note degraded-detection handling per UX §14.7.",
+      "needs_human": false
+    },
+    {
+      "severity": "critical",
+      "finding": "Codex session launch has no dedicated flow despite Codex being declared MVP-blocking. §8 maps only Claude-shaped 'Start from plan task'; §18.1 step 7 builds the Codex adapter as a 'parity path (MVP-blocking per user)' but no flow captures Codex's materially different lifecycle: no settable session id (key on cwd+returned thread_id), thread/list?cwd= re-association, host-routed approvals, no context-window %. Treating Claude's flow as a stand-in hides the re-association and approval-routing steps that are unique to Codex and load-bearing for the demo's status/approval beats.",
+      "evidence": "ARCHITECTURE_DRAFT §9.1 describes the Codex adapter differences and OQ-HARN-4/OQ-CC-7 flag id/re-association as MVP-blocking OPEN; §8 flow table only shows a single launch path. PRD HARN-3 + MVP must-have 'Codex-ready adapter model' + §18.1 step 7 'parity path (MVP-blocking)' demand a Codex launch flow.",
+      "proposed_fix": "Add a 'Start Codex session' flow row (or annotate the 'Start from plan task' row with the Codex branch) in ARCHITECTURE.md §8: UI → `gateway`(start_session, harness=codex) → `harness`(codex app-server thread/start{cwd}) → map returned thread_id → `sess_` ULID in harness_session_map → `locks` → events; show the thread/list?cwd= re-association sub-flow used on restart. Cross-link OQ-HARN-4.",
+      "needs_human": true
+    },
+    {
+      "severity": "critical",
+      "finding": "Recovery / restart flows are architecturally LOCKED but have no user-facing flow. ADR-002/010 promise daemon survives UI restart (reconnect-live) and resume-or-replay on daemon crash, and OQ-PLAT-6 accepts lossy alt-screen with a 'fresh session' banner — but §8 contains zero recovery rows. DESK-7 (process resilience) is a stated requirement with no flow showing what the user sees and does on UI relaunch, daemon relaunch, or a session that could not be resumed. This is exactly the kind of background/recovery flow the prompt asks to check beyond happy paths.",
+      "evidence": "ARCHITECTURE_DRAFT §3 ADR-010, §12 'Survival policy per ADR-010', OQ-PLAT-5/6 (SPIKE) describe the mechanism; PRD DESK-7 requires it; §8 has no 'UI restart / reconnect' or 'daemon restart / resume-or-replay' flow. UX has no recovery flow either (Flows A–M omit it).",
+      "proposed_fix": "Add two recovery rows to ARCHITECTURE.md §8: (1) 'UI restart → reattach' (UI → `ipc`(versioned handshake) → projection re-read → terminal re-stream) and (2) 'Daemon restart → resume-or-replay' (`harness` claude --resume / codex thread/resume, else event replay + relaunch + 'fresh session' banner; `locks` re-mint fencing token). Specify the user-visible state (banner, reconnect indicator per UX §6.1 status bar) and which case is lossy.",
+      "needs_human": true
+    },
+    {
+      "severity": "important",
+      "finding": "Start Blank Session flow is unmapped, yet it is an MVP path. SESS-1 lists 'blank prompt' as the FIRST session-creation source, PRD §9.5 details the full blank-session flow, and UX implies it via Command Center 'New session' action. §8 maps only plan-task-originated session creation. Without a blank-session flow, the simplest dispatch path (and a likely demo fallback) is unspecified.",
+      "evidence": "PRD SESS-1 ('blank prompt' first), PRD §9.5 'Start Blank Session', UX Screen 2 action 'New session', keyboard Cmd+Shift+T; ARCHITECTURE_DRAFT §8 has only 'Start from plan task'.",
+      "proposed_fix": "Add a 'Start blank session' row to ARCHITECTURE.md §8: UI(New Session, choose harness/profile/worktree strategy/prompt) → `gateway`(create_worktree?, start_session) → `locks` → `harness`(launch) → `terminal` → events. Note it reuses the same executors as the plan-task path minus the plan-link step.",
+      "needs_human": false
+    },
+    {
+      "severity": "important",
+      "finding": "Git commit / push flow is unmapped; §8 jumps from 'Review diff' straight to 'Create PR'. MVP must-haves explicitly include 'Git basics: status, commit, push' and GIT-4 lists commit/push as distinct actions; GIT-5 requires risky git (force push, etc.) through the Gateway. The review→commit→push leg of the canonical work path (UX §4.2) has no component mapping, so the boundary between auto-committed agent work and human-initiated commit/push is undefined.",
+      "evidence": "PRD §15 MVP must-have 'Git basics: status, commit, push, create PR if feasible'; PRD GIT-4/GIT-5; UX §4.2 canonical path includes Commit → PR; ARCHITECTURE_DRAFT §8 'Review diff' row ends at 'review workspace' and 'Create PR' row skips commit/push.",
+      "proposed_fix": "Add a 'Commit & push' row to ARCHITECTURE.md §8: UI(review) → `gateway`(commit/push action, risk classification per GIT-5) → `git`(git CLI mutation) → events → projections; mark force-push/protected-branch as risk≥3 routed through approval. Clarify whether commits come from the agent (via can_use_tool gate) or human-initiated.",
+      "needs_human": true
+    },
+    {
+      "severity": "important",
+      "finding": "Manual task/plan/session/worktree/PR linking has no flow, though it is a named MVP must-have. TASK-6 requires manual linking between tasks, plan tasks, sessions, worktrees, branches, and PRs (P0 per TASK-7 staging). §8 shows linking only as side-effects of launch/PR-create rows ('task linked to session/worktree/PR'); there is no flow for the user manually creating or editing a link, which is the entire MVP linking story (sync is deferred).",
+      "evidence": "PRD §15 MVP must-have 'Manual task/plan/session/worktree/PR linking'; PRD TASK-6, TASK-7 (P0 manual linking); ARCHITECTURE_DRAFT §8 only mentions linking as automatic side effects; §18.1 step 12 mentions linking only on PR creation.",
+      "proposed_fix": "Add a 'Manual linking' row to ARCHITECTURE.md §8: UI(select two objects / inspector link action) → `gateway`(link intent, risk 1) → `eventstore`(link event + object_refs row) → projections refresh. Reference the 4 canonical chains (SOM §35) the links must keep traceable.",
+      "needs_human": false
+    },
+    {
+      "severity": "important",
+      "finding": "GitHub/Linear task-intake (read/link) has no flow despite being MVP must-haves. MVP includes 'GitHub PR/issue read/link if feasible' and 'Linear read/link if feasible'; PRD §9.3 ('Start work from Linear/GitHub') and UX Flows E + Screen 8 (Task Inbox) detail intake. §8 only mentions integrations under 'Create PR' (write path). The read/sync/cache-as-projection intake path and dispatch-from-task path are unmapped.",
+      "evidence": "PRD §15 MVP must-haves 'GitHub PR/issue read/link', 'Linear read/link'; PRD §9.3, TASK-1/2/4; UX Flow E + Screen 8; ARCHITECTURE_DRAFT §9 mentions 'reads cached as projections' but §8 has no intake/dispatch-from-task flow.",
+      "proposed_fix": "Add a 'Task intake + dispatch' row to ARCHITECTURE.md §8: `integrations`(octocrab/Linear read) → outbox/cache → `proj_task_inbox` → UI Task Inbox → dispatch = same start_session path with task link. Distinguish read/link (MVP) from create/update (P1, deferred).",
+      "needs_human": false
+    },
+    {
+      "severity": "important",
+      "finding": "Human Input Queue covers only the permission/approval request type; the other MVP request types have no flow. HIQ-2 enumerates clarification-needed, blocked-agent, finding, and (for cc-crew) escalation categories that map into HIQ items (CC §12.9). §8 maps only the can_use_tool/app-server permission path (§9.8). A clarification or blocked-agent request does not originate from a mutation interception, so the existing approval flow does not describe how it enters the queue, gets context, or resolves (resume/instruct).",
+      "evidence": "PRD HIQ-1/HIQ-2 (request types include clarification, blocked agent, finding, deferment, architectural decision); PRD §15 MVP must-have 'Human Input Queue'; UX Screen 15 sections list 7 request kinds; ARCHITECTURE_DRAFT §8 only maps 'Respond to permission'.",
+      "proposed_fix": "Generalize the §8 'Respond to permission' row into 'Human Input Queue resolution' covering non-mutation requests: `harness`(status=waiting_on_human / clarification signal) → `eventstore`(human_input event) → `proj_approval_queue`/`proj_human_input` → UI → user responds (approve/deny/instruct/defer) → `gateway`(session.send_message or resume) → events. Note the source can be adapter status, not only an ActionRequest.",
+      "needs_human": false
+    },
+    {
+      "severity": "important",
+      "finding": "Terminal attach / detach / reattach has no flow, though the embedded terminal is an MVP must-have and a demo beat ('observe it'). TERM-1 (embedded terminal MUST), SESS-5 (attach terminal MUST), DESK-6 (dock/pop-out/attach/detach/group) and demo step 7-8 require the terminal lifecycle. §8 'Start from plan task' ends at '`terminal`(PTY)' but never describes the user opening, streaming, taking over (human-PTV handoff per OQ-HARN-SPIKE-2), or detaching a terminal.",
+      "evidence": "PRD TERM-1, SESS-5 (MUST), DESK-6, demo §25 step 7; ARCHITECTURE_DRAFT §9.1 mentions 'PTY mirror for human display/takeover' and OQ-HARN-SPIKE-2 flags the handoff as an unresolved spike; §8 has no attach/takeover/detach flow.",
+      "proposed_fix": "Add a 'Attach / take over terminal' row to ARCHITECTURE.md §8: UI(open terminal) → `ipc`(Tauri Channel subscribe) → `terminal`(stream headless VT, backpressure) → xterm.js; takeover sub-flow gated by the OQ-HARN-SPIKE-2 resolution (when human owns the PTY vs the Gateway drives via can_use_tool). Flag the takeover step as spike-dependent.",
+      "needs_human": true
+    },
+    {
+      "severity": "important",
+      "finding": "Session completion / summary / archive flow is unmapped. SESS-7 (create summary on complete/idle/archive), SESS-8 (archivable with summary/artifacts/Brain ingestion status), and UX 5.6 ('completion is explicit') + UX Flow L define a required lifecycle terminus. §8 has no completion or archive row. Even though full transcript→commit linking and episode cards are deferred, the basic 'session reaches changes_ready/completed → summary → archive → update plan/ticket' loop is MVP-relevant and closes the canonical work path.",
+      "evidence": "PRD SESS-7 (SHOULD), SESS-8, UX §5.6 + Flow L 'Archive completed work'; SESS-3 status model includes completed/archived/killed terminal states; ARCHITECTURE_DRAFT §8 has no completion/archive flow and §18.1 stops at PR creation.",
+      "proposed_fix": "Add a 'Complete & archive session' row to ARCHITECTURE.md §8: `harness`(status→changes_ready/completed) → optional summary (SESS-7) → UI(archive) → `gateway`(archive action) → `eventstore`(archive event, worktree retain/delete decision) → projections; note Brain ingestion status is recorded but episode-card generation is [DEFERRED] (OQ-BR-7).",
+      "needs_human": false
+    },
+    {
+      "severity": "important",
+      "finding": "No degraded / error flows are mapped, although the platform's local-first design depends on graceful degradation. UX §14.7 enumerates required degraded states (Brain stale, integration auth expired, execution profile offline, session usage unavailable, terminal disconnected) and the architecture repeatedly claims 'platform never hard-depends on Brain' and 'degrades gracefully when absent/stale' (§13) — but no flow shows the user-facing degraded path. The §8 happy-path-only table cannot validate the degradation claims the security/risk sections rely on.",
+      "evidence": "PRD §14.7 degraded states; ARCHITECTURE_DRAFT §13 ('degrades gracefully when absent/stale'), §6 `projections` ('degraded handling'); UX Screen 2/3 error states (runtime unavailable → read-only mode, graph unavailable → list fallback); §8 maps no degraded/error path.",
+      "proposed_fix": "Add a 'Degraded operation' note or row-set to ARCHITECTURE.md §8 (or a §8.x subsection) mapping the key degradations: daemon-unreachable (UI read-only + repair), Brain absent/stale (drawer disabled with badge), integration auth expired (Settings repair), terminal disconnected (reconnect). Tie each to the status-bar/empty-state UX (UX §6.1, §14.7).",
+      "needs_human": false
+    },
+    {
+      "severity": "nice-to-have",
+      "finding": "Workflow Pack / cc-crew detection has a flow only for detection-as-side-effect of project add, but no flow for the user inspecting and acting on detection states in the MVP (detection-only scope). MVP includes 'Workflow Pack detection states' and 'cc-crew detection at least'; personalization is deferred. §8's 'Add local project' row folds workflow detection into project add, but there is no flow for the Workflow tab / command registry view (Screen 12) showing detected-but-not-personalized states, which is the entire MVP workflow surface.",
+      "evidence": "PRD §15 MVP must-haves 'Workflow Pack detection states', 'cc-crew detection at least'; PRD WF-3 lifecycle states, WF-5 command registry (MUST); UX Screen 12; ARCHITECTURE_DRAFT §13 ('detection advisory → readiness checks; command registry') but §8 only shows detection inside 'Add local project'.",
+      "proposed_fix": "Add a 'View workflow / command registry' row to ARCHITECTURE.md §8: `workflow`(detect → readiness → command registry projection) → UI Workflow tab; note MVP is detection + registry display only, with personalization runs [DEFERRED] to P1 (OQ-WP-6).",
+      "needs_human": false
+    },
+    {
+      "severity": "nice-to-have",
+      "finding": "The §8 flow table omits the explicit statement that P1/P2 flows (Agent Team launch §9.6/Flow F, PR-checks-to-agent Flow I, workflow personalization §9.13/Flow C, archive automation, iOS Flow M) are intentionally deferred. The draft defers them in §18.2 but the §8 matrix does not cross-reference, so a reader cannot tell whether an absent flow is a gap or an intentional deferral. The prompt asks for a complete requirements→flow matrix; the deferred rows should be present-and-tagged, not silently absent.",
+      "evidence": "ARCHITECTURE_DRAFT §18.2 defers Agent Team/team-start, personalization UI, PR-checks+agent-fix, iOS; PRD §9.6/§9.13/§9.14 + UX Flows C/F/I/K/M describe them; §8 simply omits them with no [DEFERRED] tag, leaving the matrix ambiguous.",
+      "proposed_fix": "In ARCHITECTURE.md §8, add explicitly-tagged [DEFERRED] rows (or a deferred-flows sublist) for §9.6 Agent Team, §9.13 Personalization, Flow I PR-checks-to-agent, Flow L archive automation, Flow M iOS — each pointing to §18.2, so the requirements→flow matrix is complete and every PRD §9 / UX §10 flow is accounted for as mapped-or-deferred.",
+      "needs_human": false
+    }
+  ]
+}

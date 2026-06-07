@@ -1,0 +1,48 @@
+{
+  "dimension": "D07-decisions",
+  "verdict": "material-gaps",
+  "findings": [
+    {
+      "severity": "critical",
+      "finding": "Actor/requester enum is inconsistent across THREE authoritative sources and the draft never reconciles them. EM §7 actor_type = {user, project_brain, action_gateway, workflow_runtime, local_runner, session_adapter, integration_syncer, system, remote_device, automation_policy}. AG §9.7 ActorRef = {user, project_brain, workflow_pack, agent_session, system_policy} — a DIFFERENT vocabulary with NO remote member and tokens that do not map 1:1 to EM (agent_session≠session_adapter, workflow_pack≠workflow_runtime, system_policy≠automation_policy). DATA_MODEL bakes BOTH vocabularies into the schema simultaneously: events.actor_type cites 'EM §7 extended actor enum (adds remote_client)' while action_requests.requester_type and proj_approval_queue.requester_type use the AG tokens 'user|project_brain|agent_session|workflow_pack|system_policy|remote_client'. So an ActionRequest with requester_type='agent_session' must become an event with actor_type='session_adapter' (or 'remote_client' for remote), and that mapping is undocumented. The draft itself only flags the remote_device-vs-remote_client name (DATA_MODEL §6.2, OQ-DATA-7/§8.5) and silently ignores the larger agent_session/workflow_pack/system_policy vs session_adapter/workflow_runtime/automation_policy divergence.",
+      "evidence": "EM §7 lines 460-471 ('remote_device','session_adapter','workflow_runtime','automation_policy','local_runner','integration_syncer'); AG §9.7 lines 581-586 ('agent_session','workflow_pack','system_policy'); DATA_MODEL.md line 62 (events.actor_type -> EM §7 + remote_client), line 163 (proj_approval_queue.requester_type = user|project_brain|agent_session|workflow_pack|system_policy|remote_client), line 430 (action_requests.requester_type = 'AG §9.7 ActorRef + remote_client'), line 576 (RemoteClient -> actor_type='remote_client'); ARCHITECTURE_DRAFT §5 line 131 only mentions the remote_client/remote_device reconciliation.",
+      "proposed_fix": "ARCHITECTURE.md §5 (Domain Model) + §6 (gateway module): add a single canonical Actor/Requester enum table that unifies all three vocabularies, with an explicit requester_type(AG)→actor_type(EM) mapping row-by-row, and pick one token per concept (recommend EM's session_adapter/workflow_runtime/automation_policy as the audit actor, with a documented note that AG's agent_session/workflow_pack/system_policy are the request-time aliases). Resolve remote_device→remote_client. Make this enum binding so tasks-gen does not invent two parallel enums.",
+      "needs_human": true
+    },
+    {
+      "severity": "important",
+      "finding": "Task-vs-PlanTask is still [OPEN] with NO governing ADR, yet it is tagged MVP-blocking. DATA_MODEL §4.2 and §8(1) leave undecided whether external Tasks (Linear/GitHub) and PlanTask share one table+state machine or are two objects; the draft §5 references the shared §4.2 machine but does not resolve the table shape. OPEN_QUESTIONS OQ-DATA-7 marks this 'MVP-blocking / OPEN'. Because the schema (one tasks table with a kind discriminator vs separate plan_tasks + tasks) and the proj_plan_progress projection both depend on this, leaving it unresolved blocks tasks-gen from emitting a stable schema.",
+      "evidence": "DATA_MODEL.md line 499 ('Open: whether Task and PlanTask share one machine or PlanTask is a subtype'), line 647 (§8.1 'finalize must decide whether external tasks and plan_tasks are one table or two'); ARCHITECTURE_DRAFT §5 line 132/§22; OPEN_QUESTIONS OQ-DATA-7 line 101 (When=MVP-blocking, Status=OPEN); only a plan_tasks table exists in DATA_MODEL §2.8 line 398, with no tasks table for Linear/GitHub-sourced work.",
+      "proposed_fix": "ARCHITECTURE.md §5/§7: decide and record an ADR-012 (Task model): one base 'tasks' table with kind∈{plan_task, external_task} + a single §4.2 state machine, OR two tables with a documented link. Reconcile SOM §37 Q2. Bind proj_plan_progress and the ticket→merge canonical chain to the chosen shape.",
+      "needs_human": true
+    },
+    {
+      "severity": "important",
+      "finding": "ID format is still [PROPOSED]/[OPEN] (prefixed-ULID vs UUIDv7) but the ENTIRE schema, the 22 shared-ID contract, the seq-aligned ordering assumption, and Brain citations all depend on it. DATA_MODEL §5 recommends prefixed ULIDs but explicitly leaves OQ #7 ('confirm prefixed-ULID recommendation vs UUIDv7 before any schema is frozen') open. No ADR locks ID format. Several ordering/'recent-query' optimizations in §5 are only valid if ULID (not UUIDv7) is chosen, so this is load-bearing, not cosmetic.",
+      "evidence": "DATA_MODEL.md lines 525-531 (prefixed-ULID recommendation, [PROPOSED]), line 653 (§8.7 'ID format ... confirm prefixed-ULID recommendation vs UUIDv7 before any schema is frozen', [OPEN]); ARCHITECTURE_DRAFT §5 line 132 ('format = prefixed ULIDs (DATA_MODEL §5)') presents it as decided though DATA_MODEL leaves it open — an internal status inconsistency between the two artifacts.",
+      "proposed_fix": "ARCHITECTURE.md §5: promote ID format to a locked ADR (recommend prefixed ULID per the draft's own rationale) OR explicitly mark it as a pre-schema-freeze decision the human must confirm; remove the draft §5 claim that it is already decided until DATA_MODEL is updated to match.",
+      "needs_human": true
+    },
+    {
+      "severity": "important",
+      "finding": "ADR status drift: ADR-005 (Brain stdio MCP sidecar) is 'Locked-pending-spike' in DECISIONS (the macOS notarization #11992 spike could force a topology change to a user-installed Brain CLI or loopback-HTTP), but the draft §3 'Locked Architecture Decisions' spine table carries NO status column and presents all 11 ADRs as uniformly locked. A reader/tasks-gen binding to §3 would treat the Brain sidecar topology as fully locked when it is conditionally locked with a real fallback that changes process topology. This is the one ADR whose 'what would change this' is a pre-build gate, so flattening its status is materially misleading.",
+      "evidence": "DECISIONS.md line 18 (summary: ADR-005 Status='Locked-pending-spike') and line 127 ('Status: Locked-pending-spike (macOS notarization)'); ARCHITECTURE_DRAFT §3 lines 66-79 table has columns 'ADR | Decision' only — no status — and line 72 shows ADR-005 with only a parenthetical 'spike: macOS notarization #11992' rather than a conditional-lock status.",
+      "proposed_fix": "ARCHITECTURE.md §3: add a Status column to the ADR spine table mirroring DECISIONS (Locked / Locked-pending-spike), explicitly marking ADR-005 as conditionally locked and naming the topology fallback (user-installed Brain CLI / loopback-HTTP) that the notarization spike could trigger.",
+      "needs_human": false
+    },
+    {
+      "severity": "nice-to-have",
+      "finding": "The prompt's flagged '§6 in-process vs §4 UDS contradiction' is NOT an actual contradiction — but the wording is ambiguous enough to be a tasks-gen trap. §6 line 157 says the GatewayPort is 'a Rust trait the daemon implements in-process and exposes over UDS', and ADR-004 says 'implement execution inside the daemon ... transport ... is a Unix domain socket'. 'In-process' here means the executor runs inside the daemon process (not as a separate executor process), while UDS is the client(UI)↔daemon transport; the two compose cleanly and are consistent with the detached-daemon decision (ADR-002). The risk is only that an unqualified 'in-process behind GatewayPort' could be misread as 'no IPC / Gateway callable in the UI process', which WOULD violate ADR-002.",
+      "evidence": "ARCHITECTURE_DRAFT §6 line 157 ('the daemon implements in-process and exposes over UDS'); DECISIONS ADR-004 line 112 ('implement execution inside the daemon ... Transport ... is a Unix domain socket'); ADR-002 line 67 (UI is a reattaching client over IPC). No location in the draft claims the executor runs in the UI process or that there is no IPC, so there is no real contradiction.",
+      "proposed_fix": "ARCHITECTURE.md §6 GatewayPort contract: change 'implements in-process' to 'implements in-daemon (the executor runs in the daemon process)' and add one sentence: 'the GatewayPort trait is in-process WITHIN the daemon; all out-of-daemon callers (UI, future RemoteClient) reach it only over the UDS transport (§4).' Purely a clarity edit, not a decision change.",
+      "needs_human": false
+    },
+    {
+      "severity": "nice-to-have",
+      "finding": "ADR-002 fallback language is mildly self-inconsistent with ADR-004's 'off the table' framing. ADR-002 says in-process 'remains a (regressive) option since GatewayPort + SQLite state are topology-independent', while ADR-004 says 'the in-process MVP option from R-PROC is off the table once the daemon is detached'. Both are reconcilable (ADR-004 means in-process is off the table FOR MVP given the locked daemon; ADR-002 means it stays a theoretical regression path if daemon lifecycle proves intractable), but the two phrasings read as opposed without the qualifier.",
+      "evidence": "DECISIONS.md ADR-002 line 76 ('the in-process model remains a (regressive) option') and ADR-004 line 109 ('the in-process MVP option from R-PROC is off the table once the daemon is detached').",
+      "proposed_fix": "ARCHITECTURE.md §3/§17 (Alternatives): harmonize wording — state once that in-process is rejected for MVP (ADR-002 locked) and only survives as a theoretical regression path if detached-daemon lifecycle proves intractable; drop the standalone 'off the table' phrasing or qualify it as 'off the table for MVP'.",
+      "needs_human": false
+    }
+  ]
+}

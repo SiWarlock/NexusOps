@@ -1,0 +1,54 @@
+<!-- @dsCard group="Colors" viewport="700x360" name="State → treatment cheat sheet" subtitle="Major platform states mapped to status chips (color + glyph + label)" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:20px 24px; }
+  .grp { margin-bottom:14px; }
+  h4 { margin:0 0 9px; font-size:var(--eyebrow-size); letter-spacing:var(--eyebrow-tracking); text-transform:uppercase; color:var(--text-faint); font-weight:var(--fw-semibold); }
+  .chips { display:flex; flex-wrap:wrap; gap:7px; }
+</style>
+</head>
+<body>
+  <div class="grp">
+    <h4>session</h4>
+    <div class="chips">
+      <span class="cp-status" data-status="active">Active</span>
+      <span class="cp-status" data-status="running">Running</span>
+      <span class="cp-status" data-status="idle">Idle</span>
+      <span class="cp-status" data-status="waiting-human" data-beacon>Waiting · human</span>
+      <span class="cp-status" data-status="waiting-perm">Waiting · permission</span>
+      <span class="cp-status" data-status="failed">Failed</span>
+      <span class="cp-status" data-status="stale">Stale</span>
+      <span class="cp-status" data-status="completed">Completed</span>
+      <span class="cp-status" data-status="archived">Archived</span>
+    </div>
+  </div>
+  <div class="grp">
+    <h4>git · delivery</h4>
+    <div class="chips">
+      <span class="cp-status" data-status="active">Dirty worktree</span>
+      <span class="cp-status" data-status="conflict">Merge conflict</span>
+      <span class="cp-status" data-status="completed">Checks passing</span>
+      <span class="cp-status" data-status="failed">Checks failing</span>
+      <span class="cp-status" data-status="pr-open">PR open</span>
+      <span class="cp-status" data-status="completed">PR ready</span>
+      <span class="cp-status" data-status="pr-open">PR merged</span>
+    </div>
+  </div>
+  <div class="grp">
+    <h4>action gateway · capacity</h4>
+    <div class="chips">
+      <span class="cp-status" data-status="waiting-human">Approval required</span>
+      <span class="cp-status" data-status="completed">Approved</span>
+      <span class="cp-status" data-status="failed">Denied</span>
+      <span class="cp-status" data-status="critical" data-emphasis="solid">Critical action</span>
+      <span class="cp-status" data-status="waiting-human">High context</span>
+      <span class="cp-status" data-status="waiting-perm">High cost</span>
+      <span class="cp-status" data-status="degraded">Degraded runtime</span>
+    </div>
+  </div>
+</body>
+</html>

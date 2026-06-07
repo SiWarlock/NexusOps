@@ -1,0 +1,30 @@
+<!-- @dsCard group="Colors" viewport="700x340" name="Status families" subtitle="Live · Success · Attention · Caution · Warning · Danger · Critical · Review · Slate" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:20px 24px; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .fam { border:1px solid var(--border-subtle); border-radius:var(--r-2); overflow:hidden; }
+  .bar { height:30px; }
+  .body { display:flex; align-items:center; gap:8px; padding:8px 9px; }
+  .nm { font-weight:var(--fw-semibold); font-size:12px; }
+  .role { font-size:10px; color:var(--text-faint); margin-left:auto; text-align:right; }
+</style>
+</head>
+<body>
+  <div class="grid">
+    <div class="fam"><div class="bar" style="background:var(--live-solid)"></div><div class="body"><span class="nm" style="color:var(--live-ink)">Live</span><span class="role">running</span></div></div>
+    <div class="fam"><div class="bar" style="background:var(--success-solid)"></div><div class="body"><span class="nm" style="color:var(--success-ink)">Success</span><span class="role">passed · merged</span></div></div>
+    <div class="fam"><div class="bar" style="background:var(--attention-solid)"></div><div class="body"><span class="nm" style="color:var(--attention-ink)">Attention</span><span class="role">waiting · human</span></div></div>
+    <div class="fam"><div class="bar" style="background:var(--caution-solid)"></div><div class="body"><span class="nm" style="color:var(--caution-ink)">Caution</span><span class="role">permission</span></div></div>
+    <div class="fam"><div class="bar" style="background:var(--warning-solid)"></div><div class="body"><span class="nm" style="color:var(--warning-ink)">Warning</span><span class="role">stale · drift</span></div></div>
+    <div class="fam"><div class="bar" style="background:var(--danger-solid)"></div><div class="body"><span class="nm" style="color:var(--danger-ink)">Danger</span><span class="role">failed</span></div></div>
+    <div class="fam"><div class="bar cp-hazard" style="background:var(--critical-solid)"></div><div class="body"><span class="nm" style="color:var(--critical-ink)">Critical</span><span class="role">destructive</span></div></div>
+    <div class="fam"><div class="bar" style="background:var(--review-solid)"></div><div class="body"><span class="nm" style="color:var(--review-ink)">Review</span><span class="role">PR · done</span></div></div>
+    <div class="fam"><div class="bar" style="background:var(--slate-solid)"></div><div class="body"><span class="nm" style="color:var(--slate-ink)">Slate</span><span class="role">idle · archived</span></div></div>
+  </div>
+</body>
+</html>

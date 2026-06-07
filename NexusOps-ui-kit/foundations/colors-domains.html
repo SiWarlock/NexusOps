@@ -1,0 +1,35 @@
+<!-- @dsCard group="Colors" viewport="700x250" name="Domain identities" subtitle="Harmonious per-object color so ownership reads at a glance" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:20px 24px; }
+  .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  .d { display:flex; align-items:center; gap:8px; padding:9px 10px; border-radius:var(--r-2); border:1px solid var(--border-subtle); background:var(--surface-card); font-size:12px; }
+  .dot { width:9px; height:9px; border-radius:999px; flex:none; }
+  .lbl { font-weight:var(--fw-medium); }
+</style>
+</head>
+<body>
+  <div class="grid">
+    <div class="d"><span class="dot" style="background:var(--domain-claude)"></span><span class="lbl">Claude</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-codex)"></span><span class="lbl">Codex</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-team)"></span><span class="lbl">Agent team</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-lead)"></span><span class="lbl">Team lead</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-brain)"></span><span class="lbl">Project Brain</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-evidence)"></span><span class="lbl">Evidence</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-workflow-pack)"></span><span class="lbl">Workflow</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-gateway)"></span><span class="lbl">Action Gateway</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-github)"></span><span class="lbl">GitHub</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-linear)"></span><span class="lbl">Linear</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-worktree)"></span><span class="lbl">Worktree</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-pr)"></span><span class="lbl">Pull Request</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-terminal)"></span><span class="lbl">Terminal</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-editor)"></span><span class="lbl">Code editor</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-branch)"></span><span class="lbl">Branch</span></div>
+    <div class="d"><span class="dot" style="background:var(--domain-audit)"></span><span class="lbl">Audit</span></div>
+  </div>
+</body>
+</html>

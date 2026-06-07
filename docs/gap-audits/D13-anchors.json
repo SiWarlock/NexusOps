@@ -1,0 +1,69 @@
+{
+  "dimension": "D13-anchors — Missing/unstable task-planning anchors",
+  "verdict": "material-gaps",
+  "findings": [
+    {
+      "severity": "critical",
+      "finding": "Appendix A (Model / contract inventory) does not exist in the draft at all. The binding template (claude-code-tdd-agent-crew-scaffold/templates/ARCHITECTURE.md lines 5-7, 64-72) explicitly mandates Appendix A as 'the canonical home for the cross-doc invariant model inventory that the area CLAUDE.md table points at,' with the rule that a field change on any model requires editing the appendix in the same commit round. The draft has zero Appendix A and zero model/contract inventory table. tasks-gen tags every task with a cross-doc-invariant; with no inventory there is nothing for those tags to bind to, and the /tdd Step-9 cross-doc-change discipline has no anchor table to enforce against.",
+      "evidence": "ARCHITECTURE_DRAFT.md ends at §23 (line 360) with no Appendix; `grep -i appendix ARCHITECTURE_DRAFT.md` returns nothing. Template ARCHITECTURE.md §64-72 defines the required `| Model | Section | Fields (summary) |` table; template header comment line 6: 'Keep Appendix A — it is the canonical home for the cross-doc invariant model inventory.'",
+      "proposed_fix": "ARCHITECTURE.md: add Appendix A — Model / contract inventory (per template lines 64-72). Populate it with one row per cross-doc-invariant model, each pointing at its owning §N: GatewayPort (§6), HarnessAdapter trait + capability declaration (§9.1), ActionRequest + ActionPlan + ActionPlanStep + Approval + ActionResult + ActorRef + ResourceRef + EvidenceRef + PolicyDecision (§6/§7, sourced AG §9), Event envelope + actor/source/sensitivity enums (§7, sourced EM §6-9), the 8 status state-machine enums (§5, sourced DATA_MODEL §4 / UX §8 / SOM), the 22 shared IDs + ID-format/prefix contract (§5, sourced DATA_MODEL §5 / PBI §3), the 4 gap objects Device/RemoteClient/LocalRunner/EventProjection (§5, sourced DATA_MODEL §6), harness_session_map (§5). Include the summary field list for each so a field change has a single canonical edit target.",
+      "needs_human": false
+    },
+    {
+      "severity": "critical",
+      "finding": "The 8 status state-machine enums and the 22 shared IDs — both named cross-doc invariants — have no dedicated, field-level §N anchor inside the architecture document. §5 only NAMES them in a bullet ('8 status state machines ... canonical enums in SOM/UX §8, persistence + derivation rules in DATA_MODEL §4'; '22 shared IDs (PBI §3) ... format = prefixed ULIDs (DATA_MODEL §5)') and delegates the actual values out to DATA_MODEL / SOM / UX / PBI. tasks-gen and the cross-doc-invariants table need a stable anchor INSIDE the binding ARCHITECTURE.md (the planning artifacts are not the binding contract). As drafted, a task implementing the Session enum or the ID-prefix registry has no architecture §N to cite — only a planning doc that the handoff says is non-binding.",
+      "evidence": "ARCHITECTURE_DRAFT.md §5 (lines 130-132): the enums and IDs are one-line pointers to DATA_MODEL §4/§5. DATA_MODEL.md header (lines 3-4) and CLAUDE_CODE_HANDOFF.md §6 both state the planning docs are NOT binding — only ARCHITECTURE.md is. §5 has no sub-anchors (no §5.1/§5.2) to bind the enum/ID contracts to.",
+      "proposed_fix": "ARCHITECTURE.md §5 (Domain Model): promote the state machines and shared IDs to stable sub-anchors — e.g. §5.1 'The 8 status state machines' (inline the canonical enum values reconciled across SOM/UX §8/DATA_MODEL §4) and §5.2 'The 22 shared IDs + ID format contract' (inline the ID list, prefix registry, and the Claude/Codex session_id mapping rule). List both in Appendix A and the §22 Spec Anchor Index so tasks-gen binds to the architecture, not the non-binding planning draft.",
+      "needs_human": false
+    },
+    {
+      "severity": "important",
+      "finding": "Dangling anchor: §6's daemon-module table cites the harness module's Claude & Codex impls at `§9.3`, but no §9.3 section exists — the harness adapter detail lives at §9.1. A broken §N reference inside the load-bearing module decomposition table means a task generated against the `harness` module's contract will resolve to a non-existent anchor.",
+      "evidence": "ARCHITECTURE_DRAFT.md line 146: '| **`harness`** | `HarnessAdapter` trait + Claude & Codex impls (`§9.3`); ...'. `grep '### §9' ARCHITECTURE_DRAFT.md` shows only §9.1 (line 190); there is no §9.2 or §9.3.",
+      "proposed_fix": "ARCHITECTURE.md §6: correct the `harness` module row reference from `§9.3` to `§9.1` (or split the Claude/Codex impl detail into a real §9.2/§9.3 if finalize wants per-adapter anchors). Run a draft-wide anchor-integrity pass for any other dangling §N citations before freezing.",
+      "needs_human": false
+    },
+    {
+      "severity": "important",
+      "finding": "The §22 Spec Anchor Index ('downstream task planning binds here') is incomplete — it omits load-bearing sections that tasks-gen must cite. §12 (Backend/Daemon/Adapter Strategy) holds the single-write-actor concurrency model AND the executor-adapter / harness-adapter extension points (the pluggable seams new action types and harnesses bind to). §14 (Testing Strategy) holds the HarnessAdapter conformance suite and the Gateway per-action test matrix — the contract-test anchors. Both are absent from §22, so the index under-serves the contract surfaces it claims to be the binding map for.",
+      "evidence": "ARCHITECTURE_DRAFT.md §22 table (lines 340-354) lists §4,5,6,7,8,9/9.1,10,11,13,15,16,18.1,20. Missing: §12 (executor/adapter extension points, line 219), §14 (adapter conformance + gateway tests, lines 234-235). §12 line 219: 'The adapter layer (§9.1) and executor adapters (AG §15.3) are the pluggable extension points'; §14 line 235: 'a shared HarnessAdapter conformance suite run against both Claude and Codex'.",
+      "proposed_fix": "ARCHITECTURE.md §22: add rows for §12 (daemon/concurrency + executor/adapter extension points → AG §15.3, ADR-002/010) and §14 (testing strategy / adapter conformance + gateway test matrix). Confirm every §N that a cross-doc-invariant model anchors to also appears in §22.",
+      "needs_human": false
+    },
+    {
+      "severity": "important",
+      "finding": "The Action Gateway core data-model contracts (ActionRequest, ActionPlan, ActionPlanStep, ActionPreview, Approval, ActionResult, ActorRef, ResourceRef, EvidenceRef, PolicyDecision — AG §9.1-§9.9, §12.2) are the most-referenced cross-doc invariants in the system (every event object_ref, every Brain evidence chip, every gateway intent uses ResourceRef/ActorRef), yet they have no field-level §N anchor in the draft. §6's `gateway` row references 'AG §8/§12/§15' and the prose names the GatewayPort trait, but the typed request/approval/result/actorref/resourceref shapes are never anchored inside the architecture — only in the AG spec, which is upstream/authoritative but not the binding contract tasks-gen cites.",
+      "evidence": "ARCHITECTURE_DRAFT.md §6 (lines 142-143) anchors the gateway to 'AG §8/§12/§15' and §6.157 names 'GatewayPort contract [LOCKED — ADR-004]'. The ActionRequest/Approval shapes are defined only in ACTION_GATEWAY.md §9.1-§9.9 and persisted in DATA_MODEL §2.9. No §N in the draft carries the GatewayPort JSON-RPC method set or the ActionRequest/Approval/ResourceRef/ActorRef field contracts.",
+      "proposed_fix": "ARCHITECTURE.md §6: add a stable sub-anchor (e.g. §6.1 'GatewayPort contract' and §6.2 'Gateway core data model') that inlines the GatewayPort method surface (submit/preview/approve/deny/execute/status, mapped from AG §25) and the ActionRequest/Approval/ResourceRef/ActorRef/EvidenceRef/PolicyDecision field summaries, then list each in Appendix A pointing at this anchor. The actor enum unification (remote_device vs remote_client, OPEN per DATA_MODEL §6.2/§8) must be resolved here since ActorRef is a cross-doc invariant spanning AG §9.7 + EM §7.",
+      "needs_human": true
+    },
+    {
+      "severity": "important",
+      "finding": "The Event envelope — the single most pervasive cross-doc invariant (every projection, audit row, Brain notification, and gateway event derives from it) — has no dedicated §N anchor. §7 (Data and State Model) lists the `events` table columns by reference to DATA_MODEL §2.1 and EM §6, but the binding architecture never anchors the envelope contract (required vs optional fields, actor/source/sensitivity/visibility enums, object_refs shape, correlation/causation rules) at a stable §N. tasks-gen cannot tag the envelope as a cross-doc invariant against a missing anchor.",
+      "evidence": "ARCHITECTURE_DRAFT.md §7 (lines 163-167) references the events table to 'DATA_MODEL §2', 'EM §12'. The envelope contract itself is defined in EM §6/§6.1/§6.2 (required/optional field tables) and DATA_MODEL §2.1; no §N in the draft owns it. EM §7 actor enum (remote_device) vs DATA_MODEL §6.2 (remote_client) is an unresolved drift that lands directly on the envelope contract.",
+      "proposed_fix": "ARCHITECTURE.md §7: add §7.1 'Event envelope contract' inlining the required/optional envelope fields (EM §6.1/§6.2), the actor/source/sensitivity/visibility enums (EM §7-9, reconciled on the remote_device/remote_client decision), and the object_refs + correlation_id/causation_id rules. List the envelope and its enums in Appendix A.",
+      "needs_human": true
+    },
+    {
+      "severity": "important",
+      "finding": "The 4 gap objects (Device, RemoteClient, LocalRunner, EventProjection) are flagged as cross-doc invariants the schema must keep build-ready, but in the draft they appear only as a single §5 bullet ('Gap closed: ... specified in DATA_MODEL §6 [PROPOSED]') with no architecture §N of their own and an unresolved actor-enum question. They carry [PROPOSED] status and a build-gating spike (OQ-DATA-SPIKE-5) to reconcile them into SOM. Until they have a stable anchor and resolved status, tasks-gen cannot bind the local_runners/event_projections MVP rows (the two that ARE exercised in MVP per DATA_MODEL §6) to a contract anchor.",
+      "evidence": "ARCHITECTURE_DRAFT.md §5 line 131 (the only mention). DATA_MODEL §6 (lines 552-618) defines all four as [PROPOSED]; §6.2 line 576 flags the remote_client/remote_device unification as [OPEN]; CLAUDE_CODE_HANDOFF.md line 60 lists OQ-DATA-SPIKE-5 'reconcile the 4 gap objects into the Shared Object Model' as build-gating.",
+      "proposed_fix": "ARCHITECTURE.md §5: give the 4 gap objects a stable sub-anchor (e.g. §5.3 'Desktop-addendum objects') stating which are MVP-live (LocalRunner, EventProjection) vs dormant-scaffolding (Device, RemoteClient [DEFERRED]), with the SOM-reconciliation outcome of OQ-DATA-SPIKE-5 recorded. List the MVP-live two in Appendix A. Resolve the remote_device/remote_client actor token (shared with the §6.2/§7.1 ActorRef + envelope fixes).",
+      "needs_human": true
+    },
+    {
+      "severity": "nice-to-have",
+      "finding": "The §22 Spec Anchor Index does not declare its own contract guarantee — i.e. that the §N anchors are STABLE (renumber-safe) across finalize. The draft preamble (line 8) promises 'Every section carries a stable §N anchor; downstream task planning binds to these,' but the act of finalizing into the template (which renumbers §1/§1A/§2 etc. into the template's §1..§N scheme) risks shifting anchors that tasks-gen and the area CLAUDE.md cross-doc table will hardcode. Without a frozen anchor map, the cross-doc-invariants table and MVP_TASKS phase citations can silently drift.",
+      "evidence": "ARCHITECTURE_DRAFT.md line 8 (stability promise) vs the template's different numbering (template ARCHITECTURE.md §1 Goals, §2 System overview, §3+ subsystems) — the draft's §1A/§2 'Product Definition' do not map 1:1 onto the template sections, so finalize must re-anchor. CLAUDE_CODE_HANDOFF.md line 43 requires 'preserving the stable §N anchors the draft established (ARCHITECTURE_DRAFT §22).'",
+      "proposed_fix": "ARCHITECTURE.md §22: when finalizing, freeze the anchor map and add a one-line note that §N anchors are stable IDs (never reused/reordered, like the LESSONS rule), and that any renumber from the template merge is recorded as an alias row so existing citations resolve. Cross-check that every Appendix A row's §N matches the final numbering.",
+      "needs_human": false
+    },
+    {
+      "severity": "nice-to-have",
+      "finding": "HarnessAdapter capability declaration (HARN-5: supportsTerminal, supportsResume, supportsTranscriptRead, supportsToolCallParsing, supportsUsageMetadata, supportsContextMetadata, supportsCommandInjection, supportsSubagents, supportsHooks, supportsCloudTasks) is a cross-doc invariant the adapter contract MUST expose (PRD HARN-5 is a MUST), but the draft's §9.1 describes the trait methods {launch, stream-status, intercept-mutation, read-transcript, telemetry-heartbeat, resume} without the capability-declaration field set. The contract is therefore under-specified at its anchor.",
+      "evidence": "ARCHITECTURE_DRAFT.md §9.1 line 191 lists the trait methods but no capability struct; PRD §10.3 HARN-5 (lines 875-890) mandates the 10-field capability declaration as MUST.",
+      "proposed_fix": "ARCHITECTURE.md §9.1: add the HarnessAdapter capability-declaration struct (PRD HARN-5's 10 fields) to the trait contract, and list HarnessAdapter (methods + capabilities) as one Appendix A row anchored at §9.1.",
+      "needs_human": false
+    }
+  ]
+}

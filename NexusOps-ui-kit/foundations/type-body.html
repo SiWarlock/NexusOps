@@ -1,0 +1,26 @@
+<!-- @dsCard group="Type" viewport="700x290" name="Body, labels & eyebrow" subtitle="Geist — rows, metadata, uppercase section eyebrows" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:24px 26px; }
+  .row { display:flex; align-items:baseline; gap:16px; padding:7px 0; border-bottom:1px solid var(--border-subtle); }
+  .row:last-child { border-bottom:0; }
+  .spec { font-family:var(--font-mono); font-size:10px; color:var(--text-faint); width:96px; flex:none; }
+  .body-lg { font-size:var(--fs-body-lg); color:var(--text-primary); line-height:var(--lh-normal); }
+  .body { font-size:var(--fs-body); color:var(--text-secondary); line-height:var(--lh-normal); }
+  .label { font-size:var(--fs-label); font-weight:var(--fw-medium); color:var(--text-primary); }
+  .meta { font-size:var(--fs-meta); color:var(--text-muted); }
+  .eyebrow { font-size:var(--eyebrow-size); font-weight:var(--eyebrow-weight); letter-spacing:var(--eyebrow-tracking); text-transform:uppercase; color:var(--text-faint); }
+</style>
+</head>
+<body>
+  <div class="row"><span class="spec">14 / 400</span><span class="sample body-lg">Inspector body. The session produced 7 changed files across one worktree.</span></div>
+  <div class="row"><span class="spec">13 / 400</span><span class="sample body">Default row text — scannable, calm, set in Geist for long review sessions.</span></div>
+  <div class="row"><span class="spec">12 / 500</span><span class="sample label">Waiting on human · Approval required</span></div>
+  <div class="row"><span class="spec">11 / 400</span><span class="sample meta">last activity 2m ago · 128k ctx · Claude Max Main</span></div>
+  <div class="row"><span class="spec">10 / 600</span><span class="sample eyebrow">Needs my attention</span></div>
+</body>
+</html>

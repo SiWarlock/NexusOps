@@ -1,0 +1,341 @@
+/* ============================================================
+   COLOR — "Graphite Arc" taxonomy (first pass, not final brand)
+   ------------------------------------------------------------
+   Layered over the graphite neutral ramp (surfaces.css). Neutrals
+   do the structural work; saturated hue is RATIONED and only ever
+   carries meaning. Every state also ships a glyph + label in
+   status.css, so color is never the sole signal.
+
+   HUE FAMILIES (oklch hue °):
+     accent  235  electric blue-cyan  · primary actions, selected, active systems
+     live    196  cyan                · running / streaming / live
+     teal    175  teal                · workflow packs, orchestration, agent teams
+     success 150  muted green         · approved / merged / passed / completed
+     brain   287  indigo-violet       · Project Brain: memory, reasoning, evidence
+     review  318  purple              · PR / review / done states
+     attention 82 amber  (LOUDEST)    · waiting on human
+     caution  60  amber-orange        · waiting on permission / pending
+     warning  78  ochre  (muted)      · stale / degraded / drift
+     danger   25  coral-red           · failed / blocked / conflict / destructive
+     critical 16  deep red            · highest-risk / critical actions
+     linear  272  indigo              · Linear tickets (domain identity)
+     slate   258  cool gray           · idle / archived / draft / github
+
+   Each family exposes: -ink (text/icon on dark), -surface (chip
+   fill), -line (chip border), -solid (filled badge bg), -on-solid
+   (text on the solid). Tuned for the dark theme; light overrides
+   at the bottom. ACCESSIBILITY: -ink values target >= 4.5:1 on
+   panel/card surfaces; -solid pairs with its -on-solid >= 4.5:1.
+   ============================================================ */
+
+:root {
+  /* ========================================================
+     1 · ACCENT FAMILIES (brand / interactive)
+     ======================================================== */
+
+  /* PRIMARY · electric blue-cyan — primary actions, selection, active */
+  --accent-bright:   oklch(0.790 0.130 235);
+  --accent:          oklch(0.700 0.150 235);
+  --accent-strong:   oklch(0.615 0.158 237);
+  --accent-ink:      oklch(0.815 0.115 233);
+  --accent-surface:  oklch(0.700 0.150 235 / 0.14);
+  --accent-surface-2:oklch(0.700 0.150 235 / 0.22);
+  --accent-line:     oklch(0.700 0.150 235 / 0.42);
+  --accent-solid:    oklch(0.655 0.158 236);
+  --accent-on-solid: oklch(0.150 0.030 235);
+  --accent-glow:     0 0 16px -3px oklch(0.700 0.150 235 / 0.55);
+
+  /* SECONDARY · indigo-violet — Project Brain identity */
+  --brain-bright:    oklch(0.800 0.135 287);
+  --brain:           oklch(0.700 0.160 287);
+  --brain-ink:       oklch(0.805 0.130 287);
+  --brain-surface:   oklch(0.700 0.160 287 / 0.15);
+  --brain-surface-2: oklch(0.700 0.160 287 / 0.24);
+  --brain-line:      oklch(0.700 0.160 287 / 0.40);
+  --brain-solid:     oklch(0.655 0.168 287);
+  --brain-on-solid:  oklch(0.985 0.012 287);
+
+  /* TERTIARY · teal — workflow packs, orchestration, agent teams */
+  --teal-bright:     oklch(0.800 0.105 175);
+  --teal:            oklch(0.715 0.115 175);
+  --teal-ink:        oklch(0.805 0.105 175);
+  --teal-surface:    oklch(0.715 0.115 175 / 0.14);
+  --teal-line:       oklch(0.715 0.115 175 / 0.38);
+  --teal-solid:      oklch(0.690 0.120 175);
+  --teal-on-solid:   oklch(0.150 0.025 175);
+
+  /* MUTED / EMPHASIS accent helpers */
+  --accent-muted:    oklch(0.620 0.060 235);
+  --accent-emphasis: var(--accent-bright);
+
+  /* ========================================================
+     2 · STATUS HUE FAMILIES
+     ======================================================== */
+
+  /* LIVE · cyan — running / streaming */
+  --live-ink:     oklch(0.825 0.105 196);
+  --live:         oklch(0.725 0.118 196);
+  --live-surface: oklch(0.725 0.118 196 / 0.14);
+  --live-line:    oklch(0.725 0.118 196 / 0.38);
+  --live-solid:   oklch(0.705 0.122 196);
+  --live-on-solid:oklch(0.150 0.025 196);
+
+  /* SUCCESS · muted green — passed / merged / safe */
+  --success-ink:     oklch(0.800 0.120 150);
+  --success:         oklch(0.700 0.140 151);
+  --success-surface: oklch(0.700 0.140 151 / 0.14);
+  --success-line:    oklch(0.700 0.140 151 / 0.36);
+  --success-solid:   oklch(0.675 0.150 152);
+  --success-on-solid:oklch(0.150 0.030 150);
+
+  /* ATTENTION · amber — WAITING ON HUMAN (loudest, rationed) */
+  --attention-ink:      oklch(0.865 0.150 84);
+  --attention:          oklch(0.805 0.160 82);
+  --attention-surface:  oklch(0.805 0.160 82 / 0.16);
+  --attention-surface-2:oklch(0.805 0.160 82 / 0.28);
+  --attention-line:     oklch(0.805 0.160 82 / 0.48);
+  --attention-solid:    oklch(0.825 0.165 82);
+  --attention-on-solid: oklch(0.180 0.045 80);
+  --attention-glow:     0 0 0 1px oklch(0.805 0.160 82 / 0.55),
+                        0 0 18px -2px oklch(0.805 0.160 82 / 0.50);
+
+  /* CAUTION · amber-orange — waiting on permission / pending review */
+  --caution-ink:     oklch(0.825 0.150 60);
+  --caution:         oklch(0.750 0.155 60);
+  --caution-surface: oklch(0.750 0.155 60 / 0.15);
+  --caution-line:    oklch(0.750 0.155 60 / 0.40);
+  --caution-solid:   oklch(0.775 0.160 60);
+  --caution-on-solid:oklch(0.170 0.040 58);
+
+  /* WARNING · ochre — stale / degraded / drift (muted, dimmed) */
+  --warning-ink:     oklch(0.765 0.072 78);
+  --warning:         oklch(0.665 0.078 78);
+  --warning-surface: oklch(0.665 0.078 78 / 0.14);
+  --warning-line:    oklch(0.665 0.078 78 / 0.34);
+  --warning-solid:   oklch(0.705 0.082 78);
+  --warning-on-solid:oklch(0.170 0.028 78);
+
+  /* DANGER · coral-red — failed / blocked / conflict / destructive */
+  --danger-ink:      oklch(0.765 0.145 25);
+  --danger:          oklch(0.665 0.180 26);
+  --danger-surface:  oklch(0.665 0.180 26 / 0.15);
+  --danger-surface-2:oklch(0.665 0.180 26 / 0.25);
+  --danger-line:     oklch(0.665 0.180 26 / 0.44);
+  --danger-solid:    oklch(0.615 0.200 27);
+  --danger-on-solid: oklch(0.985 0.012 25);
+
+  /* CRITICAL · deep red — highest-risk actions (+ pattern in status.css) */
+  --critical-ink:     oklch(0.735 0.172 16);
+  --critical:         oklch(0.585 0.215 17);
+  --critical-surface: oklch(0.585 0.215 17 / 0.18);
+  --critical-line:    oklch(0.585 0.215 17 / 0.52);
+  --critical-solid:   oklch(0.550 0.225 18);
+  --critical-on-solid:oklch(0.985 0.012 17);
+
+  /* REVIEW / DONE · purple — PR open/ready/merged, review states */
+  --review-ink:     oklch(0.795 0.130 318);
+  --review:         oklch(0.700 0.150 318);
+  --review-surface: oklch(0.700 0.150 318 / 0.15);
+  --review-line:    oklch(0.700 0.150 318 / 0.38);
+  --review-solid:   oklch(0.660 0.160 318);
+  --review-on-solid:oklch(0.985 0.012 318);
+
+  /* SLATE · cool neutral status — idle / archived / draft */
+  --slate-ink:     oklch(0.660 0.012 258);
+  --slate:         oklch(0.560 0.014 258);
+  --slate-surface: oklch(0.620 0.014 258 / 0.12);
+  --slate-line:    var(--border-default);
+  --slate-solid:   oklch(0.560 0.014 258);
+  --slate-on-solid:oklch(0.150 0.006 262);
+
+  /* ========================================================
+     3 · SEMANTIC STATE ALIASES  (color.semantic.*)
+     Reference THESE in status pills / rows / nodes.
+     ======================================================== */
+  --state-active:           var(--accent-ink);
+  --state-active-surface:   var(--accent-surface);
+  --state-idle:             var(--slate-ink);
+  --state-idle-surface:     var(--slate-surface);
+  --state-waiting-human:    var(--attention-ink);
+  --state-waiting-human-surface: var(--attention-surface);
+  --state-waiting-perm:     var(--caution-ink);
+  --state-waiting-perm-surface:  var(--caution-surface);
+  --state-running-cmd:      var(--live-ink);
+  --state-running-cmd-surface:   var(--live-surface);
+  --state-editing:          var(--accent-ink);
+  --state-running-tests:    var(--live-ink);
+  --state-blocked:          var(--danger-ink);
+  --state-blocked-surface:  var(--danger-surface);
+  --state-failed:           var(--danger-ink);
+  --state-failed-surface:   var(--danger-surface);
+  --state-stale:            var(--warning-ink);
+  --state-stale-surface:    var(--warning-surface);
+  --state-degraded:         var(--warning-ink);
+  --state-completed:        var(--success-ink);
+  --state-completed-surface:var(--success-surface);
+  --state-archived:         var(--ink-4);
+  --state-archived-surface: var(--slate-surface);
+  --state-dirty:            var(--caution-ink);
+  --state-conflict:         var(--danger-ink);
+  --state-conflict-surface: var(--danger-surface);
+  --state-checks-passing:   var(--success-ink);
+  --state-checks-failing:   var(--danger-ink);
+  --state-pr-open:          var(--review-ink);
+  --state-pr-open-surface:  var(--review-surface);
+  --state-pr-ready:         var(--success-ink);
+  --state-pr-merged:        var(--review-ink);
+  --state-high-context:     var(--attention-ink);
+  --state-high-cost:        var(--caution-ink);
+  --state-approval-required:var(--attention-ink);
+  --state-approved:         var(--success-ink);
+  --state-denied:           var(--danger-ink);
+  --state-critical:         var(--critical-ink);
+
+  /* ========================================================
+     4 · RISK LADDER (Action Gateway)
+     ======================================================== */
+  --risk-readonly: var(--slate-ink);
+  --risk-low:      var(--success-ink);
+  --risk-medium:   var(--caution-ink);
+  --risk-high:     oklch(0.705 0.180 38);   /* red-orange */
+  --risk-critical: var(--critical-ink);
+
+  /* ========================================================
+     5 · CAPACITY METER STOPS (context / cost / tokens)
+     ======================================================== */
+  --cap-normal: var(--accent);
+  --cap-warn:   var(--attention);
+  --cap-risk:   var(--risk-high);
+  --cap-stop:   var(--danger);
+  --cap-track:  oklch(0.640 0.010 260 / 0.20);
+
+  /* ========================================================
+     6 · PRODUCT-DOMAIN TOKENS  (color.domain.*)
+     Harmonious identities; reuse families above so domains feel
+     related, not random.
+     ======================================================== */
+  /* Sessions / harnesses — near-neutral so we don't imply official
+     Claude/Codex brand color; faint warm vs cool differentiates. */
+  --domain-claude:        oklch(0.770 0.045 60);
+  --domain-claude-surface:oklch(0.770 0.045 60 / 0.12);
+  --domain-codex:         oklch(0.770 0.040 232);
+  --domain-codex-surface: oklch(0.770 0.040 232 / 0.12);
+  --domain-session:       var(--accent-ink);    /* generic agent session */
+
+  /* Agent team & roles — teal family, brightness = seniority */
+  --domain-team:        var(--teal-ink);
+  --domain-team-surface:var(--teal-surface);
+  --domain-lead:        var(--teal-bright);
+  --domain-orchestrator:oklch(0.745 0.110 175);
+  --domain-implementer: oklch(0.690 0.090 178);
+
+  /* Project Brain & evidence — brain violet */
+  --domain-brain:    var(--brain-ink);
+  --domain-evidence: var(--brain-bright);
+  --domain-evidence-surface: var(--brain-surface);
+
+  /* Workflow — teal */
+  --domain-workflow-pack:     var(--teal-ink);
+  --domain-workflow-instance: var(--teal-bright);
+
+  /* Action Gateway — authority of the accent, risk inside */
+  --domain-gateway:         var(--accent-ink);
+  --domain-gateway-surface: var(--accent-surface);
+
+  /* Integrations / tasks */
+  --domain-github:        var(--slate-ink);
+  --domain-github-surface:var(--slate-surface);
+  --domain-linear:        oklch(0.760 0.110 272);   /* indigo */
+  --domain-linear-surface:oklch(0.760 0.110 272 / 0.14);
+
+  /* Git objects */
+  --domain-worktree:  var(--teal-ink);
+  --domain-branch:    var(--slate-ink);
+  --domain-pr:        var(--review-ink);
+  --domain-pr-surface:var(--review-surface);
+  --domain-commit:    var(--ink-2);
+
+  /* Surfaces */
+  --domain-terminal:   var(--live-ink);
+  --domain-editor:     var(--accent-ink);
+  --domain-audit:      var(--slate-ink);
+
+  /* ========================================================
+     7 · GIT DIFF  (color.domain.git.diff.*)
+     ======================================================== */
+  --diff-add-ink:       oklch(0.830 0.130 150);
+  --diff-add-bg:        oklch(0.700 0.140 151 / 0.13);
+  --diff-add-gutter:    oklch(0.700 0.140 151 / 0.40);
+  --diff-del-ink:       oklch(0.800 0.150 25);
+  --diff-del-bg:        oklch(0.665 0.180 26 / 0.14);
+  --diff-del-gutter:    oklch(0.665 0.180 26 / 0.42);
+  --diff-mod-ink:       var(--caution-ink);
+  --diff-mod-bg:        oklch(0.750 0.155 60 / 0.12);
+  --diff-conflict-bg:   oklch(0.585 0.215 17 / 0.16);
+  --diff-conflict-line: var(--critical-line);
+  --diff-word-add:      oklch(0.700 0.140 151 / 0.32);
+  --diff-word-del:      oklch(0.665 0.180 26 / 0.34);
+
+  /* ========================================================
+     8 · GRAPH  (operational, not decorative)
+     Node chrome derives from object DOMAIN; an overlaid status
+     RING derives from state; selection uses the accent.
+     ======================================================== */
+  --graph-canvas:       var(--surface-sunken);
+  --graph-grid:         oklch(0.640 0.010 260 / 0.06);
+  --graph-node-bg:      var(--surface-card);
+  --graph-node-line:    var(--border-default);
+  --graph-node-line-strong: var(--border-strong);
+  --graph-selected:     var(--accent);
+  --graph-selected-glow:var(--accent-glow);
+  --graph-edge:         oklch(0.560 0.012 258 / 0.55);
+  --graph-edge-strong:  oklch(0.640 0.014 258 / 0.85);
+  --graph-edge-active:  var(--accent-line);
+  --graph-edge-blocked: var(--danger-line);
+  --graph-edge-evidence:var(--brain-line);
+  --graph-degraded:     var(--warning-line);
+  --graph-cluster-bg:   oklch(0.640 0.010 260 / 0.05);
+
+  /* ========================================================
+     9 · DATA-VIZ categorical (usage / activity / timelines)
+     Harmonious with the app; intentionally AVOIDS reusing danger
+     for harmless categories. Use --viz-warn/-crit only for true
+     over-budget / error series.
+     ======================================================== */
+  --viz-1: oklch(0.715 0.140 235);  /* azure   */
+  --viz-2: oklch(0.705 0.150 287);  /* violet  */
+  --viz-3: oklch(0.725 0.115 196);  /* cyan    */
+  --viz-4: oklch(0.715 0.120 175);  /* teal    */
+  --viz-5: oklch(0.720 0.130 150);  /* green   */
+  --viz-6: oklch(0.700 0.150 318);  /* purple  */
+  --viz-7: oklch(0.760 0.110 272);  /* indigo  */
+  --viz-8: oklch(0.805 0.150 82);   /* amber (use for "attention" series) */
+  --viz-warn: var(--attention);
+  --viz-crit: var(--danger);
+  --viz-track: var(--cap-track);
+  --viz-grid:  var(--graph-grid);
+}
+
+/* ============================================================
+   LIGHT OVERRIDE — specimen / doc surfaces only.
+   Darkens -ink families for contrast on light cards.
+   ============================================================ */
+[data-surface="light"] {
+  --accent-ink:    oklch(0.520 0.165 240);
+  --accent-surface:oklch(0.655 0.158 236 / 0.12);
+  --brain-ink:     oklch(0.505 0.170 287);
+  --teal-ink:      oklch(0.500 0.105 178);
+  --live-ink:      oklch(0.520 0.115 200);
+  --success-ink:   oklch(0.500 0.140 152);
+  --attention-ink: oklch(0.560 0.150 70);
+  --caution-ink:   oklch(0.545 0.150 55);
+  --warning-ink:   oklch(0.520 0.085 75);
+  --danger-ink:    oklch(0.545 0.195 27);
+  --critical-ink:  oklch(0.485 0.220 19);
+  --review-ink:    oklch(0.515 0.165 318);
+  --slate-ink:     oklch(0.480 0.014 258);
+  --diff-add-ink:  oklch(0.480 0.150 150);
+  --diff-del-ink:  oklch(0.500 0.190 27);
+  --cap-track:     oklch(0.500 0.010 260 / 0.14);
+  --graph-edge:    oklch(0.560 0.012 258 / 0.45);
+}

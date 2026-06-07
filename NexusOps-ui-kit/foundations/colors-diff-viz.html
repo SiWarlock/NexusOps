@@ -1,0 +1,55 @@
+<!-- @dsCard group="Colors" viewport="700x260" name="Diff & data-viz" subtitle="Git diff treatment + categorical chart palette" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:20px 24px; display:grid; grid-template-columns:1.1fr 1fr; gap:26px; }
+  h4 { margin:0 0 10px; font-size:var(--eyebrow-size); letter-spacing:var(--eyebrow-tracking); text-transform:uppercase; color:var(--text-faint); font-weight:var(--fw-semibold); }
+  .code { font-family:var(--font-mono); font-size:12px; line-height:1.7; border:1px solid var(--border-subtle); border-radius:var(--r-2); overflow:hidden; }
+  .ln { display:flex; gap:8px; padding:1px 10px; }
+  .ln .g { color:var(--text-faint); width:14px; text-align:center; flex:none; }
+  .add { background:var(--diff-add-bg); color:var(--diff-add-ink); box-shadow:inset 2px 0 0 var(--diff-add-gutter); }
+  .del { background:var(--diff-del-bg); color:var(--diff-del-ink); box-shadow:inset 2px 0 0 var(--diff-del-gutter); }
+  .ctx { color:var(--text-secondary); }
+  .viz { display:flex; flex-direction:column; gap:7px; }
+  .bar { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--text-secondary); }
+  .bar i { height:12px; border-radius:2px; display:block; }
+  .swatches { display:flex; gap:5px; margin-top:4px; }
+  .swatches span { width:26px; height:14px; border-radius:2px; }
+</style>
+</head>
+<body>
+  <div>
+    <h4>git diff</h4>
+    <div class="code">
+      <div class="ln ctx"><span class="g">·</span>function review(plan) {</div>
+      <div class="ln del"><span class="g">-</span>&nbsp;&nbsp;return run(plan)</div>
+      <div class="ln add"><span class="g">+</span>&nbsp;&nbsp;const dry = await dryRun(plan)</div>
+      <div class="ln add"><span class="g">+</span>&nbsp;&nbsp;return gateway.confirm(dry)</div>
+      <div class="ln ctx"><span class="g">·</span>}</div>
+    </div>
+  </div>
+  <div>
+    <h4>data-viz categorical</h4>
+    <div class="viz">
+      <div class="bar"><i style="width:88px;background:var(--viz-1)"></i>azure</div>
+      <div class="bar"><i style="width:64px;background:var(--viz-2)"></i>violet</div>
+      <div class="bar"><i style="width:52px;background:var(--viz-3)"></i>cyan</div>
+      <div class="bar"><i style="width:40px;background:var(--viz-4)"></i>teal</div>
+      <div class="bar"><i style="width:30px;background:var(--viz-5)"></i>green</div>
+    </div>
+    <div class="swatches">
+      <span style="background:var(--viz-1)"></span>
+      <span style="background:var(--viz-2)"></span>
+      <span style="background:var(--viz-3)"></span>
+      <span style="background:var(--viz-4)"></span>
+      <span style="background:var(--viz-5)"></span>
+      <span style="background:var(--viz-6)"></span>
+      <span style="background:var(--viz-7)"></span>
+      <span style="background:var(--viz-8)"></span>
+    </div>
+  </div>
+</body>
+</html>

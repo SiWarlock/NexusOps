@@ -1,0 +1,136 @@
+{
+  "lens": "B-status",
+  "verdict": "material-gaps",
+  "aligned": [
+    {
+      "point": "The 'never color alone' four-channel principle is genuinely implemented in the StatusPill: every status carries color + glyph + text label, and motion (pulse/beacon) where appropriate, satisfying the readme §3 'four-channel' claim and ARCHITECTURE.md §5.1's grayscale/color-blind survivability intent.",
+      "evidence": "components/status/StatusPill.jsx STATUS map (each entry has ink/surface/line + glyph + label, plus pulse/beacon); tokens/status.css header lists the 4 channels; CLAUDE_DESIGN_SYSTEM_PROMPT.md L1051 'Do not rely only on color for state'"
+    },
+    {
+      "point": "Glyph vocabulary is distinct per status and rendered in mono so markers align in dense rows, and critical adds a hazard hatch so it reads in grayscale — matching readme §4 'geometric Unicode markers ... always paired with a label' and the RiskBadge critical-hatch requirement.",
+      "evidence": "tokens/status.css --glyph-* tokens + .cp-hazard repeating-linear-gradient; components/status/RiskBadge.jsx isCritical => className 'cp-hazard'"
+    },
+    {
+      "point": "A 6-rank Attention Ladder (0–5) exists and drives sidebar dot weight, queue ordering and the 'Needs my attention' bucket, honoring PRD §5.2 / UX §5.1 attention-first ordering as the system's core idea.",
+      "evidence": "readme §3 Attention Ladder; tokens/status.css ATTENTION LADDER comment + --attn-0..5 + --rail-* ; components/status/AttentionMarker.jsx LEVELS{0..5}; foundations/status-attention-ladder.html"
+    },
+    {
+      "point": "RiskBadge encodes the Gateway 0–4 risk scale as 5 named levels (readonly/low/medium/high/critical) with mandatory text label, aligning with ARCHITECTURE.md §6.2 'Risk 0-4 drives preview depth + approval'.",
+      "evidence": "components/status/RiskBadge.jsx RISK map; kit-data.js gateway.q1/q2 risk:'medium'/'high'/'critical'; ARCHITECTURE.md §6.2"
+    },
+    {
+      "point": "ExecutionProfile health is surfaced explicitly per session/profile and the kit honors the 'no silent account-hopping' intent by showing the profile on every session.",
+      "evidence": "components/badges/ProfileBadge.jsx HEALTH{active,available,rate-limited,auth-expired,disabled}; kit-data.js profiles[].health + profilesDetail[].health; ARCHITECTURE.md §15 execution-profile binding"
+    },
+    {
+      "point": "Worktree, PR, and approval/risk objects all carry status through the same StatusPill/RiskBadge primitives, giving a single consistent status-rendering surface across object types (sessions, worktrees, PRs, approvals, graph nodes) as UX §7 requires.",
+      "evidence": "components/status/StatusPill.prompt.md 'used everywhere an object has status'; kit-views2.jsx GPill usage on worktrees (L317), PRs (L362), graph nodes (L124)"
+    }
+  ],
+  "gaps": [
+    {
+      "severity": "critical",
+      "gap": "Session status vocabulary is drastically undersized. The kit only ever uses 7 session status strings (active, running, waiting-human, waiting-perm, failed, completed, conflict) against the canonical 17-state Session machine. Missing entirely: creating, starting, thinking, running_command, editing_files, running_tests, waiting_on_external_service, idle, stale, changes_ready, archived, killed. StatusPill has 'editing'/'testing' keys but they are never used in data and do not map to canonical names; 'conflict' is applied to sessions though it is not a Session state.",
+      "kit_evidence": "kit-data.js sessions[].status (only waiting-human/running/active/failed/completed used); StatusPill.jsx STATUS keys lack thinking/running_command/running_tests/changes_ready/creating/starting/idle/stale/killed/waiting_on_external_service; kit-data status enumeration shows 14 distinct strings total across ALL objects",
+      "doc_ref": "ARCHITECTURE.md §5.1 Session(17, R-4); PRD §10 SESS-3; UX §8.1",
+      "recommendation": "Change the kit (build target): define the canonical 17 Session states as the StatusPill status vocabulary, mapping each to a (color, glyph, label, attention-level) tuple; rename hyphenated keys to the canonical snake_case enum at the data layer.",
+      "for_tasks_gen": "tasks-gen MUST require a Session StatusPill that renders all 17 canonical states (creating, starting, active, thinking, running_command, editing_files, running_tests, waiting_on_permission, waiting_on_human_input, waiting_on_external_service, idle, stale, changes_ready, failed, completed, archived, killed) each with a distinct glyph+label+attention-rank, and a frontend component test asserting one rendering per state (§14 frontend tier)."
+    },
+    {
+      "severity": "critical",
+      "gap": "The newly-added 'changes_ready' Session state (R-4, the explicit gap the architecture closed) is entirely absent from the kit — no status key, no data instance, no attention-ladder slot, no Command Center bucket. PRD §5.2 ranks 'changes ready' as attention rank 5-of-7 and UX Flow H/PRD has sessions report 'changes ready' before review; the kit instead jumps sessions from running to completed.",
+      "kit_evidence": "absent (no 'changes_ready'/'changes-ready' anywhere in kit-data.js, StatusPill.jsx, status.css, or kit-views*.jsx); kit-views.jsx L28 'done' bucket = completed/idle/archived only",
+      "doc_ref": "ARCHITECTURE.md §0.3 R-4 + §5.1 (changes_ready, event SessionWaitingOnHumanInput counterpart SessionChangesReady); PRD §5.2 item 5; UX §8.1 note",
+      "recommendation": "Change the kit: add changes_ready as a first-class Session state with its own pill (e.g. glyph for 'review me') and attention-ladder placement, plus a Command Center 'Changes ready' lane distinct from 'Recently settled'.",
+      "for_tasks_gen": "tasks-gen MUST add a task for the 'changes_ready' session state surfacing: a dedicated pill, an attention rank distinct from completed/idle, a Command Center / Sessions-list grouping, and the Flow H 'session reports changes ready -> open review' affordance; bind to §5.1 R-4."
+    },
+    {
+      "severity": "critical",
+      "gap": "Status-token canonicalization mismatch: the kit uses 'waiting-human' / label 'Waiting · human' / sidebar text 'Waiting on you' (readme §2) where the architecture canonicalized the token to 'waiting_on_human_input' (event SessionWaitingOnHumanInput). Likewise 'waiting-perm' vs canonical 'waiting_on_permission'. The kit's casual hyphenated tokens are not the binding enum and will not round-trip to projection status values.",
+      "kit_evidence": "StatusPill.jsx 'waiting-human'/'waiting-perm' keys; kit-shell.jsx L78 '◆ waiting'; readme §2 'Waiting on you'/'Permission required'; status.css [data-status=\"waiting-human\"]/[\"waiting-perm\"]",
+      "doc_ref": "ARCHITECTURE.md §0.3 R-4 ('Waiting token canonicalized to waiting_on_human_input') + §5.1 Session enum (waiting_on_permission, waiting_on_human_input)",
+      "recommendation": "Note for build + change the kit: keep the human-readable label ('Waiting on you' is acceptable copy) but bind the underlying status key to the canonical enum waiting_on_human_input / waiting_on_permission so the UI status value is the projection's TEXT status verbatim.",
+      "for_tasks_gen": "tasks-gen MUST specify that StatusPill status keys equal the canonical §5.1 enum strings (proj_session.status verbatim) and that display labels are a separate copy layer; include a test that the pill key set == the §5.1 Session enum set."
+    },
+    {
+      "severity": "critical",
+      "gap": "The Attention Ladder is hard-capped at 4 mapped states and silently floors everything else to 0. The sidebar maps only {waiting-human:5, failed:4, running:2, active:1} and 'Needs my attention' filters only ['waiting-human','failed']. So stale, blocked, conflict, waiting-permission, degraded, high-context, changes_ready, idle never receive their PRD/UX attention rank — e.g. a permission-waiting or conflicted session would sort as rank 0 (idle) and never appear in 'Needs my attention'.",
+      "kit_evidence": "kit-shell.jsx L183 inline map {'waiting-human':5,failed:4,running:2,active:1}||0; kit-views.jsx L26 attention=filter(['waiting-human','failed'])",
+      "doc_ref": "ARCHITECTURE.md §5.1; PRD §5.2 (7-rank order incl. permission requested, failed/stale/conflicted, changes ready); UX §5.1 / CLAUDE_DESIGN_SYSTEM_PROMPT.md §1 attention-first hierarchy",
+      "recommendation": "Change the kit: replace the inline 4-entry map with a single canonical status->attention-rank table covering every §5.1 state, and derive both the 'Needs my attention' membership and sort order from it (waiting_on_permission, conflict, blocked, stale, failing-checks must rank into attention).",
+      "for_tasks_gen": "tasks-gen MUST require ONE canonical status->attention-rank mapping table (covering all 9 machines' relevant states) as the single source for sidebar weight, queue membership, and sort order; specify the PRD §5.2 ordering (waiting_on_human_input > waiting_on_permission > failed/stale/conflicted > active/running_tests > changes_ready > idle > completed/archived) and a test asserting permission/conflict/stale sessions surface in 'Needs my attention'."
+    },
+    {
+      "severity": "critical",
+      "gap": "No Approval-vs-ActionRequest split. The architecture defines TWO state machines (Approval: requested..approved/denied/edited/auto_approved_by_policy/expired/cancelled/escalated; and ActionRequest/execution: submitted..policy_decided..queued/executing/succeeded/failed/partially_succeeded/rolled_back/rollback_failed). The kit collapses both into a single approve/deny gesture and a flat StatusPill set, with no executing/partially_succeeded/rolled_back/policy_decided/escalated/expired states represented anywhere.",
+      "kit_evidence": "kit-overlays.jsx L68-69 only Deny / Approve buttons; kit-tasks.jsx onResolve(item,'Approved'|'Denied'); StatusPill.jsx has 'approved' but no submitted/policy_decided/queued/executing/partially_succeeded/rolled_back/rollback_failed/edited/auto_approved_by_policy/escalated/expired; UX §9 Screen 16 lists Executing/Partially succeeded/Failed-with-recovery states that are unrendered",
+      "doc_ref": "ARCHITECTURE.md §0.3 R-5 + §5.1 Approval(10) & ActionRequest(15); UX §8.7 + Screen 16 'Important states' (Executing, Partially succeeded, Stale preconditions)",
+      "recommendation": "Change the kit: model Approval status and ActionRequest/execution status as two distinct pills; render the Gateway modal lifecycle (preview pending/succeeded/unavailable -> awaiting_approval -> executing -> succeeded|failed|partially_succeeded|rolled_back) and the stale-precondition re-approval path.",
+      "for_tasks_gen": "tasks-gen MUST require two separate status renderings (Approval machine + ActionRequest/execution machine per §5.1 R-5), the Action Gateway modal showing post-approval execution states (executing/partially_succeeded/rolled_back/rollback_failed) and the §6.2/§17 stale_precondition 'requires fresh approval' state; bind to R-5."
+    },
+    {
+      "severity": "important",
+      "gap": "Worktree status is reduced to 3 buckets with no derived-status precedence. The kit collapses worktree status to {dirty, active->'Clean', conflict} and an unrelated 'active' graph-node status, missing the canonical derived model: git-axis {clean,dirty,untracked_files,conflicts,behind_base,ahead_of_base} + lifecycle overlay {creating,locked,pr_open,merged,prunable,deleted} resolved by a precedence function (locked/conflicts > dirty > ahead/behind > clean).",
+      "kit_evidence": "kit-views2.jsx L298 WT_STATUS={dirty,active:'Clean',conflict}; kit-data.js worktrees[].status in {dirty,active,conflict}; graph nodes give worktrees status:'active'",
+      "doc_ref": "ARCHITECTURE.md §0.3 R-7 + §5.1 Worktree(derived) + §7.2 (precedence fn, re-read git2 live); UX §8.3 (11 worktree statuses)",
+      "recommendation": "Change the kit: drive worktree status from the two-axis derived model and show the precedence-winning state (e.g. conflicts/locked beat dirty), and surface untracked/ahead/behind/pr_open/merged/prunable distinctly rather than one 'Clean'/'Dirty'/'Conflict' bucket.",
+      "for_tasks_gen": "tasks-gen MUST require a Worktree status renderer driven by the derived git-axis x overlay precedence function (§7.2), surfacing all UX §8.3 states, plus a unit test for the precedence collapse (locked/conflicts > dirty > ahead/behind > clean)."
+    },
+    {
+      "severity": "important",
+      "gap": "PR status is incoherent and undersized: kit-data uses a free-text 'lane' (open/ready/merged) plus a separate 'status' field that conflicts (e.g. a 'merged' lane PR carries status:'pr-open'), and only 3 lanes are rendered. The canonical PullRequest machine has 11 states (draft, open, checks_pending, checks_failing, needs_review, changes_requested, approved, mergeable, conflict, merged, closed), GitHub-authoritative with re-fetch-before-merge.",
+      "kit_evidence": "kit-data.js prs[] {lane:'merged',status:'pr-open'} inconsistency; kit-views2.jsx L342 LANES=[open,ready,merged]; StatusPill keys lack draft/checks_pending/checks_failing/needs_review/changes_requested/approved/mergeable/conflict/closed (only pr-open/merged + generic passing/failing)",
+      "doc_ref": "ARCHITECTURE.md §5.1 PullRequest(11) + §7.2 (GitHub authoritative, re-fetch before merge); UX §8.4 + Screen 9 PR lanes (8) + Screen 10",
+      "recommendation": "Change the kit: derive a single PR status from the canonical 11-state enum and render lanes/columns from it (Draft/Checks pending/Checks failing/Needs review/Approved/Mergeable/Conflict/Merged); drop the duplicated lane vs status fields.",
+      "for_tasks_gen": "tasks-gen MUST require a PullRequest StatusPill over the canonical 11 states and PR lanes mapped to those states (UX Screen 9), with the 'mergeable' gate reflecting a GitHub re-fetch (§7.2) before the Merge action is enabled."
+    },
+    {
+      "severity": "important",
+      "gap": "Time-derived 'stale' status (and the broader stale/degraded family) is defined in the kit (StatusPill 'stale','degraded'; ladder rank 3) but never produced on any session/profile/brain instance, and there is no notion of it being daemon-time-derived (recomputed on rebuild) vs event-derived. Stale sessions/profiles/brain are a PRD §5.5 risk surface the kit never shows.",
+      "kit_evidence": "StatusPill.jsx 'stale'/'degraded' present but kit-data.js has no session/profile with stale; brain statuses use 'ready'/'indexing'/'stale'/'drift' inconsistently as free strings (projects[].brain)",
+      "doc_ref": "ARCHITECTURE.md §5.1 'Time-derived transitions' + §7.2 field-note (status event-derived vs stale daemon-time-derived recomputed on rebuild)",
+      "recommendation": "Note for build: keep the pill but document that 'stale' is derived from last_heartbeat_at age (3x refreshInterval) at read time, not a stored event status; add at least one stale session/profile/brain to sample data so the state is exercised.",
+      "for_tasks_gen": "tasks-gen MUST require the UI to render derived 'stale' (Session/ExecutionProfile/ProjectBrain) computed from heartbeat/staleness age per §7.2, visually distinct from the live status, and ensure projection-rebuild recomputes it (not replays it)."
+    },
+    {
+      "severity": "important",
+      "gap": "ExecutionProfile enum is incomplete and uses runtime values where the architecture splits config vs runtime. The kit's ProfileBadge HEALTH set is {active, available, rate-limited, auth-expired, disabled} — missing 'in_use', 'misconfigured', and 'unknown', and conflates the config row status with the re-derived-on-restart runtime status.",
+      "kit_evidence": "components/badges/ProfileBadge.jsx HEALTH (5 of 8); kit-data.js profiles[].health / profilesDetail[].health in {active,available,rate-limited,auth-expired}",
+      "doc_ref": "ARCHITECTURE.md §5.1 ExecutionProfile(8) + §7.2 (config vs runtime split; runtime re-derived on daemon restart, not trusted from persisted row)",
+      "recommendation": "Change the kit: extend ProfileBadge to the full 8-state enum and distinguish config status (durable row) from runtime status (in_use/rate_limited/auth_expired derived live).",
+      "for_tasks_gen": "tasks-gen MUST require an ExecutionProfile status with all 8 states (available, active, in_use, rate_limited, auth_expired, misconfigured, disabled, unknown) and the config-vs-runtime split per §7.2 (runtime re-derived on restart)."
+    },
+    {
+      "severity": "important",
+      "gap": "Human Input Queue exposes only 4 of the 7 UX-specified groups. The kit renders {Permission requests, High-risk actions, Failed checks needs decision, Workflow personalization} and omits 'Needs clarification', 'Project Brain action plans', and 'Agent team escalations' — the latter two being core to O-3 (Brain ActionPlan step-approval) and R-6 (AgentTeam waiting_on_human).",
+      "kit_evidence": "kit-tasks.jsx L191 order=['Permission requests','High-risk actions','Failed checks · needs decision','Workflow personalization']; kit-data.js humanInput[] has those 4 groups only",
+      "doc_ref": "UX §9 Screen 15 sections (7: incl. Project Brain action plans, Agent team escalations, Needs clarification); ARCHITECTURE.md §0.1 O-3 (ActionPlan step-approval) + §5.1 R-6 AgentTeam(waiting_on_human) + §17 hard-conflict card never auto-resolved",
+      "recommendation": "Change the kit: add the missing three Human Input Queue groups, especially Project Brain multi-step ActionPlan approvals and AgentTeam escalations/hard-conflict cards.",
+      "for_tasks_gen": "tasks-gen MUST require the Human Input Queue to render all 7 §9-Screen-15 groups, including Brain ActionPlan step-by-step approval cards (O-3) and AgentTeam escalation / hard-conflict cards that are never auto-resolved (§17)."
+    },
+    {
+      "severity": "important",
+      "gap": "AgentTeam has no status machine in the kit. Team members reuse session statuses (running/waiting-perm/completed) and the team node uses 'active', but the canonical AgentTeam(9) machine (draft, starting, active, waiting_on_human, blocked, reconciling_outputs, completed, failed, archived) — promoted to first-class in R-6 — is not represented, notably 'reconciling_outputs' and 'blocked'.",
+      "kit_evidence": "kit-data.js team.lead.status:'active', workers[].status in {running,waiting-perm,completed}; kit-views2.jsx team node status:'active'; no team-level status field anywhere",
+      "doc_ref": "ARCHITECTURE.md §0.3 R-6 + §5.1 AgentTeam(9); UX §9 Screen 11 (Team status, escalations, reconcile outputs)",
+      "recommendation": "Change the kit: give the AgentTeam its own status pill over the 9-state machine, distinct from member session status, and surface reconciling_outputs/blocked/waiting_on_human at the team level.",
+      "for_tasks_gen": "tasks-gen MUST require an AgentTeam status renderer over the canonical 9 states (§5.1 R-6), separate from worker session status, used in Agent Team View and the active_teams counter."
+    },
+    {
+      "severity": "nice-to-have",
+      "gap": "Task status vocabulary is partial and free-text. The kit uses {In progress, Ready, Backlog, Todo, Done, ready, in-progress, backlog, todo, completed} where the canonical one-table Task machine (R-8 superset) has 17 states with kind-scoped subsets (plan_task subset: not_started, ready, in_progress, in_review, blocked, done, deferred; external subset: GitHub/Linear). 'Backlog'/'Todo' are not canonical tokens.",
+      "kit_evidence": "kit-data.js tasks[].status {In progress,Ready,Todo,Backlog,Done}; plan.phases[].tracks[].tasks[].status {completed,in-progress,ready,backlog,todo}",
+      "doc_ref": "ARCHITECTURE.md §0.3 R-8 + §5.1 Task(superset) + §7.2 (PlanTask kind-scoped subset); UX §8.2 Task statuses (13); PRD Task model",
+      "recommendation": "Change the kit: bind Task/PlanTask status to the canonical superset enum with kind-scoped subsets; Plan View renders the plan_task subset, Task Inbox renders the external subset.",
+      "for_tasks_gen": "tasks-gen MUST require a single Task status component over the R-8 superset with kind-scoped subset filtering (plan_task vs external_task), Plan View showing {not_started, ready, in_progress, in_review, blocked, done, deferred}."
+    },
+    {
+      "severity": "nice-to-have",
+      "gap": "WorkflowInstance and ProjectBrain statuses are free strings on the project row rather than the canonical enums. projects[].workflow uses {active, drift, needs-personalization, none} and projects[].brain uses {ready, indexing, stale} — short of WorkflowInstance(12) (e.g. ready_for_team_run, generated_review_required, detached) and ProjectBrain(10) (e.g. partial_index, graph_degraded, transcript_ingestion_active, reindex_required).",
+      "kit_evidence": "kit-data.js projects[].workflow {active,drift,needs-personalization,none} + brain {ready,indexing,stale}; packs[].instance {active,ready,upgrade_available,needs_personalization}",
+      "doc_ref": "ARCHITECTURE.md §5.1 WorkflowInstance(12, R-7) + ProjectBrain(10); UX §8.5 / §8.6",
+      "recommendation": "Change the kit: replace the ad-hoc workflow/brain strings with the canonical enums and render them via a shared status component; align packs[].instance with WorkflowInstance states (ready_for_team_run not 'ready').",
+      "for_tasks_gen": "tasks-gen MUST require WorkflowInstance status over the canonical 12 states (incl. ready_for_team_run, generated_review_required, detached) and ProjectBrain status over the canonical 10 states (incl. partial_index, graph_degraded, reindex_required, transcript_ingestion_active/off), bound to §5.1."
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+<!-- @dsCard group="Colors" viewport="700x270" name="Accent families" subtitle="Azure (interactive) · Violet (Project Brain) · Teal (workflow / teams)" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:22px 24px; }
+  .fam { display:grid; grid-template-columns:140px repeat(3,1fr); align-items:center; gap:12px; padding:11px 0; border-bottom:1px solid var(--border-subtle); }
+  .fam:last-child { border-bottom:0; }
+  .lead { display:flex; flex-direction:column; gap:2px; }
+  .lead .nm { font-weight:var(--fw-semibold); font-size:13px; }
+  .lead .role { font-size:10px; color:var(--text-faint); }
+  .solid { height:38px; border-radius:var(--r-2); display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:var(--fw-medium); }
+  .chip { height:38px; border-radius:var(--r-2); display:flex; align-items:center; padding:0 10px; font-size:11px; font-weight:var(--fw-medium); border:1px solid; }
+  .tk { font-family:var(--font-mono); font-size:9px; opacity:.7; margin-left:auto; }
+</style>
+</head>
+<body>
+  <div class="fam">
+    <div class="lead"><span class="nm" style="color:var(--accent-ink)">Azure</span><span class="role">primary · selected · active</span></div>
+    <div class="solid" style="background:var(--accent-solid);color:var(--accent-on-solid)">solid<span class="tk">-solid</span></div>
+    <div class="chip" style="background:var(--accent-surface);border-color:var(--accent-line);color:var(--accent-ink)">surface<span class="tk">-surface</span></div>
+    <div class="chip" style="background:transparent;border-color:transparent;color:var(--accent-ink)">ink text<span class="tk">-ink</span></div>
+  </div>
+  <div class="fam">
+    <div class="lead"><span class="nm" style="color:var(--brain-ink)">Violet</span><span class="role">Project Brain · evidence</span></div>
+    <div class="solid" style="background:var(--brain-solid);color:var(--brain-on-solid)">solid</div>
+    <div class="chip" style="background:var(--brain-surface);border-color:var(--brain-line);color:var(--brain-ink)">surface</div>
+    <div class="chip" style="background:transparent;border-color:transparent;color:var(--brain-ink)">ink text</div>
+  </div>
+  <div class="fam">
+    <div class="lead"><span class="nm" style="color:var(--teal-ink)">Teal</span><span class="role">workflow · orchestration · teams</span></div>
+    <div class="solid" style="background:var(--teal-solid);color:var(--teal-on-solid)">solid</div>
+    <div class="chip" style="background:var(--teal-surface);border-color:var(--teal-line);color:var(--teal-ink)">surface</div>
+    <div class="chip" style="background:transparent;border-color:transparent;color:var(--teal-ink)">ink text</div>
+  </div>
+</body>
+</html>

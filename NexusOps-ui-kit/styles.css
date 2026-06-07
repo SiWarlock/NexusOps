@@ -1,0 +1,16 @@
+/* ============================================================
+   Control Plane Design System — global entry point
+   ------------------------------------------------------------
+   Consumers link THIS file only. It is a manifest of @imports:
+   every token, font, and global treatment is reached from here.
+   Order matters: fonts + surfaces + color primitives first, then
+   type/space/motion, then status (which references all of them).
+   ============================================================ */
+
+@import url("tokens/fonts.css");
+@import url("tokens/surfaces.css");
+@import url("tokens/color.css");
+@import url("tokens/typography.css");
+@import url("tokens/space.css");
+@import url("tokens/motion.css");
+@import url("tokens/status.css");

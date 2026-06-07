@@ -1,0 +1,39 @@
+<!-- @dsCard group="Brand" viewport="700x290" name="Iconography — Lucide" subtitle="1.5px stroke line icons · object glyphs + status markers" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:20px 24px; }
+  h4 { margin:0 0 12px; font-size:var(--eyebrow-size); letter-spacing:var(--eyebrow-tracking); text-transform:uppercase; color:var(--text-faint); font-weight:var(--fw-semibold); }
+  .ico { display:grid; grid-template-columns:repeat(9,1fr); gap:4px 2px; margin-bottom:18px; }
+  .i { display:flex; flex-direction:column; align-items:center; gap:6px; padding:9px 2px; border-radius:var(--r-2); }
+  .i svg { width:20px; height:20px; stroke:var(--text-secondary); stroke-width:1.5; }
+  .i span { font-size:9px; color:var(--text-faint); font-family:var(--font-mono); }
+  .status-row { display:flex; gap:18px; }
+  .s { display:flex; align-items:center; gap:7px; font-size:11px; }
+  .s svg { width:15px; height:15px; stroke-width:2; }
+</style>
+</head>
+<body>
+  <h4>object & action glyphs</h4>
+  <div class="ico" id="objects"></div>
+  <h4>status markers</h4>
+  <div class="status-row">
+    <span class="s" style="color:var(--live-ink)"><i data-lucide="play"></i>running</span>
+    <span class="s" style="color:var(--attention-ink)"><i data-lucide="user-round"></i>waiting · human</span>
+    <span class="s" style="color:var(--caution-ink)"><i data-lucide="lock"></i>permission</span>
+    <span class="s" style="color:var(--success-ink)"><i data-lucide="check"></i>passed</span>
+    <span class="s" style="color:var(--danger-ink)"><i data-lucide="x"></i>failed</span>
+    <span class="s" style="color:var(--warning-ink)"><i data-lucide="clock"></i>stale</span>
+  </div>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script>
+    const names = ["layout-dashboard","git-branch","git-pull-request","git-merge","terminal","brain","users-round","workflow","shield-check","folder-git-2","file-code","network","gauge","list-checks","bot","cpu"];
+    const wrap = document.getElementById("objects");
+    wrap.innerHTML = names.map(n => `<div class="i"><i data-lucide="${n}"></i><span>${n}</span></div>`).join("");
+    lucide.createIcons();
+  </script>
+</body>
+</html>

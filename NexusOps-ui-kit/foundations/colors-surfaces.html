@@ -1,0 +1,31 @@
+<!-- @dsCard group="Colors" viewport="700x250" name="Graphite surfaces" subtitle="Charcoal ramp with subtle blue undertone — deep → raised" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:22px 24px; }
+  .grid { display:grid; grid-template-columns:repeat(8,1fr); gap:8px; }
+  .sw { border-radius:var(--r-2); border:1px solid var(--border-subtle); overflow:hidden; }
+  .chip { height:64px; }
+  .cap { padding:7px 8px 8px; }
+  .nm { font-family:var(--font-mono); font-size:10px; color:var(--text-secondary); }
+  .role { font-size:10px; color:var(--text-faint); margin-top:2px; }
+  h4 { margin:0 0 14px; font-size:var(--eyebrow-size); letter-spacing:var(--eyebrow-tracking); text-transform:uppercase; color:var(--text-faint); font-weight:var(--fw-semibold); }
+</style>
+</head>
+<body>
+  <h4>surface ramp · window → active</h4>
+  <div class="grid">
+    <div class="sw"><div class="chip" style="background:var(--n-900)"></div><div class="cap"><div class="nm">n-900</div><div class="role">window</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--n-850)"></div><div class="cap"><div class="nm">n-850</div><div class="role">canvas</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--n-800)"></div><div class="cap"><div class="nm">n-800</div><div class="role">sunken</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--n-750)"></div><div class="cap"><div class="nm">n-750</div><div class="role">panel</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--n-700)"></div><div class="cap"><div class="nm">n-700</div><div class="role">card</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--n-650)"></div><div class="cap"><div class="nm">n-650</div><div class="role">input</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--n-600)"></div><div class="cap"><div class="nm">n-600</div><div class="role">hover</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--n-550)"></div><div class="cap"><div class="nm">n-550</div><div class="role">active</div></div></div>
+  </div>
+</body>
+</html>

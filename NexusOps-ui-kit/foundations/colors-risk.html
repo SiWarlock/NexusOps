@@ -1,0 +1,43 @@
+<!-- @dsCard group="Colors" viewport="700x210" name="Risk ladder & capacity" subtitle="Action Gateway risk levels + context/cost meter stops" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:20px 24px; display:grid; grid-template-columns:1.25fr 1fr; gap:28px; }
+  h4 { margin:0 0 12px; font-size:var(--eyebrow-size); letter-spacing:var(--eyebrow-tracking); text-transform:uppercase; color:var(--text-faint); font-weight:var(--fw-semibold); }
+  .risks { display:flex; flex-direction:column; gap:7px; }
+  .risk { display:flex; align-items:center; gap:9px; font-size:12px; }
+  .dot { width:10px; height:10px; border-radius:2px; flex:none; }
+  .risk .lbl { font-weight:var(--fw-medium); }
+  .risk .nm { font-family:var(--font-mono); font-size:9px; color:var(--text-faint); margin-left:auto; }
+  .meter { height:8px; border-radius:999px; background:var(--cap-track); overflow:hidden; margin:10px 0 6px; }
+  .meter > i { display:block; height:100%; }
+  .legend { display:flex; gap:12px; font-size:10px; color:var(--text-muted); }
+  .legend span::before { content:"●"; margin-right:4px; }
+</style>
+</head>
+<body>
+  <div>
+    <h4>risk ladder</h4>
+    <div class="risks">
+      <div class="risk"><span class="dot" style="background:var(--risk-readonly)"></span><span class="lbl" style="color:var(--risk-readonly)">Read-only</span><span class="nm">no approval</span></div>
+      <div class="risk"><span class="dot" style="background:var(--risk-low)"></span><span class="lbl" style="color:var(--risk-low)">Low</span><span class="nm">single approve</span></div>
+      <div class="risk"><span class="dot" style="background:var(--risk-medium)"></span><span class="lbl" style="color:var(--risk-medium)">Medium</span><span class="nm">preview + approve</span></div>
+      <div class="risk"><span class="dot" style="background:var(--risk-high)"></span><span class="lbl" style="color:var(--risk-high)">High</span><span class="nm">step-by-step</span></div>
+      <div class="risk"><span class="dot cp-hazard" style="background:var(--risk-critical)"></span><span class="lbl" style="color:var(--risk-critical)">Critical</span><span class="nm">typed confirm</span></div>
+    </div>
+  </div>
+  <div>
+    <h4>capacity meter</h4>
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">Context · normal</div>
+    <div class="meter"><i style="width:38%;background:var(--cap-normal)"></i></div>
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">Context · approaching</div>
+    <div class="meter"><i style="width:74%;background:var(--cap-warn)"></i></div>
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">Context · hard stop</div>
+    <div class="meter"><i style="width:96%;background:var(--cap-stop)"></i></div>
+    <div class="legend"><span style="color:var(--cap-normal)">normal</span><span style="color:var(--cap-warn)">warn</span><span style="color:var(--cap-risk)">risk</span><span style="color:var(--cap-stop)">stop</span></div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,88 @@
+/* ============================================================
+   SPACE — spacing, sizing, radii, elevation, layering
+   ------------------------------------------------------------
+   Built on a 4px base grid. Desktop density means small,
+   deliberate steps: most gaps live between 4 and 12px. Control
+   heights are compact (24 / 28 / 32). Radii are tight and
+   mechanical — this is an instrument panel, not a marketing site.
+   ============================================================ */
+
+:root {
+  /* --- Spacing scale (4px base) --- */
+  --sp-0:   0px;
+  --sp-px:  1px;
+  --sp-1:   2px;
+  --sp-2:   4px;
+  --sp-3:   6px;
+  --sp-4:   8px;
+  --sp-5:   10px;
+  --sp-6:   12px;
+  --sp-7:   14px;
+  --sp-8:   16px;
+  --sp-10:  20px;
+  --sp-12:  24px;
+  --sp-14:  28px;
+  --sp-16:  32px;
+  --sp-20:  40px;
+  --sp-24:  48px;
+  --sp-32:  64px;
+
+  /* --- Control heights (compact desktop) --- */
+  --ctl-xs: 22px;   /* dense chips / inline */
+  --ctl-sm: 26px;   /* table rows, secondary */
+  --ctl-md: 30px;   /* default button / input */
+  --ctl-lg: 36px;   /* primary / prominent */
+  --hit-min: 28px;  /* minimum comfortable hit target (desktop) */
+
+  /* --- Radii (tight, mechanical) --- */
+  --r-0:   0px;
+  --r-1:   3px;   /* chips, badges, inputs */
+  --r-2:   5px;   /* buttons, small cards */
+  --r-3:   7px;   /* cards, panels */
+  --r-4:   10px;  /* modals, drawers */
+  --r-pill: 999px;
+
+  /* --- Pane / shell metrics --- */
+  --shell-topbar-h:  44px;
+  --shell-statusbar-h: 26px;
+  --shell-sidebar-w: 264px;
+  --shell-sidebar-min: 200px;
+  --shell-inspector-w: 320px;
+  --shell-timeline-h: 200px;
+  --pane-divider-w: 1px;
+  --pane-grip-hit: 6px;   /* invisible resize hit area around divider */
+
+  /* --- Elevation: achromatic shadows + a thin top key-line ---
+     Depth in a dark cockpit reads mostly from a 1px lighter top
+     edge ("key line") plus a soft contact shadow. Kept restrained. */
+  --elev-0: none;
+  --elev-1:
+    0 1px 0 0 oklch(1 0 0 / 0.03) inset,
+    0 1px 2px 0 oklch(0 0 0 / 0.35);
+  --elev-2:
+    0 1px 0 0 oklch(1 0 0 / 0.04) inset,
+    0 4px 12px -2px oklch(0 0 0 / 0.45);
+  --elev-3:
+    0 1px 0 0 oklch(1 0 0 / 0.05) inset,
+    0 12px 32px -6px oklch(0 0 0 / 0.55);
+  --elev-4:
+    0 1px 0 0 oklch(1 0 0 / 0.06) inset,
+    0 24px 64px -12px oklch(0 0 0 / 0.65);
+  /* inset well (terminals, code, sunken lists) */
+  --elev-inset: inset 0 1px 2px 0 oklch(0 0 0 / 0.40);
+
+  /* --- Z-index ladder --- */
+  --z-base: 0;        /* @kind other */
+  --z-sticky: 10;     /* @kind other */
+  --z-dock: 20;       /* @kind other */
+  --z-divider: 30;    /* @kind other */
+  --z-popover: 100;   /* @kind other */
+  --z-drawer: 200;    /* @kind other */
+  --z-modal: 300;     /* @kind other */
+  --z-toast: 400;     /* @kind other */
+  --z-command: 500;   /* @kind other */
+
+  /* --- Focus ring geometry --- */
+  --ring-w: 2px;
+  --ring-offset: 1px;
+}

@@ -1,0 +1,60 @@
+<!-- @dsCard group="Components" viewport="700x320" name="Status — pills, risk, meters, attention" subtitle="StatusPill · RiskBadge · UsageMeter · AttentionMarker" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:20px 24px; }
+  .eyebrow { font-size:var(--eyebrow-size); letter-spacing:var(--eyebrow-tracking); text-transform:uppercase; color:var(--text-faint); font-weight:var(--fw-semibold); margin:0 0 9px; }
+  .sec { margin-bottom:16px; }
+  .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .meters { display:flex; gap:22px; align-items:center; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+  const { StatusPill, RiskBadge, UsageMeter, AttentionMarker } = window.ControlPlaneDesignSystem_a21911;
+  function Demo() {
+    const pills = ['active','running','waiting-human','waiting-perm','failed','conflict','stale','degraded','completed','pr-open','merged','archived','idle'];
+    return (
+      <div>
+        <div className="sec">
+          <p className="eyebrow">status pill · all states</p>
+          <div className="row">{pills.map(p => <StatusPill key={p} status={p} />)}</div>
+          <div className="row" style={{marginTop:8}}>
+            <StatusPill status="waiting-human" emphasis="solid" />
+            <StatusPill status="critical" emphasis="solid" />
+            <StatusPill status="running" size="md" />
+          </div>
+        </div>
+        <div className="sec">
+          <p className="eyebrow">risk ladder</p>
+          <div className="row">
+            <RiskBadge level="readonly" /><RiskBadge level="low" /><RiskBadge level="medium" /><RiskBadge level="high" /><RiskBadge level="critical" />
+          </div>
+        </div>
+        <div className="sec">
+          <p className="eyebrow">usage meters · attention</p>
+          <div className="meters">
+            <UsageMeter label="Context" value={128} max={200} valueText="128k / 200k" />
+            <UsageMeter label="Context" value={186} max={200} valueText="186k / 200k" />
+            <UsageMeter variant="ring" value={92} max={100} label="ctx" />
+            <UsageMeter variant="ring" value={48} max={100} label="cost" />
+            <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
+              <AttentionMarker level={5} variant="dot" /><AttentionMarker level={2} variant="dot" /><AttentionMarker level={1} variant="dot" /><AttentionMarker level={0} variant="dot" />
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+</script>
+</body>
+</html>

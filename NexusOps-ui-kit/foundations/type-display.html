@@ -1,0 +1,27 @@
+<!-- @dsCard group="Type" viewport="700x300" name="Display & headings" subtitle="Geist — screen titles, section heads, hero" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:24px 26px; }
+  .row { display:flex; align-items:baseline; gap:16px; padding:7px 0; border-bottom:1px solid var(--border-subtle); }
+  .row:last-child { border-bottom:0; }
+  .spec { font-family:var(--font-mono); font-size:10px; color:var(--text-faint); width:96px; flex:none; letter-spacing:.02em; }
+  .sample { color:var(--text-primary); line-height:var(--lh-tight); }
+  .d  { font-size:var(--fs-display); font-weight:var(--fw-semibold); letter-spacing:var(--tracking-tight); }
+  .h1 { font-size:var(--fs-h1); font-weight:var(--fw-semibold); letter-spacing:var(--tracking-tight); }
+  .h2 { font-size:var(--fs-h2); font-weight:var(--fw-semibold); }
+  .h3 { font-size:var(--fs-h3); font-weight:var(--fw-medium); }
+  .sub{ font-size:var(--fs-sub); font-weight:var(--fw-medium); color:var(--text-secondary); }
+</style>
+</head>
+<body>
+  <div class="row"><span class="spec">44 / 600</span><span class="sample d">Control Plane</span></div>
+  <div class="row"><span class="spec">32 / 600</span><span class="sample h1">Global Command Center</span></div>
+  <div class="row"><span class="spec">24 / 600</span><span class="sample h2">Project Observability Graph</span></div>
+  <div class="row"><span class="spec">19 / 500</span><span class="sample h3">Active sessions &amp; agent teams</span></div>
+  <div class="row"><span class="spec">16 / 500</span><span class="sample sub">Session inspector — pending approvals</span></div>
+</body>
+</html>

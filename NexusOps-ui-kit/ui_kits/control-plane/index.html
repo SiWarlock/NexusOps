@@ -1,0 +1,221 @@
+<!-- @dsCard group="NexusOps" viewport="1280x800" name="Control Plane — desktop app" subtitle="Command center for AI coding agents · interactive" -->
+<!-- @startingPoint section="NexusOps" subtitle="Full desktop control-plane shell — sidebar, views, Brain, Gateway" viewport="1280x800" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NexusOps — Control Plane</title>
+<link rel="stylesheet" href="../../styles.css">
+<style>
+  html, body { margin: 0; height: 100%; background: var(--surface-window); color: var(--text-primary); font-family: var(--font-sans); overflow: hidden; }
+  #app { height: 100vh; }
+  .shell {
+    display: grid;
+    grid-template-columns: var(--shell-sidebar-w) 1fr;
+    grid-template-rows: var(--shell-topbar-h) 1fr auto;
+    grid-template-areas: "top top" "side main" "dock dock";
+    height: 100%;
+    position: relative;
+  }
+  .main { grid-area: main; overflow: hidden; min-width: 0; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; border: 2px solid var(--surface-canvas); }
+  ::-webkit-scrollbar-track { background: transparent; }
+  kbd { font-family: var(--font-mono); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<script src="../../_ds_bundle.js"></script>
+<script src="kit-data.js"></script>
+<script type="text/babel" src="kit-shell.jsx"></script>
+<script type="text/babel" src="kit-views.jsx"></script>
+<script type="text/babel" src="kit-views2.jsx"></script>
+<script type="text/babel" src="kit-views3.jsx"></script>
+<script type="text/babel" src="kit-views4.jsx"></script>
+<script type="text/babel" src="kit-views5.jsx"></script>
+<script type="text/babel" src="kit-plan.jsx"></script>
+<script type="text/babel" src="kit-tasks.jsx"></script>
+<script type="text/babel" src="kit-overlays.jsx"></script>
+<script type="text/babel">
+  const { useState, useEffect, useCallback } = React;
+  const { TopBar, Sidebar, EventDock } = window.KitShell;
+  const { CommandCenter, ProjectsOverview } = window.KitViews;
+  const { ProjectGraph, SessionTerminal, DiffReview } = window.KitViews2;
+  const { EditorView, AgentTeamView } = window.KitViews3;
+  const { ProjectBrainPage, AuditTimeline, SettingsProfiles } = window.KitViews4;
+  const { WorkflowPacksView } = window.KitViews5;
+  const { PlanView } = window.KitPlan;
+  const { TaskInbox, DispatchDialog, HumanInputQueue } = window.KitTasks;
+  const { BrainDrawer, GatewayModal, CommandPalette, InspectorDrawer } = window.KitOverlays;
+
+  function Toast({ toast }) {
+    if (!toast) return null;
+    const ok = toast.kind !== 'deny';
+    return (
+      <div style={{ position: 'absolute', bottom: 22, left: '50%', transform: 'translateX(-50%)', zIndex: 'var(--z-toast)',
+        display: 'flex', alignItems: 'center', gap: 9, padding: '10px 14px', borderRadius: 'var(--r-3)',
+        background: 'var(--surface-card)', border: `1px solid ${ok ? 'var(--success-line)' : 'var(--danger-line)'}`,
+        boxShadow: 'var(--elev-3)', font: 'var(--fw-medium) var(--fs-label) var(--font-sans)', color: 'var(--text-primary)',
+        animation: 'cp-pop-in 0.18s var(--ease-out)' }}>
+        <i data-lucide={ok ? 'check-circle-2' : 'x-circle'} style={{ width: 15, height: 15, color: ok ? 'var(--success-ink)' : 'var(--danger-ink)' }}></i>
+        {toast.msg}
+      </div>
+    );
+  }
+
+  function App() {
+    const [view, setViewRaw] = useState('command');
+    const [hist, setHist] = useState([]);
+    const [future, setFuture] = useState([]);
+    const setView = (v) => { if (v === view) return; setHist([...hist, view]); setFuture([]); setViewRaw(v); };
+    const back = () => { if (!hist.length) return; setFuture([view, ...future]); setViewRaw(hist[hist.length - 1]); setHist(hist.slice(0, -1)); };
+    const forward = () => { if (!future.length) return; setHist([...hist, view]); setViewRaw(future[0]); setFuture(future.slice(1)); };
+    const [sel, setSel] = useState('s1');
+    const [graphSel, setGraphSel] = useState('s1');
+    const [brain, setBrain] = useState(false);
+    const [gateway, setGateway] = useState(null);   // gateway item id or null
+    const [palette, setPalette] = useState(false);
+    const [resolved, setResolved] = useState([]);    // resolved queue ids
+    const [overrides, setOverrides] = useState({});  // session id -> status
+    const [toast, setToast] = useState(null);
+    const [project, setProject] = useState('cp');    // active project
+    const [termTeam, setTermTeam] = useState(false); // team-terminal mode
+    const [tasksOpen, setTasksOpen] = useState(false);
+    const [dispatch, setDispatch] = useState(null);  // task being dispatched
+    const [inspect, setInspect] = useState(null);    // graph node inspector
+    const [dockOpen, setDockOpen] = useState(false);
+    const [hiqOpen, setHiqOpen] = useState(false);   // human input queue
+
+    const showToast = useCallback((msg, kind) => {
+      setToast({ msg, kind, id: Date.now() });
+    }, []);
+    useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); }, [toast]);
+
+    const G = window.KIT.gateway;
+    const queue = [G.q1, G.q2].filter(q => !resolved.includes(q.id));
+    const waiting = queue.length;
+
+    const openGateway = useCallback((id) => setGateway(id || 'q1'), []);
+    const gatewayItem = gateway ? (G[gateway] || G.q1) : null;
+
+    const resolveGateway = useCallback((item, verb) => {
+      setGateway(null);
+      setResolved(r => r.includes(item.id) ? r : [...r, item.id]);
+      if (verb === 'Approved') {
+        if (item.id === 'q1') setOverrides(o => ({ ...o, s1: 'running' }));
+        showToast(`Approved — ${item.title} is running`, 'ok');
+      } else {
+        showToast(`Denied — ${item.title}`, 'deny');
+      }
+    }, [showToast]);
+
+    // human input queue resolution
+    const resolveHiq = useCallback((it, verb) => {
+      if (verb === 'open') {
+        if (it.kind === 'gateway') { setHiqOpen(false); setGateway(it.id); }
+        else if (it.kind === 'personalization') { setHiqOpen(false); setView('packs'); showToast('Opening personalization for ' + it.target, 'ok'); }
+        else { setHiqOpen(false); setSel('s4'); setView('terminal'); showToast('Opened failed session for a decision', 'ok'); }
+      } else if (verb === 'deny') {
+        setResolved(r => r.includes(it.id) ? r : [...r, it.id]); showToast('Denied — ' + it.actor, 'deny');
+      } else {
+        showToast('Deferred — ' + it.actor, 'ok');
+      }
+    }, [showToast]);
+
+    const onAction = useCallback((action) => {
+      if (!action) return;
+      const [kind, val] = action.split(':');
+      if (kind === 'view') { if (val === 'terminal') setTermTeam(false); setView(val); }
+      else if (kind === 'overlay') { if (val === 'brain') setBrain(true); else if (val === 'gateway') setGateway('q1'); else if (val === 'tasks') setTasksOpen(true); }
+    }, []);
+
+    // graph node click -> inspector drawer; its action -> navigate
+    const onOpenNode = useCallback((open) => {
+      setInspect(null);
+      if (!open) return;
+      if (open.team) { setTermTeam(true); setView('terminal'); return; }
+      if (open.sel) setSel(open.sel);
+      setTermTeam(false);
+      setView(open.view || 'terminal');
+    }, []);
+
+    const selectProject = useCallback((id) => { setProject(id); setView('command'); }, [hist, view, future]);
+
+    // task intake: dispatch + drop
+    const openDispatch = useCallback((task) => { setTasksOpen(false); setDispatch(task); }, []);
+    const confirmDispatch = useCallback((task, opts) => {
+      setDispatch(null);
+      if (opts.mode === 'team') { setTermTeam(true); setView('terminal'); showToast(`Started agent team for ${task.id} via /team-start`, 'ok'); }
+      else { showToast(`Dispatched ${task.id} → ${opts.harness} · ${opts.profile}`, 'ok'); }
+    }, [showToast]);
+    const onTaskDrop = useCallback((task, session) => {
+      if (session) showToast(`Added ${task.id} as context to “${session.title}”`, 'ok');
+      else openDispatch(task);
+    }, [showToast, openDispatch]);
+
+    useEffect(() => {
+      const onKey = (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPalette(p => !p); }
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); setTasksOpen(t => !t); }
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'h') { e.preventDefault(); setHiqOpen(t => !t); }
+        if (e.key === 'Escape') { setPalette(false); setBrain(false); setGateway(null); setTasksOpen(false); setDispatch(null); setHiqOpen(false); }
+      };
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+    }, []);
+
+    useEffect(() => { const t = setTimeout(() => window.lucide && window.lucide.createIcons(), 30); return () => clearTimeout(t); });
+
+    const allProj = project === 'all';
+    const activeProject = allProj
+      ? { id: 'all', name: 'All projects', repo: `${window.KIT.projects.length} projects`, active: window.KIT.projects.reduce((s, p) => s + p.active, 0), prs: window.KIT.projects.reduce((s, p) => s + p.prs, 0), waiting: window.KIT.projects.reduce((s, p) => s + p.waiting, 0), brain: 'ready' }
+      : (window.KIT.projects.find(p => p.id === project) || window.KIT.projects[0]);
+
+    return (
+      <div className="shell">
+        <TopBar view={view} setView={setView} waiting={waiting} proj={activeProject} project={project}
+          onBack={back} canBack={hist.length > 0} onForward={forward} canForward={future.length > 0}
+          onSelectProject={selectProject}
+          onBrain={() => setBrain(true)} onGateway={() => setGateway('q1')}
+          onPalette={() => setPalette(true)} onHumanInput={() => setHiqOpen(true)}
+          onTasks={() => setTasksOpen(true)} />
+        <Sidebar view={view} setView={setView} sel={sel} setSel={setSel} waiting={waiting} overrides={overrides}
+          onHumanInput={() => setHiqOpen(true)} onTasks={() => setTasksOpen(true)} />
+        <div className="main">
+          {view === 'projects' && <ProjectsOverview onSelectProject={selectProject} active={project} />}
+          {view === 'command' && <CommandCenter setSel={setSel} setView={setView} openGateway={openGateway} queue={queue} overrides={overrides} project={project} onTaskDrop={onTaskDrop} />}
+          {view === 'graph' && <ProjectGraph sel={graphSel} setSel={setGraphSel} onInspect={setInspect} project={project} projectName={activeProject.name} />}
+          {view === 'plan' && <PlanView onDispatch={openDispatch} openBrain={() => setBrain(true)} />}
+          {view === 'editor' && <EditorView openGateway={() => setGateway('edit')} />}
+          {view === 'terminal' && <SessionTerminal sel={sel} openGateway={openGateway} overrides={overrides} team={termTeam} />}
+          {view === 'code' && <DiffReview openBrain={() => setBrain(true)} project={project} openGateway={openGateway} />}
+          {view === 'team' && <AgentTeamView openGateway={() => setGateway('q2')} onOpenTerminals={() => { setTermTeam(true); setView('terminal'); }} />}
+          {view === 'packs' && <WorkflowPacksView openGateway={openGateway} setView={setView} />}
+          {view === 'brain' && <ProjectBrainPage openGateway={openGateway} />}
+          {view === 'audit' && <AuditTimeline project={project} projectName={activeProject.name} />}
+          {view === 'settings' && <SettingsProfiles />}
+        </div>
+        <EventDock project={project} projectName={activeProject.name} open={dockOpen} onToggle={() => setDockOpen(o => !o)} onOpenAudit={() => { setDockOpen(false); setView('audit'); }} />
+        <BrainDrawer open={brain} onClose={() => setBrain(false)} openGateway={(id) => { setGateway(id || 'edit'); }} onExpand={() => { setBrain(false); setView('brain'); }} />
+        <InspectorDrawer node={inspect} onClose={() => setInspect(null)} onOpen={onOpenNode} />
+        <GatewayModal open={!!gateway} item={gatewayItem} onClose={() => setGateway(null)} onResolve={resolveGateway} />
+        <CommandPalette open={palette} onClose={() => setPalette(false)} onAction={onAction} />
+        <TaskInbox open={tasksOpen} onClose={() => setTasksOpen(false)} onDispatch={openDispatch} />
+        <HumanInputQueue open={hiqOpen} onClose={() => setHiqOpen(false)} onResolve={resolveHiq} resolved={resolved} />
+        <DispatchDialog task={dispatch} onClose={() => setDispatch(null)} onConfirm={confirmDispatch} />
+        <Toast toast={toast} />
+      </div>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('app')).render(<App />);
+  setTimeout(() => window.lucide && window.lucide.createIcons(), 60);
+</script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+{
+  "lens": "F-visual-a11y",
+  "verdict": "aligned-with-gaps",
+  "aligned": [
+    {
+      "point": "Tokens are genuinely two-tier, primitive->semantic, oklch-based, and re-hueable exactly as the design-system prompt and UX want. Primitives (--accent, --n-700, hue families) feed semantic aliases (--surface-card, --text-primary, --state-waiting-human, --risk-high, --diff-add-bg, --graph-edge-evidence). A re-hue touches only the ~13 hue-family primitives. This legitimately RESOLVES the 'no color taxonomy in the first pass' constraint: the prototype IS the later visual pass that is explicitly allowed to define color, and it self-documents 'first-pass palette, not locked brand color'.",
+      "evidence": "tokens/color.css L1-29 (HUE FAMILIES header), L151-261 (semantic state/risk/domain aliases); tokens/surfaces.css L44-66 (semantic surface aliases); readme.md L62, L130 ('first-pass, re-hueable; re-hue touches primitives only') vs CLAUDE_DESIGN_SYSTEM_PROMPT.md L74-97 ('do not include a color taxonomy... you MAY define status semantics without colors')"
+    },
+    {
+      "point": "'Never color alone' is implemented for real on four independent channels (color + glyph + text label + intensity/motion), so status survives grayscale and color-blindness. StatusPill carries a mono glyph + mandatory text label per status; status.css ::before injects a distinct glyph per data-status; critical adds a 45-degree hazard hatch (.cp-hazard) that reads without color.",
+      "evidence": "tokens/status.css L1-19 (four-channel doc), L72-128 (glyph + label + hazard hatch per status); components/status/StatusPill.jsx L6-27 (glyph+label per status), L57-61 (glyph element); aligns to UX_INFORMATION_ARCHITECTURE.md §8 L509 ('Do not implement these as color names... use labels, icons, badges, motion') and §16 L2322 ('Status must not rely on color alone')"
+    },
+    {
+      "point": "Risk badge and diff are non-color-redundant too. RiskBadge mandates a text label (title + visible label) and applies the hazard hatch on critical; DiffHunk renders explicit +/-/space signs in a dedicated gutter column plus an inset gutter bar, so add/delete is legible in grayscale.",
+      "evidence": "components/status/RiskBadge.jsx L5-11 (label mandatory), L18-19 (cp-hazard on critical); components/objects/DiffHunk.jsx L6-8 (sign '+'/'-'/' '), L54-57 (sign column + inset gutter); satisfies PRD §14.8 / UX §16 L2322"
+    },
+    {
+      "point": "prefers-reduced-motion is handled both globally and per-animation. motion.css has a global reduce block that flattens all animation/transition durations to ~0; status.css gates the live pulse + attention beacon behind @media (prefers-reduced-motion: no-preference). Motion is restrained to the two signature loops (live pulse, attention beacon) the spec allows.",
+      "evidence": "tokens/motion.css L56-62 (global reduce block); tokens/status.css L116-119 (no-preference gate); readme.md L80 ('everything suppressed under prefers-reduced-motion'); aligns to UX §16 L2328 and PRD accessibility intent"
+    },
+    {
+      "point": "UsageMeter implements exact/estimated/unavailable accuracy labels and renders 'unavailable' as a distinct visual state (slate fill + 'n/a' mono badge), not a misleading 0%. This matches the architecture's metric_quality contract and USAGE-4.",
+      "evidence": "components/status/UsageMeter.jsx L19-26 (accuracy prop -> color override + label), L23 (accuracy==='unavailable' -> --slate); ARCHITECTURE.md L212 (metric_quality in {exact,estimated,unavailable}; NULL context-% renders 'unknown', not 0%), L271 (USAGE-1..5 exact/estimated/unavailable labels); PRD USAGE-4 L1674-1676"
+    },
+    {
+      "point": "The Attention Ladder (0-5) is a coherent thesis that drives sort order, rail weight, and loudness everywhere, matching the attention-first product idea. Intensity is a real, fourth, color-independent channel (rail width + position), and the loudest amber + beacon are correctly reserved for waiting-on-human.",
+      "evidence": "tokens/status.css L9-19, L30-33 (rail widths by intensity); foundations/status-attention-ladder.html L24-30 (0-5 ladder); components/status/AttentionMarker.jsx L5-12 (level->color+label); readme.md L65-66; aligns to PRD attention model and UX §7"
+    },
+    {
+      "point": "Task chips DO have a non-drag fallback: each TaskChip is draggable AND clickable, click opens the Dispatch dialog, and the helper text states 'Drag a task onto a session, or click to dispatch' — this satisfies the baseline of TASK-5 for the dispatch path.",
+      "evidence": "ui_kits/control-plane/kit-tasks.jsx L56, L75-76 (draggable + onClick=onDispatch + title); PRD TASK-5 L1110-1112; ARCHITECTURE.md L271 ('every drag has a button/menu equivalent')"
+    }
+  ],
+  "gaps": [
+    {
+      "severity": "critical",
+      "gap": "The Project Graph has NO list/table fallback and no view toggle. ProjectGraph renders only an absolutely-positioned SVG-edge + div-node canvas (hardcoded x/y) plus an empty state; there is no equivalent list/table rendering of the same nodes/edges. This violates a binding, explicitly-TESTED accessibility invariant.",
+      "kit_evidence": "ui_kits/control-plane/kit-views2.jsx L48-96 (ProjectGraph is canvas-only; no list/table branch); component inventory 'List/table fallback for graph' (CLAUDE_DESIGN_SYSTEM_PROMPT.md L663) is unrepresented in the kit",
+      "doc_ref": "ARCHITECTURE.md §271 ('every graph has a functionally-equivalent list/table (OBS-6)') + §297 ('graph list-fallback a11y equivalence' is a frontend merge-gate test); PRD OBS-6 L1615-1617; PRD §14.8 L2060; UX §5.7 L272-274 + §16 L2327",
+      "recommendation": "Build the Graph surface with a Graph/List view toggle from day one. The list/table must expose the SAME nodes (object type, title, status, owner, attention level) AND the relationships (a 'relates to' column or expandable edge rows), keyboard-navigable and screen-reader-labelled, so it is functionally equivalent, not a degraded summary.",
+      "for_tasks_gen": "Add a task: 'Project Graph MUST ship a list/table view that is a functional equivalent of the graph (same nodes + edges, status, ownership, attention level), toggled via a visible Graph|List control and reachable by keyboard. Add a frontend component test asserting a11y-equivalence (every node/edge in the graph fixture appears as a row) per ARCHITECTURE §297.'"
+    },
+    {
+      "severity": "critical",
+      "gap": "No visible keyboard focus indicator anywhere. The --focus-ring and --selection-bg tokens are DEFINED in surfaces.css but never applied: there is no :focus-visible rule in styles.css/status.css and no focus styling on Button, IconButton, QueueItem, ModeOpt, tabs, or graph nodes. Controls style only hover/press/selected. Keyboard users cannot see where focus is.",
+      "kit_evidence": "tokens/surfaces.css L64-65 (--focus-ring, --selection-bg defined but orphaned); components/controls/Button.jsx L38-65 (no focus style); components/controls/IconButton.jsx (only hover handlers); grep for :focus / focus-visible across styles.css + components + ui_kits returns zero applied rules; GraphNode.jsx L47 only styles outline when selected, not on :focus",
+      "doc_ref": "ARCHITECTURE.md §271 ('command palette + queues keyboard-navigable'); PRD §14.8 + UX §16 L2323 ('Keyboard navigation should reach all primary actions') and the design-system prompt's a11y MUSTs (CLAUDE_DESIGN_SYSTEM_PROMPT.md L1086-1100 'Visible focus states', L1092)",
+      "recommendation": "Add a global :focus-visible treatment wired to --focus-ring (the readme already promises a '2px azure ring' on focus, L81 — it is just not implemented). Apply it to all interactive elements (buttons, icon buttons, chips, tabs, queue items, graph nodes/rows, command palette entries).",
+      "for_tasks_gen": "Add a task: 'Implement a global :focus-visible ring (2px --focus-ring) on every interactive control (Button, IconButton, StatusPill-as-button, tabs, QueueItem, Task chips, graph nodes, list rows, command-palette items). No interactive element may rely on hover/selected styling alone for keyboard visibility.'"
+    },
+    {
+      "severity": "important",
+      "gap": "Two of the three documented drag drop-targets have NO non-drag equivalent. Dragging a task onto a session row 'adds to existing session' (kit drop handler exists) and dragging onto the Command Center column 'creates a new session' — but the only non-drag affordance is clicking the chip, which opens the GENERIC Dispatch dialog (choose mode/harness/profile -> new session). There is no button/menu to 'add this task as context to <specific session>' and no per-session 'add task' affordance. So 'drag onto session = add context' and the targeted drops fail TASK-5's 'every drag action MUST have an accessible button/menu alternative'.",
+      "kit_evidence": "ui_kits/control-plane/kit-views.jsx L31 (onColDrop -> new session) and L114-124 (SessionRowWrap onDrop -> onTaskDrop(t, s) add-to-session) — both reachable ONLY via drag; kit-tasks.jsx L75-76 click path routes to DispatchDialog (new dispatch), with no 'add to existing session' option; UX_INFORMATION_ARCHITECTURE.md L845-847 enumerates 3 distinct drag semantics (new session / delegate to team / add to existing session)",
+      "doc_ref": "PRD TASK-5 L1110-1112 ('every drag action MUST have an accessible button/menu alternative'); ARCHITECTURE.md §271 + §297 ('drag->non-drag paths' is a frontend merge-gate test); UX §11.1 L2059-2061 drag sources; UX §16 L2321",
+      "recommendation": "For every drag semantic give a parallel non-drag command: a session-row overflow menu / 'Add task as context' button (and an inverse 'Send to session' picker on the task chip), and a 'Dispatch as new session' explicit button (already partly covered). The Dispatch dialog should offer target = {new session, existing session, agent team} so the click path reaches all three drag outcomes.",
+      "for_tasks_gen": "Add a task: 'Every task drag semantic (new session, delegate to team, add-to-existing-session) MUST have a button/menu equivalent: (a) task chip overflow menu with Dispatch new / Send to session / Delegate to team; (b) session-row menu Add task as context; (c) Dispatch dialog gains a target selector. Add a drag->non-drag equivalence test per ARCHITECTURE §297.'"
+    },
+    {
+      "severity": "important",
+      "gap": "Graph nodes are individually role=button but the canvas has no keyboard navigation MODEL: no roving tabindex, no arrow-key movement between nodes, no defined focus order, and edges are pointer-events:none SVG with no accessible representation. Even with the list fallback (gap above), the graph itself is not operable by keyboard as the spec implies primary actions should be.",
+      "kit_evidence": "ui_kits/control-plane/kit-views2.jsx L75-91 (SVG edges pointerEvents:none; nodes positioned absolutely with onClick only); components/objects/GraphNode.jsx L37-40 (role=button, aria-pressed, but no tabindex/onKeyDown)",
+      "doc_ref": "ARCHITECTURE.md §271 (keyboard-navigable surfaces); UX §16 L2323 ('Keyboard navigation should reach all primary actions'); CLAUDE_DESIGN_SYSTEM_PROMPT.md L1088-1090 (keyboard-first nav, command palette access)",
+      "recommendation": "Treat the list/table fallback as the primary keyboard surface for the graph (simplest path to compliance), and/or add roving-tabindex + arrow-key traversal and Enter/Space activation on graph nodes with a documented focus order. Ensure each node has a screen-reader label that includes type + status + attention level.",
+      "for_tasks_gen": "Add a task: 'Graph nodes MUST be keyboard-operable (tabindex/roving focus + Enter/Space to open Inspector) OR the list/table fallback MUST be the designated keyboard-equivalent surface; node accessible names MUST include object type + status + attention level. Cover with a keyboard-nav component test.'"
+    },
+    {
+      "severity": "nice-to-have",
+      "gap": "AttentionMarker 'rail' variant encodes attention on color + width only (no glyph), and its beacon animation is dropped for the rail (animation runs only when l.pulse is true; level-5 sets beacon:true but the rail returns animation only for pulse). So the sidebar/queue leading rail loses the motion + glyph channels and leans more on color than the StatusPill does. It carries aria-label, which mitigates SR users, but sighted color-blind users get color+width only on that element.",
+      "kit_evidence": "components/status/AttentionMarker.jsx L5-12 (no glyph per level), L14-17 (animate computed) vs L24-26 (rail returns animation: l.pulse ? ... : 'none' — beacon never animates on rail)",
+      "doc_ref": "readme.md L63 ('Every status is encoded on four channels'); tokens/status.css L1-19 (four-channel guarantee); CLAUDE_DESIGN_SYSTEM_PROMPT.md L1051 ('Do not rely only on color for state')",
+      "recommendation": "Either (a) pair the rail with the row's StatusPill/glyph so the four channels are present at the row level (likely already true in real rows — verify in build), or (b) apply the beacon animation to the rail for level 5, and rely on the adjacent label/glyph. Width-as-intensity is a valid second channel; just ensure a glyph or label is always co-located.",
+      "for_tasks_gen": "Add a task/acceptance note: 'Wherever AttentionMarker rail is used, the row MUST also present the status glyph + text label (StatusPill or equivalent) so attention is conveyed on >=3 non-color channels; apply the beacon animation to the level-5 rail under prefers-reduced-motion:no-preference.'"
+    },
+    {
+      "severity": "nice-to-have",
+      "gap": "The risk-ladder/capacity foundation specimen (colors-risk.html) uses color-only square dots and a color-only legend (CSS ::before '●' with no per-stop text). The risk ROWS are text-labelled (Read-only/Low/Medium/High/Critical) so the specimen mostly complies, but the capacity meter legend (normal/warn/risk/stop) relies on colored dots beside short words and the meter fill itself is color-only with no threshold tick/label. This is a specimen, so low impact, but the pattern could leak into the product capacity meter.",
+      "kit_evidence": "foundations/colors-risk.html L17-18 (.legend span::before '●' color-only), L33-40 (meter fill color-only, no threshold marker); the component UsageMeter.jsx also has no visible threshold tick/label, only color escalation + (when present) a mono value",
+      "doc_ref": "PRD USAGE-4 (accuracy labels) + UX §16 L2322 ('not color alone'); CLAUDE_DESIGN_SYSTEM_PROMPT.md L1051",
+      "recommendation": "In the product capacity meter, add a non-color threshold cue (a tick at warn/risk/stop, or a text state label 'approaching'/'hard stop' as already used in colors-risk.html L34-38) so over-budget reads without color. Keep specimen legends but ensure the shipped meter has the label/tick.",
+      "for_tasks_gen": "Add an acceptance note to the Usage/Context Dashboard task: 'Capacity meters MUST convey threshold crossing on a non-color channel (threshold tick or state label normal/approaching/hard-stop), not fill color alone, in addition to the exact/estimated/unavailable accuracy label.'"
+    }
+  ]
+}

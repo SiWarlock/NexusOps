@@ -1,0 +1,26 @@
+{
+  "lens": "A-screens",
+  "verdict": "aligned-with-gaps",
+  "canonical_screen_to_surface_mapping": {
+    "1 First Launch / Setup Wizard": "ABSENT (no view in index.html router, no kit-data, no foundation HTML)",
+    "2 Global Command Center": "kit-views.jsx CommandCenter (view='command') - present; missing runtime-unavailable error state",
+    "3 Project Home / Observability Graph": "kit-views2.jsx ProjectGraph (view='graph') + ProjectsOverview (view='projects') - present; graph has no list-view a11y fallback",
+    "4 Project Sessions List / Board": "FOLDED into Command Center groups + sidebar ProjectsNav tree; no dedicated table/board with column set or per-row actions",
+    "5 Session Terminal View": "kit-views2.jsx SessionTerminal (view='terminal') - present (mock terminal + inline permission card)",
+    "6 Code Editor / Diff Review": "kit-views3.jsx EditorView (view='editor') + kit-views2.jsx DiffReview 'Review' tab (view='code') - present; no conflict resolver, no side-by-side mode",
+    "7 Plan View": "kit-plan.jsx PlanView (view='plan') - present",
+    "8 Task Inbox": "kit-tasks.jsx TaskInbox drawer + DispatchDialog - present (drawer-first)",
+    "9 Worktree / Git / PR Control Center": "FOLDED into DiffReview 'Worktrees' + 'Pull requests' tabs (view='code') - present, sound fold",
+    "10 PR Review Workspace": "COLLAPSED into Code 'Review' tab (single PR #84 diff); missing checks/reviews/comments/mergeability/Brain-evidence panels + merge controls",
+    "11 Agent Team View": "kit-views3.jsx AgentTeamView (view='team') + TeamTerminal split grid - present",
+    "12 Workflow Setup + Command Registry": "kit-views5.jsx WorkflowPacksView (view='packs') - present (pack!=instance lock enforced)",
+    "13 Workflow Personalization Review": "MINIMAL - banner + 'Personalize' button -> generic Gateway modal; no stepper/inferred-values/generated-file-diff/two-pause screen",
+    "14 Project Brain Drawer": "kit-overlays.jsx BrainDrawer + kit-views4.jsx ProjectBrainPage (view='brain') - present (chat + evidence + action plan)",
+    "15 Human Input Queue": "kit-tasks.jsx HumanInputQueue drawer - present (sidebar row + bell + grouped triage)",
+    "16 Action Gateway Review Modal": "kit-overlays.jsx GatewayModal - present (single-action); does not render multi-step ActionPlan step list (ARCH O-3 gap)",
+    "17 Execution Profiles Settings": "kit-views4.jsx SettingsProfiles 'Execution profiles' tab - present",
+    "18 Usage / Context Dashboard": "FOLDED into Settings 'Usage' tab (UsageSection) - present, sound fold",
+    "19 Events / Audit Log": "kit-views4.jsx AuditTimeline (view='audit') + kit-shell.jsx EventDock - present; detail inspector (correlation/causation/sensitivity/payload) absent",
+    "20 Settings / Integrations / Remote Access": "PARTIAL - Settings Integrations/Security tabs present; Remote Access / iOS pairing section ABSENT"
+  }
+}

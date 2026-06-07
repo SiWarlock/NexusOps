@@ -1,0 +1,32 @@
+<!-- @dsCard group="Status" viewport="700x330" name="Attention ladder" subtitle="Sort order for queues, sidebars, graphs — loudest needs the human" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:18px 22px; }
+  .lvl { display:flex; align-items:center; gap:12px; padding:8px 10px; border-radius:var(--r-2); margin-bottom:5px; border:1px solid var(--border-subtle); }
+  .n { font-family:var(--font-mono); font-size:13px; font-weight:var(--fw-semibold); width:18px; text-align:center; }
+  .rail { width:3px; align-self:stretch; border-radius:2px; }
+  .lbl { font-size:13px; font-weight:var(--fw-medium); }
+  .ex { margin-left:auto; font-size:11px; color:var(--text-faint); }
+  .l5 { background:var(--attention-surface); border-color:var(--attention-line); }
+  .l4 { background:var(--danger-surface); border-color:var(--danger-line); }
+  .l4b{ background:var(--caution-surface); border-color:var(--caution-line); }
+  .l3 { background:var(--warning-surface); border-color:var(--warning-line); }
+  .l2 { background:var(--live-surface); border-color:var(--live-line); }
+  .l1 { background:var(--accent-surface); border-color:var(--accent-line); }
+  .l0 { background:var(--slate-surface); }
+</style>
+</head>
+<body>
+  <div class="lvl l5"><span class="n" style="color:var(--attention-ink)">5</span><span class="rail" style="background:var(--attention-solid)"></span><span class="lbl" style="color:var(--attention-ink)">Waiting on human</span><span class="ex">amber beacon · sorts to top</span></div>
+  <div class="lvl l4"><span class="n" style="color:var(--danger-ink)">4</span><span class="rail" style="background:var(--danger-solid)"></span><span class="lbl" style="color:var(--danger-ink)">Failed · blocked · conflict · critical</span><span class="ex">danger</span></div>
+  <div class="lvl l4b"><span class="n" style="color:var(--caution-ink)">4</span><span class="rail" style="background:var(--caution-solid)"></span><span class="lbl" style="color:var(--caution-ink)">Waiting on permission · approval</span><span class="ex">caution</span></div>
+  <div class="lvl l3"><span class="n" style="color:var(--warning-ink)">3</span><span class="rail" style="background:var(--warning-solid)"></span><span class="lbl" style="color:var(--warning-ink)">Checks failing · high context/cost · degraded</span><span class="ex">warning</span></div>
+  <div class="lvl l2"><span class="n" style="color:var(--live-ink)">2</span><span class="rail" style="background:var(--live-solid)"></span><span class="lbl" style="color:var(--live-ink)">Running · editing · testing</span><span class="ex">live pulse</span></div>
+  <div class="lvl l1"><span class="n" style="color:var(--accent-ink)">1</span><span class="rail" style="background:var(--accent-solid)"></span><span class="lbl" style="color:var(--accent-ink)">Active · dirty · PR open</span><span class="ex">accent</span></div>
+  <div class="lvl l0"><span class="n" style="color:var(--slate-ink)">0</span><span class="rail" style="background:var(--slate-solid)"></span><span class="lbl" style="color:var(--slate-ink)">Idle · completed · archived</span><span class="ex">quietest</span></div>
+</body>
+</html>

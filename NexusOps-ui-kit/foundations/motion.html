@@ -1,0 +1,39 @@
+<!-- @dsCard group="Spacing" viewport="700x210" name="Motion & attention beacon" subtitle="Durations, easing, live pulse + waiting-on-human beacon" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:22px 24px; display:grid; grid-template-columns:1.1fr 1fr; gap:26px; }
+  h4 { margin:0 0 12px; font-size:var(--eyebrow-size); letter-spacing:var(--eyebrow-tracking); text-transform:uppercase; color:var(--text-faint); font-weight:var(--fw-semibold); }
+  .dur { font-family:var(--font-mono); font-size:11px; color:var(--text-secondary); line-height:1.85; }
+  .dur b { color:var(--text-primary); }
+  .live { display:flex; flex-direction:column; gap:14px; }
+  .demo { display:flex; align-items:center; gap:10px; font-size:12px; color:var(--text-secondary); }
+  .pulse { width:9px; height:9px; border-radius:50%; background:var(--live); animation:cp-live-pulse 1.6s var(--ease-inout) infinite; }
+  .beacon { width:11px; height:11px; border-radius:50%; background:var(--attention); animation:cp-attention-beacon 2.2s var(--ease-out) infinite; }
+</style>
+</head>
+<body>
+  <div>
+    <h4>duration · easing</h4>
+    <div class="dur">
+      dur-1 <b>80ms</b> · press<br>
+      dur-2 <b>120ms</b> · default<br>
+      dur-3 <b>180ms</b> · popover<br>
+      dur-4 <b>240ms</b> · drawer<br>
+      dur-5 <b>320ms</b> · route<br>
+      <span style="color:var(--text-faint)">ease-standard · cubic-bezier(.2,0,0,1)</span>
+    </div>
+  </div>
+  <div>
+    <h4>signature motion</h4>
+    <div class="live">
+      <div class="demo"><span class="pulse"></span>Live pulse — running session</div>
+      <div class="demo"><span class="beacon"></span>Attention beacon — waiting on human</div>
+      <div class="demo" style="color:var(--text-faint);font-size:11px">Both suppressed under prefers-reduced-motion</div>
+    </div>
+  </div>
+</body>
+</html>

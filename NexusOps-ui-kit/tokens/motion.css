@@ -1,0 +1,62 @@
+/* ============================================================
+   MOTION — restrained, operational feedback
+   ------------------------------------------------------------
+   Motion serves legibility, never delight. Durations are short;
+   easing is mostly a calm standard curve. The only looping motion
+   allowed on content is the "live" pulse (running sessions) and
+   the "attention" beacon (waiting on human) — both subtle, both
+   suppressed under prefers-reduced-motion.
+   ============================================================ */
+
+:root {
+  --dur-1: 80ms;    /* @kind other */ /* instant: hovers, presses */
+  --dur-2: 120ms;   /* @kind other */ /* default: most transitions */
+  --dur-3: 180ms;   /* @kind other */ /* panels, popovers */
+  --dur-4: 240ms;   /* @kind other */ /* drawers, modals */
+  --dur-5: 320ms;   /* @kind other */ /* large surfaces, route changes */
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);    /* @kind other */
+  --ease-out:      cubic-bezier(0.16, 1, 0.3, 1);  /* @kind other */
+  --ease-in:       cubic-bezier(0.4, 0, 1, 1);     /* @kind other */
+  --ease-inout:    cubic-bezier(0.65, 0, 0.35, 1); /* @kind other */
+
+  --press-scale: 0.985;   /* @kind other */ /* press feedback */
+}
+
+/* Live pulse — running / streaming sessions. */
+@keyframes cp-live-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+/* Attention beacon — waiting on human. Slow, ring-style. */
+@keyframes cp-attention-beacon {
+  0%   { box-shadow: 0 0 0 0 var(--attention-surface-2); }
+  70%  { box-shadow: 0 0 0 6px oklch(0.800 0.160 82 / 0); }
+  100% { box-shadow: 0 0 0 0 oklch(0.800 0.160 82 / 0); }
+}
+/* Indeterminate shimmer — loading skeletons. */
+@keyframes cp-skeleton {
+  0%   { background-position: -160% 0; }
+  100% { background-position: 160% 0; }
+}
+/* Marching ants — dry-run / preview boundaries. */
+@keyframes cp-ants { to { background-position: 16px 0; } }
+
+/* Overlay entrances. */
+@keyframes cp-pop-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes cp-slide-in {
+  from { opacity: 0.4; transform: translateX(16px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes cp-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

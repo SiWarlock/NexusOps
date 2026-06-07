@@ -1,0 +1,100 @@
+{
+  "lens": "C-objects",
+  "verdict": "aligned-with-gaps",
+  "aligned": [
+    {
+      "point": "EvidenceChip covers all 10 canonical evidence types (file, anchor, plantask, session, commit, pr, decision, ticket, event, memory) exactly as enumerated in UX §13.3, each with a distinct mono glyph and an open action.",
+      "evidence": "components/objects/EvidenceChip.jsx KIND map (lines 5-16); UX_INFORMATION_ARCHITECTURE.md §13.3 evidence chip types"
+    },
+    {
+      "point": "RiskBadge is a 5-level scale (readonly | low | medium | high | critical) and ALWAYS renders a text label (label||r.label), never color-only; critical adds the cp-hazard hatch so it survives grayscale.",
+      "evidence": "components/status/RiskBadge.jsx RISK map + label render (lines 5-34); UI_COMPONENT_INVENTORY.md §4.9 'Must include text label, not only visual treatment'; ARCHITECTURE.md §6.2 Risk 0-4 (5 levels)"
+    },
+    {
+      "point": "RiskBadge level names map cleanly onto the architecture's numeric Risk 0-4 axis, and the kit's own sample data encodes the same ORDER ['readonly','low','medium','high','critical'], keeping the gateway risk taxonomy consistent across badge and data model.",
+      "evidence": "components/status/RiskBadge.jsx; ui_kits/control-plane/kit-data.js risk.ts ORDER (lines 146-147); ARCHITECTURE.md §6.2 'Risk 0-4 (AG §7)'"
+    },
+    {
+      "point": "UsageMeter carries an `accuracy` prop with the exact/estimated/unavailable trichotomy required by USAGE-4, greys to slate when unavailable, and shows '≈'/'n/a' affordances in the bar variant.",
+      "evidence": "components/status/UsageMeter.jsx accuracy prop + acc render (lines 19-26, 56); PRD §10.18 USAGE-4 (MUST); ARCHITECTURE.md §7.2 metric_quality ∈ {exact,estimated,unavailable}"
+    },
+    {
+      "point": "SessionRow composes the status/badge/meter primitives into one row carrying status + harness + execution profile + task + branch + worktree + PR + context, and sorts via an attention-level map — matching the 'full ownership chain everywhere, attention-first ordering' invariant.",
+      "evidence": "components/objects/SessionRow.jsx (lines 51-67) + ATTN map (line 12); ARCHITECTURE.md §0/§4 'Session atomic; full ownership chain everywhere; attention-first ordering (PRD §5.2)'"
+    },
+    {
+      "point": "HarnessBadge enumerates the 4 canonical harnesses (Claude Code, Codex CLI, Codex Cloud, Custom Shell) and stays near-neutral with faint mono glyphs (no brand color), matching the design-prompt 'never imply official brand color' constraint and HARN harness set.",
+      "evidence": "components/badges/HarnessBadge.jsx HARNESS map (lines 6-11); UI_COMPONENT_INVENTORY.md §4.5; ARCHITECTURE.md §9.1 harness adapter set"
+    },
+    {
+      "point": "ProfileBadge makes the Execution Profile (provider + account alias) explicit with a health dot covering active/available/rate-limited/auth-expired/disabled — aligned to the ExecutionProfile runtime state machine.",
+      "evidence": "components/badges/ProfileBadge.jsx HEALTH map (lines 5-11); ARCHITECTURE.md §5.1 ExecutionProfile states (available/active/in_use/rate_limited/auth_expired/misconfigured/disabled/unknown)"
+    },
+    {
+      "point": "DiffHunk is a first-class per-hunk review surface with Accept/Reject/Ask why/Request fix actions, comment count, and accepted|rejected|conflict review ribbon, matching UI_COMPONENT_INVENTORY.md §8.5 inline diff hunk.",
+      "evidence": "components/objects/DiffHunk.jsx (action bar lines 63-70, ribbon lines 36-47); UI_COMPONENT_INVENTORY.md §8.5"
+    },
+    {
+      "point": "StatusPill encodes state on four channels (color + glyph + text label + optional motion) per the 'never color alone' design-system constraint, and the canonical fixed status vocabulary is used (Waiting · human, Permission, Failed, Conflict, Stale, Checks passing, etc.).",
+      "evidence": "components/status/StatusPill.jsx STATUS map (lines 6-27); CLAUDE_DESIGN_SYSTEM_PROMPT.md 'never color alone' four-channel rule; UX §8 status enums"
+    }
+  ],
+  "gaps": [
+    {
+      "severity": "critical",
+      "gap": "UsageMeter drops the exact/estimated/unavailable accuracy label in the `ring` variant — the ring branch computes `color` (greying to slate on unavailable) but never renders the `acc` indicator that the bar branch shows. The ring is the variant SessionRow and graph nodes use (the densest, most-frequent contexts), so in practice the accuracy signal degrades to color-only there.",
+      "kit_evidence": "components/status/UsageMeter.jsx ring branch lines 28-48 (no `acc` render); bar branch line 56 renders `acc`; SessionRow.jsx line 57 uses variant='ring'",
+      "doc_ref": "PRD §10.18 USAGE-4 (MUST: metrics MUST indicate exact/estimated/unavailable); ARCHITECTURE.md §7.2 metric_quality + §9.1 supportsContextMetadata=false → render 'unknown'; CLAUDE_DESIGN_SYSTEM_PROMPT.md 'never color alone'",
+      "recommendation": "Change the kit: render the accuracy affordance (≈ / n/a glyph + sr-only text) in the ring variant too, and emit a distinct 'unknown' rendering (not 0% / empty ring) when accuracy='unavailable' or context_pct is NULL.",
+      "for_tasks_gen": "UsageMeter MUST render the exact/estimated/unavailable accuracy label in ALL variants (ring, bar, inline badge, team aggregate). When accuracy='unavailable' or context_pct is NULL (Codex case), the meter MUST display 'unknown' as text — not 0%, not an empty ring, not color-only. Add a test asserting the ring variant exposes the accuracy state."
+    },
+    {
+      "severity": "important",
+      "gap": "SessionRow's attention-level map omits `waiting-perm` (permission required). A session in waiting_on_permission falls through `ATTN[status] ?? 0` to level 0 (idle, no rail) — but the attention ladder ranks permission as level 4. The most consequence-bearing 'needs-a-human' state would render with idle visual weight, breaking attention-first ordering.",
+      "kit_evidence": "components/objects/SessionRow.jsx ATTN map line 12 (no 'waiting-perm' key) + level = ATTN[status] ?? 0 (line 32)",
+      "doc_ref": "readme.md §3 Attention Ladder ('4 failed/blocked/conflict & permission'); ARCHITECTURE.md §5.1 Session state waiting_on_permission; PRD §5.2 attention-first ordering",
+      "recommendation": "Change the kit: add 'waiting-perm' (and a generic fallback for any unmapped waiting_on_* state) to SessionRow's ATTN map at level 4, mirroring AttentionMarker's intent.",
+      "for_tasks_gen": "The attention-level derivation (used by SessionRow, sidebar rows, queue items, graph nodes) MUST map EVERY one of the 17 canonical Session states to a ladder level, with no silent fall-through to idle. waiting_on_permission = level 4; waiting_on_human_input = level 5; waiting_on_external_service must have an explicit non-idle level. Add a test that every Session enum value resolves to its specified ladder level."
+    },
+    {
+      "severity": "important",
+      "gap": "GraphNode covers 13 node kinds (project, session, team, worker, worktree, branch, pr, issue, ticket, plantask, approval, human, brain) but is missing 4 node types from the canonical graph node set: team_lead, orchestrator, generic Task (distinct from plantask), and Workflow command. OBS-2 lists 14 types and UX §9 lists ~17; lead/orchestrator/worker are collapsed and the workflow-command node is absent.",
+      "kit_evidence": "components/objects/GraphNode.jsx KIND map lines 6-20 (13 kinds); prompt.md line 11 enumerates the same 13",
+      "doc_ref": "PRD §10.x OBS-2 Node Types (14); UX_INFORMATION_ARCHITECTURE.md §9 graph node types (Project, Session, Agent Team, Team lead, Orchestrator, Worker, Task, PlanTask, GitHub Issue, Linear Ticket, Worktree, Branch, Pull Request, Human input, Approval, Brain memory/source, Workflow command)",
+      "recommendation": "Change the kit: add team_lead, orchestrator, task, and workflow_command kinds to GraphNode's KIND map (each with glyph + domain tint + label); team uses teal, lead/orchestrator teal, workflow_command teal/tertiary, task accent.",
+      "for_tasks_gen": "GraphNode MUST support the full OBS-2/UX §9 node-type set including team_lead, orchestrator, worker, generic Task (vs PlanTask), and Workflow command, in addition to the 13 already present. Each node type maps to a stable glyph + domain tint + uppercase type label. Add a graph-list-equivalent (OBS-6 accessibility) that enumerates the same node types."
+    },
+    {
+      "severity": "important",
+      "gap": "EvidenceChip models freshness as a binary (only freshness==='stale' shows a single dot). The canonical EvidenceItem lifecycle has 5 freshness states (live, stale, moved, unverified, unavailable), and UX §13.3 also lists 'confidence' as a chip field. The chip cannot distinguish a moved anchor from an unavailable one, and never surfaces confidence.",
+      "kit_evidence": "components/objects/EvidenceChip.jsx: `const stale = freshness === 'stale'` (line 23) + single stale dot (line 42); no confidence prop",
+      "doc_ref": "SHARED_OBJECT_MODEL.md §25 EvidenceItem status/lifecycle (live, stale, moved, unverified, unavailable) + field `confidence`; UX_INFORMATION_ARCHITECTURE.md §13.3 'Freshness/confidence'",
+      "recommendation": "Change the kit: replace the boolean stale flag with a `freshness` enum covering all 5 EvidenceItem states (distinct glyph/treatment per state, each with a text/aria label so it is never color-only), and add an optional `confidence` affordance.",
+      "for_tasks_gen": "EvidenceChip MUST represent the full EvidenceItem freshness lifecycle (live, stale, moved, unverified, unavailable) — each visually distinct AND text/aria-labeled (never color/dot-only) — and MUST surface confidence when present. Bind chip freshness to EvidenceItemInvalidated/Resolved events so grounding warnings are live, not static."
+    },
+    {
+      "severity": "important",
+      "gap": "SessionRow's ownership chain omits two fields the SOM marks as part of the Session identity: `model` (the chain shows harness + profile but not the model name) and `agent_team_id` / team role (no indication a session belongs to a team or its role within one). UI_COMPONENT_INVENTORY.md §5.3 lists 'Harness/model' and §7.2 lists 'Role if team' as required.",
+      "kit_evidence": "components/objects/SessionRow.jsx props (lines 14-31) and line-2 chips (lines 60-67) carry harness/profile/task/branch/worktree/pr but no model and no team/role",
+      "doc_ref": "SHARED_OBJECT_MODEL.md §12 Session key fields (`model`, `agent_team_id`); UI_COMPONENT_INVENTORY.md §5.3 SessionRow 'Harness/model', §7.2 'Role if team'",
+      "recommendation": "Change the kit: add a `model` prop rendered alongside HarnessBadge (or inside ProfileBadge), and a `team`/`role` affordance (chip or marker) when agent_team_id is set, so a worker row reads its team + role.",
+      "for_tasks_gen": "SessionRow MUST render the model name as part of the harness/profile identity and MUST indicate team membership + role when the session belongs to an AgentTeam (worker/lead/orchestrator). The ownership-chain chips MUST be derivable from the 22 shared IDs (session_id, agent_team_id, execution_profile_id, worktree_id, branch_name, pr_number, linked_task_id, linked_plan_task_id)."
+    },
+    {
+      "severity": "nice-to-have",
+      "gap": "StatusPill (and therefore SessionRow's status surface) lacks 6 of the 17 canonical Session states: creating, starting, thinking, waiting_on_external_service, changes_ready, killed. SessionRow's ATTN map similarly has no entry for these. The kit covers the steady-state and terminal cases but not the boot/transient/external-wait states.",
+      "kit_evidence": "components/status/StatusPill.jsx STATUS map (lines 6-27) — no creating/starting/thinking/waiting_on_external_service/changes_ready/killed; SessionRow.jsx ATTN map line 12",
+      "doc_ref": "ARCHITECTURE.md §5.1 Session machine (17 states, R-4); SHARED_OBJECT_MODEL.md §12 Session status/lifecycle; UX §8 status enums",
+      "recommendation": "Change the kit: extend StatusPill.STATUS with the 6 missing Session states (each with glyph + canonical label + ladder-consistent tone), e.g. waiting_on_external_service = caution/level 4, changes_ready = review/level 1, killed = danger/terminal, creating/starting = neutral transient, thinking = live pulse.",
+      "for_tasks_gen": "StatusPill MUST render all 17 canonical Session states (plus the Task, Worktree, PR, WorkflowInstance, ProjectBrain, Approval, ActionRequest, ExecutionProfile, AgentTeam machine states it is reused for) with a glyph + canonical text label per UX §8. Add a contract test asserting every state in each §5.1 enum has a StatusPill rendering (no fall-through to idle)."
+    },
+    {
+      "severity": "nice-to-have",
+      "gap": "RiskBadge uses string levels (readonly/low/medium/high/critical) but the architecture's authoritative axis is numeric Risk 0-4 with per-action ranges (e.g. git.delete_worktree 3-4). The kit cannot express a risk *range* and there is no documented mapping from the numeric gateway value to the badge string, risking drift when the Gateway emits 0-4.",
+      "kit_evidence": "components/status/RiskBadge.jsx level prop is the string union only; kit-data.js risk fields are strings ('medium','high','readonly')",
+      "doc_ref": "ARCHITECTURE.md §6.2 'Risk 0-4 (AG §7)'; §6.3 per-action risk ranges (e.g. git.delete_worktree 3-4)",
+      "recommendation": "Note for build: define the canonical 0-4 ↔ {readonly,low,medium,high,critical} mapping once and accept either form in RiskBadge; allow an optional range display where the action type carries a range.",
+      "for_tasks_gen": "Define and document the numeric Risk 0-4 ↔ named-level mapping as a shared contract; RiskBadge MUST accept the numeric gateway value and render the named level + text label, and SHOULD support a risk range for action types that declare one (§6.3). Critical (4) must remain visually distinct (hazard hatch) and is never in approve-all by default."
+    }
+  ]
+}

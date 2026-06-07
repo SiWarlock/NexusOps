@@ -1,0 +1,144 @@
+{
+  "lens": "D-gateway-brain",
+  "verdict": "material-gaps",
+  "aligned": [
+    {
+      "point": "Brain is positioned as propose-not-execute: every Brain action plan terminates in a 'Run via Gateway' button rather than direct execution, honoring the reason-vs-execute split (ARCH §4.2 law 3, PBI §1/§8).",
+      "evidence": "kit-views4.jsx BrainMsg (lines 167-185, 'Run via Gateway' -> openGateway) + kit-data.js brainThread/brainReplies plans never self-execute; ARCHITECTURE.md §4.2, PROJECT_BRAIN_INTERFACE.md §6/§8"
+    },
+    {
+      "point": "The Action Gateway modal renders approval as a structured card OUTSIDE terminal text (modal with risk badge, actor, worktree, 'What will happen' consequence well, Deny / Approve), satisfying ARCH §11 'approval prompts are structured cards outside terminal text'.",
+      "evidence": "kit-overlays.jsx GatewayModal (lines 38-74); ARCHITECTURE.md §11"
+    },
+    {
+      "point": "Risk is encoded on four channels (color + RiskBadge text label + glyph dot + hazard hatch for critical), surviving grayscale per the design-system 'never color alone' constraint.",
+      "evidence": "components/status/RiskBadge.jsx (cp-hazard for critical, mandatory text label, showDot); readme.md §3 'Never color alone'; CLAUDE_DESIGN_SYSTEM_PROMPT.md"
+    },
+    {
+      "point": "Brain answers ground in evidence chips with provenance kinds and a stale/freshness marker, matching PBI §5/§6 'evidence chips and freshness/provenance' and UX Screen 14 evidence-chip types.",
+      "evidence": "components/objects/EvidenceChip.jsx (kind glyphs + freshness stale dot); kit-data.js brainThread evidence[] with freshness:'stale'; PROJECT_BRAIN_INTERFACE.md §5/§6, UX §9 Screen 14"
+    },
+    {
+      "point": "Human Input Queue exists as centralized triage with grouped sections (Permission requests, High-risk actions, Failed checks needs decision, Workflow personalization), reachable from sidebar/bell/shortcut, matching UX Screen 15 intent.",
+      "evidence": "kit-tasks.jsx HumanInputQueue (lines 184-239) + kit-data.js humanInput[]; UX §9 Screen 15"
+    },
+    {
+      "point": "Gateway 'Always allow in this project' checkbox + per-action consequence preview ('Sandboxed in worktree. No network. Reversible.') reflect AG standing-grant + preview/dry-run language and the canonical governance voice.",
+      "evidence": "kit-overlays.jsx line 66 'Always allow in this project'; kit-data.js gateway.q1.desc/conseq; ACTION_GATEWAY.md §13 preview table, readme.md §2 voice"
+    },
+    {
+      "point": "Command palette exposes Brain, Gateway approval queue, and Task Inbox as first-class commands, supporting command-first access to the cross-cutting overlays (UX §5.8 command-first).",
+      "evidence": "kit-overlays.jsx CMDS (lines 85-97); UX §5.8"
+    },
+    {
+      "point": "Dispatch dialog routes session/team starts 'via Gateway' with a preview line and a single-action vs cc-crew team choice, consistent with session.create being a Gateway intent (ARCH §6.3, §8 flows).",
+      "evidence": "kit-tasks.jsx DispatchDialog 'Will run via Gateway' (lines 141-146); ARCHITECTURE.md §6.3 session.create, §8"
+    }
+  ],
+  "gaps": [
+    {
+      "severity": "critical",
+      "gap": "The Action Gateway modal supports ONLY a single ActionRequest, not a bundled multi-step ActionPlan with step-by-step approval. The modal renders a flat 'What will happen' consequence list (item.conseq), never a step list. Every gateway item in data (q1/q2/edit/perm) is a single action; openGateway(id) selects exactly one. There is no submit_action_plan path, no per-step rows, no step status, no per-step risk/preview/rollback. This directly violates owner decision O-3 (full multi-step bundled ActionPlan + step-by-step approval is MVP-blocking).",
+      "kit_evidence": "kit-overlays.jsx GatewayModal lines 38-74 (renders item.conseq, no steps); kit-data.js gateway.{q1,q2,edit,perm} are single ActionRequests; index.html lines 100-105 openGateway picks one item id",
+      "doc_ref": "ARCHITECTURE.md §0.1 O-3, §6.1 submit_action_plan, §6.2 ActionPlan/ActionPlanStep, Appendix A approval_mode(approve_all|step_by_step|mixed|blocked); UX §9 Screen 16; ACTION_GATEWAY.md §9.2/§9.3",
+      "recommendation": "Change the kit: the Gateway modal MUST render the Screen-16 layout (Action summary / Risk banner / Step list / Preview-per-step / Affected resources / Evidence / Permissions / Approval controls / Audit note) backed by an ActionPlan{steps[], dependencies, overallRisk, approvalMode} data shape, not a single conseq array.",
+      "for_tasks_gen": "Gateway Review Modal must accept an ActionPlan (1..N ActionPlanSteps) and render a step list; each step row shows step number, action type, target, risk level, preconditions, preview/dry-run status, rollback availability, and step status. A single ActionRequest is the N=1 degenerate case of the same component. Bind to ARCH §6.2 + Appendix A ActionPlan/ActionPlanStep."
+    },
+    {
+      "severity": "critical",
+      "gap": "Step-by-step approval controls are entirely absent from the Gateway modal. UX Screen 16 mandates seven controls (Approve all, Approve step-by-step, Deny, Edit plan, Remove step, Require manual execution, Save as policy if eligible). The prototype offers only Deny + Approve-once (two buttons) plus an 'Always allow' checkbox. Missing: approve-all-eligible, approve-individual-step, edit-step-before-approve, remove-step, require-manual-execution, save-as-policy, deny-with-reason.",
+      "kit_evidence": "kit-overlays.jsx GatewayModal footer lines 64-70 (only Deny + Approve once + 'Always allow' checkbox); no edit/remove/manual/save-as-policy/per-step controls",
+      "doc_ref": "UX §9 Screen 16 Controls (Approve all / Approve step-by-step / Deny / Edit plan / Remove step / Require manual execution / Save as policy if eligible); ARCHITECTURE.md §6.1 approve(approval_id, edits?, step_id?), §6.2 PolicyDecision require_step_approval",
+      "recommendation": "Change the kit: add the full Screen-16 control set; wire step_id into the approve action and surface PolicyDecision.require_step_approval. Map 'Save as policy' to approvalScope='policy_grant' (AG §9.5) and 'Always allow' to the same grant flow.",
+      "for_tasks_gen": "Gateway modal controls must implement: approve-all-eligible (excludes critical by default), approve-individual-step (step_id), edit-before-approve (re-preview + re-risk, never execute an unapproved diff per ARCH §6.2 stale-precondition rule), remove-step, require-manual-execution, deny-with-reason (deny carries reason -> ARCH §6.1 deny(approval_id, reason)), and save-as-policy when eligible (approvalScope policy_grant). Critical (risk 4) actions must never appear in approve-all by default."
+    },
+    {
+      "severity": "critical",
+      "gap": "The Brain action plan is NOT routed through a real ActionPlan Gateway flow: clicking 'Run via Gateway' on a 3-4 step Brain plan calls openGateway('edit'), which opens an UNRELATED single-action modal (the static gateway.edit item). The multi-step plan the user reviewed in the Brain drawer is discarded — the modal shows a different, single action. This breaks the Ask-Brain->multi-step-ActionPlan->step-approve flow (ARCH §8 'Ask Brain + action plan' / PRD §9.11-12 / O-3) and the propose->preview->step-approve seam.",
+      "kit_evidence": "kit-views4.jsx BrainMsg line 182 onClick={() => openGateway('edit')}; index.html line 205 BrainDrawer openGateway -> setGateway(id||'edit'); kit-data.js brainThread plan.steps[] are never passed to GatewayModal",
+      "doc_ref": "ARCHITECTURE.md §8 'Ask Brain + action plan' (Brain proposes multi-step ActionPlan -> gateway preview/step-approve), §0.1 O-3, §19.1 step 9; PROJECT_BRAIN_INTERFACE.md §7; UX §9 Screen 14 Action plan response",
+      "recommendation": "Change the kit: the Brain's proposed plan.steps must be the payload submitted to the Gateway (submit_action_plan) and rendered as the same ActionPlan in the Gateway modal; do not substitute a static single action.",
+      "for_tasks_gen": "Wire Brain 'Run via Gateway' to submit_action_plan with the exact reviewed steps; the Gateway Review Modal renders that plan with step-by-step approval. The handoff must preserve step count, per-step risk, targets, evidenceRefs, and preview status. Brain remains propose-only (INV-SEC-1)."
+    },
+    {
+      "severity": "critical",
+      "gap": "The Brain drawer is missing modes. PBI §6 and UX Screen 14 require modes: Ask, Plan, Dispatch, Review, Decisions, Memory, Actions. The prototype defines only five: ['Ask','Plan','Review','Decisions','Memory'] — missing 'Actions' (the in-Brain log/queue of proposed-and-pending Gateway actions) and 'Dispatch' (UX Screen 14 adds Dispatch). The 'Actions' mode is load-bearing for O-3: it is where the user sees Brain-proposed action plans and their approval state.",
+      "kit_evidence": "kit-views4.jsx line 30 BRAIN_MODES = ['Ask','Plan','Review','Decisions','Memory'] (5 of the required 6-7)",
+      "doc_ref": "PROJECT_BRAIN_INTERFACE.md §6 (Ask/Plan/Dispatch?/Review/Decisions/Memory/Actions); UX §9 Screen 14 Drawer modes (Ask/Plan/Dispatch/Review/Decisions/Memory/Actions)",
+      "recommendation": "Change the kit: add the 'Actions' mode (proposed/pending/executed Brain action plans with their Gateway approval state) and reconcile 'Dispatch' (UX adds it; PBI does not). Confirm the canonical mode set with tasks-gen against PBI §6 + UX Screen 14.",
+      "for_tasks_gen": "Brain drawer must implement the full mode set Ask/Plan/Review/Decisions/Memory/Actions (+ Dispatch per UX Screen 14, reconcile during build). 'Actions' mode lists Brain-proposed ActionPlans with live approval/execution status fed from the Gateway projection (proj_approval_queue / action_requests). The currently-non-functional mode tabs (mode state never filters the thread) must actually change drawer content."
+    },
+    {
+      "severity": "important",
+      "gap": "The Brain drawer modes are decorative: selecting a mode sets state but does not change drawer content (the same chat thread renders for Ask/Plan/Review/Decisions/Memory). 'Decisions' and 'Memory' have no distinct surfaces in the drawer (memory only appears in the non-drawer right rail, which is hidden when drawer=true). So in the actual right-stack drawer, Decisions/Memory/Review are unreachable as distinct views.",
+      "kit_evidence": "kit-views4.jsx lines 74-79 mode buttons set mode but thread render (lines 83-88) ignores mode; right-rail memory (lines 107-123) is gated on !drawer so absent in the drawer; BrainDrawer hosts ProjectBrainPage with drawer=true",
+      "doc_ref": "PROJECT_BRAIN_INTERFACE.md §6 modes; UX §9 Screen 14 (modes are functional views, not labels)",
+      "recommendation": "Change the kit: each mode must render its own content (Plan=plan composer, Review=diff/PR review explanations, Decisions=decision log, Memory=memory sources, Actions=action-plan queue). Ensure Memory/Decisions are reachable inside the drawer, not only the full page.",
+      "for_tasks_gen": "Each Brain drawer mode is a distinct functional view with mode-specific content and controls; mode selection switches drawer body. Memory and Decisions surfaces must be present in the drawer form factor (right-stack), not only the full-page form."
+    },
+    {
+      "severity": "important",
+      "gap": "Gateway modal omits required Screen-16 sections: explicit preview/dry-run STATUS states (preview pending / succeeded / unavailable / stale preconditions), affected-resources list (ResourceRef), evidence references, permissions-required, and an audit-note line. The kit shows only a freeform consequence list with no preview lifecycle, no stale-precondition handling, and no evidence linkage — so the operator cannot see 'preview pending', 'preview unavailable (reason)', or 'stale preconditions, re-approve' which are mandated states.",
+      "kit_evidence": "kit-overlays.jsx GatewayModal (lines 50-63) renders only item.desc + item.conseq; no preview-status, resourceRefs, evidenceRefs, permissions, or audit-note fields",
+      "doc_ref": "UX §9 Screen 16 Layout (Preview/dry-run results, Affected resources, Evidence, Permissions required, Audit note) + Important states; ARCHITECTURE.md §6.2 ActionPreview + stale-precondition re-check, ACTION_GATEWAY.md §9.4 ActionPreview, §13 preview classes",
+      "recommendation": "Change the kit: render preview lifecycle (pending/succeeded/unavailable+reason/stale), affected ResourceRefs, EvidenceRefs, permissions-required, and an audit note; on stale precondition show 're-approval required'.",
+      "for_tasks_gen": "Gateway modal must render ActionPreview status (pending/succeeded/unavailable with cannotPreviewReason/stale), the per-step preview class (command/diff/git/api/session/workflow/rollback per AG §13), affected resources, evidence chips, permissions-required, and an audit-note. Stale-precondition (preview != reality at execute) must surface 'fresh approval required' per ARCH §6.2/§17."
+    },
+    {
+      "severity": "important",
+      "gap": "The Human Input Queue is missing required Screen-15 sections and card actions. Sections present: 4 of 7 — missing 'Needs clarification', 'Project Brain action plans', and 'Agent team escalations'. Card actions present: Review/Decide/Personalize + Deny/Defer — missing Edit instruction, Open terminal, Open diff, Ask Project Brain, Approve once, Set rule, Escalate. The 'Project Brain action plans' section is the HIQ entry point for O-3 multi-step plans and is absent.",
+      "kit_evidence": "kit-tasks.jsx HumanInputQueue order=['Permission requests','High-risk actions','Failed checks · needs decision','Workflow personalization'] (line 191); HIQCard actions (lines 230-236) only Review/Decide/Personalize + Deny/Defer; kit-data.js humanInput[] has no clarification/brain-plan/team-escalation kinds",
+      "doc_ref": "UX §9 Screen 15 Sections (7) + Actions (Approve/Deny/Edit instruction/Open terminal/Open diff/Ask Project Brain/Approve once/Set rule/Escalate/defer)",
+      "recommendation": "Change the kit: add 'Needs clarification', 'Project Brain action plans', and 'Agent team escalations' sections + sample data; extend card actions to the full Screen-15 set; route a Brain-action-plan HIQ card into the ActionPlan Gateway modal.",
+      "for_tasks_gen": "Human Input Queue must render all 7 sections (incl. Needs clarification, Project Brain action plans, Agent team escalations) and the full card action set (Approve, Deny, Edit instruction, Open terminal, Open diff, Ask Project Brain, Approve once, Set rule, Escalate/defer). Brain-action-plan cards open the multi-step Gateway modal; approval-card fields must include expiration."
+    },
+    {
+      "severity": "important",
+      "gap": "Approval cards (both HIQ and Gateway modal) omit an expiration / time-to-expiry field, and the Approval state model is not surfaced. ARCH §5.1 Approval machine has 10 states (incl. edited, auto_approved_by_policy, expired, cancelled, escalated) and ActionRequest has 15; the kit only ever shows binary Approved/Denied (resolveGateway toasts 'Approved'/'Denied'). No 'edited', 'escalated', 'expired', 'auto-approved-by-policy', 'partially succeeded', or 'executing' states are representable.",
+      "kit_evidence": "kit-tasks.jsx HIQCard has age but no expiry (lines 217-238); kit-overlays.jsx onResolve only emits 'Approved'/'Denied'; kit-data.js humanInput items have age, no expiresAt; no edited/escalated/partial states anywhere",
+      "doc_ref": "ARCHITECTURE.md §5.1 Approval(10)/ActionRequest(15) state machines, §6.2; UX §9 Screen 15 'Expiration', Screen 16 Important states (Partially approved/Executing/Partially succeeded/Failed with recovery)",
+      "recommendation": "Change the kit: add expiresAt to approval/HIQ cards and represent the richer Approval/ActionRequest states (edited, escalated, expired, auto_approved_by_policy, executing, partially_succeeded, failed-with-recovery).",
+      "for_tasks_gen": "Approval and HIQ cards must show expiration and represent the full Approval(10) + ActionRequest(15) state enums from ARCH §5.1 — at minimum edited, escalated, expired, auto_approved_by_policy, executing, partially_succeeded, and 'failed with recovery actions' (Screen 16 states)."
+    },
+    {
+      "severity": "important",
+      "gap": "Brain drawer scope chips are incomplete. PBI §6 lists 7 scopes (Entire project, Current session, Current file, Current diff, Current PR, Current plan task, Current agent team) and UX Screen 14 lists 6 (workspace/project/session/file/PR/selection). Prototype offers 4 (Entire project, Current session, Current PR, Current plan task) — missing Current file, Current diff/selection, Current agent team, and workspace scope.",
+      "kit_evidence": "kit-views4.jsx line 31 SCOPES = ['Entire project','Current session','Current PR','Current plan task'] (4 of 6-7)",
+      "doc_ref": "PROJECT_BRAIN_INTERFACE.md §6 scope chips (7); UX §9 Screen 14 Scope (workspace/project/session/file/PR/selection)",
+      "recommendation": "Change the kit: add Current file, Current diff/selection, Current agent team, and Workspace scopes; reconcile the PBI vs UX scope lists during build.",
+      "for_tasks_gen": "Brain drawer scope selector must offer the full scope set per PBI §6 + UX Screen 14: workspace, project, session, file, diff/selection, PR, plan task, agent team. Scope must actually constrain retrieval (the kit's scope value is currently inert)."
+    },
+    {
+      "severity": "important",
+      "gap": "The Brain drawer header omits required provenance/transport/index-status indicators. UX Screen 14 header fields = Scope, Index status, Evidence mode, Action mode, Privacy/transport indicator. The kit shows a static 'grounded · 142 objects' badge and a 'co-pilot' badge only — no live ProjectBrain status (the 10-state machine: indexing/stale/partial_index/degraded/reindex_required/error), no privacy/transport (stdio MCP vs loopback-HTTP fallback) indicator, no evidence-mode/action-mode toggles. This matters because ARCH §13.1 has the Brain degrade gracefully (stale/absent) and §7.2 caches brain_status_reported_at staleness — the UI must reflect it.",
+      "kit_evidence": "kit-views4.jsx header lines 61-72 (static 'grounded · 142 objects' badge, no live status/privacy/transport); kit-overlays.jsx BrainDrawer header 'co-pilot' badge only (lines 20-28); kit-data.js project.brain has states ready/indexing/stale but drawer ignores them",
+      "doc_ref": "UX §9 Screen 14 Header fields; ARCHITECTURE.md §5.1 ProjectBrain(10 states), §7.2 brain_status_reported_at staleness, §13.1 degrade-gracefully + transport fallback",
+      "recommendation": "Change the kit: header must render live ProjectBrain index status (10-state machine), a freshness/grounded-at stamp tied to brain_status_reported_at, a privacy/transport indicator, and evidence-mode/action-mode controls; show a degraded banner when Brain is stale/unreachable.",
+      "for_tasks_gen": "Brain drawer header must show: live index status (ProjectBrain 10-state enum), grounded-at + staleness (brain_status_reported_at), evidence mode, action mode, and privacy/transport indicator. A degraded/stale/unreachable Brain must render a non-blocking banner (platform never hard-depends on Brain, ARCH §13.1)."
+    },
+    {
+      "severity": "important",
+      "gap": "Per-answer confidence/verification state is not rendered. UX Screen 14 'Conversation answer requirements' include 'Confidence/verification state' and the design-system flags 'Unverified Project Brain claim' as a state. Brain messages render evidence + plan but no confidence/verification indicator, so an unverified or low-confidence claim is visually indistinguishable from a verified one — risky for an evidence-first tool.",
+      "kit_evidence": "kit-views4.jsx BrainMsg (lines 152-191) renders text + evidence + plan only; kit-data.js brainReplies have no confidence/verification field; EvidenceChip has confidence type per AG/SOM but kit never passes it",
+      "doc_ref": "UX §9 Screen 14 (Confidence/verification state; Unverified Project Brain claim per §5.5/states list); ACTION_GATEWAY.md §9.8 EvidenceRef.confidence",
+      "recommendation": "Change the kit: render a confidence/verification badge on Brain answers and a distinct 'unverified claim' treatment; carry EvidenceRef.confidence on evidence chips.",
+      "for_tasks_gen": "Brain answers must render a confidence/verification state and visibly mark unverified claims; evidence chips carry EvidenceRef.confidence (ARCH Appendix A EvidenceRef{type,id,confidence})."
+    },
+    {
+      "severity": "nice-to-have",
+      "gap": "The Gateway modal's approve label hardcodes the action ('Approve force-push') and the modal is keyed off a coarse risk string ('high'/'critical') rather than the canonical 0-4 risk integer scale; risk 0-4 (ARCH §6.2, AG §7) and the per-type locked-risk catalog (ARCH §6.3) are not modeled. RiskBadge supports readonly/low/medium/high/critical (5 names) which maps to 0-4, but the gateway data only uses medium/high/critical and the modal logic only branches on high|critical.",
+      "kit_evidence": "kit-overlays.jsx line 40 isHigh = risk==='high'||'critical'; line 69 label switches force-push; kit-data.js gateway items use risk strings only; RiskBadge.jsx supports 5 levels but no 0-4 mapping",
+      "doc_ref": "ARCHITECTURE.md §6.2 Risk 0-4, §6.3 per-type locked risk (ActionTypeCatalog); ACTION_GATEWAY.md §7 risk levels 0-4",
+      "recommendation": "Adopt the 0-4 risk integer scale mapped to readonly/low/medium/high/critical and drive preview depth + approve-all eligibility from it; resolve per-action risk from the §6.3 catalog rather than ad-hoc strings.",
+      "for_tasks_gen": "Risk must be the canonical 0-4 integer (ARCH §6.2) resolved per action-type from the §6.3 ActionTypeCatalog; critical(4) auto-excluded from approve-all; preview depth and confirmation mode driven by risk level, not hardcoded per-action labels."
+    },
+    {
+      "severity": "nice-to-have",
+      "gap": "The Brain co-pilot does not distinguish actor identity in audit/event terms: Brain-proposed plans flow to the Gateway but the kit never stamps actor_type=project_brain on the resulting approval/action, nor shows that a pending action originated from the Brain vs an agent vs the user. ARCH R-2 requires the requester actor (project_brain) be carried; the HIQ 'Project Brain action plans' section (gap above) is where this surfaces.",
+      "kit_evidence": "kit-data.js humanInput actors are 'Claude · ENG-221' / 'Codex · GH-184' / 'repograph-scaffold' — no project_brain-originated entry; gateway items have who= harness only",
+      "doc_ref": "ARCHITECTURE.md §0.3 R-2 actor/requester enum (project_brain), §6.2 ActorRef, §13.1 actor_type=project_brain stamping; ACTION_GATEWAY.md §9.7 ActorRef project_brain",
+      "recommendation": "Add Brain-originated approval/HIQ items stamped with a project_brain actor so the operator can see which pending mutations the Brain proposed.",
+      "for_tasks_gen": "Gateway/HIQ cards must show requester actor identity including project_brain (ARCH R-2 / §9.7 ActorRef), so Brain-proposed action plans are visually attributable and audit events stamp actor_type=project_brain."
+    }
+  ]
+}

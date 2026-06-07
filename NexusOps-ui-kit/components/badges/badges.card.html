@@ -1,0 +1,70 @@
+<!-- @dsCard group="Components" viewport="700x270" name="Badges — generic, harness, profile, meta" subtitle="Badge · HarnessBadge · ProfileBadge · MetaChip" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:20px 24px; }
+  .eyebrow { font-size:var(--eyebrow-size); letter-spacing:var(--eyebrow-tracking); text-transform:uppercase; color:var(--text-faint); font-weight:var(--fw-semibold); margin:0 0 9px; }
+  .sec { margin-bottom:16px; }
+  .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  svg { width:12px; height:12px; stroke-width:1.6; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+  const { Badge, HarnessBadge, ProfileBadge, MetaChip } = window.ControlPlaneDesignSystem_a21911;
+  const I = (n) => <i data-lucide={n}></i>;
+  function Demo() {
+    return (
+      <div>
+        <div className="sec"><p className="eyebrow">badge · tones &amp; variants</p>
+          <div className="row">
+            <Badge tone="accent">Active</Badge>
+            <Badge tone="brain" variant="dot">Project Brain</Badge>
+            <Badge tone="teal">Workflow pack</Badge>
+            <Badge tone="review" variant="outline">PR #482</Badge>
+            <Badge tone="success" variant="solid">Merged</Badge>
+            <Badge tone="neutral" mono>128k ctx</Badge>
+            <Badge tone="caution" mono>$2.74</Badge>
+            <Badge tone="slate" variant="dot">Archived</Badge>
+          </div>
+        </div>
+        <div className="sec"><p className="eyebrow">harness</p>
+          <div className="row">
+            <HarnessBadge harness="claude-code" /><HarnessBadge harness="codex-cli" /><HarnessBadge harness="codex-cloud" /><HarnessBadge harness="shell" />
+          </div>
+        </div>
+        <div className="sec"><p className="eyebrow">execution profile</p>
+          <div className="row">
+            <ProfileBadge name="Claude Max Main" provider="claude" health="active" />
+            <ProfileBadge name="Claude Team Work" provider="claude" health="rate-limited" />
+            <ProfileBadge name="Codex Cloud GitHub" provider="codex" health="auth-expired" />
+          </div>
+        </div>
+        <div className="sec"><p className="eyebrow">meta chips · ownership</p>
+          <div className="row">
+            <MetaChip tone="branch" icon={I('git-branch')}>agent/eng-221-oauth</MetaChip>
+            <MetaChip tone="worktree" icon={I('folder-git-2')}>~/wt/eng-221</MetaChip>
+            <MetaChip tone="pr" icon={I('git-pull-request')}>#84</MetaChip>
+            <MetaChip tone="linear" mono={false} icon={I('square-kanban')}>ENG-221</MetaChip>
+            <MetaChip tone="github" icon={I('circle-dot')}>#184</MetaChip>
+            <MetaChip tone="brain" icon={I('brain')}>3 evidence</MetaChip>
+            <MetaChip icon={I('git-commit-horizontal')}>4f18a70</MetaChip>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+  setTimeout(() => window.lucide && window.lucide.createIcons(), 30);
+</script>
+</body>
+</html>

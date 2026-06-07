@@ -1,0 +1,125 @@
+{
+  "bundle": "main_platform_arch_draft_handoff_v0_1",
+  "created": "2026-06-07",
+  "files": [
+    {
+      "path": "00_INDEX/README_ARTIFACT_INDEX.md",
+      "source_filename": "generated",
+      "bytes": 2021,
+      "sha256": "f903ee75c4577868859b04dbbed1048a4a300551032b4082b4ace92386a2c0ea",
+      "lines": 42
+    },
+    {
+      "path": "01_PRD/main_platform_prd_v0_1.md",
+      "source_filename": "main_platform_prd_v0_1.md",
+      "bytes": 58370,
+      "sha256": "4da2decbc920500b884e74e8a99494906fdb897d061c4162de30f3460b8dcec6",
+      "lines": 2473
+    },
+    {
+      "path": "02_PRODUCT_MODEL/platform_product_canon_v0_1.md",
+      "source_filename": "platform_product_canon_v0_1.md",
+      "bytes": 20165,
+      "sha256": "89b3c7c622dac3495689a19f216b5f801a68e06e74ef33279a4f0b7c3cd89900",
+      "lines": 771
+    },
+    {
+      "path": "02_PRODUCT_MODEL/shared_object_model_v0_1.md",
+      "source_filename": "shared_object_model_v0_1.md",
+      "bytes": 31164,
+      "sha256": "1d7e751f80fffc4bb1f1c045aebf0cdf6b29164344af5b0fce87afe018d206c7",
+      "lines": 1902
+    },
+    {
+      "path": "03_PLATFORM_MECHANICS/action_gateway_spec_v0_1.md",
+      "source_filename": "action_gateway_spec_v0_1.md",
+      "bytes": 49461,
+      "sha256": "dfcb5117ccd9fab53cd5e83331f62a240f71e054eb1ca33ae0605a3ddf9953c9",
+      "lines": 2112
+    },
+    {
+      "path": "03_PLATFORM_MECHANICS/event_model_audit_trail_spec_v0_1.md",
+      "source_filename": "event_model_audit_trail_spec_v0_1.md",
+      "bytes": 37255,
+      "sha256": "81c9ca9142f82a93f597abc71f7ca8e084ea0d1dd15c3d9963faa45ea8b1b1ad",
+      "lines": 1672
+    },
+    {
+      "path": "03_PLATFORM_MECHANICS/desktop_first_runtime_addendum_v0_1.md",
+      "source_filename": "desktop_first_runtime_addendum_v0_1.md",
+      "bytes": 5451,
+      "sha256": "c198ea2ba8c3d76520c80a026fdf96e8bd362d4f370c4a47c199489ce7f53ce1",
+      "lines": 247
+    },
+    {
+      "path": "04_WORKFLOW_PACKS/workflow_packs_spec_v0_1.md",
+      "source_filename": "workflow_packs_spec_v0_1.md",
+      "bytes": 30290,
+      "sha256": "4b3b828ba1fe467a4c72aa1ec08b7b553121c305597eefb97dbe2c2b46b8c12c",
+      "lines": 1366
+    },
+    {
+      "path": "04_WORKFLOW_PACKS/cc_crew_workflow_pack_integration_v0_1.md",
+      "source_filename": "cc_crew_workflow_pack_integration_v0_1.md",
+      "bytes": 22689,
+      "sha256": "7a254140f4c3937ef11837a22f05ce06f5ca9c6efa7ad7042f2ed29f844141d9",
+      "lines": 1036
+    },
+    {
+      "path": "05_PROJECT_BRAIN_INTERFACE/project_brain_platform_interface_notes_v0_1.md",
+      "source_filename": "project_brain_platform_interface_notes_v0_1.md",
+      "bytes": 5000,
+      "sha256": "6a64e465370c426c8ca94406bb85f200aeac2d90dcdeaf43f0e6f34c26a415a9",
+      "lines": 199
+    },
+    {
+      "path": "06_UX_DESIGN/platform_ux_information_architecture_spec_v0_1.md",
+      "source_filename": "platform_ux_information_architecture_spec_v0_1.md",
+      "bytes": 47579,
+      "sha256": "39229bc3429ff7715e5261d3d85f1aa40ac0270ecbc9dfe6333c9c72e9476809",
+      "lines": 2356
+    },
+    {
+      "path": "06_UX_DESIGN/ui_component_inventory_v0_1.md",
+      "source_filename": "ui_component_inventory_v0_1.md",
+      "bytes": 19334,
+      "sha256": "f7ac7fc7fd8f51927004f0740ac1ee03dfee44810bec14a356cc21c6b5b9a8e4",
+      "lines": 1551
+    },
+    {
+      "path": "06_UX_DESIGN/claude_design_prototype_prompt_v0_1.md",
+      "source_filename": "claude_design_prototype_prompt_v0_1.md",
+      "bytes": 14943,
+      "sha256": "909448bd7a0c50c3474e7dea2086206162f50ab63f93939e8a9985a87d650e0e",
+      "lines": 657
+    },
+    {
+      "path": "06_UX_DESIGN/legacy_agentops_studio_design_handoff_v2.md",
+      "source_filename": "agentops_studio_claude_design_handoff_v2.md",
+      "bytes": 68876,
+      "sha256": "de9a68041d49daa5a458a18b401bacd9cad5ae873344ff73bc527015b11bd58a",
+      "lines": 3480
+    },
+    {
+      "path": "06_UX_DESIGN/legacy_agentops_studio_design_handoff_original.md",
+      "source_filename": "agentops_studio_claude_design_handoff.md",
+      "bytes": 60166,
+      "sha256": "361b29f6e4e521b6d066b6082772f7adaf9cc1f566e439e1775d506ccdc9a257",
+      "lines": 3141
+    },
+    {
+      "path": "07_PLANNING/platform_artifact_register_v1.md",
+      "source_filename": "platform_artifact_register_v1.md",
+      "bytes": 11307,
+      "sha256": "96e12c3e725ea6793959cb9702832736d7fd93d89291f2e2ee688e514d6367ea",
+      "lines": 542
+    },
+    {
+      "path": "07_PLANNING/platform_naming_shortlist_v1.md",
+      "source_filename": "platform_naming_shortlist_v1.md",
+      "bytes": 7809,
+      "sha256": "f58d9168d6af55c4b54b8d510746326c96cabf792879dc93ee7356b027e6dc33",
+      "lines": 405
+    }
+  ]
+}

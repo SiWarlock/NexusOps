@@ -1,0 +1,66 @@
+/* ============================================================
+   TYPOGRAPHY — developer-tool type system
+   ------------------------------------------------------------
+   Two families only:
+   - Geist        : UI text, labels, headings (a precise Swiss-
+                    inspired grotesk; technical, neutral, calm).
+   - Geist Mono   : code, terminal, IDs, paths, SHAs, numerics,
+                    any value that must align or be copied.
+   Dense by default. The minimum readable UI size is 11px (used
+   only for dense metadata); body sits at 13px.
+   ============================================================ */
+
+:root {
+  --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+
+  /* --- Type scale (px-based, tuned for dense desktop UI) --- */
+  --fs-micro:   10px;  /* legends, axis ticks (sparingly) */
+  --fs-meta:    11px;  /* dense metadata, table sub-cells */
+  --fs-label:   12px;  /* labels, chips, badges, sidebar */
+  --fs-body:    13px;  /* default body / rows */
+  --fs-body-lg: 14px;  /* comfortable body, inspector */
+  --fs-sub:     16px;  /* sub-headings, panel titles */
+  --fs-h3:      19px;  /* section heads */
+  --fs-h2:      24px;  /* screen titles */
+  --fs-h1:      32px;  /* hero / setup wizard */
+  --fs-display: 44px;  /* rare display moments */
+
+  /* --- Weights (Geist) --- */
+  --fw-light:    300; /* @kind font */
+  --fw-regular:  400; /* @kind font */
+  --fw-book:     450; /* @kind font */
+  --fw-medium:   500; /* @kind font */
+  --fw-semibold: 600; /* @kind font */
+  --fw-bold:     700; /* @kind font */
+
+  /* --- Line heights --- */
+  --lh-tight:   1.15; /* @kind font */
+  --lh-snug:    1.3;  /* @kind font */
+  --lh-normal:  1.5;  /* @kind font */
+  --lh-code:    1.55; /* @kind font */
+
+  /* --- Tracking --- */
+  --tracking-tight:  -0.01em; /* @kind font */
+  --tracking-normal: 0;       /* @kind font */
+  --tracking-wide:   0.02em;  /* @kind font */
+  --tracking-caps:   0.06em;  /* @kind font */
+
+  /* --- Numeric behavior --- */
+  --num-tabular: "tnum" 1, "lnum" 1; /* @kind font */
+
+  /* --- Semantic roles --- */
+  --type-screen-title: var(--fw-semibold) var(--fs-h2)/var(--lh-tight) var(--font-sans); /* @kind font */
+  --type-panel-title:  var(--fw-medium) var(--fs-sub)/var(--lh-snug) var(--font-sans); /* @kind font */
+  --type-body:         var(--fw-regular) var(--fs-body)/var(--lh-normal) var(--font-sans); /* @kind font */
+  --type-label:        var(--fw-medium) var(--fs-label)/var(--lh-snug) var(--font-sans); /* @kind font */
+  --type-mono:         var(--fw-regular) var(--fs-body)/var(--lh-code) var(--font-mono); /* @kind font */
+  --type-mono-meta:    var(--fw-regular) var(--fs-meta)/var(--lh-snug) var(--font-mono); /* @kind font */
+}
+
+/* Uppercase section eyebrow — a recurring motif in the cockpit UI. */
+:root {
+  --eyebrow-size: var(--fs-micro);
+  --eyebrow-weight: var(--fw-semibold); /* @kind font */
+  --eyebrow-tracking: var(--tracking-caps); /* @kind font */
+}

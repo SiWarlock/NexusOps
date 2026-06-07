@@ -1,0 +1,128 @@
+/* ============================================================
+   STATUS — semantics that never rely on color alone
+   ------------------------------------------------------------
+   Every status is encoded on FOUR independent channels so it
+   survives color-blindness, grayscale print, and reduced motion:
+     1. COLOR    — a hue family from color.css
+     2. GLYPH    — a distinct icon/marker (set in components)
+     3. LABEL    — an explicit text label (always present)
+     4. INTENSITY— an attention level 0–5 (drives ordering + loudness)
+
+   ATTENTION LADDER (sort order for queues, sidebars, graphs):
+     5  waiting on human          (loudest — amber beacon)
+     4  failed · blocked · conflict · critical action
+     4  waiting on permission · approval required
+     3  checks failing · high context · high cost · degraded
+     2  running · editing · testing · live
+     1  active · dirty · pr open
+     0  idle · completed · archived · read-only  (quietest)
+   ============================================================ */
+
+:root {
+  /* Attention intensity scalars (used for opacity/emphasis math). */
+  --attn-0: 0; /* @kind other */
+  --attn-1: 1; /* @kind other */
+  --attn-2: 2; /* @kind other */
+  --attn-3: 3; /* @kind other */
+  --attn-4: 4; /* @kind other */
+  --attn-5: 5; /* @kind other */
+
+  /* Left attention rail width (rows/cards), scales with intensity. */
+  --rail-quiet: 0px;
+  --rail-soft:  2px;
+  --rail-loud:  3px;
+
+  /* Glyph tokens (monospace markers) — paired with text labels.
+     These give a non-color shorthand usable in CSS ::before content. */
+  --glyph-active:    "●";   /* @kind other */
+  --glyph-running:   "▶";   /* @kind other */
+  --glyph-waiting:   "◆";   /* @kind other */ /* waiting on human */
+  --glyph-perm:      "⊘";   /* @kind other */ /* permission lock */
+  --glyph-failed:    "✕";   /* @kind other */
+  --glyph-blocked:   "■";   /* @kind other */
+  --glyph-stale:     "◌";   /* @kind other */
+  --glyph-degraded:  "△";   /* @kind other */
+  --glyph-completed: "✓";   /* @kind other */
+  --glyph-archived:  "—";   /* @kind other */
+  --glyph-conflict:  "⨯";   /* @kind other */
+  --glyph-idle:      "○";   /* @kind other */
+  --glyph-pr:        "⇡";   /* @kind other */
+  --glyph-critical:  "!";   /* @kind other */
+}
+
+/* ============================================================
+   STATUS CHIP — base treatment + per-status modifiers.
+   A consumer can apply .cp-status[data-status="..."] to get the
+   right surface/ink/line. Color + glyph + label together.
+   ============================================================ */
+.cp-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2, 4px);
+  height: var(--ctl-xs, 22px);
+  padding: 0 var(--sp-3, 6px);
+  border-radius: var(--r-1, 3px);
+  font: var(--fw-medium, 500) var(--fs-meta, 11px)/1 var(--font-sans);
+  letter-spacing: var(--tracking-wide, 0.02em);
+  white-space: nowrap;
+  border: 1px solid var(--border-default);
+  background: var(--neutral-surface);
+  color: var(--text-secondary);
+}
+.cp-status::before {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+}
+
+.cp-status[data-status="active"]        { color: var(--state-active);         background: var(--state-active-surface);        border-color: var(--accent-line); }
+.cp-status[data-status="active"]::before        { content: var(--glyph-active); }
+.cp-status[data-status="running"]       { color: var(--state-running-cmd);    background: var(--state-running-cmd-surface);   border-color: var(--live-line); }
+.cp-status[data-status="running"]::before       { content: var(--glyph-running); }
+.cp-status[data-status="waiting-human"] { color: var(--state-waiting-human);  background: var(--state-waiting-human-surface); border-color: var(--attention-line); }
+.cp-status[data-status="waiting-human"]::before { content: var(--glyph-waiting); }
+.cp-status[data-status="waiting-perm"]  { color: var(--state-waiting-perm);   background: var(--state-waiting-perm-surface);  border-color: var(--caution-line); }
+.cp-status[data-status="waiting-perm"]::before  { content: var(--glyph-perm); }
+.cp-status[data-status="failed"]        { color: var(--state-failed);         background: var(--state-failed-surface);        border-color: var(--danger-line); }
+.cp-status[data-status="failed"]::before        { content: var(--glyph-failed); }
+.cp-status[data-status="blocked"]       { color: var(--state-blocked);        background: var(--state-blocked-surface);       border-color: var(--danger-line); }
+.cp-status[data-status="blocked"]::before       { content: var(--glyph-blocked); }
+.cp-status[data-status="stale"]         { color: var(--state-stale);          background: var(--state-stale-surface);         border-color: var(--warning-line); }
+.cp-status[data-status="stale"]::before         { content: var(--glyph-stale); }
+.cp-status[data-status="degraded"]      { color: var(--state-degraded);       background: var(--warning-surface);             border-color: var(--warning-line); }
+.cp-status[data-status="degraded"]::before      { content: var(--glyph-degraded); }
+.cp-status[data-status="completed"]     { color: var(--state-completed);      background: var(--state-completed-surface);     border-color: var(--success-line); }
+.cp-status[data-status="completed"]::before     { content: var(--glyph-completed); }
+.cp-status[data-status="archived"]      { color: var(--state-archived);       background: var(--state-archived-surface);      border-color: var(--border-subtle); }
+.cp-status[data-status="archived"]::before      { content: var(--glyph-archived); }
+.cp-status[data-status="conflict"]      { color: var(--state-conflict);       background: var(--state-conflict-surface);      border-color: var(--danger-line); }
+.cp-status[data-status="conflict"]::before      { content: var(--glyph-conflict); }
+.cp-status[data-status="idle"]          { color: var(--state-idle);           background: var(--state-idle-surface);          border-color: var(--border-default); }
+.cp-status[data-status="idle"]::before          { content: var(--glyph-idle); }
+.cp-status[data-status="pr-open"]       { color: var(--state-pr-open);        background: var(--state-pr-open-surface);       border-color: var(--review-line); }
+.cp-status[data-status="pr-open"]::before       { content: var(--glyph-pr); }
+.cp-status[data-status="critical"]      { color: var(--state-critical);       background: var(--critical-surface);            border-color: var(--critical-line); }
+.cp-status[data-status="critical"]::before      { content: var(--glyph-critical); }
+
+/* Solid (loud) variant — for the single most urgent chip in view. */
+.cp-status[data-emphasis="solid"][data-status="waiting-human"] {
+  background: var(--attention-solid); color: var(--attention-on-solid); border-color: transparent;
+}
+.cp-status[data-emphasis="solid"][data-status="critical"] {
+  background: var(--critical-solid); color: var(--critical-on-solid); border-color: transparent;
+}
+
+/* Live pulse on the running glyph; attention beacon on waiting-human. */
+@media (prefers-reduced-motion: no-preference) {
+  .cp-status[data-status="running"]::before { animation: cp-live-pulse 1.6s var(--ease-inout) infinite; }
+  .cp-status[data-status="waiting-human"][data-beacon] { animation: cp-attention-beacon 2.2s var(--ease-out) infinite; }
+}
+
+/* Critical actions also carry a hazard hatch so they read in grayscale. */
+.cp-hazard {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--critical-surface) 0 6px,
+    transparent 6px 12px
+  );
+}

@@ -1,0 +1,37 @@
+<!-- @dsCard group="Spacing" viewport="700x200" name="Control heights & shell metrics" subtitle="Compact desktop controls + pane dimensions" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:22px 24px; display:grid; grid-template-columns:1fr 1fr; gap:28px; }
+  h4 { margin:0 0 12px; font-size:var(--eyebrow-size); letter-spacing:var(--eyebrow-tracking); text-transform:uppercase; color:var(--text-faint); font-weight:var(--fw-semibold); }
+  .ctl { display:flex; align-items:center; gap:10px; margin-bottom:9px; }
+  .box { background:var(--surface-input); border:1px solid var(--border-default); border-radius:var(--r-2); display:flex; align-items:center; padding:0 12px; font-size:12px; color:var(--text-secondary); }
+  .nm { font-family:var(--font-mono); font-size:10px; color:var(--text-faint); }
+  .metrics { font-family:var(--font-mono); font-size:11px; color:var(--text-secondary); line-height:1.9; }
+  .metrics b { color:var(--text-primary); font-weight:var(--fw-medium); }
+</style>
+</head>
+<body>
+  <div>
+    <h4>control heights</h4>
+    <div class="ctl"><div class="box" style="height:var(--ctl-xs)">xs</div><span class="nm">22 · chips</span></div>
+    <div class="ctl"><div class="box" style="height:var(--ctl-sm)">sm</div><span class="nm">26 · rows</span></div>
+    <div class="ctl"><div class="box" style="height:var(--ctl-md)">md</div><span class="nm">30 · default</span></div>
+    <div class="ctl"><div class="box" style="height:var(--ctl-lg)">lg</div><span class="nm">36 · primary</span></div>
+  </div>
+  <div>
+    <h4>shell metrics</h4>
+    <div class="metrics">
+      topbar&nbsp;&nbsp;&nbsp;&nbsp;<b>44px</b><br>
+      statusbar&nbsp;<b>26px</b><br>
+      sidebar&nbsp;&nbsp;&nbsp;<b>264px</b><br>
+      inspector&nbsp;<b>320px</b><br>
+      timeline&nbsp;&nbsp;<b>200px</b><br>
+      divider&nbsp;&nbsp;&nbsp;<b>1px</b> · grip 6px
+    </div>
+  </div>
+</body>
+</html>

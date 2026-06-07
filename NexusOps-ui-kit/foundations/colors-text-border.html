@@ -1,0 +1,38 @@
+<!-- @dsCard group="Colors" viewport="700x240" name="Text & borders" subtitle="Ink ramp + hairline scale on graphite" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:22px 24px; display:grid; grid-template-columns:1.15fr 1fr; gap:26px; }
+  h4 { margin:0 0 12px; font-size:var(--eyebrow-size); letter-spacing:var(--eyebrow-tracking); text-transform:uppercase; color:var(--text-faint); font-weight:var(--fw-semibold); }
+  .ink { display:flex; align-items:baseline; gap:12px; padding:6px 0; }
+  .ink span.t { font-size:15px; }
+  .ink .nm { font-family:var(--font-mono); font-size:10px; color:var(--text-faint); margin-left:auto; }
+  .borders { display:flex; flex-direction:column; gap:12px; }
+  .bd { display:flex; align-items:center; gap:10px; }
+  .bd .box { width:46px; height:30px; border-radius:var(--r-2); background:var(--surface-card); }
+  .bd .nm { font-family:var(--font-mono); font-size:10px; color:var(--text-secondary); }
+  .bd .role { font-size:10px; color:var(--text-faint); }
+</style>
+</head>
+<body>
+  <div>
+    <h4>ink ramp</h4>
+    <div class="ink"><span class="t" style="color:var(--ink-1)">Primary — review this diff</span><span class="nm">ink-1</span></div>
+    <div class="ink"><span class="t" style="color:var(--ink-2)">Secondary — 7 files changed</span><span class="nm">ink-2</span></div>
+    <div class="ink"><span class="t" style="color:var(--ink-3)">Muted — 2m ago · 64% ctx</span><span class="nm">ink-3</span></div>
+    <div class="ink"><span class="t" style="color:var(--ink-4)">Faint — placeholder / disabled</span><span class="nm">ink-4</span></div>
+  </div>
+  <div>
+    <h4>borders</h4>
+    <div class="borders">
+      <div class="bd"><div class="box" style="border:1px solid var(--line-1)"></div><span class="nm">line-1</span><span class="role">subtle divider</span></div>
+      <div class="bd"><div class="box" style="border:1px solid var(--line-2)"></div><span class="nm">line-2</span><span class="role">default border</span></div>
+      <div class="bd"><div class="box" style="border:1px solid var(--line-3)"></div><span class="nm">line-3</span><span class="role">strong / focus rest</span></div>
+      <div class="bd"><div class="box" style="border:1px solid var(--line-4)"></div><span class="nm">line-4</span><span class="role">emphasis outline</span></div>
+    </div>
+  </div>
+</body>
+</html>

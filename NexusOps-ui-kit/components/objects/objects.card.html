@@ -1,0 +1,70 @@
+<!-- @dsCard group="Components" viewport="700x500" name="Objects — session, evidence, node, diff" subtitle="SessionRow · EvidenceChip · GraphNode · DiffHunk" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:18px 22px; }
+  .eyebrow { font-size:var(--eyebrow-size); letter-spacing:var(--eyebrow-tracking); text-transform:uppercase; color:var(--text-faint); font-weight:var(--fw-semibold); margin:0 0 8px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  .panel { background:var(--surface-panel); border:1px solid var(--border-subtle); border-radius:var(--r-3); padding:8px; }
+  .nodes { display:flex; gap:10px; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+  const { SessionRow, EvidenceChip, GraphNode, DiffHunk } = window.ControlPlaneDesignSystem_a21911;
+  function Demo() {
+    return (
+      <div>
+        <p className="eyebrow">session rows — attention-sorted</p>
+        <div className="panel" style={{marginBottom:18}}>
+          <SessionRow status="waiting-human" title="ENG-221 · GitHub OAuth callback" harness="claude-code" profile="Claude Max Main"
+            task={{id:'ENG-221',tone:'linear'}} branch="agent/eng-221-oauth" worktree="~/wt/eng-221" pr="#84"
+            context={{value:186,max:200}} current="$ npm test — awaiting permission" activity="2m ago" selected />
+          <SessionRow status="running" title="GH-184 · parser memory leak" harness="codex-cli" provider="codex" profile="Codex CLI Main"
+            task={{id:'#184',tone:'github'}} branch="fix/gh-184-leak" worktree="~/wt/gh-184"
+            context={{value:96,max:200}} current="editing src/parser/stream.ts" activity="just now" />
+          <SessionRow status="completed" title="Docs drift refresh" harness="claude-code" profile="Claude Team Work"
+            branch="chore/docs-drift" pr="#82" context={{value:40,max:200}} activity="14m ago" />
+        </div>
+        <div className="grid">
+          <div>
+            <p className="eyebrow">graph nodes</p>
+            <div className="nodes">
+              <GraphNode kind="session" title="ENG-221 OAuth" status="waiting-human" beacon subtitle="claude · max-main" owner="Control Plane" meta={['93% ctx']} selected />
+              <GraphNode kind="pr" title="#84 registry" status="pr-open" owner="Codex" meta={['+412 −98']} />
+            </div>
+            <p className="eyebrow" style={{marginTop:16}}>brain evidence</p>
+            <div className="nodes">
+              <EvidenceChip kind="commit" label="4f18a70" sub="add eval gate" />
+              <EvidenceChip kind="pr" label="#84" />
+              <EvidenceChip kind="anchor" label="ARCHITECTURE.md#gateway" freshness="stale" />
+              <EvidenceChip kind="session" label="Codex · PR fix" />
+            </div>
+          </div>
+          <div>
+            <p className="eyebrow">diff hunk</p>
+            <DiffHunk file="src/gateway/review.ts" header="@@ -10,3 +10,4 @@" comments={2}
+              lines={[
+                {type:'ctx',ln:10,text:'function review(plan) {'},
+                {type:'del',text:'  return run(plan)'},
+                {type:'add',ln:11,text:'  const dry = await dryRun(plan)'},
+                {type:'add',ln:12,text:'  return gateway.confirm(dry)'},
+                {type:'ctx',ln:13,text:'}'},
+              ]} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+</script>
+</body>
+</html>

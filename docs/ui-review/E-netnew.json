@@ -1,0 +1,109 @@
+{
+  "lens": "E-netnew",
+  "verdict": "material-gaps",
+  "summary": "The kit predates ARCHITECTURE.md and is missing nearly the entire net-new survival/daemon/setup/notification surface that the finalized contract makes binding. The kit's ONLY runtime-health affordance is a static green 'runtime healthy' chip (kit-shell.jsx:85 top bar, :203 dock) that represents the LocalRunner/session-execution surface, NOT the daemon<->UI IPC connection (ARCH ADR-002/§4) and has no degraded/disconnected/read-only state. Note several of these concepts were actually specified in UX_INFORMATION_ARCHITECTURE.md (Screen 1 Setup Wizard, Screen 2 'read-only mode' error, Screen 6 reconnect, §11.5 notifications, Screen 20 notification-only) and were OMITTED by the kit, then made harder-binding by ARCH §16/§17/§4. One active contradiction: Codex sessions carry concrete context numbers, violating ARCH §7.2/§9.1 supportsContextMetadata=false.",
+  "aligned": [
+    {
+      "point": "A persistent local-runtime status indicator exists in two places (top-bar pill + bottom dock status bar), so the surface for a daemon/connection health indicator is already wired into the shell chrome and only needs to be made dynamic + correctly scoped to the daemon IPC.",
+      "evidence": "kit-shell.jsx:85 (TopBar 'runtime' pill) + kit-shell.jsx:203 ('runtime healthy' in EventDock status bar) vs ARCH §4.1 process topology / §12"
+    },
+    {
+      "point": "Local runtime is modeled as a first-class integration in Settings, matching ARCH's LocalRunner desktop-addendum object — a natural home for daemon/runner health + repair actions.",
+      "evidence": "kit-data.js:337 integrations[runtime] 'Local runtime · Healthy · 3 sessions · worktree root ~/wt' vs ARCH §5.3 LocalRunner [MVP-live]"
+    },
+    {
+      "point": "The Human Input Queue is centralized, grouped, and risk-aware, and the design system already carries 'conflict', 'degraded', and 'stale' status tokens on four channels — so the fencing/hard-conflict card, fail-closed alert, and degraded daemon state can be expressed within the existing visual language without new primitives.",
+      "evidence": "kit-tasks.jsx:184-239 HumanInputQueue + groups; tokens/status.css (glyph-degraded '△', conflict); components/status/StatusPill.jsx:19 vs ARCH §17 hard-conflict card / §15 fail-closed"
+    },
+    {
+      "point": "Codex is treated as a co-equal MVP harness throughout (sessions, profiles, dispatch harness picker, usage by-provider), matching ARCH O-1 (both harnesses MVP-blocking) — the only divergence is the per-capability degradation detail, not the presence of Codex.",
+      "evidence": "kit-data.js:14,20 codex sessions; :30-31 codex profiles; kit-tasks.jsx:128-131 harness <select> incl Codex CLI/Cloud vs ARCH §0.1 O-1"
+    },
+    {
+      "point": "ExecutionProfile runtime states (active / available / rate-limited / auth-expired) and a per-profile re-auth affordance are present, which is the right substrate for the Agent-SDK credit-pool surfacing and for the §9 integration auth-failure 're-authenticate' card.",
+      "evidence": "kit-data.js:258-264 profilesDetail health states + 'Re-auth' button kit-views4.jsx:329 vs ARCH §5.1 ExecutionProfile machine / §9 integration-failure contract"
+    }
+  ],
+  "gaps": [
+    {
+      "severity": "critical",
+      "gap": "No daemon/UI-split visibility and no degraded READ-ONLY mode. The kit's 'runtime healthy' chip is hardcoded (never reflects an actual connection) and conflates the LocalRunner (session-execution surface) with the daemon<->UI IPC link. ARCH's whole topology (detached daemon = sole mutator; UI = reattaching client over UDS) means the UI must show daemon-connection state and degrade to read-only (reads-only, no intents/approvals) when the daemon is unreachable. The kit cannot express 'daemon down', and approve/dispatch buttons would falsely appear actionable.",
+      "kit_evidence": "kit-shell.jsx:85 ('runtime' pill, static success colors) + kit-shell.jsx:203 ('runtime healthy', static); no disconnected/read-only branch anywhere",
+      "doc_ref": "ARCHITECTURE.md §4.1/§4.3 (daemon vs UI), §12, §16 'Daemon-start-failure -> explicit degraded UX'; UX IA Screen 2 error 'Local runtime unavailable; show limited read-only mode and repair action'",
+      "recommendation": "Change the kit: split the single 'runtime' chip into (a) Daemon connection status (connected / reconnecting / disconnected) driven by the IPC handshake, and (b) LocalRunner health. Add a global degraded READ-ONLY mode that disables all mutating controls (approve/deny, dispatch, run-via-Gateway, commit) with an inline banner + repair action while keeping projection reads visible.",
+      "for_tasks_gen": "Capture a Daemon-connection indicator component (3+ states: connected/reconnecting/disconnected) bound to the IPC handshake, distinct from LocalRunner health; and a global READ-ONLY degraded mode that disables every intent-submitting control (Gateway approve/deny, Dispatch, Brain Run-via-Gateway, commit/push) and surfaces a 'daemon unavailable — reconnecting' banner + Retry/Repair, per ARCH §16 daemon-start-failure and UX IA Screen 2 error state."
+    },
+    {
+      "severity": "critical",
+      "gap": "No survival/recovery UX. There is no reconnect-on-UI-restart affordance and no daemon-restart 'restored view, process relaunched/replayed' banner. ARCH commits to full session survival (O-2): UI restart -> reconnect-live; daemon restart -> resume-or-replay with a user-visible banner and a per-session resumed-vs-replayed indicator, plus a 'restart session' affordance for sessions that failed during recovery.",
+      "kit_evidence": "absent — no reconnect/resume/replay/relaunch state in kit-shell.jsx, kit-data.js sessions, or the Human Input Queue; one audit row 'session resumed after rate-limit backoff' (kit-data.js:244) is unrelated to daemon survival",
+      "doc_ref": "ARCHITECTURE.md §0.1 O-2, ADR-010, §8 (Recovery: UI restart / daemon restart rows), §17 (agent/PTY death -> 'restart session' in Human Input Queue)",
+      "recommendation": "Change the kit: add a transient recovery banner ('Reconnected to daemon — view restored; N sessions resumed, M replayed') shown after restart; add a per-session badge distinguishing 'resumed (live)' vs 'replayed (relaunched)'; add a 'Restart session' action to failed sessions in the Human Input Queue.",
+      "for_tasks_gen": "Capture (1) a post-restart recovery banner summarizing reconnect + resume-vs-replay counts; (2) a per-session resumed/replayed/relaunched indicator on SessionRow and the session header; (3) a 'Restart session' affordance in the Human Input Queue for sessions that failed during recovery, per ARCH §8 recovery rows, §17, and O-2/ADR-010."
+    },
+    {
+      "severity": "critical",
+      "gap": "Codex sessions show concrete context numbers, directly violating per-capability degradation. kit-data.js gives Codex sessions s2 context 96/200 and s4 context 58/200, and the Usage 'Top context consumers' meters render concrete k-values for all sessions. ARCH mandates Codex supportsContextMetadata=false -> context-% must render 'unknown' (NULL allowed, never 0% and never a fabricated number).",
+      "kit_evidence": "kit-data.js:16 (s2 context {value:96,max:200}), :22 (s4 {value:58,max:200}); kit-views4.jsx:416-424 'Top context consumers' BMeter renders ${value}k for every session including Codex",
+      "doc_ref": "ARCHITECTURE.md §9.1 (HarnessCapabilities, supportsContextMetadata=false for Codex -> render 'unknown'), §7.2 field-level note ('NULL context-% allowed for Codex — UI renders \"unknown\", not 0%'), Appendix A TelemetrySample context_pct:Option",
+      "recommendation": "Change the kit: set Codex sessions' context to null/unknown and render an 'unknown' (or 'n/a') treatment for context meters when metric_quality=unavailable; exclude or label Codex rows in 'Top context consumers'. Add a metric_quality field (exact/estimated/unavailable) to telemetry-bearing data.",
+      "for_tasks_gen": "Capture per-capability metric degradation in the UI: context-% (and any telemetry) must render 'unknown' when HarnessCapabilities.supportsContextMetadata=false (Codex) or metric_quality=unavailable — never 0% or a fabricated number — across SessionRow, session header, and Usage 'Top context consumers'; carry exact/estimated/unavailable labels per ARCH §9.1 / §7.2 / USAGE-1..5."
+    },
+    {
+      "severity": "critical",
+      "gap": "No First-Run Setup Wizard and no macOS consent/TCC map. The kit has no wizard screen at all (only a CSS comment '/* hero / setup wizard */' on a font token in tokens/typography.css:26). ARCH §16 makes first-run bootstrap + a consent/OS-permission map binding (keychain ACL, notification permission, Full Disk Access, launchd Background Item via SMAppService, AppleEvents) each with a wizard step and a degraded-on-denial state. UX IA Screen 1 already specified this surface (9 steps, consent prompt, repair action).",
+      "kit_evidence": "absent — no setup/onboarding view in any kit-views file or command palette; only tokens/typography.css:26 comment",
+      "doc_ref": "ARCHITECTURE.md §16 (first-run bootstrap ordered steps; consent/OS-permission map), §11 (Setup Wizard listed in MVP screen set), §8 First-time setup flow; UX IA Screen 1 'First Launch / Desktop Setup Wizard'",
+      "recommendation": "Change the kit: add the First-Launch Setup Wizard screen (stepper: welcome, runtime check, Claude/Codex detection, profiles, Brain, git/GitHub/Linear, workflow packs, security policy, finish) with per-step consent cards for each macOS gate and a degraded-state for each denial + a repair action.",
+      "for_tasks_gen": "Capture the First-Launch Setup Wizard as an MVP screen with a step stepper and an explicit macOS consent/TCC map: a consent card + denied-degraded state + repair action for keychain ACL, notification permission, Full Disk Access, launchd Background Item (SMAppService), and AppleEvents (external-IDE), per ARCH §16 consent map, §11 screen set, §8 first-time-setup flow, and UX IA Screen 1."
+    },
+    {
+      "severity": "important",
+      "gap": "No fencing-conflict 'hard conflict' card in the Human Input Queue. The HIQ has only 4 groups (Permission requests, High-risk actions, Failed checks, Workflow personalization) and no representation of a lease/fencing conflict — which ARCH §17 mandates surface as a hard-conflict card that is NEVER auto-resolved.",
+      "kit_evidence": "kit-tasks.jsx:191 order=['Permission requests','High-risk actions','Failed checks · needs decision','Workflow personalization']; no fencing/conflict group; kit-data.js:328-333 humanInput has no conflict kind",
+      "doc_ref": "ARCHITECTURE.md §17 (Lease expiry / fencing conflict -> 'hard-conflict card in Human Input Queue (never auto-resolved)'), §5.1 R-9 / ActionRequest 'fencing_conflict', §0.2 ADR-008 lease+fencing",
+      "recommendation": "Change the kit: add a 'Conflicts' group (kind: 'conflict') to the Human Input Queue with a hard-conflict card showing the contended resource, the two owners/fencing tokens, and explicit manual-resolution actions (no auto-resolve, no Defer).",
+      "for_tasks_gen": "Capture a fencing/hard-conflict card type in the Human Input Queue (new group + 'conflict' kind) that shows the contended resource and competing lease owners/fencing tokens and offers only explicit human resolution (never auto-resolved, no silent defer), per ARCH §17 lease/fencing row and §5.1 R-9."
+    },
+    {
+      "severity": "important",
+      "gap": "No fail-closed / audit-integrity alert. ARCH §15/§17 require that if a side effect applied but its terminal audit event can't be written, the system emits a hard audit-integrity alert (and 'unknown outcome' for un-reconcilable executing actions on restart). The kit has no such alert surface; the Audit trail is presented as serenely 'append-only' with no integrity-failure or 'unknown outcome' state.",
+      "kit_evidence": "absent — kit-views4.jsx:208 AuditTimeline badge 'append-only · N events' with no integrity/quarantine/unknown-outcome row; kit-data.js audit[] has no integrity-failure or partially_succeeded/unknown entries",
+      "doc_ref": "ARCHITECTURE.md §15 (fail-closed-on-audit-write), §17 rows 'Event-write fails -> hard audit-integrity alert' and 'Daemon crash mid-action -> surface unknown outcome'; §5.1 ActionRequest partially_succeeded / rollback_failed",
+      "recommendation": "Change the kit: add an audit-integrity alert banner (system-level, loud) and an 'unknown outcome' / 'partially succeeded' ActionRequest status treatment in the Audit trail and Human Input Queue, distinct from normal denied/approved results.",
+      "for_tasks_gen": "Capture an audit-integrity / fail-closed alert surface: a loud system banner when an authoritative event fails to write or is quarantined, plus 'unknown outcome', 'partially succeeded', and 'rollback failed' result treatments in the Audit trail and Human Input Queue, per ARCH §15 fail-closed, §17 audit-integrity/unknown-outcome rows, and the ActionRequest terminal states in §5.1."
+    },
+    {
+      "severity": "important",
+      "gap": "No Agent-SDK credit-pool warning in Usage. ARCH §9.1 calls out a Claude Agent-SDK credit pool (effective 2026-06-15) that hard-stops when exhausted and is distinct from interactive-terminal usage; this is a load-bearing degradation/cost signal. The Usage dashboard shows spend/tokens/quota but no credit-pool meter or exhaustion warning, and Execution Profiles model only generic 'quota/limit'.",
+      "kit_evidence": "kit-views4.jsx:375-428 UsageSection (spend/tokens/context/by-profile) — no credit-pool concept; kit-data.js:46-61 usage{} and :258-264 profilesDetail use generic usage/limit only",
+      "doc_ref": "ARCHITECTURE.md §9.1 (Agent-SDK credit-pool, 2026-06-15: SDK/-p draws a capped pool that hard-stops; interactive terminal exempt) + OQ-HARN-SPIKE-7; PRD USAGE-1..5",
+      "recommendation": "Change the kit: add a distinct Agent-SDK credit-pool meter to the Usage dashboard (and/or per-profile) with an exhaustion/near-exhaustion warning state, separate from token spend and interactive usage.",
+      "for_tasks_gen": "Capture an Agent-SDK credit-pool indicator in the Usage dashboard and on Claude profiles: a dedicated meter + near-exhaustion and exhausted (hard-stop) warning states, distinct from token spend and interactive-terminal usage, per ARCH §9.1 credit-pool note."
+    },
+    {
+      "severity": "important",
+      "gap": "No native macOS desktop notifications surface. ARCH §10 specifies a 'notifier' module (DESK-8) that emits macOS UserNotifications for waiting-on-human/permission, check-failed, and session-completed, with notification permission as a setup consent step and redacted lock-screen previews. UX IA §11.5 enumerated 9 notification types and Screen 20 a 'notification-only mode'. The kit has only an in-app bell badge (kit-shell.jsx:87) and no notification settings/preferences or consent affordance.",
+      "kit_evidence": "kit-shell.jsx:87 in-app bell IconButton (badge count) only; no notification preferences in Settings; Settings tabs limited to Integrations/Execution profiles/Usage/Security & policy (kit-views4.jsx:274)",
+      "doc_ref": "ARCHITECTURE.md §10 notifier (DESK-8), §16 (notification permission consent step + redacted lock-screen previews), §15 redaction; UX IA §11.5 Notifications (9 types) + Screen 20 notification-only mode",
+      "recommendation": "Change the kit: add a Notifications settings section (toggle per notification type from the §11.5 list; permission state + request affordance; redaction note) and reflect notification-permission state in the consent map; keep the in-app bell as the in-window mirror.",
+      "for_tasks_gen": "Capture a native-notification settings surface: per-type toggles for the 9 UX IA §11.5 notification types, notification-permission state + request/repair affordance tied to the setup consent map, and a 'previews are redacted' note, mapping to the notifier triggers in ARCH §10 (SessionWaitingOnHumanInput/Permission, CheckFailed, SessionCompleted) and §16 consent/redaction."
+    },
+    {
+      "severity": "important",
+      "gap": "No version-skew handling. ARCH §6.4/§16 make the UI<->daemon handshake and a version-compatibility matrix binding, with explicit mismatch behavior (UI<->daemon: refuse+relaunch; daemon<->DB: migrate-up-or-refuse; DB-newer-than-binary: refuse-safely). The kit has no version handshake state, no 'app/daemon version mismatch — please update' screen, and no DB-migration/rollback feedback.",
+      "kit_evidence": "absent — no version/handshake/update-mismatch state in kit-shell.jsx or any kit-views; command palette and Settings have no app-version/update surface",
+      "doc_ref": "ARCHITECTURE.md §6.4 (HelloFrame/HelloAck/VersionSkewError, error code 'version_skew'), §16 (version-compatibility matrix + mismatch rules; app-update-while-daemon-running; DB migration backup/rollback)",
+      "recommendation": "Change the kit: add a version-skew blocking state (UI/daemon mismatch -> 'update required / relaunching') and a DB-migration progress + 'update failed, rolled back to vN' feedback surface, wired to the app-update flow.",
+      "for_tasks_gen": "Capture version-skew and update states: a blocking UI<->daemon version-mismatch screen ('update required'/relaunch), a DB-migration progress + rollback ('update failed, rolled back to vN') surface, and an app-update-while-running affordance, per ARCH §6.4 VersionSkewError and §16 version-compatibility matrix / app-update / migration-rollback."
+    },
+    {
+      "severity": "nice-to-have",
+      "gap": "Empty/loading/error/degraded states are largely unrepresented across screens. UX IA item #20 (component requirements) explicitly requires 'Empty/loading/error/degraded states', and ARCH leans heavily on degraded UX (daemon-start failure §16, projection-degraded §17, integration stale/offline §17, Brain degraded §13.1). The kit mostly renders happy-path data; degraded variants (offline integration 'stale (offline)' badge, Brain degraded, projection-rebuild) are absent.",
+      "kit_evidence": "kit-views4.jsx integrations/profiles/usage render only configured/healthy states; no offline/stale-projection/Brain-degraded variants in kit-data.js or views",
+      "doc_ref": "ARCHITECTURE.md §17 (network-loss 'stale (offline)' badge; projection degraded), §13.1 (Brain degrades gracefully), §16 (daemon-start degraded); UX IA §12 item 20 'Empty/loading/error/degraded states'",
+      "recommendation": "Note for build: add degraded/offline/stale variants to integration cards, the Brain status, and projection-backed lists (e.g. 'stale (offline)' badge, 'Brain degraded', 'rebuilding projections'), reusing the existing degraded/stale tokens.",
+      "for_tasks_gen": "Capture degraded/offline/stale UI variants as first-class states: integration 'stale (offline)' badges with queued-writes indication, Brain-degraded status, and projection-rebuild/degraded markers, per ARCH §17 network-loss + projection rows, §13.1 Brain-degrades, and UX IA §12 item 20."
+    }
+  ]
+}

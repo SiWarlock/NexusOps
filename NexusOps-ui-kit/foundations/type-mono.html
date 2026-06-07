@@ -1,0 +1,26 @@
+<!-- @dsCard group="Type" viewport="700x300" name="Mono — code, IDs, data" subtitle="Geist Mono — terminals, paths, SHAs, tabular numerics" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin:0; background:var(--surface-canvas); color:var(--text-primary); font-family:var(--font-sans); padding:24px 26px; }
+  .row { display:flex; align-items:baseline; gap:16px; padding:7px 0; border-bottom:1px solid var(--border-subtle); }
+  .row:last-child { border-bottom:0; }
+  .spec { font-family:var(--font-mono); font-size:10px; color:var(--text-faint); width:104px; flex:none; }
+  .mono { font-family:var(--font-mono); color:var(--text-secondary); font-size:13px; line-height:var(--lh-code); }
+  .mono .add { color:var(--diff-add-ink); }
+  .mono .del { color:var(--diff-del-ink); }
+  .mono .dim { color:var(--text-faint); }
+  .num { font-family:var(--font-mono); font-variant-numeric:tabular-nums; font-size:13px; color:var(--text-primary); }
+</style>
+</head>
+<body>
+  <div class="row"><span class="spec">path</span><span class="mono dim">~/dev/control-plane/<span style="color:var(--text-primary)">src/gateway/review.ts</span></span></div>
+  <div class="row"><span class="spec">branch · sha</span><span class="mono">agent/eng-221-oauth <span class="dim">·</span> 4f18a70</span></div>
+  <div class="row"><span class="spec">diff</span><span class="mono"><span class="add">+ const ok = await dryRun(plan)</span> <span class="dim">/</span> <span class="del">- run(plan)</span></span></div>
+  <div class="row"><span class="spec">tabular</span><span class="num">128,420 in · 41,932 out · $2.74 · 64%</span></div>
+  <div class="row"><span class="spec">command</span><span class="mono dim">$ <span style="color:var(--live-ink)">/team-start</span> backend --profile claude-max-main</span></div>
+</body>
+</html>

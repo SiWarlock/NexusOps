@@ -44,7 +44,10 @@ macro_rules! check_terminal {
             .map(|v| wire(v))
             .collect();
         let exp: BTreeSet<String> = $expected.iter().map(|s| s.to_string()).collect();
-        assert_eq!(got, exp, concat!("terminal-set mismatch for ", stringify!($ty)));
+        assert_eq!(
+            got, exp,
+            concat!("terminal-set mismatch for ", stringify!($ty))
+        );
     }};
 }
 
@@ -57,73 +60,159 @@ fn test_every_state_machine_value_present_and_serializes() {
     check_values(
         SessionStatus::ALL,
         &[
-            "creating", "starting", "active", "thinking", "running_command",
-            "editing_files", "running_tests", "waiting_on_permission",
-            "waiting_on_human_input", "waiting_on_external_service", "idle", "stale",
-            "changes_ready", "failed", "completed", "archived", "killed",
+            "creating",
+            "starting",
+            "active",
+            "thinking",
+            "running_command",
+            "editing_files",
+            "running_tests",
+            "waiting_on_permission",
+            "waiting_on_human_input",
+            "waiting_on_external_service",
+            "idle",
+            "stale",
+            "changes_ready",
+            "failed",
+            "completed",
+            "archived",
+            "killed",
         ],
     );
     check_values(
         TaskStatus::ALL,
         &[
-            "unassigned", "queued", "assigned", "ready", "in_progress", "blocked",
-            "needs_clarification", "in_review", "changes_ready", "pr_opened",
-            "needs_review", "requested_changes", "done", "deferred", "merged",
-            "closed", "abandoned",
+            "unassigned",
+            "queued",
+            "assigned",
+            "ready",
+            "in_progress",
+            "blocked",
+            "needs_clarification",
+            "in_review",
+            "changes_ready",
+            "pr_opened",
+            "needs_review",
+            "requested_changes",
+            "done",
+            "deferred",
+            "merged",
+            "closed",
+            "abandoned",
         ],
     );
     check_values(
         WorktreeGitStatus::ALL,
-        &["clean", "dirty", "untracked_files", "conflicts", "behind_base", "ahead_of_base"],
+        &[
+            "clean",
+            "dirty",
+            "untracked_files",
+            "conflicts",
+            "behind_base",
+            "ahead_of_base",
+        ],
     );
     check_values(
         WorktreeOverlayStatus::ALL,
-        &["creating", "locked", "pr_open", "merged", "prunable", "deleted"],
+        &[
+            "creating", "locked", "pr_open", "merged", "prunable", "deleted",
+        ],
     );
     check_values(
         PullRequestStatus::ALL,
         &[
-            "draft", "open", "checks_pending", "checks_failing", "needs_review",
-            "changes_requested", "approved", "mergeable", "conflict", "merged", "closed",
+            "draft",
+            "open",
+            "checks_pending",
+            "checks_failing",
+            "needs_review",
+            "changes_requested",
+            "approved",
+            "mergeable",
+            "conflict",
+            "merged",
+            "closed",
         ],
     );
     check_values(
         WorkflowInstanceStatus::ALL,
         &[
-            "not_detected", "pack_available", "needs_personalization",
-            "personalization_in_progress", "generated_review_required", "active",
-            "ready_for_team_run", "degraded", "drift_detected", "upgrade_available",
-            "archived", "detached",
+            "not_detected",
+            "pack_available",
+            "needs_personalization",
+            "personalization_in_progress",
+            "generated_review_required",
+            "active",
+            "ready_for_team_run",
+            "degraded",
+            "drift_detected",
+            "upgrade_available",
+            "archived",
+            "detached",
         ],
     );
     check_values(
         ProjectBrainStatus::ALL,
         &[
-            "not_configured", "indexing", "ready", "partial_index", "stale",
-            "graph_degraded", "transcript_ingestion_off", "transcript_ingestion_active",
-            "reindex_required", "error",
+            "not_configured",
+            "indexing",
+            "ready",
+            "partial_index",
+            "stale",
+            "graph_degraded",
+            "transcript_ingestion_off",
+            "transcript_ingestion_active",
+            "reindex_required",
+            "error",
         ],
     );
     check_values(
         ApprovalStatus::ALL,
         &[
-            "requested", "previewed", "awaiting_approval", "approved", "denied",
-            "edited", "auto_approved_by_policy", "expired", "cancelled", "escalated",
+            "requested",
+            "previewed",
+            "awaiting_approval",
+            "approved",
+            "denied",
+            "edited",
+            "auto_approved_by_policy",
+            "expired",
+            "cancelled",
+            "escalated",
         ],
     );
     check_values(
         ActionRequestStatus::ALL,
         &[
-            "submitted", "previewed", "policy_decided", "awaiting_approval", "approved",
-            "denied", "queued", "executing", "succeeded", "failed",
-            "partially_succeeded", "rolled_back", "rollback_failed", "cancelled", "expired",
+            "submitted",
+            "previewed",
+            "policy_decided",
+            "awaiting_approval",
+            "approved",
+            "denied",
+            "queued",
+            "executing",
+            "succeeded",
+            "failed",
+            "partially_succeeded",
+            "rolled_back",
+            "rollback_failed",
+            "cancelled",
+            "expired",
         ],
     );
     check_values(
         AgentTeamStatus::ALL,
         &[
-            "draft", "starting", "active", "waiting_on_human", "blocked",
-            "reconciling_outputs", "completed", "failed", "archived",
+            "draft",
+            "starting",
+            "active",
+            "waiting_on_human",
+            "blocked",
+            "reconciling_outputs",
+            "completed",
+            "failed",
+            "archived",
         ],
     );
 }
@@ -142,11 +231,27 @@ fn test_terminal_states_marked() {
     check_terminal!(ProjectBrainStatus, ["error"]);
     check_terminal!(
         ApprovalStatus,
-        ["approved", "denied", "edited", "auto_approved_by_policy", "expired", "cancelled", "escalated"]
+        [
+            "approved",
+            "denied",
+            "edited",
+            "auto_approved_by_policy",
+            "expired",
+            "cancelled",
+            "escalated"
+        ]
     );
     check_terminal!(
         ActionRequestStatus,
-        ["succeeded", "failed", "partially_succeeded", "rolled_back", "rollback_failed", "cancelled", "expired"]
+        [
+            "succeeded",
+            "failed",
+            "partially_succeeded",
+            "rolled_back",
+            "rollback_failed",
+            "cancelled",
+            "expired"
+        ]
     );
     check_terminal!(AgentTeamStatus, ["completed", "failed", "archived"]);
 }
@@ -214,7 +319,10 @@ fn test_all_22_ids_present_with_prefixes() {
 fn test_minted_id_newtype_carries_prefix_and_parses() {
     use nexusops_shared::ids::{IdKind, SessionId};
     let id = SessionId::new();
-    assert!(id.as_str().starts_with("sess_"), "minted SessionId carries sess_");
+    assert!(
+        id.as_str().starts_with("sess_"),
+        "minted SessionId carries sess_"
+    );
     assert_eq!(SessionId::KIND, IdKind::SessionId);
     let parsed = SessionId::parse(id.as_str()).expect("round-trip parse");
     assert_eq!(parsed, id);
@@ -234,7 +342,11 @@ macro_rules! check_minted {
         assert_eq!(<$ty>::parse(id.as_str()).unwrap(), id, "round-trip parse");
         // PREFIX const, KIND.prefix(), and the literal must be one single truth
         assert_eq!(<$ty>::PREFIX, $prefix, "PREFIX const agrees");
-        assert_eq!(<$ty>::KIND.prefix(), Some(<$ty>::PREFIX), "KIND.prefix() == PREFIX");
+        assert_eq!(
+            <$ty>::KIND.prefix(),
+            Some(<$ty>::PREFIX),
+            "KIND.prefix() == PREFIX"
+        );
     }};
 }
 
@@ -278,9 +390,16 @@ fn test_actor_enum_matches_r2() {
     check_values(
         ActorType::ALL,
         &[
-            "user", "project_brain", "action_gateway", "workflow_runtime",
-            "local_runner", "session_adapter", "integration_syncer", "system",
-            "remote_client", "automation_policy",
+            "user",
+            "project_brain",
+            "action_gateway",
+            "workflow_runtime",
+            "local_runner",
+            "session_adapter",
+            "integration_syncer",
+            "system",
+            "remote_client",
+            "automation_policy",
         ],
     );
 }

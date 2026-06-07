@@ -96,7 +96,10 @@ impl IdKind {
 
     /// Reverse of [`IdKind::prefix`]: the kind owning `prefix`, if any.
     pub fn from_prefix(prefix: &str) -> Option<Self> {
-        Self::ALL.iter().copied().find(|k| k.prefix() == Some(prefix))
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|k| k.prefix() == Some(prefix))
     }
 }
 

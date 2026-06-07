@@ -12,8 +12,8 @@ use crate::actor::ActorType;
 use crate::ids::IdKind;
 use crate::objects::DesktopObjectKind;
 use crate::status::{
-    ActionRequest, AgentTeam, Approval, ProjectBrain, PullRequest, Session, Task,
-    WorkflowInstance, WorktreeGit, WorktreeOverlay,
+    ActionRequest, AgentTeam, Approval, ProjectBrain, PullRequest, Session, Task, WorkflowInstance,
+    WorktreeGit, WorktreeOverlay,
 };
 use crate::CONTRACT_VERSION;
 

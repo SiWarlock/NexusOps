@@ -75,11 +75,40 @@ The MVP is "done" when:
 
 ---
 
+## Parallelization & track plan
+
+Running this with multiple agent teams. The architecture is "daemon = single source of truth + sole mutator," so most surfaces consume daemon contracts — but **Phase 0.5 freezes those contracts into `shared/` up front**, which lets tracks build in parallel against the frozen *interface* (mocking the other side; the arch even mandates a mock GatewayPort for UI tests, §14). **The fan-out trigger is the end of Phase 0 — not daemon progress.**
+
+**Sequence:** spikes (parallel) → **freeze contracts (serial neck, 0.5)** → `daemon-core` ∥ `ui` [∥ `edges`] → converge → demo.
+
+**Tracks** (`/team-start <track>`; track-prefixed `<track>-<area>-<role>` so peer DMs don't cross-bleed):
+
+| Track | Phases | Area | Runs independently because… | Mocks | Gated by |
+|---|---|---|---|---|---|
+| **shared** (the neck) | 0 | `shared/` | one team; 6 spikes (parallel) then the contract freeze | — | — |
+| **daemon-core** (critical path / long pole) | 1 → 2 → 4 | `daemon/` | it *is* the foundation everyone consumes | — | 0.4, 0.5 |
+| **ui** (biggest independent arm) | 6 | `ui/` | projection-driven; the NexusOps-ui-kit already exists | GatewayPort + projections (fixtures) | 0.5 |
+| **edges** (optional 3rd) | 3, 5, 7 | `daemon/` (+`ui/` for PR review) | executor edges submit intents to the frozen Gateway iface | Gateway executor iface | 0.1, 0.3, 0.5 |
+| **converge** | 8, 9 | `daemon/`+`ui/` | layer on once core + edges exist | — | per-phase |
+| **integration** (final gate) | 10 | all | the demo needs everything | — | ~all (esp. 0.2) |
+
+**Recommended cadence:**
+1. **One team — `/team-start daemon` → all of Phase 0.** Run the spikes in parallel; then **0.5 contract freeze** (the daemon team owns `shared/`). This is the only serial neck.
+2. **0.5 lands → `/team-start ui`** (parallel). Two arms now: daemon-core (1→2→4) + ui (6). The UI builds against the frozen enums/projections + a mock gateway-client + the NexusOps-ui-kit; it integrates with the real daemon per slice once that slice's daemon-side contract is live.
+3. **Bandwidth + 0.1/0.3 resolved → optionally `/team-start edges`** (3/5/7).
+4. **Converge** (8/9), then the **demo/deploy gate** (10) — all hands, not parallelizable.
+
+**Ceiling:** 2 tracks is the sweet spot, 3 if you have bandwidth. You are the escalation conduit for every team — past ~3 you become the bottleneck (the product's own "human attention is the scarce resource" thesis applies to *you*). **Don't fan out before 0.5** — contract churn after fan-out thrashes every track. The per-phase `Track / deps:` lines below make the dependency graph explicit.
+
+---
+
 ## Phase 0 — Pre-build spikes & contract freeze
 
 **Goal:** Resolve the build-gating spikes and freeze the shared contracts so downstream phases bind to stable enums/IDs. These are validation/decision tasks, not TDD code; each ends in a recorded decision (→ Decisions tabled / a `DECISIONS.md` note) or a `ARCHITECTURE.md` confirmation. **Gates the phases noted.**
 
 **Spec anchors:** `ARCHITECTURE.md §23` (spikes), `§0.3` (reconciliations), `§5.1`, `§5.2`, `§9.1`, `§13.1`, `§16`.
+
+**Track / deps:** `shared` (the serial neck — one team). **Deps:** none. **Parallel:** the 6 spikes run concurrently; **0.5 (contract freeze) is gated on 0.1 + 0.3** and is what unlocks every downstream track.
 
 ### 0.1 — Claude supervision-mode spike (O-4) — *gates Phase 3 Claude adapter*
 - [ ] Empirically map `can_use_tool` coverage across direct bash/Write/Edit, MCP tools, Task subagents (fg/bg), and each permission mode; confirm the #27203 background-subagent gap.
@@ -120,6 +149,8 @@ The MVP is "done" when:
 **Goal:** The trust-core spine — a detached Rust daemon owning a single-writer WAL SQLite event store with rebuildable projections, an outbox, persistent lease locks, a UDS `GatewayPort`, single-instance + first-run bootstrap, and migrations with backup/rollback. Everything downstream writes through this.
 
 **Spec anchors:** `ARCHITECTURE.md §4`, `§6.1`, `§6.4`, `§7`, `§7.1`, `§7.2`, `§5.2`, `§8` (recovery rows), `§16` (bootstrap/migration/version-compat), `§12`.
+
+**Track / deps:** `daemon-core` (critical path / long pole). **Deps:** 0.4, 0.5. **Parallel-with:** Phase 6 (ui, via mock GatewayPort + fixture projections).
 
 ### 1.1 — Event store: append-only events + envelope + FTS5
 - [ ] WAL SQLite opened with the §1 pragmas; `events` table per `§7.1` envelope (incl. reserved `payload_hash`/`previous_event_hash`); `seq` canonical order; FTS5 over the redaction-safe audit projection; `user_version` migration runner.
@@ -170,6 +201,8 @@ The MVP is "done" when:
 
 **Spec anchors:** `ARCHITECTURE.md §6`, `§6.1`, `§6.2`, `§6.3`, `§5.1` (Approval/ActionRequest), `§15` (INV-SEC-1, fail-closed), `§17` (stale-precondition, fencing-conflict, daemon-crash-mid-action).
 
+**Track / deps:** `daemon-core`. **Deps:** Phase 1, 0.5. **Parallel-with:** Phase 6 (ui); Phase 5 (git, against the frozen Gateway iface). Unblocks the `edges` track's intercept→intent path.
+
 ### 2.1 — Gateway pipeline + ActionRequest/ActionPlan model + mutation methods
 - [ ] `submit_action`/`submit_action_plan`/`preview_action`/`approve`/`deny` GatewayPort methods; the staged pipeline; `action_requests`/`approvals` durable rows; the two split state machines (R-5); authoritative `ActionExecution*` events emitted ONLY by the Gateway.
 - [ ] Files: `daemon/src/gateway/` (NEW: pipeline, request, approval), `daemon/src/ipc/` (extended)
@@ -206,6 +239,8 @@ The MVP is "done" when:
 **Goal:** One `HarnessAdapter` contract over two lifecycle models — Claude Code (drive-mode per the 0.1 spike; `can_use_tool`/`PreToolUse` defense-in-depth, default-mode-only, no background subagents) and Codex (`app-server` stdio). Embedded PTY terminals (portable-pty → xterm.js) with backpressure. Status derived from structured streams, never from PTY scraping.
 
 **Spec anchors:** `ARCHITECTURE.md §9.1`, `§5.1` (Session machine), `§6` (intercept→Gateway intent), `§7.2` (harness-derived SoT), `§9` (terminal/ADR-009), `§0.1` O-1/O-4, `§0.2` O-13.
+
+**Track / deps:** `edges`. **Deps:** 0.1 (Claude mode), 0.3 (Codex schema), 0.5, Phase 2 (Gateway intercept→intent; can mock the Gateway iface to start). **Parallel-with:** daemon-core (Phase 4), ui (Phase 6).
 
 ### 3.1 — HarnessAdapter contract + normalized types + capabilities
 - [ ] The trait `{launch, stream_status, intercept_mutation, read_transcript, telemetry_heartbeat, resume, capabilities}` + normalized types (NormalizedStatus[17], TelemetrySample{context_pct:Option, metric_quality}, MutationIntercept, TranscriptRef, ResumeResult) + `HarnessCapabilities` (10 fields); per-harness coverage matrix.
@@ -244,6 +279,8 @@ The MVP is "done" when:
 
 **Spec anchors:** `ARCHITECTURE.md §17`, `§10`, `§8` (recovery rows), `§0.1` O-2, `§5.1` (stale, Session terminals).
 
+**Track / deps:** `daemon-core`. **Deps:** Phase 1, Phase 3 (sessions/adapters must exist to survive/recover). **Parallel-with:** ui (Phase 6), edges (Phase 5/7).
+
 ### 4.1 — Survival: UI-restart reconnect + daemon-restart resume-or-replay
 - [ ] UI restart → reconnect live (daemon alive). Daemon restart → rebuild projections, re-read git2, ping Brain, reclaim leases, then per session: resume (harness `--resume`/`thread/resume`) else serialized-scrollback replay + relaunch; emit resumed-vs-replayed signal.
 - [ ] Files: `daemon/src/harness/resume.rs` (NEW), `daemon/src/bootstrap.rs` (extended)
@@ -274,6 +311,8 @@ The MVP is "done" when:
 
 **Spec anchors:** `ARCHITECTURE.md §9` (git/integrations), `§7.2` (git/profile SoT + re-read), `§5.1` (Worktree derived, ExecutionProfile), `§6.3` (git.* actions), `§15` (profile binding, keychain).
 
+**Track / deps:** `edges`. **Deps:** 0.3 (git2/octocrab), 0.5, Phase 2 (git mutations are Gateway actions; mock to start). **Parallel-with:** daemon-core, ui.
+
 ### 5.1 — Project registry + detection
 - [ ] `projects`/`repositories` registry; `project.rescan` action detects git state, GitHub remote, workflow/cc-crew signals, Brain status, plan files; emits events → projections.
 - [ ] Files: `daemon/src/git/detect.rs`, `daemon/src/workflow/detect.rs` (NEW), `daemon/src/eventstore` (registry tables)
@@ -303,6 +342,8 @@ The MVP is "done" when:
 **Goal:** The Tauri shell as a projection-driven reattaching client implementing the canonical design system (O-5), the status-rendering binding, attention-first ordering, the core screens, the net-new daemon/survival/degraded surfaces, and the accessibility MUSTs.
 
 **Spec anchors:** `ARCHITECTURE.md §11`, `§11.1`–`§11.7`, `§4` (UI=client), `§5.1` (status binding), `§7.2` (degraded SoT), `§14` (frontend tests).
+
+**Track / deps:** `ui` (biggest independent arm — open it the moment 0.5 lands). **Deps:** 0.5 only (frozen enums/projections/GatewayPort) + the existing NexusOps-ui-kit. **Parallel-with:** ALL of daemon-core + edges — builds against a mock gateway-client + fixture projections; integrate with the real daemon per slice once that slice's daemon-side contract is live (team-protocol rule).
 
 ### 6.1 — App shell + design-system integration + daemon-connection/read-only mode
 - [ ] Tauri shell (top bar, project switcher, sidebar, right drawer stack, activity dock, status bar); link `NexusOps-ui-kit` tokens + components; **daemon-connection indicator** (connected/reconnecting/disconnected) distinct from LocalRunner health; **global READ-ONLY degraded mode** disabling all intent-submitting controls + banner/Repair.
@@ -340,6 +381,8 @@ The MVP is "done" when:
 
 **Spec anchors:** `ARCHITECTURE.md §9`, `§11.2` (PR Review), `§7.2` (PR SoT), `§6.3` (github/linear actions), `§17` (integration-failure contract), `§8` (intake/PR flows).
 
+**Track / deps:** `edges`. **Deps:** 0.3, Phase 2 (Gateway), Phase 5 (git). **Parallel-with:** ui (Phase 6); the PR-Review-Workspace UI lands in the ui track and consumes this track's GitHub data.
+
 ### 7.1 — GitHub + Linear integration (read/link first)
 - [ ] octocrab (issues/PRs/checks) + gh-token bootstrap else Device Flow; Linear SDK (PKCE/key, 24h refresh); `integration_connections` (keychain); reads cached as projections; integration-failure contract (§17).
 - [ ] Files: `daemon/src/integrations/{github,linear}/` (NEW)
@@ -370,6 +413,8 @@ The MVP is "done" when:
 
 **Spec anchors:** `ARCHITECTURE.md §13.1`, `§11.5`, `§6` (Brain→Gateway intents), `§7.1` (Brain outbox payload), `§5.1` (ProjectBrain status), `§0.1` O-3, `§13.1` (notarization spike/fallback).
 
+**Track / deps:** `converge`. **Deps:** 0.2 (sidecar notarization/fallback), Phase 1 (events/outbox), Phase 2 (Gateway). **Parallel-with:** Phase 9; the Brain-drawer UI lands in the ui track.
+
 ### 8.1 — Brain MCP sidecar lifecycle + notification→event adapter
 - [ ] Spawn/own the Brain stdio MCP sidecar (`rmcp`); ping/restart/backoff/process-group-kill; MCP-notification→event mapping (BrainEventMapping); Brain outbox payload (redacted envelope, object_refs by shared ID); degrade gracefully when absent/stale (`brain_status_reported_at`).
 - [ ] Files: `daemon/src/brainclient/` (NEW)
@@ -393,6 +438,8 @@ The MVP is "done" when:
 **Goal:** The generic Workflow Pack abstraction (detection-advisory → readiness), cc-crew as the first pack (plan + architecture-anchor parsers), the command registry, the Plan view, and the AgentTeam object/projection (modeling only; orchestration deferred). Trust-gated pack script execution.
 
 **Spec anchors:** `ARCHITECTURE.md §13.2`, `§11.2` (Plan/Packs screens), `§5.1` (WorkflowInstance, AgentTeam R-6), `§15` (pack trust gate), `§19.2` (orchestration deferred).
+
+**Track / deps:** `converge`. **Deps:** Phase 1, Phase 2; the Plan-view + Workflow-Packs UI depends on Phase 6 (ui). **Parallel-with:** Phase 8.
 
 ### 9.1 — Workflow Pack detection + readiness + command registry
 - [ ] Pack/Instance model (pack≠instance); detection-advisory → explicit readiness checks; `command_registry`; workflow-owned manifests read-only (re-hash on scan → drift); trust-gated script execution (untrusted → Gateway risk≥3).
@@ -423,6 +470,8 @@ The MVP is "done" when:
 **Goal:** The First-Launch Setup Wizard + consent/TCC map, native notifications, signed/notarized packaging (incl. the Python sidecar), and the PRD §25 demo wired end-to-end as the release gate.
 
 **Spec anchors:** `ARCHITECTURE.md §16`, `§11.4` (setup wizard, consent, notifications), `§10` (notifier), `§19.1` (demo), `§14` (demo e2e), `§13.1` (sidecar notarization, 0.2 spike).
+
+**Track / deps:** `integration` (all hands — final gate, NOT parallelizable). **Deps:** ~everything (esp. 0.2 notarization, Phase 2 Gateway, Phase 6 ui, Phase 8 Brain). The Setup Wizard + consent map can be drafted in the ui track earlier; the demo e2e + signing are the convergence gate.
 
 ### 10.1 — First-Launch Setup Wizard + consent/TCC map
 - [ ] Stepper (welcome, runtime check, Claude/Codex detection, Execution Profiles, Brain, git/GitHub/Linear, Workflow Pack library, security/approval policy, finish/add-project) as idempotent/reversible/skippable Gateway intents; consent card + denied-degraded + repair for keychain ACL, notification permission, Full Disk Access, launchd Background Item, AppleEvents.

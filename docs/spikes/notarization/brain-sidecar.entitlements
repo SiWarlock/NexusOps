@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OQ-PLAT-SPIKE-1 — entitlements for the bundled PyInstaller Project Brain sidecar
+  (MVP task 0.2). Hardened-runtime exceptions required because PyInstaller's
+  bootloader + CPython map executable memory pages. Keep the surface MINIMAL:
+  enable an exception only if signing fails without it (verify incrementally).
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- REQUIRED for PyInstaller/CPython (W^X exception) — §16, ADR-005 -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- LIKELY needed: PyInstaller sets DYLD_* at bootstrap -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+
+    <!--
+      EVALUATE (prefer OFF): only enable if deep-signing every bundled .dylib/.so
+      with the SAME Team ID still fails library validation, or if the sidecar must
+      load libs signed by a different identity. Weakens security — §16 says
+      "evaluate", not "enable by default".
+    -->
+    <!-- <key>com.apple.security.cs.disable-library-validation</key><true/> -->
+</dict>
+</plist>

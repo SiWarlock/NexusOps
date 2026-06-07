@@ -78,6 +78,156 @@
       ],
       "type": "string"
     },
+    "EventEnvelope": {
+      "additionalProperties": false,
+      "description": "The §7.1 Event envelope. `seq` is the canonical total order (not `occurred_at`;\nclocks skew — both kept). Required fields are non-`Option`; the rest are optional\nper §7.1. `payload_hash`/`previous_event_hash` are reserved (R-10). The\n`redaction_status` field + `RedactionStatus` enum land with the redaction\nsub-feature commit (alongside the gate that enforces them).",
+      "properties": {
+        "action_request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "actor_id": {
+          "type": "string"
+        },
+        "actor_type": {
+          "$ref": "#/$defs/ActorType"
+        },
+        "agent_team_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approval_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "causation_id": {
+          "description": "the immediate prior event_id (typed as the frozen newtype, per §2.1)",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "correlation_id": {
+          "type": "string"
+        },
+        "event_id": {
+          "type": "string"
+        },
+        "event_type": {
+          "type": "string"
+        },
+        "event_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "object_refs": {
+          "description": "optional (§7.1) — omitted when empty, so the schema does not mark it required",
+          "items": {
+            "$ref": "#/$defs/ObjectRef"
+          },
+          "type": "array"
+        },
+        "occurred_at": {
+          "type": "string"
+        },
+        "payload_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payload_json": {
+          "type": "string"
+        },
+        "previous_event_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recorded_at": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "sensitivity": {
+          "$ref": "#/$defs/Sensitivity"
+        },
+        "seq": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "source_type": {
+          "$ref": "#/$defs/SourceType"
+        },
+        "visibility": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Visibility"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workflow_run_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "seq",
+        "event_type",
+        "event_version",
+        "occurred_at",
+        "recorded_at",
+        "workspace_id",
+        "actor_type",
+        "actor_id",
+        "source_type",
+        "source_id",
+        "correlation_id",
+        "sensitivity",
+        "payload_json",
+        "schema_version"
+      ],
+      "type": "object"
+    },
     "IdKind": {
       "description": "The 22 shared ID kinds (§5.2). Serialized snake_case (== the ID field name).",
       "enum": [
@@ -105,6 +255,23 @@
         "evidence_item_id"
       ],
       "type": "string"
+    },
+    "ObjectRef": {
+      "additionalProperties": false,
+      "description": "A normalized event→object edge (`object_refs[]`, §7.1 / DATA_MODEL §2.2).",
+      "properties": {
+        "object_id": {
+          "type": "string"
+        },
+        "object_type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "object_type",
+        "object_id"
+      ],
+      "type": "object"
     },
     "ProjectBrain": {
       "description": "ProjectBrain (10) — daemon-cached last-reported sidecar status (§7.2).",
@@ -139,6 +306,17 @@
       ],
       "type": "string"
     },
+    "Sensitivity": {
+      "description": "§7.1/§15 sensitivity classification (EM §9). Terminal output defaults `restricted`.",
+      "enum": [
+        "public",
+        "internal",
+        "confidential",
+        "secret",
+        "restricted"
+      ],
+      "type": "string"
+    },
     "Session": {
       "description": "Session lifecycle (17, R-4) — the driver-agnostic normalized vocabulary the\n§9.1 harness adapters map INTO. `stale` is time-derived (§5.1).",
       "enum": [
@@ -162,6 +340,27 @@
       ],
       "type": "string"
     },
+    "SourceType": {
+      "description": "EM §8 source model — the subsystem that emitted the event (CLOSED MVP set, 15).",
+      "enum": [
+        "desktop_ui",
+        "local_daemon",
+        "action_gateway",
+        "terminal_supervisor",
+        "claude_code_adapter",
+        "codex_adapter",
+        "git_executor",
+        "github_syncer",
+        "linear_syncer",
+        "workflow_pack_runtime",
+        "project_brain_indexer",
+        "project_brain_retriever",
+        "project_brain_action_planner",
+        "usage_meter",
+        "remote_relay"
+      ],
+      "type": "string"
+    },
     "Task": {
       "description": "Task / PlanTask superset (17, R-8).",
       "enum": [
@@ -182,6 +381,16 @@
         "merged",
         "closed",
         "abandoned"
+      ],
+      "type": "string"
+    },
+    "Visibility": {
+      "description": "§7.1 visibility scope.",
+      "enum": [
+        "user",
+        "project",
+        "workspace",
+        "system"
       ],
       "type": "string"
     },
@@ -246,6 +455,9 @@
     "desktop_object_kind": {
       "$ref": "#/$defs/DesktopObjectKind"
     },
+    "event_envelope": {
+      "$ref": "#/$defs/EventEnvelope"
+    },
     "id_kind": {
       "$ref": "#/$defs/IdKind"
     },
@@ -255,11 +467,20 @@
     "pull_request": {
       "$ref": "#/$defs/PullRequest"
     },
+    "sensitivity": {
+      "$ref": "#/$defs/Sensitivity"
+    },
     "session": {
       "$ref": "#/$defs/Session"
     },
+    "source_type": {
+      "$ref": "#/$defs/SourceType"
+    },
     "task": {
       "$ref": "#/$defs/Task"
+    },
+    "visibility": {
+      "$ref": "#/$defs/Visibility"
     },
     "workflow_instance": {
       "$ref": "#/$defs/WorkflowInstance"
@@ -284,9 +505,13 @@
     "agent_team",
     "actor_type",
     "id_kind",
-    "desktop_object_kind"
+    "desktop_object_kind",
+    "event_envelope",
+    "source_type",
+    "sensitivity",
+    "visibility"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.5.0"
+  "x-contract-version": "0.6.0"
 }

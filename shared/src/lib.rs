@@ -6,6 +6,7 @@
 //! consumed (generated) by the TS UI (Zod) and the Python Brain (Pydantic).
 
 pub mod actor;
+pub mod event_envelope;
 pub mod ids;
 pub mod objects;
 pub mod schema;
@@ -13,7 +14,7 @@ pub mod status;
 
 /// The frozen-contract version, stamped into the emitted JSON Schema and asserted
 /// to agree across Rust / schema / Zod / Pydantic (the §5.0 propagation contract).
-pub const CONTRACT_VERSION: &str = "0.5.0";
+pub const CONTRACT_VERSION: &str = "0.6.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

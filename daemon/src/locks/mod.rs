@@ -18,7 +18,7 @@ mod pidlock;
 
 // The lease types are public (they cross `EventStore`'s public method signatures); the free
 // functions are crate-internal — reached only through the connection-owning `EventStore`.
-pub(crate) use lease::{acquire, release, renew, validate_held};
+pub(crate) use lease::{acquire, reap_once, release, renew, validate_held};
 pub use lease::{FencingToken, Lease, LeaseError, LeaseKind, OwnerId, ResourceId};
 // pidlock is a standalone OS-file-lock guard (no DB) — the 1.6 bootstrap is the call site.
 pub use pidlock::{PidLock, PidLockError};

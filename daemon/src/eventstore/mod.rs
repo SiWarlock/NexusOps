@@ -406,6 +406,16 @@ impl EventStore {
         )
     }
 
+    /// Reap expired leases (§12): free every lease past `expires_at` (holder fields NULL,
+    /// token kept) + return the reclaimed set. The deterministic unit; the Tokio interval
+    /// spawn is the 1.6 bootstrap (joins the outbox drainer spawn).
+    pub fn reap_leases(
+        &mut self,
+        clock: &dyn Clock,
+    ) -> Result<Vec<(ResourceId, LeaseKind)>, LeaseError> {
+        locks::reap_once(&mut self.conn, clock)
+    }
+
     /// the applied schema version (§16)
     pub fn user_version(&self) -> i64 {
         migrations::current_user_version(&self.conn).unwrap_or(-1)

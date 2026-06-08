@@ -9,7 +9,7 @@
 //!   L1 (1–6) — leases (migration 5) + lease primitive + monotonic fencing + the live-lease
 //!             authority oracle (`validate_held`, human-ruled Option B). ⚠️ safety-critical
 //!   L2 (7–8) — pidlock single-instance (std advisory file lock). ⚠️ protects single-writer
-//!   L3 (9–10) — reaper (reap_once) + restart survival.                                       [pending]
+//!   L3 (9–10) — reaper (reap_once) + restart survival.
 
 use std::sync::Mutex;
 
@@ -447,5 +447,125 @@ fn test_pidlock_pid_reuse_no_false_single_instance() {
     assert!(
         got.is_ok(),
         "a foreign PID in the file must not falsely block (no kill(pid,0) oracle)"
+    );
+}
+
+// =============== L3 — reaper + restart survival (9–10) ========================
+
+// ---- Test 9 — reap_once frees expired leases, keeps the token (§12) ---------
+
+#[test]
+fn test_reap_once_frees_expired() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let clock = StepClock::new("2026-06-08T00:00:00Z");
+
+    // one short-lived lease (expires 00:01:00) + one long-lived (expires 01:00:00)
+    let exp = store
+        .acquire_lease(&res("wt_exp"), &kind(), &owner("a"), 60, &clock)
+        .unwrap();
+    let _live = store
+        .acquire_lease(&res("wt_live"), &kind(), &owner("b"), 3600, &clock)
+        .unwrap();
+
+    // advance past wt_exp's expiry but not wt_live's, then reap
+    clock.set("2026-06-08T00:30:00Z");
+    let reclaimed = store.reap_leases(&clock).unwrap();
+    assert_eq!(reclaimed.len(), 1, "only the expired lease is reaped");
+    assert_eq!(
+        reclaimed[0].0,
+        res("wt_exp"),
+        "the expired resource was reclaimed"
+    );
+    assert_eq!(reclaimed[0].1, kind(), "with its lease kind");
+
+    // expired lease freed (holder NULL) but the fencing high-water mark is KEPT
+    assert!(
+        lease_is_free(&path, "wt_exp"),
+        "expired lease freed by the reaper"
+    );
+    assert_eq!(
+        high_water(&path, "wt_exp"),
+        exp.fencing_token.0 as i64,
+        "reap preserves the fencing token (no reuse on the next acquire)"
+    );
+    // the live lease is untouched
+    assert!(
+        !lease_is_free(&path, "wt_live"),
+        "non-expired lease untouched"
+    );
+}
+
+// ---- Test 10 — restart preserves fencing monotonicity (ADR-008, integration) -
+
+#[test]
+fn test_restart_preserves_fencing_monotonicity() {
+    let (_d, path) = temp_db();
+
+    // a lease is held at token N, then expires; the store is dropped (restart boundary)
+    let a_token;
+    {
+        let mut store = open(&path);
+        let clock = StepClock::new("2026-06-08T00:00:00Z");
+        let a = store
+            .acquire_lease(&res("wt_1"), &kind(), &owner("a"), 60, &clock)
+            .unwrap();
+        a_token = a.fencing_token;
+    } // store dropped → DB closed: simulated daemon restart
+
+    // reopen the DB; a new acquire (past the old expiry) mints a STRICTLY-GREATER token —
+    // proving the high-water mark was persisted on disk, not held in memory.
+    let mut store2 = open(&path);
+    let clock2 = StepClock::new("2026-06-08T02:00:00Z");
+    let b = store2
+        .acquire_lease(&res("wt_1"), &kind(), &owner("b"), 60, &clock2)
+        .unwrap();
+    assert!(
+        b.fencing_token > a_token,
+        "post-restart token strictly greater (high-water persisted across restart)"
+    );
+
+    // the pre-restart token is no longer authoritative after the post-restart reclaim
+    assert!(
+        !store2
+            .validate_lease_held(&res("wt_1"), &kind(), &owner("a"), a_token, &clock2)
+            .unwrap(),
+        "pre-restart token fails validation after restart + reclaim"
+    );
+}
+
+// ---- Test 11 — reap at the exact expiry boundary; re-acquire increments (§12) -
+
+#[test]
+fn test_reap_boundary_then_reacquire_increments() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let clock = StepClock::new("2026-06-08T00:00:00Z");
+
+    // acquire (token 1, expires exactly 00:01:00)
+    let a = store
+        .acquire_lease(&res("wt_1"), &kind(), &owner("a"), 60, &clock)
+        .unwrap();
+    assert_eq!(a.fencing_token, FencingToken(1));
+
+    // boundary: now == expires_at. `live` is `expires_at > now` (strict), so the lease is
+    // NOT live; reap (`expires_at <= now`) MUST reclaim it — the two checks are complements.
+    clock.set("2026-06-08T00:01:00Z");
+    let reclaimed = store.reap_leases(&clock).unwrap();
+    assert_eq!(
+        reclaimed.len(),
+        1,
+        "a lease at exactly expires_at is reaped"
+    );
+    assert!(lease_is_free(&path, "wt_1"), "reaped slot is free");
+
+    // re-acquiring the reaped slot increments from the KEPT high-water (reap didn't reset it)
+    let b = store
+        .acquire_lease(&res("wt_1"), &kind(), &owner("b"), 60, &clock)
+        .unwrap();
+    assert_eq!(
+        b.fencing_token,
+        FencingToken(2),
+        "post-reap acquire mints token N+1 (reap preserved the high-water, no reuse)"
     );
 }

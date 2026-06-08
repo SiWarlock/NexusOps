@@ -268,3 +268,61 @@ pub(crate) fn validate_held(
         _ => false,
     })
 }
+
+/// Reaper unit (§12): free every lease past `expires_at` (NULL the holder fields, **keep**
+/// the fencing high-water mark) and return the reclaimed `(resource_id, lease_kind)` set.
+/// Non-expired leases are untouched. Expiry is otherwise lazy (acquire reclaims an expired
+/// slot on demand); this is the periodic sweep. The Tokio interval **spawn** is the 1.6
+/// bootstrap's job (joins the outbox drainer spawn, §12); 1.4 ships the deterministic unit.
+/// Select-then-free under `BEGIN IMMEDIATE` so the scan + frees commit atomically.
+///
+/// Takes `&mut Connection` (unlike the outbox `drain_once`'s autocommit `&Connection`)
+/// because the explicit `transaction_with_behavior(Immediate)` requires `&mut` — same as
+/// `acquire`'s read-modify-write.
+pub(crate) fn reap_once(
+    conn: &mut Connection,
+    clock: &dyn Clock,
+) -> Result<Vec<(ResourceId, LeaseKind)>, LeaseError> {
+    let now = clock.now_rfc3339();
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(LeaseError::Db)?;
+
+    // expired = a holder is recorded AND `expires_at <= now` (the complement of `live`'s
+    // `expires_at > now`, so a lease at exactly `now` is reaped). Lexical Z-UTC compare.
+    let expired: Vec<(String, String)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT resource_id, lease_kind FROM leases \
+                 WHERE owner_id IS NOT NULL AND expires_at IS NOT NULL AND expires_at <= ?1",
+            )
+            .map_err(LeaseError::Db)?;
+        let rows = stmt
+            .query_map(params![now], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(LeaseError::Db)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(LeaseError::Db)?);
+        }
+        out
+    };
+
+    for (resource_id, lease_kind) in &expired {
+        // free the slot but KEEP fencing_token (the next acquire still increments → no reuse).
+        tx.execute(
+            "UPDATE leases SET owner_id = NULL, acquired_at = NULL, heartbeat_at = NULL, \
+               expires_at = NULL \
+             WHERE resource_id = ?1 AND lease_kind = ?2",
+            params![resource_id, lease_kind],
+        )
+        .map_err(LeaseError::Db)?;
+    }
+    tx.commit().map_err(LeaseError::Db)?;
+
+    Ok(expired
+        .into_iter()
+        .map(|(r, k)| (ResourceId(r), LeaseKind(k)))
+        .collect())
+}

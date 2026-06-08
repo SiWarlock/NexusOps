@@ -13,6 +13,7 @@ const Session = bundle.shape.Session;
 const PullRequest = bundle.shape.PullRequest;
 const Approval = bundle.shape.Approval;
 const ActorType = bundle.shape.ActorType;
+const ActionRequest = bundle.shape.ActionRequest;
 
 // ─── Survival/recovery (PROVISIONAL — 6.4d) ──────────────────────────────────
 // The daemon's O-2 survival schema is NOT frozen. RecoveryState/ResumeMode/
@@ -71,15 +72,50 @@ export const FencingConflict = z.object({
 });
 export type FencingConflict = z.infer<typeof FencingConflict>;
 
+// ─── §17 audit-integrity (PROVISIONAL — 6.4d-2 L2) ───────────────────────────
+// Fail-closed / audit-integrity treatments (§11.4, §15/§17, safety #5). The two
+// action-outcome treatments REUSE the frozen ActionRequest enum (drift-pinned via
+// `.extract` — it THROWS at load if the frozen enum renames them; never a re-
+// declaration, Lesson §2). Only the net-new integrity signals are provisional.
+
+/** The two frozen ActionRequest outcomes that raise an audit-integrity alert. */
+export const AuditOutcomeStatus = ActionRequest.extract([
+  "partially_succeeded",
+  "rollback_failed",
+]);
+export type AuditOutcomeStatus = z.infer<typeof AuditOutcomeStatus>;
+
+/** Net-new audit-integrity signals NOT in the frozen contract (§17). PROVISIONAL. */
+export const AuditIntegrityKind = z.enum([
+  "unknown_outcome",
+  "audit_write_failed",
+  "corrupt_payload",
+]);
+export type AuditIntegrityKind = z.infer<typeof AuditIntegrityKind>;
+
+/**
+ * A fail-closed / audit-integrity signal (§15/§17, safety #5) — a discriminated
+ * union: `action_status` reuses the frozen ActionRequest outcome enum, `integrity`
+ * carries the provisional net-new signals (daemon-crash unknown-outcome, event-
+ * write-fail, corrupt-payload quarantine). PROVISIONAL.
+ */
+export const AuditIntegrityState = z.discriminatedUnion("source", [
+  z.object({ source: z.literal("action_status"), status: AuditOutcomeStatus }),
+  z.object({ source: z.literal("integrity"), kind: AuditIntegrityKind }),
+]);
+export type AuditIntegrityState = z.infer<typeof AuditIntegrityState>;
+
 /**
  * The aggregate §17 safety state the Shell renders (fixture-driven; the daemon
- * §17 failure-mode logic isn't built). The audit-integrity half (L2) extends this
- * with an `integrity` member. PROVISIONAL — mirrors the `RecoveryStatus` input-
- * prop shape (a Zod schema, validated at the boundary when real state lands).
+ * §17 failure-mode logic isn't built). PROVISIONAL — mirrors the `RecoveryStatus`
+ * input-prop shape (a Zod schema, validated at the boundary when real state lands).
  */
 export const SafetyState = z.object({
   // A pending fencing/hard-conflict, or null when clean (non-intrusive default).
   conflict: FencingConflict.nullable(),
+  // A pending fail-closed/audit-integrity signal, or null when clean. REQUIRED
+  // (not optional) so a #5 caller can't silently omit a must-be-seen alert.
+  integrity: AuditIntegrityState.nullable(),
 });
 export type SafetyState = z.infer<typeof SafetyState>;
 

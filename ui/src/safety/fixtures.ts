@@ -7,7 +7,7 @@
 // this module supplies only the fixture VALUES, not the type.
 import type { FencingConflict, SafetyState } from "../contracts/index";
 
-export const safetyCleanFixture: SafetyState = { conflict: null };
+export const safetyCleanFixture: SafetyState = { conflict: null, integrity: null };
 
 export const fencingConflictFixture: FencingConflict = {
   action_request_id: "act_fixture_1",

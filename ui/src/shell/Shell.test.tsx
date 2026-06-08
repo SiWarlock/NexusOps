@@ -152,7 +152,7 @@ describe("Shell", () => {
     render(
       <Shell
         gateway={new MockGatewayPort()}
-        safety={{ conflict: fencingConflictFixture }}
+        safety={{ conflict: fencingConflictFixture, integrity: null }}
       />,
     );
     await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
@@ -163,11 +163,33 @@ describe("Shell", () => {
     expect(screen.getByTestId("conflict-resolve")).toHaveProperty("disabled", true);
   });
 
-  it("shell_safety_clean_by_default_renders_no_conflict_card", async () => {
+  it("shell_renders_audit_integrity_alert_from_safety_prop", async () => {
+    render(
+      <Shell
+        gateway={new MockGatewayPort()}
+        safety={{
+          conflict: null,
+          integrity: { source: "integrity", kind: "audit_write_failed" },
+        }}
+      />,
+    );
+    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    // the §17 fail-closed audit-integrity alert is reachable in the shell (Step
+    // 7.5), non-dismissible (its acknowledge is parked/disabled)
+    const alert = screen.getByTestId("audit-integrity-alert");
+    expect(alert.getAttribute("data-treatment")).toBe("audit_write_failed");
+    expect(screen.getByTestId("audit-integrity-acknowledge")).toHaveProperty(
+      "disabled",
+      true,
+    );
+  });
+
+  it("shell_safety_clean_by_default_renders_no_safety_surfaces", async () => {
     render(<Shell gateway={new MockGatewayPort()} />);
     await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
-    // default safety fixture is clean → no conflict card intrudes (like 6.4d recovered)
+    // default safety fixture is clean → neither surface intrudes (like 6.4d recovered)
     expect(screen.queryByTestId("hard-conflict-card")).toBeNull();
+    expect(screen.queryByTestId("audit-integrity-alert")).toBeNull();
   });
 
   it("shell_renders_recovery_banner", async () => {

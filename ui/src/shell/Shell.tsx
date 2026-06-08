@@ -35,6 +35,7 @@ import { DegradedBanner } from "../connection/DegradedBanner";
 import { RecoveryBanner } from "../recovery/RecoveryBanner";
 import { recoveryStatusFixture } from "../recovery/fixtures";
 import { HardConflictCard } from "../safety/HardConflictCard";
+import { AuditIntegrityAlert } from "../safety/AuditIntegrityAlert";
 import { safetyCleanFixture } from "../safety/fixtures";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
@@ -193,11 +194,13 @@ export function Shell({
         {/* Survival/recovery banner (O-2) — a DISTINCT surface from the transport
             DegradedBanner above. Non-intrusive (renders nothing) when recovered. */}
         <RecoveryBanner recovery={recovery} />
-        {/* §17 safety-state host (6.4d-2) — a THIRD distinct concern beyond the
-            transport DegradedBanner + the session-survival RecoveryBanner. Hosts
-            the never-auto-resolved fencing/hard-conflict card (#6) and, at L2, the
-            fail-closed audit-integrity alert (#5). Non-intrusive when clean; the
-            full 7-group Human Input Queue host is Phase 8 (intent seam). */}
+        {/* §17 fail-closed / audit-integrity alert (#5) — prominent + non-
+            dismissible, rendered near the banner stack so the signal is seen. A
+            THIRD distinct safety concern beyond transport-degraded + survival. */}
+        <AuditIntegrityAlert integrity={safety.integrity} />
+        {/* §17 safety-state host (6.4d-2) — hosts the never-auto-resolved fencing/
+            hard-conflict card (#6). Non-intrusive when clean; the full 7-group
+            Human Input Queue host is Phase 8 (intent seam). */}
         <div className="safety-host" data-testid="safety-host">
           <HardConflictCard conflict={safety.conflict} />
         </div>

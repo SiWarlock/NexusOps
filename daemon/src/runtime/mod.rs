@@ -13,7 +13,9 @@
 //! the accept-loop, and the subscribe source.
 
 mod drainer;
+mod listener;
 mod writer;
 
 pub use drainer::{spawn_drainer, spawn_reaper};
+pub use listener::{bind, spawn_accept_loop};
 pub use writer::{RuntimeError, WriteActor, WriteHandle};

@@ -23,7 +23,7 @@ mod server;
 mod subscribe;
 mod transport;
 
-pub use peer::{authorize_peer, peer_uid};
+pub use peer::{authorize_peer, current_euid, peer_uid};
 pub use server::serve_connection;
 pub use subscribe::push_subscription;
 pub use transport::{decode_len, encode_frame, read_frame, write_frame, MAX_FRAME_SIZE};

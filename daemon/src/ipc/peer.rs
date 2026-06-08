@@ -24,6 +24,15 @@ pub fn authorize_peer(peer_uid: u32, daemon_uid: u32) -> Result<(), IpcError> {
     }
 }
 
+/// The daemon's own effective uid — the authority `authorize_peer` compares a peer against
+/// (safety rule #7). `geteuid(2)` matches `getpeereid`'s EFFECTIVE-uid semantics. The accept-loop
+/// reads this once at startup and passes it as `daemon_uid` to every `serve_connection`.
+pub fn current_euid() -> u32 {
+    // SAFETY: `geteuid` is infallible (POSIX: it always succeeds, takes no args, returns the
+    // calling process's effective uid). `libc::uid_t` is u32 on every target — no cast.
+    unsafe { libc::geteuid() }
+}
+
 /// Read the connected peer's effective uid from a UDS file descriptor via `getpeereid(2)`.
 /// **Fail-closed:** on a syscall error this returns `Err` (an `IpcError::Io`) — the caller
 /// gets no uid and therefore can never authorize the peer (safety rule #7).

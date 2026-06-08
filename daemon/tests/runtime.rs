@@ -10,14 +10,20 @@
 use nexusops_shared::actor::ActorType;
 use nexusops_shared::event_envelope::{Sensitivity, SourceType};
 use nexusops_shared::ids::WorkspaceId;
+use nexusops_shared::ipc::{
+    GetProjectionParams, HelloAck, HelloFrame, ProjectionName, RpcRequest, RpcResponse, ServerFrame,
+};
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{
     open_read_only, AppendIntent, EventStore, JsonlMirror, PrefixRedactor, DRAIN_BATCH_LIMIT,
 };
 use nexusopsd::idgen::UlidGen;
+use nexusopsd::ipc::{current_euid, read_frame, write_frame};
 use nexusopsd::locks::{LeaseKind, OwnerId, ResourceId};
-use nexusopsd::runtime::{spawn_drainer, spawn_reaper, WriteActor};
+use nexusopsd::runtime::{bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor};
 
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -239,4 +245,198 @@ async fn test_reaper_loop_invokes_reap_once() {
     );
 
     actor.shutdown().await;
+}
+
+// ---- L3 — UDS bind + accept-loop ---------------------------------------------
+
+/// connect + send a HelloFrame; return `true` if the server REJECTED us (dropped the connection
+/// before a HelloAck — e.g. a foreign-uid reject or at-cap refusal → read_frame errs on EOF).
+fn client_rejected(sock: &Path) -> bool {
+    let mut stream = StdUnixStream::connect(sock).expect("connect");
+    let hello = HelloFrame {
+        protocol_version: 1,
+        client_kind: "test".to_string(),
+        app_version: "0".to_string(),
+    };
+    let _ = write_frame(&mut stream, &serde_json::to_vec(&hello).unwrap());
+    read_frame(&mut stream).is_err()
+}
+
+/// connect + handshake; return the open stream (held → holds the server-side permit) + the ack.
+fn client_handshake(sock: &Path) -> (StdUnixStream, HelloAck) {
+    let mut stream = StdUnixStream::connect(sock).expect("connect");
+    let hello = HelloFrame {
+        protocol_version: 1,
+        client_kind: "test".to_string(),
+        app_version: "0".to_string(),
+    };
+    write_frame(&mut stream, &serde_json::to_vec(&hello).unwrap()).expect("write hello");
+    let ack: HelloAck =
+        serde_json::from_slice(&read_frame(&mut stream).expect("read ack")).expect("decode ack");
+    (stream, ack)
+}
+
+/// connect → handshake → one get_projection → half-close → read the RpcResponse (a full session).
+fn client_get_projection(sock: &Path, name: ProjectionName) -> RpcResponse {
+    let mut stream = StdUnixStream::connect(sock).expect("connect");
+    let hello = HelloFrame {
+        protocol_version: 1,
+        client_kind: "test".to_string(),
+        app_version: "0".to_string(),
+    };
+    write_frame(&mut stream, &serde_json::to_vec(&hello).unwrap()).expect("write hello");
+    let req = RpcRequest {
+        method: "get_projection".to_string(),
+        params: serde_json::to_value(GetProjectionParams { name, scope: None }).unwrap(),
+        id: 1,
+    };
+    write_frame(&mut stream, &serde_json::to_vec(&req).unwrap()).expect("write req");
+    stream
+        .shutdown(Shutdown::Write)
+        .expect("half-close write → serve loop ends on EOF");
+    let _ack: HelloAck =
+        serde_json::from_slice(&read_frame(&mut stream).expect("read ack")).expect("decode ack");
+    match serde_json::from_slice::<ServerFrame>(&read_frame(&mut stream).expect("read resp"))
+        .expect("decode ServerFrame")
+    {
+        ServerFrame::RpcResponse(r) => r,
+        ServerFrame::SubscriptionPush(_) => {
+            panic!("expected an RpcResponse, got a SubscriptionPush")
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_bind_reclaims_stale_socket() {
+    // §16 stale-socket reclaim: a leftover socket file must not block bind (the pidlock already
+    // guarantees single-instance, so any existing socket is stale → unlink-first, no EADDRINUSE).
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("gw.sock");
+    let stale = bind(&sock).unwrap();
+    drop(stale); // the socket FILE remains on disk after the listener drops
+    assert!(sock.exists(), "a leftover socket file remains");
+    let _listener = bind(&sock).expect("a fresh bind reclaims the stale socket");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_foreign_peer_rejected_in_accept_path() {
+    // safety rule #7, end-to-end through the accept path: a peer whose uid ≠ the daemon-uid is
+    // rejected. We force the mismatch by configuring a daemon_uid ≠ our real euid.
+    let (_d, path) = temp_db();
+    open_store(&path);
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("gw.sock");
+    let listener = bind(&sock).unwrap();
+    let (sd_tx, sd_rx) = watch::channel(false);
+    let wrong_daemon_uid = current_euid().wrapping_add(1); // ≠ our real peer uid
+    let accept = spawn_accept_loop(listener, path.clone(), wrong_daemon_uid, 8, sd_rx);
+
+    let sock2 = sock.clone();
+    let rejected = tokio::task::spawn_blocking(move || client_rejected(&sock2))
+        .await
+        .unwrap();
+    assert!(
+        rejected,
+        "a foreign-uid peer is rejected through the accept path (rule #7)"
+    );
+
+    sd_tx.send(true).unwrap();
+    let _ = accept.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_connection_cap_enforced() {
+    // anti-DoS: at the concurrency cap, a new connection is refused. cap=1; A handshakes + holds
+    // its connection open (holding the one permit); B is then refused.
+    let (_d, path) = temp_db();
+    open_store(&path);
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("gw.sock");
+    let listener = bind(&sock).unwrap();
+    let (sd_tx, sd_rx) = watch::channel(false);
+    let uid = current_euid();
+    let accept = spawn_accept_loop(listener, path.clone(), uid, 1, sd_rx); // cap = 1
+
+    let sock_a = sock.clone();
+    // A handshakes + keeps the connection open → holds the single permit (acquired before its ack).
+    let (a_stream, _ack) = tokio::task::spawn_blocking(move || client_handshake(&sock_a))
+        .await
+        .unwrap();
+
+    let sock_b = sock.clone();
+    let b_rejected = tokio::task::spawn_blocking(move || client_rejected(&sock_b))
+        .await
+        .unwrap();
+    assert!(
+        b_rejected,
+        "at the cap, a new connection is refused (anti-DoS)"
+    );
+
+    drop(a_stream);
+    sd_tx.send(true).unwrap();
+    let _ = accept.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_connection_permit_released_on_close() {
+    // the completing half of the anti-DoS invariant: a permit is RELEASED on connection close, so
+    // a later connection succeeds (no permit leak / self-DoS). cap=1; A does a full session + closes;
+    // B then connects successfully.
+    let (_d, path) = temp_db();
+    open_store(&path);
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("gw.sock");
+    let listener = bind(&sock).unwrap();
+    let (sd_tx, sd_rx) = watch::channel(false);
+    let uid = current_euid();
+    let accept = spawn_accept_loop(listener, path.clone(), uid, 1, sd_rx); // cap = 1
+
+    let sock_a = sock.clone();
+    let _resp = tokio::task::spawn_blocking(move || {
+        client_get_projection(&sock_a, ProjectionName::Session)
+    })
+    .await
+    .unwrap();
+    // give A's serve task a beat to finish + release the permit (accept-loop liveness timing).
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let sock_b = sock.clone();
+    let b_rejected = tokio::task::spawn_blocking(move || client_rejected(&sock_b))
+        .await
+        .unwrap();
+    assert!(
+        !b_rejected,
+        "a later connection succeeds — the permit was released on the prior connection's close"
+    );
+
+    sd_tx.send(true).unwrap();
+    let _ = accept.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_read_projection_over_real_socket() {
+    // §6.1 live read, in-process: a client handshakes + reads a projection over a REAL bound UDS
+    // (accept-loop → getpeereid → serve_connection → dispatch over read-only WAL).
+    let (_d, path) = temp_db();
+    open_store(&path); // create + migrate the DB so the read-only conn + projections exist
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("gw.sock");
+    let listener = bind(&sock).unwrap();
+    let (sd_tx, sd_rx) = watch::channel(false);
+    let uid = current_euid();
+    let accept = spawn_accept_loop(listener, path.clone(), uid, 8, sd_rx);
+
+    let sock2 = sock.clone();
+    let resp =
+        tokio::task::spawn_blocking(move || client_get_projection(&sock2, ProjectionName::Session))
+            .await
+            .unwrap();
+    assert_eq!(resp.id, 1, "the response correlates by id");
+    assert!(
+        resp.error.is_none(),
+        "the projection read succeeded over the real socket"
+    );
+
+    sd_tx.send(true).unwrap();
+    let _ = accept.await;
 }

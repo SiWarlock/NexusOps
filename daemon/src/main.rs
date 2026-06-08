@@ -13,11 +13,12 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
-use nexusopsd::bootstrap::{cold_start, BootstrapConfig};
+use nexusopsd::bootstrap::{cold_start, BootstrapConfig, DB_FILENAME};
 use nexusopsd::clock::SystemClock;
 use nexusopsd::eventstore::{JsonlMirror, PrefixRedactor};
 use nexusopsd::idgen::UlidGen;
-use nexusopsd::runtime::{spawn_drainer, spawn_reaper, WriteActor};
+use nexusopsd::ipc::current_euid;
+use nexusopsd::runtime::{bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor};
 
 /// outbox drain cadence (§12) — deliver due rows a few times a minute.
 const DRAINER_INTERVAL: Duration = Duration::from_secs(5);
@@ -25,6 +26,10 @@ const DRAINER_INTERVAL: Duration = Duration::from_secs(5);
 const REAPER_INTERVAL: Duration = Duration::from_secs(30);
 /// the local JSONL audit/debug mirror sink (§10.4) within the app-support dir.
 const EVENTS_MIRROR_FILE: &str = "events.jsonl";
+/// the GatewayPort UDS within the app-support dir (§6.4).
+const SOCKET_FILE: &str = "gateway.sock";
+/// max concurrent live GatewayPort connections (anti-DoS bound, §6.4).
+const MAX_CONNECTIONS: usize = 64;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -67,14 +72,27 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         DRAINER_INTERVAL,
         shutdown_rx.clone(),
     );
-    let reaper = spawn_reaper(handle, REAPER_INTERVAL, shutdown_rx);
+    let reaper = spawn_reaper(handle, REAPER_INTERVAL, shutdown_rx.clone());
+
+    // L3 — bind the GatewayPort UDS (reclaiming a stale socket) + spawn the peer-auth'd accept-loop.
+    let db_path = base_dir.join(DB_FILENAME);
+    let listener = bind(&base_dir.join(SOCKET_FILE))?;
+    eprintln!("nexusopsd: GatewayPort listening at {SOCKET_FILE}");
+    let accept = spawn_accept_loop(
+        listener,
+        db_path,
+        current_euid(),
+        MAX_CONNECTIONS,
+        shutdown_rx,
+    );
 
     wait_for_shutdown().await;
     eprintln!("nexusopsd: shutdown signal received; draining + exiting");
-    // stop the interval loops, then drain + close the writer.
+    // stop the interval loops + accept-loop, then drain + close the writer.
     let _ = shutdown_tx.send(true);
     let _ = drainer.await;
     let _ = reaper.await;
+    let _ = accept.await;
     actor.shutdown().await;
     // _pidlock drops here → the single-instance OS lock releases.
     Ok(())

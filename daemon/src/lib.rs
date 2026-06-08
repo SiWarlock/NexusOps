@@ -6,6 +6,7 @@
 //! backup/rollback (§16), read-only WAL readers, and injectable `Clock`+`IdGen`
 //! for deterministic golden-log replay (§14).
 
+pub mod bootstrap;
 pub mod clock;
 pub mod eventstore;
 pub mod idgen;

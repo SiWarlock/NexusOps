@@ -157,12 +157,14 @@ fn test_migration_3_over_existing_events_backs_up() {
             .unwrap();
         conn.execute_batch(nexusopsd::eventstore::MIGRATION_2_REDACTION)
             .unwrap();
+        // valid minted IDs so the startup catch-up replay can reconstruct + fold it
         conn.execute(
             "INSERT INTO events (event_id, seq, event_type, event_version, occurred_at, \
              recorded_at, workspace_id, actor_type, actor_id, source_type, source_id, \
-             correlation_id, sensitivity, payload_json, redaction_status) \
-             VALUES ('evt_x',1,'SessionStarted',1,'t','t','ws_x','user','u','desktop_ui','s',\
-             'c','internal','{}','redacted')",
+             correlation_id, sensitivity, payload_json, schema_version, redaction_status) \
+             VALUES ('evt_01ARZ3NDEKTSV4RRFFQ69G5FAV',1,'SessionStarted',1,\
+             '2026-06-07T00:00:00Z','2026-06-07T00:00:00Z','ws_01ARZ3NDEKTSV4RRFFQ69G5FAV',\
+             'user','u','desktop_ui','s','c','internal','{}','event-envelope-v1','redacted')",
             [],
         )
         .unwrap();
@@ -424,4 +426,223 @@ fn test_session_started_increments_activity_counter() {
         )
         .unwrap();
     assert_eq!(active, 2, "two SessionStarted → active_sessions counts 2");
+}
+
+// ======================= L3 — recovery (tests 10–13, 15) ====================
+
+/// a stable fingerprint of the whole projection surface (for rebuild-equivalence).
+fn projection_fingerprint(path: &std::path::Path) -> String {
+    let conn = nexusopsd::eventstore::open_read_only(path).unwrap();
+    let sessions: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT session_id, status FROM proj_session ORDER BY session_id")
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok(format!(
+                "{}={}",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    };
+    let one = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    format!(
+        "sessions=[{}] refs={} nodes={} edges={} audit={} activity={}",
+        sessions.join(","),
+        one("SELECT COUNT(*) FROM object_refs"),
+        one("SELECT COUNT(*) FROM proj_graph_node"),
+        one("SELECT COUNT(*) FROM proj_graph_edge"),
+        one("SELECT COUNT(*) FROM proj_audit_trail"),
+        one("SELECT COALESCE(SUM(active_sessions),0) FROM proj_project_activity"),
+    )
+}
+
+// ---- Test 10 — startup catch-up replays pending events (§7.2) ----------------
+
+#[test]
+fn test_startup_catch_up_replays_pending() {
+    let (_d, path) = temp_db();
+    let pid = ProjectId::new();
+    {
+        let mut store = open(&path);
+        store
+            .append(session_intent(
+                &SessionId::new(),
+                &pid,
+                "{\"status\":\"starting\"}",
+            ))
+            .unwrap();
+        store
+            .append(session_intent(
+                &SessionId::new(),
+                &pid,
+                "{\"status\":\"starting\"}",
+            ))
+            .unwrap();
+    }
+    // simulate a projector that lagged behind the log (crash mid-write): rewind the
+    // session offset + drop its rows, leaving the raw events ahead.
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute("UPDATE projection_offsets SET last_seq=0, state='healthy' WHERE projection_name='session'", []).unwrap();
+        conn.execute("DELETE FROM proj_session", []).unwrap();
+    }
+    // reopening runs catch_up_replay → folds events WHERE seq > last_seq
+    let _store = open(&path);
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_session"),
+        2,
+        "catch-up re-folded the 2 pending events"
+    );
+    assert_eq!(offset(&path, "session"), (2, "healthy".to_string()));
+}
+
+// ---- Test 11 — rebuild == incremental fold (§7.2 fully-rebuildable) ----------
+
+#[test]
+fn test_rebuild_equivalence() {
+    let (_d, path) = temp_db();
+    let pid = ProjectId::new();
+    let mut store = open(&path);
+    for _ in 0..3 {
+        store
+            .append(session_intent(
+                &SessionId::new(),
+                &pid,
+                "{\"status\":\"active\"}",
+            ))
+            .unwrap();
+    }
+    let incremental = projection_fingerprint(&path);
+    store.rebuild_projections().unwrap();
+    let rebuilt = projection_fingerprint(&path);
+    assert_eq!(
+        incremental, rebuilt,
+        "full rebuild reproduces the incremental-fold state"
+    );
+}
+
+// ---- Test 12 — rebuild truncates proj_* but never the raw events (§7.2) ------
+
+#[test]
+fn test_rebuild_preserves_raw_events() {
+    let (_d, path) = temp_db();
+    let pid = ProjectId::new();
+    let mut store = open(&path);
+    for _ in 0..3 {
+        store
+            .append(session_intent(
+                &SessionId::new(),
+                &pid,
+                "{\"status\":\"active\"}",
+            ))
+            .unwrap();
+    }
+    let before = store.read_all().unwrap();
+    store.rebuild_projections().unwrap();
+    let after = store.read_all().unwrap();
+    assert_eq!(
+        before, after,
+        "rebuild leaves the raw events byte-identical"
+    );
+    assert_eq!(after.len(), 3);
+}
+
+// ---- Test 13 — unknown event_version degrades, skips, continues (§7.2/§17) ---
+
+#[test]
+fn test_unknown_event_version_degrades_skips() {
+    let (_d, path) = temp_db();
+    let pid = ProjectId::new();
+    let sid_b = SessionId::new();
+    let mut store = open(&path);
+    store
+        .append(session_intent(
+            &SessionId::new(),
+            &pid,
+            "{\"status\":\"starting\"}",
+        ))
+        .unwrap(); // seq 1
+    store
+        .append(session_intent(&sid_b, &pid, "{\"status\":\"active\"}"))
+        .unwrap(); // seq 2
+                   // make seq 1 unfoldable by this binary (a future event_version)
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute("UPDATE events SET event_version = 9999 WHERE seq = 1", [])
+            .unwrap();
+    }
+    store.rebuild_projections().unwrap();
+
+    // seq 1 skipped (degraded), seq 2 still folded (skip + continue), events intact
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_session"),
+        1,
+        "only the foldable event projected"
+    );
+    let only: String = nexusopsd::eventstore::open_read_only(&path)
+        .unwrap()
+        .query_row("SELECT session_id FROM proj_session", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        only,
+        sid_b.as_str(),
+        "the survivor is seq 2, not the degraded seq 1"
+    );
+    // the offset advanced PAST the degraded seq 1 to the last folded seq 2 — a
+    // degraded event never strands last_seq, so a reopen re-folds nothing (no
+    // double-count); a future binary that understands the version re-attempts seq 1.
+    assert_eq!(
+        offset(&path, "session"),
+        (2, "degraded".to_string()),
+        "advanced past the skip, sticky-degraded"
+    );
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM events"),
+        2,
+        "raw events never mutated"
+    );
+}
+
+// ---- Test 15 — catch-up is a strict no-op when offsets are current (§7.2) ----
+
+#[test]
+fn test_catch_up_replay_noop_when_offsets_current() {
+    let (_d, path) = temp_db();
+    let pid = ProjectId::new();
+    {
+        let mut store = open(&path);
+        store
+            .append(session_intent(
+                &SessionId::new(),
+                &pid,
+                "{\"status\":\"starting\"}",
+            ))
+            .unwrap();
+        store
+            .append(session_intent(
+                &SessionId::new(),
+                &pid,
+                "{\"status\":\"starting\"}",
+            ))
+            .unwrap();
+    }
+    let before = projection_fingerprint(&path);
+    // reopen → catch_up_replay runs with offsets already current → strict `seq > last_seq`
+    // means it folds NOTHING: the increment-only activity counter is NOT doubled and
+    // object_refs hits no PK conflict (idempotent replay on restart).
+    let _store = open(&path);
+    let after = projection_fingerprint(&path);
+    assert_eq!(
+        before, after,
+        "catch-up on a current log is a no-op (no double-count)"
+    );
+    // explicit: activity stayed at 2, not 4
+    assert!(
+        after.contains("activity=2"),
+        "counter not re-incremented: {after}"
+    );
 }

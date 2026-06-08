@@ -15,9 +15,10 @@ mod activity;
 mod audit;
 mod graph;
 mod object_refs;
+mod schema;
 mod session;
 
-use rusqlite::{params, Transaction};
+use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde::Serialize;
 
 use nexusops_shared::event_envelope::EventEnvelope;
@@ -33,6 +34,12 @@ pub enum ProjectionError {
     /// reject-unknown). The reason MUST NOT echo (possibly sensitive) payload bytes.
     #[error("projection decode failed: {0}")]
     Decode(String),
+    /// an offset write touched != 1 row — the projector's offset row is missing or
+    /// duplicated (a §2.4 invariant break). Fail-closed: a silently-missing offset
+    /// row would leave `last_seq` un-advanced, so catch-up re-folds it every reopen
+    /// and the non-idempotent counters double-count.
+    #[error("offset anomaly for {projector}: {rows} rows touched")]
+    OffsetAnomaly { projector: String, rows: usize },
 }
 
 /// A single read-model fold. `apply` writes its rows for `env` **within the caller's
@@ -111,9 +118,11 @@ pub(crate) fn apply_one(
             mark_degraded(tx, name)?;
             Ok(())
         }
-        Err(ProjectionError::Db(e)) => {
+        // a Db / OffsetAnomaly (infrastructure or integrity) error fails closed: roll
+        // the projector back and propagate so the whole append/replay txn aborts.
+        Err(e) => {
             tx.execute_batch(&format!("ROLLBACK TO \"{name}\"; RELEASE \"{name}\""))?;
-            Err(ProjectionError::Db(e))
+            Err(e)
         }
     }
 }
@@ -136,22 +145,37 @@ fn advance_offset(
     name: &str,
     env: &EventEnvelope,
 ) -> Result<(), ProjectionError> {
-    tx.execute(
+    let rows = tx.execute(
         "UPDATE projection_offsets SET \
            last_event_id = ?2, last_seq = ?3, last_processed_at = ?4, \
            state = CASE WHEN state = 'degraded' THEN 'degraded' ELSE 'healthy' END \
          WHERE projection_name = ?1",
         params![name, env.event_id.as_str(), env.seq, env.recorded_at],
     )?;
-    Ok(())
+    expect_one_row(name, rows)
 }
 
 fn mark_degraded(tx: &Transaction, name: &str) -> Result<(), ProjectionError> {
-    tx.execute(
+    let rows = tx.execute(
         "UPDATE projection_offsets SET state = 'degraded' WHERE projection_name = ?1",
         params![name],
     )?;
-    Ok(())
+    expect_one_row(name, rows)
+}
+
+/// Fail-closed if an offset write didn't touch exactly one row — a missing offset
+/// row would silently strand `last_seq`, re-folding the log on every reopen (and
+/// double-counting the non-idempotent counters). `ensure_offset_row` runs first, so
+/// this is structurally unreachable in normal flow — it backstops a regression.
+fn expect_one_row(projector: &str, rows: usize) -> Result<(), ProjectionError> {
+    if rows == 1 {
+        Ok(())
+    } else {
+        Err(ProjectionError::OffsetAnomaly {
+            projector: projector.to_string(),
+            rows,
+        })
+    }
 }
 
 /// A contract enum's canonical snake_case wire string — fail-closed: a value that
@@ -162,5 +186,64 @@ pub(crate) fn wire_value<T: Serialize>(v: &T) -> Result<String, ProjectionError>
         _ => Err(ProjectionError::Decode(
             "enum did not serialize to a string".into(),
         )),
+    }
+}
+
+// ---- recovery: startup catch-up replay + full rebuild (§7.2) -----------------
+
+/// Startup catch-up: fold every event a projector lags behind (`seq > its last_seq`),
+/// per projector, in one txn. The strict `>` makes a current log a NO-OP — idempotent
+/// on restart, so the non-idempotent counters never double-count. A crash mid-write
+/// heals: the un-advanced offset re-folds its tail on the next open.
+pub fn catch_up_replay(conn: &mut Connection) -> Result<(), ProjectionError> {
+    replay(conn, false)
+}
+
+/// Full rebuild: truncate every derived table + drop offsets, then replay the entire
+/// log from scratch. Raw `events` are untouched (§7.2 — corruption of a projection must
+/// not corrupt the spine). Deterministic: the result is identical to the incremental
+/// fold of the same log (rebuild-equivalence).
+pub fn rebuild(conn: &mut Connection) -> Result<(), ProjectionError> {
+    replay(conn, true)
+}
+
+fn replay(conn: &mut Connection, full_rebuild: bool) -> Result<(), ProjectionError> {
+    let registry = projectors();
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if full_rebuild {
+        // table names are fixed compile-time constants (no injection surface)
+        for table in schema::REBUILD_TABLES {
+            tx.execute_batch(&format!("DELETE FROM {table}"))?;
+        }
+        tx.execute_batch("DELETE FROM projection_offsets")?;
+    }
+    // each projector replays its OWN pending tail independently. `object_refs` is first,
+    // so by the time `graph` replays, the rows it folds from are all present — identical
+    // to the in-band interleave (graph reads only the current event's refs, never others').
+    for p in &registry {
+        ensure_offset_row(&tx, p.name())?;
+        let from = offset_last_seq(&tx, p.name())?;
+        let pending = crate::eventstore::read_events_after(&tx, from).map_err(replay_read_err)?;
+        for env in &pending {
+            apply_one(&tx, p.as_ref(), env)?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn offset_last_seq(tx: &Transaction, name: &str) -> Result<i64, ProjectionError> {
+    Ok(tx.query_row(
+        "SELECT last_seq FROM projection_offsets WHERE projection_name = ?1",
+        params![name],
+        |r| r.get(0),
+    )?)
+}
+
+/// Map a store read error from the replay source onto the projection error.
+fn replay_read_err(e: crate::eventstore::EventStoreError) -> ProjectionError {
+    match e {
+        crate::eventstore::EventStoreError::Write(err) => ProjectionError::Db(err),
+        other => ProjectionError::Decode(other.to_string()),
     }
 }

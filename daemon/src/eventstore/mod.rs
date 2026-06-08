@@ -133,12 +133,23 @@ impl EventStore {
         schema::apply_pragmas(&conn).map_err(EventStoreError::Write)?;
         migrations::refuses_db_newer_than_supported(&conn)?;
         migrations::run(path, &mut conn)?;
+        // §7.2 startup catch-up: fold any events the projections lag behind (a db with
+        // pre-existing events, or a crash mid-write) so the read models are eventually
+        // consistent with the log on every start. A fresh/current db is a no-op.
+        crate::projections::catch_up_replay(&mut conn).map_err(projection_to_store_err)?;
         Ok(Self {
             conn,
             idgen,
             clock,
             redactor,
         })
+    }
+
+    /// Full projection rebuild (§7.2): truncate every derived table + reset offsets,
+    /// then replay the entire log. Raw `events` are never touched. The MVP debug/CLI
+    /// rebuild path; a deterministic re-derivation of every read model from the spine.
+    pub fn rebuild_projections(&mut self) -> Result<(), EventStoreError> {
+        crate::projections::rebuild(&mut self.conn).map_err(projection_to_store_err)
     }
 
     /// Append one event. Assigns `seq` (canonical monotonic order), `event_id`,
@@ -377,13 +388,42 @@ fn read_envelope_by_seq(
     }
 }
 
-/// Map a projection failure that escaped `apply_all` onto the store's error. Only a
-/// `Db` (infrastructure) error escapes — projector logic failures degrade in-place —
-/// so this fails the append closed on a genuine write fault (§15/§17).
+/// Reconstruct envelopes for events with `seq > after_seq`, in canonical order — the
+/// input the projection catch-up replay / rebuild folds (`projections::*`). Reads on
+/// the given connection (typically the replay txn). `object_refs` is empty here;
+/// projectors derive it (so a rebuild reproduces it deterministically, §2.2/§7.2).
+pub(crate) fn read_events_after(
+    conn: &Connection,
+    after_seq: i64,
+) -> Result<Vec<EventEnvelope>, EventStoreError> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {COLS} FROM events WHERE seq > ?1 ORDER BY seq"
+        ))
+        .map_err(EventStoreError::Write)?;
+    let rows = stmt
+        .query_map([after_seq], |row| Ok(row_to_envelope(row)))
+        .map_err(EventStoreError::Write)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(EventStoreError::Write)??);
+    }
+    Ok(out)
+}
+
+/// Map a projection failure that escaped a projection call onto the store's error.
+/// From `apply_all` only a `Db` (infrastructure) error escapes — projector logic
+/// failures degrade in-place; the offset-anomaly + decode arms are fail-closed
+/// integrity errors (§15/§17).
 fn projection_to_store_err(e: crate::projections::ProjectionError) -> EventStoreError {
     match e {
         crate::projections::ProjectionError::Db(err) => EventStoreError::Write(err),
         crate::projections::ProjectionError::Decode(s) => EventStoreError::Reconstruct(s),
+        crate::projections::ProjectionError::OffsetAnomaly { projector, rows } => {
+            EventStoreError::Reconstruct(format!(
+                "projection offset anomaly: '{projector}' write touched {rows} rows (expected 1)"
+            ))
+        }
     }
 }
 

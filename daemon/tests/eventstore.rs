@@ -390,21 +390,25 @@ fn test_secret_token_redacted_before_persist() {
 #[test]
 fn test_auto_backup_before_migration_on_nonempty_db() {
     let (_d, path) = temp_db();
-    // simulate a v1 (post-L2) db that already holds data
+    // simulate a real v1 db that already holds an event (valid IDs so the startup
+    // catch-up replay on open can reconstruct + fold it).
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE events (seq INTEGER NOT NULL, payload_json TEXT NOT NULL);",
-        )
-        .unwrap();
+        conn.execute_batch(nexusopsd::eventstore::MIGRATION_1_EVENTS)
+            .unwrap();
         conn.execute(
-            "INSERT INTO events (seq, payload_json) VALUES (1, '{}')",
+            "INSERT INTO events (event_id, seq, event_type, event_version, occurred_at, \
+             recorded_at, workspace_id, actor_type, actor_id, source_type, source_id, \
+             correlation_id, sensitivity, payload_json, schema_version) \
+             VALUES ('evt_01ARZ3NDEKTSV4RRFFQ69G5FAV',1,'SessionStarted',1,\
+             '2026-06-07T00:00:00Z','2026-06-07T00:00:00Z','ws_01ARZ3NDEKTSV4RRFFQ69G5FAV',\
+             'user','u','desktop_ui','s','c','internal','{}','event-envelope-v1')",
             [],
         )
         .unwrap();
         conn.pragma_update(None, "user_version", 1).unwrap();
     }
-    // opening raises 1→2 (migration 2) on a NON-EMPTY db → backup .bak-1 first (§16)
+    // opening raises 1→2→3 on a NON-EMPTY db → backup .bak-1 first (§16)
     let _store = open(&path);
     let bak = std::path::PathBuf::from(format!("{}.bak-1", path.display()));
     assert!(

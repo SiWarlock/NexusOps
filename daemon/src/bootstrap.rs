@@ -62,6 +62,15 @@ pub struct DaemonContext {
     pub version: DaemonVersionInfo,
 }
 
+impl DaemonContext {
+    /// Consume the context into its parts for the runtime (1.6b): the held [`PidLock`] (the
+    /// runtime MUST keep it bound for the daemon's lifetime — dropping it releases single-
+    /// instance), the writable [`EventStore`] (→ the write-actor), and the version facts.
+    pub fn into_parts(self) -> (PidLock, EventStore, DaemonVersionInfo) {
+        (self._pidlock, self.store, self.version)
+    }
+}
+
 /// Typed cold-start failures — fail-closed (§16): a start that cannot prove single-instance
 /// AND a sound DB returns an error, never a half-initialized context.
 #[derive(Debug, thiserror::Error)]

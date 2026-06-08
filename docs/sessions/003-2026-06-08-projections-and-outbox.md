@@ -6,7 +6,7 @@
 | **Phase** | Phase 1 (daemon foundation) — tasks 1.2 + 1.3 |
 | **Track / role** | `daemon` / daemon-implementer |
 | **Predecessor** | [002](002-2026-06-07-event-store.md) |
-| **Successor** | _(TBD — Phase 1.4 leases + fencing tokens, after the lead cycles)_ |
+| **Successor** | [004](004-2026-06-08-lease-locks-and-fencing.md) — Phase 1.4 lease locks + fencing + pidlock + reaper |
 | **Commits** | **1.2:** `c8c6c72` (L1) · `a1dc482` (L2) · `e66c659` (L3) — slice complete · **1.3:** `343cc09` (L1) · `707845a` (L2) — slice complete |
 
 ## Why this session existed

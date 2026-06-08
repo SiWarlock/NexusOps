@@ -2,12 +2,16 @@ import { useEffect, useState } from "react";
 import type { GatewayPort } from "../gateway-client/types";
 import { MockGatewayPort } from "../gateway-client/mock";
 import type {
+  ApprovalQueueRow,
   AuditEventRow,
   ProjectActivityRow,
+  PullRequestRow,
   SessionRow,
 } from "../contracts/index";
 import { deriveProjectSwitcherCounts, type ProjectSwitcherCounts } from "./derive";
 import type { SidebarItem } from "./Sidebar";
+import { CommandCenter } from "../views/command/CommandCenter";
+import type { CommandItem } from "../views/command/group";
 import { ReadOnlyProvider, type ConnectionStatus } from "../connection/read-only";
 import {
   checkVersionCompat,
@@ -27,6 +31,8 @@ interface ShellData {
   counts: Record<string, ProjectSwitcherCounts>;
   events: AuditEventRow[];
   sessions: SessionRow[];
+  pullRequests: PullRequestRow[];
+  approvals: ApprovalQueueRow[];
 }
 
 /**
@@ -78,6 +84,8 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
           counts,
           events: audit.rows,
           sessions: sessions.rows,
+          pullRequests: pullRequests.rows,
+          approvals: approvals.rows,
         });
       } catch (e) {
         if (!cancelled) setError(e);
@@ -116,6 +124,29 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
     status: s.status,
   }));
 
+  // Command Center items: sessions + PRs + approvals (the wired projections;
+  // tasks join when a Task/PlanProgress projection lands — Phase 7).
+  const commandItems: CommandItem[] = [
+    ...data.sessions.map((s) => ({
+      id: s.session_id,
+      label: s.title ?? s.session_id,
+      machine: "Session",
+      status: s.status,
+    })),
+    ...data.pullRequests.map((pr) => ({
+      id: pr.pr_number,
+      label: pr.title ?? `PR #${pr.pr_number}`,
+      machine: "PullRequest",
+      status: pr.status,
+    })),
+    ...data.approvals.map((a) => ({
+      id: a.approval_id,
+      label: a.title ?? a.approval_id,
+      machine: "Approval",
+      status: a.status,
+    })),
+  ];
+
   // Retry = re-attempt the transport (real). Repair is a DISTINCT affordance
   // (§16: deeper repair / update-relaunch) whose dedicated backing lands with
   // daemon-1.5 + Phase-10 packaging; until then it aliases reconnect. Named
@@ -138,9 +169,9 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
         <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
           <Sidebar items={sidebarItems} />
           <main style={{ flex: 1, minWidth: 0 }} aria-label="Main surface">
-            {/* Screen contents (Command Center, Graph, Sessions, Terminal, Diff)
-                land in 6.3; the shell only provides the container here. */}
-            <div data-testid="content-pane" />
+            {/* Command Center is the default content view (6.3a). Graph /
+                Sessions / Terminal / Diff are the later 6.3 sub-slices. */}
+            <CommandCenter items={commandItems} />
           </main>
           <DrawerStack />
         </div>

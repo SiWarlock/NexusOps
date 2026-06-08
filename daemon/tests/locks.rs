@@ -8,14 +8,16 @@
 //! the pub `Clock` trait for deterministic expiry. Layered:
 //!   L1 (1–6) — leases (migration 5) + lease primitive + monotonic fencing + the live-lease
 //!             authority oracle (`validate_held`, human-ruled Option B). ⚠️ safety-critical
-//!   L2 (7–8) — pidlock single-instance (std advisory file lock). ⚠️ protects single-writer  [pending]
+//!   L2 (7–8) — pidlock single-instance (std advisory file lock). ⚠️ protects single-writer
 //!   L3 (9–10) — reaper (reap_once) + restart survival.                                       [pending]
 
 use std::sync::Mutex;
 
 use nexusopsd::clock::{Clock, FixedClock};
 use nexusopsd::eventstore::EventStore;
-use nexusopsd::locks::{FencingToken, LeaseError, LeaseKind, OwnerId, ResourceId};
+use nexusopsd::locks::{
+    FencingToken, LeaseError, LeaseKind, OwnerId, PidLock, PidLockError, ResourceId,
+};
 
 // ---- shared fixtures --------------------------------------------------------
 
@@ -395,5 +397,55 @@ fn test_fencing_token_strictly_monotonic() {
     assert_eq!(
         prev, 5,
         "5 acquire/release cycles → token 5 (release never lowers the high-water mark)"
+    );
+}
+
+// ===================== L2 — pidlock single-instance (7–8) ====================
+//
+// Single-instance via a std advisory file lock (ADR-008). The OS holds the lock
+// against the open fd → auto-released on process death (even a crash) → IMMUNE to
+// PID reuse. The PID written into the file is diagnostic only — NEVER a kill(pid,0)
+// liveness oracle (PID reuse → false positives). ⚠️ protects the single-writer.
+
+// ---- Test 7 — a second instance is refused while the first holds it ---------
+
+#[test]
+fn test_pidlock_refuses_second_instance() {
+    let dir = tempfile::tempdir().unwrap();
+    let lock_path = dir.path().join("daemon.lock");
+
+    let first = PidLock::acquire(&lock_path).expect("first instance acquires the lock");
+    // while the first holds the OS lock, a second acquire on the same path is refused
+    let second = PidLock::acquire(&lock_path);
+    assert!(
+        matches!(second, Err(PidLockError::AlreadyHeld)),
+        "second instance refused while the first holds the lock"
+    );
+    // dropping the first closes its fd → the OS releases the lock → a fresh acquire wins
+    drop(first);
+    let third = PidLock::acquire(&lock_path);
+    assert!(
+        third.is_ok(),
+        "after the first releases, a fresh acquire succeeds"
+    );
+}
+
+// ---- Test 8 — PID reuse does not yield a false single-instance --------------
+
+#[test]
+fn test_pidlock_pid_reuse_no_false_single_instance() {
+    let dir = tempfile::tempdir().unwrap();
+    let lock_path = dir.path().join("daemon.lock");
+
+    // a STALE lock file containing a foreign/reused PID, but NO live process holds the
+    // OS advisory lock (we only write bytes; we take no lock on the handle).
+    std::fs::write(&lock_path, "99999\n").unwrap();
+
+    // the oracle is the OS advisory lock, not the file's PID contents — so acquire SUCCEEDS
+    // (a dead/foreign PID in the file neither grants nor falsely blocks).
+    let got = PidLock::acquire(&lock_path);
+    assert!(
+        got.is_ok(),
+        "a foreign PID in the file must not falsely block (no kill(pid,0) oracle)"
     );
 }

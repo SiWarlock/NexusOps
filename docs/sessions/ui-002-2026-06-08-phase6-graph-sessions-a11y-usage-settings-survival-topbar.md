@@ -3,7 +3,7 @@
 - **Date:** 2026-06-08
 - **Phase:** 6 (Frontend shell & projection-driven UI) — round 2 (`track/ui`)
 - **Predecessor:** [ui-001](ui-001-2026-06-08-phase6-shell-status-command-center.md) (6.1 + 6.2 + 6.3a)
-- **Successor:** _(next ui session — 6.4d-2 §17 safety-state display + the checking-banner, then the 6.5 theme pass)_
+- **Successor:** [ui-003](ui-003-2026-06-08-safety-state-display-and-checking-banner.md) (6.4d-2 §17 safety-state display + the checking-banner — Phase-6 logic finish)
 - **Round commits:** `c420cd7` `885cc0d` (6.3b L1/L2) · `23fbda3` (6.3c) · `f70757e` (6.4a) · `db9b89b` (6.4b) · `765923f` (6.4c) · `290381a` (6.4d) · `823d16e` (6.4e) — **7 slices, 116 tests green**
 - **Builds on:** frozen `shared/` 0.5.0 + `MockGatewayPort` + fixtures + `NexusOps-ui-kit`. Real `UdsGatewayPort` integrates at daemon-1.5.
 

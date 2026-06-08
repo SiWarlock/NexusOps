@@ -173,7 +173,11 @@ export function Shell({
         className="shell"
         style={{ display: "flex", flexDirection: "column", height: "100vh" }}
       >
-        <TopBar projects={data.projects} counts={data.counts} />
+        <TopBar
+          projects={data.projects}
+          counts={data.counts}
+          onOpenSettings={() => setContentView("settings")}
+        />
         <DegradedBanner
           degraded={degraded}
           onRetry={handleRetry}
@@ -213,13 +217,8 @@ export function Shell({
               >
                 Sessions
               </button>
-              <button
-                type="button"
-                aria-pressed={contentView === "settings"}
-                onClick={() => setContentView("settings")}
-              >
-                Settings
-              </button>
+              {/* Settings is reached via the TopBar (§11.2 nav model), not here —
+                  the view-switch carries content surfaces only. */}
             </div>
             {contentView === "command" ? (
               <CommandCenter items={commandItems} />
@@ -234,6 +233,8 @@ export function Shell({
               <SessionsTable sessions={data.sessions} projects={data.projects} />
             ) : (
               // Settings folds the Usage dashboard into its Usage tab (§11.2).
+              // Reached ONLY via the TopBar's onOpenSettings — no view-switch
+              // button sets contentView="settings" (§11.2 nav model).
               <Settings usage={data.usage} creditPool={data.creditPool} />
             )}
           </main>

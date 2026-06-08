@@ -1,34 +1,56 @@
+import type { CSSProperties } from "react";
 import { Button } from "../design-system/kit";
 import type { ProjectActivityRow } from "../contracts/index";
 import type { ProjectSwitcherCounts } from "./derive";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 
+// Inline visually-hidden style. The accessible NAME of a closed-prop kit control
+// must come from a visually-hidden child INSIDE it (a wrapper aria-label would not
+// name the inner button) — Lesson §6 + §11.7. Uses the modern `clipPath` (not the
+// deprecated `clip`). TODO(6.5): replace with the global sr-only utility the theme
+// pass introduces (single source of truth).
+const SR_ONLY: CSSProperties = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clipPath: "inset(50%)",
+  whiteSpace: "nowrap",
+  border: 0,
+};
+
 /**
  * Top bar: back/forward history + the project switcher; Brain + Settings are
- * reached here (not the sidebar), per the kit shell reference (§11.2).
+ * reached here (not the view-switch), per the §11.2 nav model (human-confirmed
+ * 2026-06-08). The Settings control opens the Settings view; the Brain trigger is
+ * deferred to Phase 8 (the Brain drawer isn't built — placeholder). The icon-only
+ * back/forward controls carry visually-hidden accessible names (history nav itself
+ * is not wired yet — names only).
  */
 export function TopBar({
   projects,
   counts,
+  onOpenSettings,
 }: {
   projects: ProjectActivityRow[];
   counts: Record<string, ProjectSwitcherCounts>;
+  onOpenSettings: () => void;
 }) {
   return (
     <header
       className="topbar"
       style={{ display: "flex", alignItems: "center", gap: 8 }}
     >
-      {/* TODO(6.4 a11y): the history controls need accessible names — the kit
-          Button's typed props don't accept aria-label, so the glyph-only label
-          gap is resolved with 6.4's a11y MUSTs (focus ring / labels / non-drag).
-          The nav landmark is labelled in the meantime. */}
       <nav aria-label="History" style={{ display: "flex", gap: 4 }}>
         <Button variant="ghost" size="sm">
-          ←
+          <span aria-hidden="true">←</span>
+          <span style={SR_ONLY}>Back</span>
         </Button>
         <Button variant="ghost" size="sm">
-          →
+          <span aria-hidden="true">→</span>
+          <span style={SR_ONLY}>Forward</span>
         </Button>
       </nav>
       <ProjectSwitcher projects={projects} counts={counts} />
@@ -36,7 +58,7 @@ export function TopBar({
         <Button variant="ghost" size="sm">
           Brain
         </Button>
-        <Button variant="ghost" size="sm">
+        <Button variant="ghost" size="sm" onClick={onOpenSettings}>
           Settings
         </Button>
       </div>

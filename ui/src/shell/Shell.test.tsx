@@ -113,20 +113,36 @@ describe("Shell", () => {
     expect(container.querySelector('[aria-label="Command Center"]')).toBeNull();
   });
 
-  it("view_switch_mounts_settings_not_interim_usage", async () => {
+  it("topbar_settings_opens_settings_view", async () => {
     const { container } = render(<Shell gateway={new MockGatewayPort()} />);
     await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
-    // the content-view switch offers Settings, NOT a top-level interim "Usage".
-    // (Scoped to the switch group — the TopBar also has a placeholder "Settings".)
-    const viewSwitch = screen.getByRole("group", { name: "Content view" });
-    expect(within(viewSwitch).getByRole("button", { name: /settings/i })).toBeTruthy();
-    expect(within(viewSwitch).queryByRole("button", { name: /usage/i })).toBeNull();
     expect(container.querySelector('[aria-label="Command Center"]')).not.toBeNull();
-    // selecting Settings mounts the tablist (switch-not-stack); Usage is now
-    // reached via Settings → Usage (the relocation — Step 7.5)
-    fireEvent.click(within(viewSwitch).getByRole("button", { name: /settings/i }));
+    expect(screen.queryByRole("tablist")).toBeNull();
+    // §11.2 nav: the TopBar Settings control opens the Settings view (it's the only
+    // "Settings" button now — the view-switch dropped it, so no scoping needed)
+    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     expect(screen.getByRole("tablist")).toBeTruthy();
     expect(container.querySelector('[aria-label="Command Center"]')).toBeNull();
+  });
+
+  it("view_switch_no_longer_offers_settings", async () => {
+    render(<Shell gateway={new MockGatewayPort()} />);
+    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    // the content-view switch is content surfaces only — CC / Graph / Sessions
+    const viewSwitch = screen.getByRole("group", { name: "Content view" });
+    expect(within(viewSwitch).getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "Command Center",
+      "Project Graph",
+      "Sessions",
+    ]);
+    expect(within(viewSwitch).queryByRole("button", { name: /settings/i })).toBeNull();
+  });
+
+  it("settings_still_reachable_and_functional", async () => {
+    render(<Shell gateway={new MockGatewayPort()} />);
+    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    // Settings (the 6.4c tablist + Usage tab) is reachable + functional via TopBar
+    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     fireEvent.click(screen.getByRole("tab", { name: /usage/i }));
     expect(screen.getByTestId("usage-table")).toBeTruthy();
   });

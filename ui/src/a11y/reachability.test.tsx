@@ -39,16 +39,11 @@ describe("a11y reachability + wiring", () => {
     // Sweep ALL three content views — the audit is the single §11.6 gate for any
     // per-view control (view-switch, Graph|List toggle, Sessions sort headers),
     // so a non-focusable control added to ANY view later is caught here.
-    auditFocusable(container); // Command Center (default)
-    // the view-switch controls are real (focusable) buttons. Scoped to the switch
-    // group — the TopBar also carries a (placeholder) "Settings" control.
+    auditFocusable(container); // Command Center (default) — incl. the TopBar controls
+    // the content-view switch carries only the content surfaces (CC/Graph/Sessions);
+    // Settings is reached via the TopBar (§11.2 nav reconcile).
     const viewSwitch = screen.getByRole("group", { name: "Content view" });
-    for (const name of [
-      /command center/i,
-      /project graph/i,
-      /sessions/i,
-      /settings/i,
-    ]) {
+    for (const name of [/command center/i, /project graph/i, /sessions/i]) {
       expect(within(viewSwitch).getByRole("button", { name })).toBeTruthy();
     }
 
@@ -60,9 +55,10 @@ describe("a11y reachability + wiring", () => {
     expect(screen.getByTestId("sessions-table")).toBeTruthy();
     auditFocusable(container); // Sessions (incl. the sort-header buttons)
 
-    fireEvent.click(within(viewSwitch).getByRole("button", { name: /settings/i }));
+    // Settings is reached via the TopBar trigger (now the only "Settings" button).
+    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     expect(screen.getByRole("tablist")).toBeTruthy();
-    auditFocusable(container); // Settings (the 4th view — tab buttons; §9 net)
+    auditFocusable(container); // Settings (tab buttons; §9 net)
   });
 
   it("focus_stylesheet_is_imported", () => {

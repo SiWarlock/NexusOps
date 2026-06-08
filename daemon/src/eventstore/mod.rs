@@ -1,0 +1,392 @@
+//! Single-writer WAL event log (§7/§7.1/§15/§16/§17).
+//!
+//! [`EventStore`] owns the one write connection (the single audited writer,
+//! forbidden-pattern #3 / §15); all other access goes through a read-only WAL
+//! connection ([`open_read_only`]). Append assigns the canonical monotonic `seq`,
+//! the `event_id` (via the injected [`IdGen`]), and `recorded_at` (via the
+//! injected [`Clock`]) — so a fixed input replays a byte-identical log (§14).
+//! The redaction GATE lands in the L3 sub-feature; this layer is the spine.
+
+mod migrations;
+mod schema;
+
+use std::path::Path;
+
+use rusqlite::{Connection, OpenFlags};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+
+use nexusops_shared::actor::ActorType;
+use nexusops_shared::event_envelope::{EventEnvelope, Sensitivity, SourceType, Visibility};
+use nexusops_shared::ids::{
+    ActionRequestId, AgentTeamId, EventId, ProjectId, SessionId, WorkspaceId,
+};
+
+use crate::clock::Clock;
+use crate::idgen::IdGen;
+
+pub use migrations::SUPPORTED_USER_VERSION;
+
+/// the highest `event_version` this binary can fully reconstruct (§17)
+const MAX_SUPPORTED_EVENT_VERSION: i64 = 1;
+
+/// Typed event-store failures — fail-closed (§15/§17): a write that cannot
+/// durably + validly persist returns an error, never a silent success.
+#[derive(Debug, thiserror::Error)]
+pub enum EventStoreError {
+    #[error("event-store write failed: {0}")]
+    Write(rusqlite::Error),
+    #[error("event-store open failed: {0}")]
+    Open(rusqlite::Error),
+    #[error("duplicate idempotency_key")]
+    DuplicateIdempotencyKey,
+    #[error("io error: {0}")]
+    Io(std::io::Error),
+    #[error("migration failed: {0}")]
+    Migration(String),
+    #[error("db user_version {db} is newer than supported {supported}")]
+    DbNewerThanSupported { db: i64, supported: i64 },
+    #[error("event reconstruction failed: {0}")]
+    Reconstruct(String),
+}
+
+/// What a caller provides to append an event; the store assigns `event_id`,
+/// `seq`, and `recorded_at`.
+pub struct AppendIntent {
+    pub event_type: String,
+    pub event_version: u32,
+    pub occurred_at: String,
+    pub workspace_id: WorkspaceId,
+    pub actor_type: ActorType,
+    pub actor_id: String,
+    pub source_type: SourceType,
+    pub source_id: String,
+    pub correlation_id: String,
+    pub sensitivity: Sensitivity,
+    pub payload_json: String,
+    pub schema_version: String,
+    pub idempotency_key: Option<String>,
+}
+
+/// A read result that degrades instead of crashing on a malformed row (§17).
+pub enum DegradableEvent {
+    Ok(Box<EventEnvelope>),
+    /// `event_version` newer than this binary understands
+    Degraded {
+        seq: i64,
+        reason: String,
+    },
+    /// payload / row could not be reconstructed (corrupt) — diverted, not crashed
+    Quarantined {
+        seq: i64,
+        reason: String,
+    },
+}
+
+impl DegradableEvent {
+    pub fn is_degraded(&self) -> bool {
+        matches!(self, Self::Degraded { .. })
+    }
+    pub fn is_quarantined(&self) -> bool {
+        matches!(self, Self::Quarantined { .. })
+    }
+}
+
+/// The single-writer WAL event store.
+pub struct EventStore {
+    conn: Connection,
+    idgen: Box<dyn IdGen>,
+    clock: Box<dyn Clock>,
+}
+
+impl EventStore {
+    /// Open (creating if needed) with WAL pragmas + forward-only migrations.
+    /// Refuses a db newer than this binary understands (§16).
+    pub fn open(
+        path: &Path,
+        idgen: Box<dyn IdGen>,
+        clock: Box<dyn Clock>,
+    ) -> Result<Self, EventStoreError> {
+        let mut conn = Connection::open(path).map_err(EventStoreError::Write)?;
+        schema::apply_pragmas(&conn).map_err(EventStoreError::Write)?;
+        migrations::refuses_db_newer_than_supported(&conn)?;
+        migrations::run(&mut conn)?;
+        Ok(Self { conn, idgen, clock })
+    }
+
+    /// Append one event. Assigns `seq` (canonical monotonic order), `event_id`,
+    /// `recorded_at`. Fails closed on a write/constraint failure (§15/§17).
+    pub fn append(&mut self, i: AppendIntent) -> Result<EventId, EventStoreError> {
+        // fail-closed: serialize the enum audit fields up front — an enum that
+        // can't render to its wire string is an error, never an empty column.
+        let actor = enum_wire(&i.actor_type)?;
+        let source = enum_wire(&i.source_type)?;
+        let sensitivity = enum_wire(&i.sensitivity)?;
+        let event_id = self.idgen.new_event_id();
+        let recorded_at = self.clock.now_rfc3339();
+
+        // seq assignment + INSERT in ONE IMMEDIATE transaction so the canonical
+        // `seq` (§7.1) is atomic at the DB level, not merely by the &mut writer.
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(EventStoreError::Write)?;
+        let seq: i64 = tx
+            .query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM events", [], |r| {
+                r.get(0)
+            })
+            .map_err(EventStoreError::Write)?;
+        let res = tx.execute(
+            "INSERT INTO events \
+             (event_id, seq, event_type, event_version, occurred_at, recorded_at, \
+              workspace_id, actor_type, actor_id, source_type, source_id, \
+              correlation_id, idempotency_key, sensitivity, payload_json, schema_version) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            rusqlite::params![
+                event_id.as_str(),
+                seq,
+                i.event_type,
+                i.event_version,
+                i.occurred_at,
+                recorded_at,
+                i.workspace_id.as_str(),
+                actor,
+                i.actor_id,
+                source,
+                i.source_id,
+                i.correlation_id,
+                i.idempotency_key,
+                sensitivity,
+                i.payload_json,
+                i.schema_version,
+            ],
+        );
+        match res {
+            Ok(_) => {
+                tx.commit().map_err(EventStoreError::Write)?;
+                Ok(event_id)
+            }
+            // tx drops → rollback on either error path (fail-closed; nothing persists)
+            Err(e) if is_idempotency_violation(&e) => Err(EventStoreError::DuplicateIdempotencyKey),
+            Err(e) => Err(EventStoreError::Write(e)),
+        }
+    }
+
+    /// All events in canonical `seq` order. Strict — a malformed row is an error
+    /// (use [`EventStore::read_all_degradable`] for resilient reads).
+    pub fn read_all(&self) -> Result<Vec<EventEnvelope>, EventStoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {COLS} FROM events ORDER BY seq"))
+            .map_err(EventStoreError::Write)?;
+        let rows = stmt
+            .query_map([], |row| Ok(row_to_envelope(row)))
+            .map_err(EventStoreError::Write)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(EventStoreError::Write)??);
+        }
+        Ok(out)
+    }
+
+    /// All events, degrading (unknown version) or quarantining (corrupt) bad rows
+    /// instead of crashing (§17).
+    pub fn read_all_degradable(&self) -> Result<Vec<DegradableEvent>, EventStoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT seq, event_version, payload_json, {COLS} FROM events ORDER BY seq"
+            ))
+            .map_err(EventStoreError::Write)?;
+        let rows = stmt
+            .query_map([], |row| {
+                // a bad/unreadable leading column quarantines THAT row — it must
+                // not abort the whole replay (§17 resilience).
+                let seq: i64 = row.get(0).unwrap_or(-1);
+                let event_version: i64 = match row.get(1) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return Ok(DegradableEvent::Quarantined {
+                            seq,
+                            reason: "unreadable event_version".to_string(),
+                        })
+                    }
+                };
+                let payload_json: String = match row.get(2) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return Ok(DegradableEvent::Quarantined {
+                            seq,
+                            reason: "unreadable payload_json".to_string(),
+                        })
+                    }
+                };
+                if event_version > MAX_SUPPORTED_EVENT_VERSION {
+                    return Ok(DegradableEvent::Degraded {
+                        seq,
+                        reason: format!("unknown event_version {event_version}"),
+                    });
+                }
+                if serde_json::from_str::<serde_json::Value>(&payload_json).is_err() {
+                    return Ok(DegradableEvent::Quarantined {
+                        seq,
+                        reason: "corrupt payload_json".to_string(),
+                    });
+                }
+                // columns 3.. are the COLS block (offset by the 3 leading cols)
+                match row_to_envelope_offset(row, 3) {
+                    Ok(env) => Ok(DegradableEvent::Ok(Box::new(env))),
+                    Err(e) => Ok(DegradableEvent::Quarantined {
+                        seq,
+                        reason: e.to_string(),
+                    }),
+                }
+            })
+            .map_err(EventStoreError::Write)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(EventStoreError::Write)?);
+        }
+        Ok(out)
+    }
+
+    /// the applied schema version (§16)
+    pub fn user_version(&self) -> i64 {
+        migrations::current_user_version(&self.conn).unwrap_or(-1)
+    }
+
+    /// Read an integer PRAGMA from the WRITER's connection (the per-connection
+    /// pragmas — synchronous/foreign_keys/busy_timeout — live here, ADR-003).
+    pub fn pragma_i64(&self, name: &str) -> rusqlite::Result<i64> {
+        self.conn.pragma_query_value(None, name, |r| r.get(0))
+    }
+
+    /// Read a text PRAGMA from the writer's connection (e.g. `journal_mode`).
+    pub fn pragma_string(&self, name: &str) -> rusqlite::Result<String> {
+        self.conn.pragma_query_value(None, name, |r| r.get(0))
+    }
+
+    /// §16 version floor — refuse a db newer than this binary understands.
+    pub fn refuses_db_newer_than_supported(path: &Path) -> Result<(), EventStoreError> {
+        let conn = open_read_only(path)?;
+        migrations::refuses_db_newer_than_supported(&conn)
+    }
+
+    /// expose the backup/restore helpers for tests + the bootstrap path (§16)
+    pub fn backup_db(path: &Path, from: i64) -> Result<(), EventStoreError> {
+        migrations::backup_db(path, from)
+    }
+    pub fn restore_db(path: &Path, from: i64) -> Result<(), EventStoreError> {
+        migrations::restore_db(path, from)
+    }
+}
+
+/// Open a read-only WAL connection (every non-writer path, §15 single-writer).
+pub fn open_read_only(path: &Path) -> Result<Connection, EventStoreError> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(EventStoreError::Open)?;
+    conn.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=5000;")
+        .map_err(EventStoreError::Write)?;
+    Ok(conn)
+}
+
+// ---- row mapping ------------------------------------------------------------
+
+const COLS: &str = "event_id, seq, event_type, event_version, occurred_at, recorded_at, \
+workspace_id, project_id, actor_type, actor_id, source_type, source_id, correlation_id, \
+causation_id, action_request_id, approval_id, session_id, agent_team_id, workflow_run_id, \
+idempotency_key, sensitivity, visibility, payload_hash, previous_event_hash, schema_version, \
+payload_json";
+
+fn row_to_envelope(row: &rusqlite::Row) -> Result<EventEnvelope, EventStoreError> {
+    row_to_envelope_offset(row, 0)
+}
+
+/// Reconstruct an envelope from the `COLS` block starting at `base`.
+fn row_to_envelope_offset(
+    row: &rusqlite::Row,
+    base: usize,
+) -> Result<EventEnvelope, EventStoreError> {
+    let g = |i: usize| {
+        row.get::<_, String>(base + i)
+            .map_err(EventStoreError::Write)
+    };
+    let go = |i: usize| {
+        row.get::<_, Option<String>>(base + i)
+            .map_err(EventStoreError::Write)
+    };
+    let event_version: i64 = row.get(base + 3).map_err(EventStoreError::Write)?;
+    let seq: i64 = row.get(base + 1).map_err(EventStoreError::Write)?;
+
+    Ok(EventEnvelope {
+        event_id: EventId::parse(&g(0)?)
+            .map_err(|e| EventStoreError::Reconstruct(e.to_string()))?,
+        seq,
+        event_type: g(2)?,
+        event_version: u32::try_from(event_version)
+            .map_err(|e| EventStoreError::Reconstruct(e.to_string()))?,
+        occurred_at: g(4)?,
+        recorded_at: g(5)?,
+        workspace_id: WorkspaceId::parse(&g(6)?)
+            .map_err(|e| EventStoreError::Reconstruct(e.to_string()))?,
+        project_id: parse_opt_id(go(7)?, ProjectId::parse)?,
+        actor_type: parse_enum(&g(8)?)?,
+        actor_id: g(9)?,
+        source_type: parse_enum(&g(10)?)?,
+        source_id: g(11)?,
+        correlation_id: g(12)?,
+        causation_id: parse_opt_id(go(13)?, EventId::parse)?,
+        action_request_id: parse_opt_id(go(14)?, ActionRequestId::parse)?,
+        approval_id: go(15)?,
+        session_id: parse_opt_id(go(16)?, SessionId::parse)?,
+        agent_team_id: parse_opt_id(go(17)?, AgentTeamId::parse)?,
+        workflow_run_id: go(18)?,
+        idempotency_key: go(19)?,
+        sensitivity: parse_enum::<Sensitivity>(&g(20)?)?,
+        visibility: Some(parse_enum::<Visibility>(&g(21)?)?),
+        object_refs: Vec::new(), // normalized object_refs table is 1.2
+        payload_hash: go(22)?,
+        previous_event_hash: go(23)?,
+        schema_version: g(24)?,
+        payload_json: g(25)?,
+    })
+}
+
+fn parse_opt_id<T, E: std::fmt::Display>(
+    v: Option<String>,
+    parse: impl Fn(&str) -> Result<T, E>,
+) -> Result<Option<T>, EventStoreError> {
+    match v {
+        None => Ok(None),
+        Some(s) => parse(&s)
+            .map(Some)
+            .map_err(|e| EventStoreError::Reconstruct(e.to_string())),
+    }
+}
+
+fn parse_enum<T: DeserializeOwned>(s: &str) -> Result<T, EventStoreError> {
+    serde_json::from_value(serde_json::Value::String(s.to_string()))
+        .map_err(|e| EventStoreError::Reconstruct(e.to_string()))
+}
+
+/// The snake_case wire string for a contract enum — fail-closed (an enum that
+/// doesn't serialize to a JSON string is an error, never a silent empty column).
+fn enum_wire<T: Serialize>(v: &T) -> Result<String, EventStoreError> {
+    match serde_json::to_value(v).map_err(|e| EventStoreError::Reconstruct(e.to_string()))? {
+        serde_json::Value::String(s) => Ok(s),
+        other => Err(EventStoreError::Reconstruct(format!(
+            "enum did not serialize to a string: {other}"
+        ))),
+    }
+}
+
+fn is_idempotency_violation(e: &rusqlite::Error) -> bool {
+    if let rusqlite::Error::SqliteFailure(err, Some(msg)) = e {
+        // extended code distinguishes UNIQUE from CHECK/NOT-NULL; the message
+        // names the offending column (`events.idempotency_key`) — together these
+        // pin the idempotency index without depending on a single fragile string.
+        return err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+            && msg.contains("idempotency_key");
+    }
+    false
+}

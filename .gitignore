@@ -1,2 +1,5 @@
 claude-code-tdd-agent-crew-scaffold/
 .DS_Store
+
+# Rust workspace build output (root ./Cargo.toml builds shared + daemon here).
+/target

@@ -6,7 +6,7 @@
 | **Phase** | Phase 1 (daemon foundation) — task 1.4 |
 | **Track / role** | `daemon` / daemon-implementer |
 | **Predecessor** | [003](003-2026-06-08-projections-and-outbox.md) |
-| **Successor** | _(TBD — Phase 1.5 UDS GatewayPort transport, after the lead merges `track/ui` → main)_ |
+| **Successor** | [005](005-2026-06-08-uds-gatewayport-transport.md) — Phase 1.5 UDS GatewayPort transport |
 | **Commits** | **1.4:** `b3f7612` (L1 leases+fencing+validate_held) · `442149a` (L2 pidlock) · `0347ac6` (L3 reaper+restart) — slice complete |
 
 ## Why this session existed

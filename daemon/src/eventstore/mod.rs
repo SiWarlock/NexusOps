@@ -30,6 +30,8 @@ pub use redaction::{PrefixRedactor, RedactionOutcome, Redactor};
 // migration DDL constants (re-exported so the projection-migration test + the
 // migrations registry reference one canonical source).
 pub use schema::{MIGRATION_1_EVENTS, MIGRATION_2_REDACTION, MIGRATION_3_PROJECTIONS};
+// outbox delivery surface (the drainer + its destinations, §12/§17).
+pub use outbox::{DeliveryOutcome, Destination, DrainSummary, JsonlMirror};
 
 use crate::clock::Clock;
 use crate::idgen::IdGen;
@@ -138,12 +140,27 @@ impl EventStore {
         // pre-existing events, or a crash mid-write) so the read models are eventually
         // consistent with the log on every start. A fresh/current db is a no-op.
         crate::projections::catch_up_replay(&mut conn).map_err(projection_to_store_err)?;
+        // §17 outbox crash recovery: a row claimed `in_flight` but not confirmed
+        // before a crash is reset to `pending` → re-deliverable (at-least-once).
+        outbox::reset_in_flight(&conn)?;
         Ok(Self {
             conn,
             idgen,
             clock,
             redactor,
         })
+    }
+
+    /// Drain one outbox pass for `dest` (§12/§17): deliver its due rows, classify
+    /// retryable/terminal, back off, dead-letter after the bounded budget. The unit
+    /// the daemon's drainer Tokio task calls on an interval — the **spawn** is wired
+    /// by the 1.6 bootstrap (where the Tokio runtime lives); 1.3 ships the unit only.
+    pub fn drain_once(
+        &mut self,
+        clock: &dyn Clock,
+        dest: &dyn Destination,
+    ) -> Result<DrainSummary, EventStoreError> {
+        outbox::drain_once(&self.conn, clock, dest)
     }
 
     /// Full projection rebuild (§7.2): truncate every derived table + reset offsets,

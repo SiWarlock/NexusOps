@@ -7,12 +7,16 @@
 //!   L1 (1–3) — outbox table (migration 4) + in-txn write + §15 sync gate.
 //!   L2 (4–9) — drainer (drain_once / classify / backoff / dead-letter) + crash redeliver. [L2]
 
+use std::collections::HashSet;
+use std::sync::Mutex;
+
 use nexusops_shared::actor::ActorType;
 use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType};
 use nexusops_shared::ids::{ProjectId, SessionId, WorkspaceId};
-use nexusopsd::clock::FixedClock;
+use nexusopsd::clock::{Clock, FixedClock};
 use nexusopsd::eventstore::{
-    AppendIntent, EventStore, EventStoreError, PrefixRedactor, RedactionOutcome, Redactor,
+    AppendIntent, DeliveryOutcome, Destination, EventStore, EventStoreError, JsonlMirror,
+    PrefixRedactor, RedactionOutcome, Redactor,
 };
 
 fn temp_db() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -185,5 +189,262 @@ fn test_outbox_payload_has_no_secret() {
     assert!(
         payload.contains("[REDACTED]"),
         "the outbox mirrors the redacted event"
+    );
+}
+
+// ======================= L2 — drainer + destinations (4–9) ===================
+
+/// a clock the test advances by setting an explicit RFC3339 (drives backoff due-ness).
+struct StepClock {
+    now: Mutex<String>,
+}
+impl StepClock {
+    fn new(ts: &str) -> Self {
+        Self {
+            now: Mutex::new(ts.to_string()),
+        }
+    }
+    fn set(&self, ts: &str) {
+        *self.now.lock().unwrap() = ts.to_string();
+    }
+}
+impl Clock for StepClock {
+    fn now_rfc3339(&self) -> String {
+        self.now.lock().unwrap().clone()
+    }
+}
+
+/// a scripted destination: one settable outcome, counts deliver calls, and dedups
+/// effects by payload (an idempotent consumer — proves no-double-apply).
+struct FakeDestination {
+    name: &'static str,
+    outcome: Mutex<DeliveryOutcome>,
+    calls: Mutex<usize>,
+    applied: Mutex<HashSet<String>>,
+}
+impl FakeDestination {
+    fn new(name: &'static str, outcome: DeliveryOutcome) -> Self {
+        Self {
+            name,
+            outcome: Mutex::new(outcome),
+            calls: Mutex::new(0),
+            applied: Mutex::new(HashSet::new()),
+        }
+    }
+    fn set_outcome(&self, o: DeliveryOutcome) {
+        *self.outcome.lock().unwrap() = o;
+    }
+    fn calls(&self) -> usize {
+        *self.calls.lock().unwrap()
+    }
+    fn applied(&self) -> usize {
+        self.applied.lock().unwrap().len()
+    }
+}
+impl Destination for FakeDestination {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn deliver(&self, payload: &str) -> DeliveryOutcome {
+        *self.calls.lock().unwrap() += 1;
+        let outcome = self.outcome.lock().unwrap().clone();
+        if matches!(outcome, DeliveryOutcome::Delivered) {
+            self.applied.lock().unwrap().insert(payload.to_string()); // idempotent dedup
+        }
+        outcome
+    }
+}
+
+fn status_of(path: &std::path::Path) -> String {
+    nexusopsd::eventstore::open_read_only(path)
+        .unwrap()
+        .query_row("SELECT status FROM outbox LIMIT 1", [], |r| r.get(0))
+        .unwrap()
+}
+
+// ---- Test 4 — delivery flows ONLY from outbox rows (INV-SEC-1 analogue) ------
+
+#[test]
+fn test_outbox_is_only_external_path() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path); // no append → no outbox rows
+    let fake = FakeDestination::new("jsonl_mirror", DeliveryOutcome::Delivered);
+    store
+        .drain_once(&StepClock::new("2030-01-01T00:00:00Z"), &fake)
+        .unwrap();
+    assert_eq!(
+        fake.calls(),
+        0,
+        "no outbox row ⇒ no delivery (outbox is the only path)"
+    );
+}
+
+// ---- Test 5 — drain delivers once, marks delivered (§12) — real jsonl_mirror -
+
+#[test]
+fn test_drain_delivers_once_marks_delivered() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    store
+        .append(session_intent("{\"status\":\"starting\"}"))
+        .unwrap();
+
+    // the real Phase-1 destination appends the redacted payload as a JSONL line
+    let mirror_path = path.with_extension("mirror.jsonl");
+    let mirror = JsonlMirror::new(mirror_path.clone());
+    let summary = store
+        .drain_once(&StepClock::new("2030-01-01T00:00:00Z"), &mirror)
+        .unwrap();
+    assert_eq!(summary.delivered, 1, "summary reports one delivery");
+
+    assert_eq!(status_of(&path), "delivered", "row marked delivered");
+    let mirrored = std::fs::read_to_string(&mirror_path).unwrap();
+    assert_eq!(mirrored.lines().count(), 1, "one JSONL line written");
+    assert!(
+        mirrored.contains("\"event_type\":\"SessionStarted\""),
+        "the redacted event was mirrored"
+    );
+}
+
+// ---- Test 6 — retryable backs off, re-drains after the delay (§17) -----------
+
+#[test]
+fn test_retryable_backs_off() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    store
+        .append(session_intent("{\"status\":\"starting\"}"))
+        .unwrap();
+    let fake = FakeDestination::new("jsonl_mirror", DeliveryOutcome::Retryable("503".into()));
+    let clock = StepClock::new("2030-01-01T00:00:00Z");
+
+    let summary = store.drain_once(&clock, &fake).unwrap();
+    assert_eq!(summary.retried, 1, "summary reports one retry scheduled");
+    let (status, retry, next): (String, i64, Option<String>) =
+        nexusopsd::eventstore::open_read_only(&path)
+            .unwrap()
+            .query_row(
+                "SELECT status, retry_count, next_attempt_at FROM outbox",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+    assert_eq!(status, "failed", "retryable → failed");
+    assert_eq!(retry, 1, "retry_count incremented");
+    assert!(
+        next.unwrap().as_str() > "2030-01-01T00:00:00Z",
+        "backed off to the future"
+    );
+
+    // not due at the same clock — a re-drain delivers nothing
+    store.drain_once(&clock, &fake).unwrap();
+    assert_eq!(status_of(&path), "failed", "still failed (not due yet)");
+
+    // advance past the backoff + flip the destination to success → delivered
+    fake.set_outcome(DeliveryOutcome::Delivered);
+    clock.set("2030-01-02T00:00:00Z");
+    store.drain_once(&clock, &fake).unwrap();
+    assert_eq!(
+        status_of(&path),
+        "delivered",
+        "re-drains + delivers after the delay"
+    );
+}
+
+// ---- Test 7 — terminal goes dead immediately (§17) --------------------------
+
+#[test]
+fn test_terminal_goes_dead() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    store
+        .append(session_intent("{\"status\":\"starting\"}"))
+        .unwrap();
+    let fake = FakeDestination::new("jsonl_mirror", DeliveryOutcome::Terminal("401".into()));
+    store
+        .drain_once(&StepClock::new("2030-01-01T00:00:00Z"), &fake)
+        .unwrap();
+    assert_eq!(status_of(&path), "dead", "terminal → dead, no retry");
+    assert_eq!(fake.calls(), 1, "attempted once");
+}
+
+// ---- Test 8 — retry budget exhausts to dead (§17 bounded budget) -------------
+
+#[test]
+fn test_retry_budget_exhausts_to_dead() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    store
+        .append(session_intent("{\"status\":\"starting\"}"))
+        .unwrap();
+    let fake = FakeDestination::new("jsonl_mirror", DeliveryOutcome::Retryable("503".into()));
+    let clock = StepClock::new("2030-01-01T00:00:00Z");
+
+    // drain repeatedly, advancing past each backoff, until the bounded budget is hit
+    for day in 1..20 {
+        if status_of(&path) == "dead" {
+            break;
+        }
+        clock.set(&format!("2030-02-{day:02}T00:00:00Z"));
+        store.drain_once(&clock, &fake).unwrap();
+    }
+    assert_eq!(
+        status_of(&path),
+        "dead",
+        "repeated retryable → dead after the budget"
+    );
+    assert_eq!(
+        fake.calls(),
+        6,
+        "exactly 6 deliver attempts (1 initial + MAX_RETRIES=5) — pins the budget boundary"
+    );
+}
+
+// ---- Test 9 — crash redelivers, idempotent consumer does not double-apply ----
+
+#[test]
+fn test_crash_redelivers_no_double_apply() {
+    let (_d, path) = temp_db();
+    // ONE idempotent destination spans the crash boundary, so its call/apply counts
+    // accumulate across both drains.
+    let fake = FakeDestination::new("jsonl_mirror", DeliveryOutcome::Delivered);
+    {
+        let mut store = open(&path);
+        store
+            .append(session_intent("{\"status\":\"starting\"}"))
+            .unwrap();
+        store
+            .drain_once(&StepClock::new("2030-01-01T00:00:00Z"), &fake)
+            .unwrap();
+        assert_eq!(status_of(&path), "delivered");
+    }
+    // simulate a crash that LOST the delivered-commit: the row is stuck in_flight
+    // (the deliver happened; its confirmation never persisted).
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute("UPDATE outbox SET status='in_flight'", [])
+            .unwrap();
+    }
+    // reopen → crash recovery resets in_flight→pending → the row is re-deliverable
+    let mut store = open(&path);
+    assert_eq!(
+        status_of(&path),
+        "pending",
+        "in_flight reset to pending on restart"
+    );
+    store
+        .drain_once(&StepClock::new("2030-01-02T00:00:00Z"), &fake)
+        .unwrap();
+
+    assert_eq!(status_of(&path), "delivered", "redelivered");
+    assert_eq!(
+        fake.calls(),
+        2,
+        "deliver attempted twice (at-least-once across the crash)"
+    );
+    assert_eq!(
+        fake.applied(),
+        1,
+        "idempotent consumer applied the effect exactly once"
     );
 }

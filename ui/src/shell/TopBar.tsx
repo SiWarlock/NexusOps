@@ -13,26 +13,35 @@ import { ProjectSwitcher } from "./ProjectSwitcher";
  * reached here (not the view-switch), per the §11.2 nav model (human-confirmed
  * 2026-06-08). The Settings control opens the Settings view; the Brain trigger is
  * deferred to Phase 8 (the Brain drawer isn't built — placeholder). The icon-only
- * back/forward controls carry visually-hidden accessible names (history nav itself
- * is not wired yet — names only).
+ * back/forward controls carry visually-hidden accessible names and drive the
+ * content-view history (useViewHistory): each is `disabled` at its boundary so a
+ * named control is never a dead click (§11.6).
  */
 export function TopBar({
   projects,
   counts,
   onOpenSettings,
+  onBack,
+  onForward,
+  canBack,
+  canForward,
 }: {
   projects: ProjectActivityRow[];
   counts: Record<string, ProjectSwitcherCounts>;
   onOpenSettings: () => void;
+  onBack: () => void;
+  onForward: () => void;
+  canBack: boolean;
+  canForward: boolean;
 }) {
   return (
     <header className="topbar">
       <nav aria-label="History">
-        <Button variant="ghost" size="sm">
+        <Button variant="ghost" size="sm" onClick={onBack} disabled={!canBack}>
           <span aria-hidden="true">←</span>
           <span className="sr-only">Back</span>
         </Button>
-        <Button variant="ghost" size="sm">
+        <Button variant="ghost" size="sm" onClick={onForward} disabled={!canForward}>
           <span aria-hidden="true">→</span>
           <span className="sr-only">Forward</span>
         </Button>

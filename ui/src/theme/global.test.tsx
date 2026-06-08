@@ -25,7 +25,17 @@ describe("6.5a theme base — wiring guard (NOT the visual gate)", () => {
   });
 
   it("topbar_accessible_names_use_global_sr_only", () => {
-    render(<TopBar projects={[]} counts={{}} onOpenSettings={() => {}} />);
+    render(
+      <TopBar
+        projects={[]}
+        counts={{}}
+        onOpenSettings={() => {}}
+        onBack={() => {}}
+        onForward={() => {}}
+        canBack={false}
+        canForward={false}
+      />,
+    );
     // the back/forward accessible names are visually-hidden via the global
     // .sr-only utility (the SR_ONLY inline-style swap is behavior-preserving)
     expect(screen.getByText("Back").className).toBe("sr-only");

@@ -42,6 +42,7 @@ import {
   filterByActiveProject,
   ActiveProjectProvider,
 } from "./active-project";
+import { useViewHistory } from "./view-history";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
 import { DrawerStack } from "./DrawerStack";
@@ -91,10 +92,17 @@ export function Shell({
   );
   // Fail-safe: version stays "unknown" (→ read-only) until a handshake confirms it.
   const [version, setVersion] = useState<VersionCompat>("unknown");
-  // Which content view the main surface shows (6.3b/6.3c). Command Center is default.
-  const [contentView, setContentView] = useState<
-    "command" | "graph" | "sessions" | "settings"
-  >("command");
+  // Which content view the main surface shows (6.3b/6.3c). Command Center is the
+  // default; back/forward navigate the view history (§11.2 — pure UI state, no
+  // daemon dep, Lesson §13 family). `navigate` is the single nav entry point.
+  const {
+    current: contentView,
+    canBack,
+    canForward,
+    navigate,
+    back,
+    forward,
+  } = useViewHistory();
   // Active-project selection (P7.3): UI scope state over the frozen projects
   // projection. null until the user picks; defaults to the first project (below).
   const [rawActiveProjectId, setActiveProject] = useState<string | null>(null);
@@ -201,7 +209,11 @@ export function Shell({
         <TopBar
           projects={data.projects}
           counts={data.counts}
-          onOpenSettings={() => setContentView("settings")}
+          onOpenSettings={() => navigate("settings")}
+          onBack={back}
+          onForward={forward}
+          canBack={canBack}
+          canForward={canForward}
         />
         {/* Banner stack (grid row) — the transport DegradedBanner, the survival
             RecoveryBanner, and the §17 safety surfaces. Auto-height: collapses to
@@ -235,21 +247,21 @@ export function Shell({
               <button
                 type="button"
                 aria-pressed={contentView === "command"}
-                onClick={() => setContentView("command")}
+                onClick={() => navigate("command")}
               >
                 Command Center
               </button>
               <button
                 type="button"
                 aria-pressed={contentView === "graph"}
-                onClick={() => setContentView("graph")}
+                onClick={() => navigate("graph")}
               >
                 Project Graph
               </button>
               <button
                 type="button"
                 aria-pressed={contentView === "sessions"}
-                onClick={() => setContentView("sessions")}
+                onClick={() => navigate("sessions")}
               >
                 Sessions
               </button>

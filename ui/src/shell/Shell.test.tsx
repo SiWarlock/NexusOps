@@ -213,6 +213,27 @@ describe("Shell", () => {
     expect(rows).toHaveLength(2);
   });
 
+  it("shell_history_nav_round_trips_content", async () => {
+    const { container } = render(<Shell gateway={new MockGatewayPort()} />);
+    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    // Command Center is the default content view; history has no back yet.
+    expect(container.querySelector('[aria-label="Command Center"]')).not.toBeNull();
+    expect(screen.getByRole("button", { name: /back/i })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    // navigate Command → Graph via the view-switch (a real nav, pushes history)
+    fireEvent.click(screen.getByRole("button", { name: /project graph/i }));
+    expect(screen.getByTestId("graph-canvas")).toBeTruthy();
+    // TopBar Back is now live and returns the Command surface
+    fireEvent.click(screen.getByRole("button", { name: /back/i }));
+    expect(container.querySelector('[aria-label="Command Center"]')).not.toBeNull();
+    expect(screen.queryByTestId("graph-canvas")).toBeNull();
+    // TopBar Forward returns Graph (cursor moves, stack intact)
+    fireEvent.click(screen.getByRole("button", { name: /forward/i }));
+    expect(screen.getByTestId("graph-canvas")).toBeTruthy();
+  });
+
   it("shell_renders_recovery_banner", async () => {
     render(
       <Shell

@@ -98,7 +98,6 @@ export function ProjectGraph({
               className="project-graph__node"
               data-item-id={node.id}
               data-node-type={node.type}
-              style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
             >
               <AttentionMarker rank={node.attentionRank} variant="dot" />
               <span className="project-graph__node-label">{node.label}</span>

@@ -23,12 +23,9 @@ function GroupItem({ item }: { item: RankedCommandItem }) {
     <li
       className="command-center__item"
       data-item-id={`${item.machine}:${item.id}`}
-      style={{ display: "flex", alignItems: "stretch", gap: 6 }}
     >
       <AttentionMarker rank={item.attentionRank} variant="rail" />
-      <span className="command-center__item-label" style={{ flex: 1, minWidth: 0 }}>
-        {item.label}
-      </span>
+      <span className="command-center__item-label">{item.label}</span>
       <StatusPill machine={item.machine} status={item.status} size="xs" />
     </li>
   );
@@ -55,7 +52,7 @@ export function CommandCenter({ items }: { items: CommandItem[] }) {
                 Nothing here.
               </p>
             ) : (
-              <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+              <ul>
                 {groupItems.map((item) => (
                   <GroupItem key={`${item.machine}:${item.id}`} item={item} />
                 ))}

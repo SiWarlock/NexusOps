@@ -13,6 +13,9 @@ import "./theme/global.css";
 // grid + region chrome (topbar/sidebar/main/dock/status/banner) from semantic
 // tokens. After global.css (base canvas), before focus.css.
 import "./theme/shell.css";
+// 6.5c Graphite Arc view + component panels — themes the in-view panels + the
+// banner/safety surfaces (severity color additive to glyph+label). After shell.css.
+import "./theme/components.css";
 // Global :focus-visible ring on every interactive control (§11.6) — uses the kit
 // ring tokens; must load after the kit tokens so the custom properties resolve.
 import "./a11y/focus.css";

@@ -76,11 +76,12 @@
   min-width: 0;
 }
 
-/* Main content region. Whole-region scroll for now; per-panel scroll is 6.5c. */
+/* Main content region. overflow:hidden — each view owns its scroll region beneath
+   the sticky content-switch toolbar (6.5c, refinement B). */
 .main {
   grid-area: main;
   min-width: 0;
-  overflow: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }

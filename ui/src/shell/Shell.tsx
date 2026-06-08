@@ -16,7 +16,7 @@ import { CommandCenter } from "../views/command/CommandCenter";
 import type { CommandItem } from "../views/command/group";
 import { ProjectGraph } from "../views/graph/ProjectGraph";
 import { SessionsTable } from "../views/sessions/SessionsTable";
-import { UsageDashboard } from "../views/usage/UsageDashboard";
+import { Settings } from "../views/settings/Settings";
 import {
   toSessionItems,
   toPrItems,
@@ -69,7 +69,7 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
   const [version, setVersion] = useState<VersionCompat>("unknown");
   // Which content view the main surface shows (6.3b/6.3c). Command Center is default.
   const [contentView, setContentView] = useState<
-    "command" | "graph" | "sessions" | "usage"
+    "command" | "graph" | "sessions" | "settings"
   >("command");
 
   useEffect(() => client.onConnectionChange(setConnection), [client]);
@@ -201,10 +201,10 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
               </button>
               <button
                 type="button"
-                aria-pressed={contentView === "usage"}
-                onClick={() => setContentView("usage")}
+                aria-pressed={contentView === "settings"}
+                onClick={() => setContentView("settings")}
               >
-                Usage
+                Settings
               </button>
             </div>
             {contentView === "command" ? (
@@ -219,7 +219,8 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
             ) : contentView === "sessions" ? (
               <SessionsTable sessions={data.sessions} projects={data.projects} />
             ) : (
-              <UsageDashboard rows={data.usage} creditPool={data.creditPool} />
+              // Settings folds the Usage dashboard into its Usage tab (§11.2).
+              <Settings usage={data.usage} creditPool={data.creditPool} />
             )}
           </main>
           <DrawerStack />

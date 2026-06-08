@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach } from "vitest";
-import { act, cleanup, render, screen, fireEvent } from "@testing-library/react";
+import { act, cleanup, render, screen, fireEvent, within } from "@testing-library/react";
 import { Shell } from "./Shell";
 import { MockGatewayPort } from "../gateway-client/mock";
 import { BoundaryValidationError } from "../gateway-client/boundary";
@@ -113,15 +113,21 @@ describe("Shell", () => {
     expect(container.querySelector('[aria-label="Command Center"]')).toBeNull();
   });
 
-  it("view_switch_mounts_usage_dashboard", async () => {
+  it("view_switch_mounts_settings_not_interim_usage", async () => {
     const { container } = render(<Shell gateway={new MockGatewayPort()} />);
     await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    // the content-view switch offers Settings, NOT a top-level interim "Usage".
+    // (Scoped to the switch group — the TopBar also has a placeholder "Settings".)
+    const viewSwitch = screen.getByRole("group", { name: "Content view" });
+    expect(within(viewSwitch).getByRole("button", { name: /settings/i })).toBeTruthy();
+    expect(within(viewSwitch).queryByRole("button", { name: /usage/i })).toBeNull();
     expect(container.querySelector('[aria-label="Command Center"]')).not.toBeNull();
-    expect(screen.queryByTestId("usage-table")).toBeNull();
-    // selecting Usage mounts <UsageDashboard/>, reachable from the Shell (Step 7.5)
-    fireEvent.click(screen.getByRole("button", { name: /usage/i }));
-    expect(screen.getByTestId("usage-table")).toBeTruthy();
-    // switch-not-stack — Command Center is unmounted
+    // selecting Settings mounts the tablist (switch-not-stack); Usage is now
+    // reached via Settings → Usage (the relocation — Step 7.5)
+    fireEvent.click(within(viewSwitch).getByRole("button", { name: /settings/i }));
+    expect(screen.getByRole("tablist")).toBeTruthy();
     expect(container.querySelector('[aria-label="Command Center"]')).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: /usage/i }));
+    expect(screen.getByTestId("usage-table")).toBeTruthy();
   });
 });

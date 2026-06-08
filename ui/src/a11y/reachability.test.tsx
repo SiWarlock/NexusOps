@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
-import { cleanup, render, screen, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, fireEvent, within } from "@testing-library/react";
 import { Shell } from "../shell/Shell";
 import { MockGatewayPort } from "../gateway-client/mock";
 import { projectActivityFixture } from "../projections/fixtures/proj_project_activity";
@@ -40,27 +40,29 @@ describe("a11y reachability + wiring", () => {
     // per-view control (view-switch, Graph|List toggle, Sessions sort headers),
     // so a non-focusable control added to ANY view later is caught here.
     auditFocusable(container); // Command Center (default)
-    // the view-switch controls are real (focusable) buttons
+    // the view-switch controls are real (focusable) buttons. Scoped to the switch
+    // group — the TopBar also carries a (placeholder) "Settings" control.
+    const viewSwitch = screen.getByRole("group", { name: "Content view" });
     for (const name of [
       /command center/i,
       /project graph/i,
       /sessions/i,
-      /usage/i,
+      /settings/i,
     ]) {
-      expect(screen.getByRole("button", { name })).toBeTruthy();
+      expect(within(viewSwitch).getByRole("button", { name })).toBeTruthy();
     }
 
-    fireEvent.click(screen.getByRole("button", { name: /project graph/i }));
+    fireEvent.click(within(viewSwitch).getByRole("button", { name: /project graph/i }));
     expect(screen.getByTestId("graph-canvas")).toBeTruthy();
     auditFocusable(container); // Project Graph (incl. the Graph|List toggle)
 
-    fireEvent.click(screen.getByRole("button", { name: /sessions/i }));
+    fireEvent.click(within(viewSwitch).getByRole("button", { name: /sessions/i }));
     expect(screen.getByTestId("sessions-table")).toBeTruthy();
     auditFocusable(container); // Sessions (incl. the sort-header buttons)
 
-    fireEvent.click(screen.getByRole("button", { name: /usage/i }));
-    expect(screen.getByTestId("usage-table")).toBeTruthy();
-    auditFocusable(container); // Usage (interim 4th view — keeps the §9 net complete)
+    fireEvent.click(within(viewSwitch).getByRole("button", { name: /settings/i }));
+    expect(screen.getByRole("tablist")).toBeTruthy();
+    auditFocusable(container); // Settings (the 4th view — tab buttons; §9 net)
   });
 
   it("focus_stylesheet_is_imported", () => {

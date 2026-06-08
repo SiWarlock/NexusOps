@@ -265,3 +265,24 @@ CREATE TABLE proj_usage_ledger (
   updated_at_seq       INTEGER NOT NULL
 );
 ";
+
+/// Migration 4 (1.3 outbox) — the transactional-outbox table (DATA_MODEL §2.5). Rows
+/// are written in the event-commit txn (the writer); an async drainer delivers them
+/// at-least-once with backoff. `status` ∈ pending|in_flight|delivered|failed|dead;
+/// `next_attempt_at` (NULL = due now) drives `ix_outbox_due`. `out_` ULID is a
+/// daemon-internal id (NOT one of the 22 frozen `shared/` IDs — the outbox is the
+/// daemon's own delivery mechanism, not a UI/Brain contract surface).
+pub const MIGRATION_4_OUTBOX: &str = "\
+CREATE TABLE outbox (
+  outbox_id       TEXT PRIMARY KEY,
+  destination     TEXT NOT NULL,
+  event_id        TEXT NOT NULL REFERENCES events(event_id),
+  payload_json    TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'pending',
+  retry_count     INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT,
+  last_error      TEXT,
+  created_at      TEXT NOT NULL
+);
+CREATE INDEX ix_outbox_due ON outbox(status, next_attempt_at);
+";

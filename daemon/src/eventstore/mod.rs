@@ -8,6 +8,7 @@
 //! The redaction GATE lands in the L3 sub-feature; this layer is the spine.
 
 mod migrations;
+mod outbox;
 pub mod redaction;
 mod schema;
 
@@ -231,6 +232,10 @@ impl EventStore {
                 // intent) means append + rebuild fold byte-identical envelopes.
                 let env = read_envelope_by_seq(&tx, seq)?;
                 crate::projections::apply_all(&tx, &env).map_err(projection_to_store_err)?;
+                // §7 transactional-outbox: delivery intents join the SAME txn, after
+                // the projections, on the already-redacted event (§15 sync sink). A
+                // failure here rolls the whole append back (recorded-iff-intended).
+                outbox::write_for_event(&tx, &env, self.idgen.as_ref(), self.clock.as_ref())?;
                 tx.commit().map_err(EventStoreError::Write)?;
                 Ok(event_id)
             }

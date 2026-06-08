@@ -8,9 +8,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nexusops_shared::ids::EventId;
 
-/// Mints platform `event_id`s (`evt_<ULID>`).
+/// Mints platform `event_id`s (`evt_<ULID>`) + daemon-internal `out_` outbox ids.
 pub trait IdGen: Send + Sync {
     fn new_event_id(&self) -> EventId;
+    /// A fresh `out_<ULID>` outbox id (DATA_MODEL §2.5). Daemon-internal — NOT one of
+    /// the 22 frozen `shared/` IDs, so it is a plain `String`, not a newtype.
+    fn new_outbox_id(&self) -> String;
 }
 
 /// Production generator — real time+random ULIDs.
@@ -21,6 +24,9 @@ impl IdGen for UlidGen {
     fn new_event_id(&self) -> EventId {
         EventId::new()
     }
+    fn new_outbox_id(&self) -> String {
+        format!("out_{}", ulid::Ulid::new())
+    }
 }
 
 /// Deterministic generator for tests / golden-log replay — yields `evt_` ULIDs
@@ -29,6 +35,9 @@ impl IdGen for UlidGen {
 #[derive(Debug, Default)]
 pub struct FixedIdGen {
     counter: AtomicU64,
+    // a SEPARATE counter for outbox ids so writing outbox rows never perturbs the
+    // event-id sequence — the golden-log replay stays byte-identical (§14).
+    outbox_counter: AtomicU64,
 }
 
 impl FixedIdGen {
@@ -45,5 +54,9 @@ impl IdGen for FixedIdGen {
         // (these sort before any real production id); never use in production.
         let ulid = ulid::Ulid::from(n as u128);
         EventId::parse(&format!("evt_{ulid}")).expect("counter-derived ULID is always valid")
+    }
+    fn new_outbox_id(&self) -> String {
+        let n = self.outbox_counter.fetch_add(1, Ordering::Relaxed);
+        format!("out_{}", ulid::Ulid::from(n as u128))
     }
 }

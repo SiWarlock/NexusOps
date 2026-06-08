@@ -286,3 +286,27 @@ CREATE TABLE outbox (
 );
 CREATE INDEX ix_outbox_due ON outbox(status, next_attempt_at);
 ";
+
+/// Migration 5 (1.4 leases) — the cross-restart lease table (ADR-008 / §7.2). ONE row
+/// per `(resource_id, lease_kind)`; `fencing_token` is a MONOTONIC high-water mark that
+/// only ever increments and survives restart (persisted in the row, never an in-memory
+/// counter — see §17 / safety rule #6). The holder fields (owner_id/acquired_at/
+/// heartbeat_at/expires_at) are NULL when the slot is free; `release` + the reaper NULL
+/// them but KEEP the token, so the next acquire still increments (no token reuse). A live
+/// lease = owner present AND `expires_at > now`; authority is tied to a live lease, not a
+/// merely-unsuperseded token (human-ruled Option B). `ix_leases_expiry` drives the reaper's
+/// expired-lease scan (§12). **Daemon-internal** — NOT a `shared/` contract (the UI/Brain
+/// never read `leases`), analogous to the 1.3 outbox: no CONTRACT_VERSION bump.
+pub const MIGRATION_5_LEASES: &str = "\
+CREATE TABLE leases (
+  resource_id   TEXT NOT NULL,
+  lease_kind    TEXT NOT NULL,
+  owner_id      TEXT,
+  fencing_token INTEGER NOT NULL DEFAULT 0,
+  acquired_at   TEXT,
+  heartbeat_at  TEXT,
+  expires_at    TEXT,
+  PRIMARY KEY (resource_id, lease_kind)
+);
+CREATE INDEX ix_leases_expiry ON leases(expires_at);
+";

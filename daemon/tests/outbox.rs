@@ -96,7 +96,12 @@ impl Redactor for NeverRedacts {
 fn test_migration_4_creates_outbox() {
     let (_d, path) = temp_db();
     let store = open(&path);
-    assert_eq!(store.user_version(), 4, "open migrates to user_version 4");
+    // outbox was introduced at migration 4; later migrations raise the version further
+    // (the exact-version pin lives in each migration's own test, e.g. M5 in tests/locks.rs).
+    assert!(
+        store.user_version() >= 4,
+        "open migrates at/above the outbox migration (4)"
+    );
     let t = tables(&path);
     assert!(t.contains("outbox"), "migration 4 creates outbox");
     assert!(t.contains("ix_outbox_due"), "due-index created");

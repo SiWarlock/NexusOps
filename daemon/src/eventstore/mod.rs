@@ -35,6 +35,7 @@ pub use outbox::{DeliveryOutcome, Destination, DrainSummary, JsonlMirror};
 
 use crate::clock::Clock;
 use crate::idgen::IdGen;
+use crate::locks::{self, FencingToken, Lease, LeaseError, LeaseKind, OwnerId, ResourceId};
 
 pub use migrations::SUPPORTED_USER_VERSION;
 
@@ -339,6 +340,70 @@ impl EventStore {
             out.push(r.map_err(EventStoreError::Write)?);
         }
         Ok(out)
+    }
+
+    // ---- lease locks + fencing (§7.2/§17, safety rule #6) -------------------
+    //
+    // `locks/` is a persistence-core sibling; `EventStore` (the single connection
+    // owner) drives it over `self.conn` — exactly the `drain_once`/`rebuild_projections`
+    // precedent, so no second writable connection is opened (Forbidden #3 / LESSON §3).
+    // The production caller is the **Phase-2 Action Gateway** (acquire → re-read after
+    // lock → validate the token at execute → `fencing_conflict` on a stale token); 1.4
+    // ships the primitive, the gateway wires it in Phase 2.
+
+    /// Acquire `(resource_id, lease_kind)` for `owner_id` with a `ttl_secs` lease — minting a
+    /// strictly-monotonic fencing token. Refuses (typed `Held`) a live lease held by another.
+    pub fn acquire_lease(
+        &mut self,
+        resource_id: &ResourceId,
+        lease_kind: &LeaseKind,
+        owner_id: &OwnerId,
+        ttl_secs: i64,
+        clock: &dyn Clock,
+    ) -> Result<Lease, LeaseError> {
+        locks::acquire(
+            &mut self.conn,
+            resource_id,
+            lease_kind,
+            owner_id,
+            ttl_secs,
+            clock,
+        )
+    }
+
+    /// Renew an owned lease (extend the TTL; token unchanged). Owner-and-token-and-expiry guarded.
+    pub fn renew_lease(
+        &self,
+        lease: &Lease,
+        ttl_secs: i64,
+        clock: &dyn Clock,
+    ) -> Result<Lease, LeaseError> {
+        locks::renew(&self.conn, lease, ttl_secs, clock)
+    }
+
+    /// Release an owned lease — free the slot, preserve the fencing high-water mark.
+    pub fn release_lease(&self, lease: &Lease) -> Result<(), LeaseError> {
+        locks::release(&self.conn, lease)
+    }
+
+    /// The authority oracle (safety rule #6, Option B): `true` iff `owner_id` holds the lease
+    /// with `token` AND it is still live. The Phase-2 gateway's stale-token check (§17).
+    pub fn validate_lease_held(
+        &self,
+        resource_id: &ResourceId,
+        lease_kind: &LeaseKind,
+        owner_id: &OwnerId,
+        token: FencingToken,
+        clock: &dyn Clock,
+    ) -> Result<bool, LeaseError> {
+        locks::validate_held(
+            &self.conn,
+            resource_id,
+            lease_kind,
+            owner_id,
+            token,
+            &clock.now_rfc3339(),
+        )
     }
 
     /// the applied schema version (§16)

@@ -118,10 +118,11 @@ fn table_names(path: &std::path::Path) -> std::collections::BTreeSet<String> {
 fn test_migration_3_creates_projection_tables() {
     let (_d, path) = temp_db();
     let store = open(&path);
-    assert_eq!(
-        store.user_version(),
-        4,
-        "open migrates to user_version 4 (through migration 3)"
+    // projections were introduced at migration 3; later migrations raise the version
+    // further (the exact-version pin lives in each migration's own test).
+    assert!(
+        store.user_version() >= 3,
+        "open migrates at/above the projections migration (3)"
     );
 
     let tables = table_names(&path);
@@ -174,10 +175,13 @@ fn test_migration_3_over_existing_events_backs_up() {
         .unwrap();
         conn.pragma_update(None, "user_version", 2).unwrap();
     }
-    // opening raises 2→3→4 on a NON-EMPTY db → backup `.bak-2` first (§16, one
+    // opening raises 2→3→… on a NON-EMPTY db → backup `.bak-2` first (§16, one
     // pre-run snapshot keyed by the starting version, restored if any step fails)
     let store = open(&path);
-    assert_eq!(store.user_version(), 4, "migrated through 3 to 4");
+    assert!(
+        store.user_version() >= 3,
+        "migrated through 3 (and any later migrations)"
+    );
     let bak = std::path::PathBuf::from(format!("{}.bak-2", path.display()));
     assert!(
         bak.exists(),

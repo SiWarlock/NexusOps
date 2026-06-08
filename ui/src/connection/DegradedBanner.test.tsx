@@ -61,6 +61,38 @@ describe("DegradedBanner + read-only integration", () => {
     ).toBeTruthy();
   });
 
+  it("renders_checking_variant", () => {
+    render(
+      <DegradedBanner degraded="checking" onRetry={() => {}} onRepair={() => {}} />,
+    );
+    // a polite role=status banner (not an assertive alert) explaining the
+    // read-only handshake window — read-only is never silently unexplained (§11.4)
+    const banner = screen.getByRole("status");
+    expect(banner.getAttribute("data-degraded")).toBe("checking");
+    expect(banner.textContent).toMatch(/read-only/i);
+    expect(banner.textContent).toMatch(/handshake|compatibility/i);
+    // a handshake self-resolves → NO Retry/Repair affordances (not a failure)
+    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /repair|update/i })).toBeNull();
+  });
+
+  it("checking_distinct_from_failure_variants", () => {
+    // checking = polite role=status, self-resolving, no action buttons...
+    const { unmount } = render(
+      <DegradedBanner degraded="checking" onRetry={() => {}} onRepair={() => {}} />,
+    );
+    expect(screen.getByRole("status")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    unmount();
+    // ...whereas a failure variant (reconnecting) is an assertive role=alert WITH actions
+    render(
+      <DegradedBanner degraded="reconnecting" onRetry={() => {}} onRepair={() => {}} />,
+    );
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(screen.getAllByRole("button").length).toBeGreaterThan(0);
+  });
+
   it("reconnect_restores_live_state", () => {
     const disconnected: ConnectionStatus = {
       connection: "disconnected",

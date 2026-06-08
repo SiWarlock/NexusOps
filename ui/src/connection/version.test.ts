@@ -36,12 +36,25 @@ describe("version compatibility", () => {
     expect(deriveDegradedState("reconnecting", "compatible")).toBe("reconnecting");
   });
 
-  it("derive_degraded_state_connected_but_unconfirmed_version_is_ok", () => {
-    // Pre-handshake window: connected but version not yet confirmed → no banner
-    // ("ok"), while canSubmitIntent stays fail-safe FALSE (pinned in
-    // read-only.test). Intentional for now; a "checking" banner variant is a
-    // 6.3+ follow-up. Unreachable through Shell (it mounts after caps resolve).
-    expect(deriveDegradedState("connected", "unknown")).toBe("ok");
+  it("connected_unknown_is_checking", () => {
+    // Post-connect, pre-version-confirm handshake window: connected but version
+    // not yet confirmed → a non-intrusive "checking" banner (was "ok" — the
+    // silent-read-only gap, §11.4). canSubmitIntent stays fail-safe FALSE
+    // (pinned in read-only.test) — this only EXPLAINS the existing read-only.
+    expect(deriveDegradedState("connected", "unknown")).toBe("checking");
+  });
+
+  it("checking_precedence", () => {
+    // checking is the LOWEST-severity degraded state — only the connected+unknown
+    // window; everything more severe wins (§16 precedence).
+    expect(deriveDegradedState("connected", "update_required")).toBe("update_required");
+    expect(deriveDegradedState("disconnected", "unknown")).toBe("disconnected");
+    // connecting = pre-handshake (transport not yet up) → reconnecting, NOT checking
     expect(deriveDegradedState("connecting", "unknown")).toBe("reconnecting");
+    // reconnecting beats checking too — a dropped/recovering transport wins over
+    // the version-unknown window (pins the guard ordering against inversion)
+    expect(deriveDegradedState("reconnecting", "unknown")).toBe("reconnecting");
+    // handshake resolved compatible → ok (no banner)
+    expect(deriveDegradedState("connected", "compatible")).toBe("ok");
   });
 });

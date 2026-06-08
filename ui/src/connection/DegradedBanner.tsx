@@ -18,6 +18,24 @@ export function DegradedBanner({
 }) {
   if (degraded === "ok") return null;
 
+  if (degraded === "checking") {
+    // The connected-but-version-unconfirmed handshake window (§6.4): read-only
+    // is EXPLAINED, never silent (§11.4). role="status" (polite) — transient and
+    // self-resolving (→ ok / update_required / disconnected), NOT a failure, so
+    // no Retry/Repair (a handshake can't be retried into compatibility).
+    return (
+      <div
+        role="status"
+        className="degraded-banner degraded-banner--checking"
+        data-degraded="checking"
+      >
+        <span className="degraded-banner__msg">
+          Confirming compatibility… — read-only until the handshake completes.
+        </span>
+      </div>
+    );
+  }
+
   if (degraded === "update_required") {
     return (
       <div

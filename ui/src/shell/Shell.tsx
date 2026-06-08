@@ -152,6 +152,11 @@ export function Shell({
   }
 
   const status: ConnectionStatus = { connection, version };
+  // The "checking" (connected + version-unknown) window surfaces at the real
+  // daemon-1.5 reconnect re-handshake; the MockGatewayPort resolves version
+  // together with data (one Promise.all behind the !data load gate), so the
+  // window is trigger-pending here (wired, not yet driven). See the ui↔daemon-1.5
+  // Carry-forward spread.
   const degraded = deriveDegradedState(connection, version);
 
   // Sessions drive the sidebar's attention-ordered items (§11.3 sidebar weight);

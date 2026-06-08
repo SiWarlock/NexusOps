@@ -8,6 +8,7 @@ import type {
   ProjectActivityRow,
   PullRequestRow,
   RecoveryStatus,
+  SafetyState,
   SessionRow,
   UsageRow,
 } from "../contracts/index";
@@ -33,6 +34,8 @@ import type { ConnectionState } from "../connection/state";
 import { DegradedBanner } from "../connection/DegradedBanner";
 import { RecoveryBanner } from "../recovery/RecoveryBanner";
 import { recoveryStatusFixture } from "../recovery/fixtures";
+import { HardConflictCard } from "../safety/HardConflictCard";
+import { safetyCleanFixture } from "../safety/fixtures";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
 import { DrawerStack } from "./DrawerStack";
@@ -65,9 +68,13 @@ export function Shell({
   // O-2 survival display (6.4d): fixture-driven (recovered = non-intrusive) until
   // the daemon survival-schema integration supplies real recovery state.
   recovery = recoveryStatusFixture,
+  // §17 safety-state display (6.4d-2): fixture-driven (clean = non-intrusive) until
+  // the daemon §17/failure-mode integration supplies real safety state.
+  safety = safetyCleanFixture,
 }: {
   gateway?: GatewayPort;
   recovery?: RecoveryStatus;
+  safety?: SafetyState;
 }) {
   // Stable client across renders (a fresh default per render would loop the effect).
   const [client] = useState<GatewayPort>(() => gateway ?? new MockGatewayPort());
@@ -186,6 +193,14 @@ export function Shell({
         {/* Survival/recovery banner (O-2) — a DISTINCT surface from the transport
             DegradedBanner above. Non-intrusive (renders nothing) when recovered. */}
         <RecoveryBanner recovery={recovery} />
+        {/* §17 safety-state host (6.4d-2) — a THIRD distinct concern beyond the
+            transport DegradedBanner + the session-survival RecoveryBanner. Hosts
+            the never-auto-resolved fencing/hard-conflict card (#6) and, at L2, the
+            fail-closed audit-integrity alert (#5). Non-intrusive when clean; the
+            full 7-group Human Input Queue host is Phase 8 (intent seam). */}
+        <div className="safety-host" data-testid="safety-host">
+          <HardConflictCard conflict={safety.conflict} />
+        </div>
         <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
           <Sidebar items={sidebarItems} />
           <main style={{ flex: 1, minWidth: 0 }} aria-label="Main surface">

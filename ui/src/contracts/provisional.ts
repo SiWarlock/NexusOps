@@ -35,6 +35,54 @@ export const RecoveryStatus = z.object({
 });
 export type RecoveryStatus = z.infer<typeof RecoveryStatus>;
 
+// ─── §17 safety-state (PROVISIONAL — 6.4d-2) ─────────────────────────────────
+// The daemon's §17 failure-mode / conflict schema is NOT in the frozen contract.
+// ConflictReason + FencingConflict are hand-declared provisional shapes (Lesson
+// §2); they reconcile at the daemon §17/survival-schema freeze (Carry-forward
+// provisional→generated spread). The audit-integrity treatments (L2) REUSE the
+// frozen ActionRequest enum for partially_succeeded/rollback_failed — never
+// re-declared here.
+
+/**
+ * Why a mutation was rejected at the fencing gate (§17 fencing row, safety #6).
+ * Scoped to `fencing_conflict` ONLY — the never-auto-resolved hard conflict.
+ * `stale_precondition` is a SEPARATE, RE-APPROVABLE flow (regenerate preview +
+ * require fresh approval, §17/§6.2) — NOT a hard conflict; it belongs with the
+ * approval/preview surface, not this card, so it is deliberately excluded here.
+ * PROVISIONAL.
+ */
+export const ConflictReason = z.enum(["fencing_conflict"]);
+export type ConflictReason = z.infer<typeof ConflictReason>;
+
+/**
+ * A stale-token / lease-expiry rejected mutation → `ActionFailed(fencing_conflict)`
+ * + conflict event (§17). The UI DISPLAYS it as the never-auto-resolved hard-
+ * conflict card (safety #6); resolution is a daemon-side typed Action (parked,
+ * daemon-1.5 — single mutator / INV-SEC-1 is daemon-side). PROVISIONAL.
+ */
+export const FencingConflict = z.object({
+  // The affected action (frozen IdKind `action_request_id`; the value is the `act_…` id string).
+  action_request_id: z.string(),
+  // The affected session when session-scoped (frozen IdKind `session_id`).
+  session_id: z.string().optional(),
+  reason: ConflictReason,
+  // Human-readable summary of what was rejected (daemon-supplied; never invented — forbidden #2).
+  summary: z.string(),
+});
+export type FencingConflict = z.infer<typeof FencingConflict>;
+
+/**
+ * The aggregate §17 safety state the Shell renders (fixture-driven; the daemon
+ * §17 failure-mode logic isn't built). The audit-integrity half (L2) extends this
+ * with an `integrity` member. PROVISIONAL — mirrors the `RecoveryStatus` input-
+ * prop shape (a Zod schema, validated at the boundary when real state lands).
+ */
+export const SafetyState = z.object({
+  // A pending fencing/hard-conflict, or null when clean (non-intrusive default).
+  conflict: FencingConflict.nullable(),
+});
+export type SafetyState = z.infer<typeof SafetyState>;
+
 /** A single row of the Session projection (provisional shape). */
 export const SessionRow = z.object({
   session_id: z.string(),

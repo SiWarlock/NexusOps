@@ -7,6 +7,7 @@ import { BoundaryValidationError } from "../gateway-client/boundary";
 import { SessionProjectionPage } from "../contracts/index";
 import type { GatewayPort } from "../gateway-client/types";
 import { projectActivityFixture } from "../projections/fixtures/proj_project_activity";
+import { fencingConflictFixture } from "../safety/fixtures";
 
 afterEach(cleanup);
 
@@ -145,6 +146,28 @@ describe("Shell", () => {
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     fireEvent.click(screen.getByRole("tab", { name: /usage/i }));
     expect(screen.getByTestId("usage-table")).toBeTruthy();
+  });
+
+  it("shell_renders_hard_conflict_card_from_safety_prop", async () => {
+    render(
+      <Shell
+        gateway={new MockGatewayPort()}
+        safety={{ conflict: fencingConflictFixture }}
+      />,
+    );
+    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    // the §17 hard-conflict card is reachable in the shell (Step 7.5) with its
+    // parked (disabled) resolution control — a distinct safety surface
+    const card = screen.getByTestId("hard-conflict-card");
+    expect(card.getAttribute("data-conflict-reason")).toBe("fencing_conflict");
+    expect(screen.getByTestId("conflict-resolve")).toHaveProperty("disabled", true);
+  });
+
+  it("shell_safety_clean_by_default_renders_no_conflict_card", async () => {
+    render(<Shell gateway={new MockGatewayPort()} />);
+    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    // default safety fixture is clean → no conflict card intrudes (like 6.4d recovered)
+    expect(screen.queryByTestId("hard-conflict-card")).toBeNull();
   });
 
   it("shell_renders_recovery_banner", async () => {

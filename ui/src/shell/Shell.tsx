@@ -37,6 +37,11 @@ import { recoveryStatusFixture } from "../recovery/fixtures";
 import { HardConflictCard } from "../safety/HardConflictCard";
 import { AuditIntegrityAlert } from "../safety/AuditIntegrityAlert";
 import { safetyCleanFixture } from "../safety/fixtures";
+import {
+  resolveActiveProject,
+  filterByActiveProject,
+  ActiveProjectProvider,
+} from "./active-project";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
 import { DrawerStack } from "./DrawerStack";
@@ -90,6 +95,9 @@ export function Shell({
   const [contentView, setContentView] = useState<
     "command" | "graph" | "sessions" | "settings"
   >("command");
+  // Active-project selection (P7.3): UI scope state over the frozen projects
+  // projection. null until the user picks; defaults to the first project (below).
+  const [rawActiveProjectId, setActiveProject] = useState<string | null>(null);
 
   useEffect(() => client.onConnectionChange(setConnection), [client]);
 
@@ -152,6 +160,10 @@ export function Shell({
   }
 
   const status: ConnectionStatus = { connection, version };
+  // Effective active project: the user's pick when it still exists, else the
+  // first project (default scope), else null at zero-projects (the graph's
+  // no-projects guard). resolveActiveProject guards the stale-ID case.
+  const activeProjectId = resolveActiveProject(data.projects, rawActiveProjectId);
   // The "checking" (connected + version-unknown) window surfaces at the real
   // daemon-1.5 reconnect re-handshake; the MockGatewayPort resolves version
   // together with data (one Promise.all behind the !data load gate), so the
@@ -182,6 +194,9 @@ export function Shell({
 
   return (
     <ReadOnlyProvider value={status}>
+      {/* ActiveProjectProvider wraps the WHOLE shell (incl. TopBar) so the
+          ProjectSwitcher inside TopBar can read/set the active project. */}
+      <ActiveProjectProvider value={{ activeProjectId, setActiveProject }}>
       <div className="shell">
         <TopBar
           projects={data.projects}
@@ -245,13 +260,16 @@ export function Shell({
               <CommandCenter items={commandItems} />
             ) : contentView === "graph" ? (
               <ProjectGraph
-                projectId={data.projects[0]?.project_id ?? ""}
+                projectId={activeProjectId ?? ""}
                 projects={data.projects}
                 sessions={data.sessions}
                 pullRequests={data.pullRequests}
               />
             ) : contentView === "sessions" ? (
-              <SessionsTable sessions={data.sessions} projects={data.projects} />
+              <SessionsTable
+                sessions={filterByActiveProject(data.sessions, activeProjectId)}
+                projects={data.projects}
+              />
             ) : (
               // Settings folds the Usage dashboard into its Usage tab (§11.2).
               // Reached ONLY via the TopBar's onOpenSettings — no view-switch
@@ -263,6 +281,7 @@ export function Shell({
           <ActivityDock events={data.events} />
           <StatusBar connection={connection} />
         </div>
+      </ActiveProjectProvider>
     </ReadOnlyProvider>
   );
 }

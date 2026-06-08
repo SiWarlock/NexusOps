@@ -41,6 +41,20 @@ export function ProjectGraph({
   pullRequests,
 }: ProjectGraphProps) {
   const [view, setView] = useState<GraphView>("graph");
+
+  // No active project (empty projectId) / no projects → an explicit no-projects
+  // guard, NOT an empty-pid root (6.3b zero-projects gap). Distinct from the
+  // per-project empty state below (a selected project with no activity yet).
+  if (!projectId) {
+    return (
+      <div className="project-graph" aria-label="Project Graph">
+        <p className="project-graph__no-project" data-testid="graph-no-project">
+          No project selected — add or select a project to see its graph.
+        </p>
+      </div>
+    );
+  }
+
   const graph = buildProjectGraph({ projectId, projects, sessions, pullRequests });
 
   // The Contained-by column represents the edge set: each child names its parent.

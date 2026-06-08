@@ -100,4 +100,24 @@ describe("ProjectGraph view", () => {
     renderGraph("project_fixture_3");
     expect(screen.getByTestId("graph-empty")).toBeTruthy();
   });
+
+  it("graph_roots_at_active_project", () => {
+    // rooting at a NON-first project (billing = project_fixture_2) roots the graph
+    // THERE — not a hardcoded projects[0] (resolves the 6.3b Q3 graph project-source).
+    renderGraph("project_fixture_2");
+    toList();
+    const table = screen.getByTestId("graph-table");
+    expect(table.querySelector('[data-item-id="project:project_fixture_2"]')).not.toBeNull();
+    expect(table.querySelector('[data-item-id="project:project_fixture_1"]')).toBeNull();
+  });
+
+  it("graph_zero_or_no_active_shows_guard", () => {
+    // no active project (empty projectId) / no projects → the explicit no-projects
+    // guard, NOT an empty-pid root (resolves the 6.3b zero-projects gap); distinct
+    // from the per-project empty state.
+    render(<ProjectGraph projectId="" projects={[]} sessions={[]} pullRequests={[]} />);
+    expect(screen.getByTestId("graph-no-project")).toBeTruthy();
+    expect(screen.queryByTestId("graph-canvas")).toBeNull();
+    expect(screen.queryByTestId("graph-empty")).toBeNull();
+  });
 });

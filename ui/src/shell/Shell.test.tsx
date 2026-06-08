@@ -192,6 +192,27 @@ describe("Shell", () => {
     expect(screen.queryByTestId("audit-integrity-alert")).toBeNull();
   });
 
+  it("shell_active_project_reroots_graph_and_filters_sessions", async () => {
+    render(<Shell gateway={new MockGatewayPort()} />);
+    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded (auth-service)
+    // default active = the first project; select billing (project_fixture_2) in the switcher
+    fireEvent.click(screen.getByRole("button", { name: /billing/i }));
+    // (a) the graph re-roots at the active project (billing), not the hardcoded projects[0]
+    fireEvent.click(screen.getByRole("button", { name: /project graph/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^list$/i }));
+    expect(
+      screen
+        .getByTestId("graph-table")
+        .querySelector('[data-item-id="project:project_fixture_2"]'),
+    ).not.toBeNull();
+    // (b) the Sessions view filters to the active project (billing has 2 sessions)
+    fireEvent.click(screen.getByRole("button", { name: /sessions/i }));
+    const rows = screen
+      .getByTestId("sessions-table")
+      .querySelectorAll("tbody tr[data-item-id]");
+    expect(rows).toHaveLength(2);
+  });
+
   it("shell_renders_recovery_banner", async () => {
     render(
       <Shell

@@ -59,3 +59,13 @@ CREATE INDEX        ix_events_session     ON events(session_id, seq);
 CREATE UNIQUE INDEX ux_events_idempotency ON events(idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE VIRTUAL TABLE fts_events USING fts5(event_id UNINDEXED, body);
 ";
+
+/// Migration 2 (L3 redaction) — the §15 redaction columns. The backfill DEFAULT
+/// is **`unredacted`** (NOT `redacted`): pre-gate (L2-era) rows never passed the
+/// Redactor, so honest provenance labels them unredacted for a future read-path
+/// sweep — never falsely 'redacted'. New rows set `redacted` explicitly via the
+/// append gate. `redaction_engine_version` records which Redactor masked them.
+pub const MIGRATION_2_REDACTION: &str = "\
+ALTER TABLE events ADD COLUMN redaction_status TEXT NOT NULL DEFAULT 'unredacted';
+ALTER TABLE events ADD COLUMN redaction_engine_version TEXT;
+";

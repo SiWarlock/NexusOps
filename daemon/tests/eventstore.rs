@@ -4,11 +4,25 @@
 //! land with the L3 redaction sub-feature.)
 
 use nexusops_shared::actor::ActorType;
-use nexusops_shared::event_envelope::{EventEnvelope, Sensitivity, SourceType};
+use nexusops_shared::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceType};
 use nexusops_shared::ids::WorkspaceId;
 use nexusopsd::clock::{Clock, FixedClock};
-use nexusopsd::eventstore::{AppendIntent, EventStore, EventStoreError};
+use nexusopsd::eventstore::{
+    AppendIntent, EventStore, EventStoreError, PrefixRedactor, RedactionOutcome, Redactor,
+};
 use nexusopsd::idgen::{FixedIdGen, UlidGen};
+
+/// test Redactor that refuses to redact — exercises the fail-closed gate (test 4).
+struct NeverRedacts;
+impl Redactor for NeverRedacts {
+    fn redact(&self, payload_json: &str) -> RedactionOutcome {
+        RedactionOutcome {
+            status: RedactionStatus::Unredacted,
+            payload_json: payload_json.to_string(),
+            engine_version: "never".to_string(),
+        }
+    }
+}
 
 /// A minimal valid append intent (the store assigns event_id, seq, recorded_at).
 fn intent(occurred_at: &str, payload: &str) -> AppendIntent {
@@ -40,6 +54,7 @@ fn open(path: &std::path::Path) -> EventStore {
         path,
         Box::new(UlidGen),
         Box::new(FixedClock::new("2026-06-07T00:00:00Z")),
+        Box::new(PrefixRedactor),
     )
     .expect("open event store")
 }
@@ -260,6 +275,7 @@ fn test_golden_log_deterministic_replay() {
             path,
             Box::new(FixedIdGen::new()),
             Box::new(FixedClock::new("2026-01-01T00:00:00Z")),
+            Box::new(PrefixRedactor),
         )
         .unwrap();
         for i in 0..3 {
@@ -301,4 +317,86 @@ fn test_wal_pragmas_applied() {
         "busy_timeout=5000"
     );
     let _ = Clock::now_rfc3339(&FixedClock::new("x")); // touch the trait import
+}
+
+// ---- Test 4 (L3, LOAD-BEARING) — writer refuses unredacted (§15) -------------
+
+#[test]
+fn test_redaction_gate_fail_closed() {
+    // THE §15 redaction-before-persist invariant: the writer REFUSES to persist
+    // any event that is not `redacted`. A Redactor yielding `unredacted` →
+    // RedactionRequired error, nothing persisted.
+    let (_d, path) = temp_db();
+    let mut store = EventStore::open(
+        &path,
+        Box::new(UlidGen),
+        Box::new(FixedClock::new("2026-06-07T00:00:00Z")),
+        Box::new(NeverRedacts),
+    )
+    .unwrap();
+    let res = store.append(intent("2026-06-07T00:00:00Z", "{}"));
+    assert!(
+        matches!(res, Err(EventStoreError::RedactionRequired)),
+        "writer must refuse to persist a non-redacted event (§15)"
+    );
+    let reader = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let n: i64 = reader
+        .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0, "nothing persisted when redaction didn't run");
+}
+
+// ---- Test 5 (L3) — secret token redacted before persist (§15) ----------------
+
+#[test]
+fn test_secret_token_redacted_before_persist() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path); // PrefixRedactor
+    store
+        .append(intent(
+            "2026-06-07T00:00:00Z",
+            "{\"token\":\"ghp_SECRETSECRETSECRETSECRET\",\"key\":\"sk-abc123def456\"}",
+        ))
+        .unwrap();
+    let events = store.read_all().unwrap();
+    assert_eq!(events.len(), 1);
+    let p = &events[0].payload_json;
+    assert!(
+        !p.contains("ghp_SECRETSECRETSECRETSECRET"),
+        "ghp_ secret masked"
+    );
+    assert!(!p.contains("sk-abc123def456"), "sk- secret masked");
+    assert!(p.contains("[REDACTED]"), "redaction marker present");
+    assert_eq!(
+        events[0].redaction_engine_version.as_deref(),
+        Some("prefix-v1")
+    );
+}
+
+// ---- Test (L3, must-close §16) — auto-backup before a raise on a non-empty db -
+
+#[test]
+fn test_auto_backup_before_migration_on_nonempty_db() {
+    let (_d, path) = temp_db();
+    // simulate a v1 (post-L2) db that already holds data
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE events (seq INTEGER NOT NULL, payload_json TEXT NOT NULL);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (seq, payload_json) VALUES (1, '{}')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+    }
+    // opening raises 1→2 (migration 2) on a NON-EMPTY db → backup .bak-1 first (§16)
+    let _store = open(&path);
+    let bak = std::path::PathBuf::from(format!("{}.bak-1", path.display()));
+    assert!(
+        bak.exists(),
+        "auto-backup wrote .bak-1 before the user_version raise"
+    );
 }

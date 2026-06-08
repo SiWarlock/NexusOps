@@ -9,7 +9,7 @@
 use schemars::JsonSchema;
 
 use crate::actor::ActorType;
-use crate::event_envelope::{EventEnvelope, Sensitivity, SourceType, Visibility};
+use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility};
 use crate::ids::IdKind;
 use crate::objects::DesktopObjectKind;
 use crate::status::{
@@ -41,6 +41,7 @@ struct ContractBundle {
     source_type: SourceType,
     sensitivity: Sensitivity,
     visibility: Visibility,
+    redaction_status: RedactionStatus,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

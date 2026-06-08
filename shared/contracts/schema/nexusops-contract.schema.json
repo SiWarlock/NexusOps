@@ -80,7 +80,7 @@
     },
     "EventEnvelope": {
       "additionalProperties": false,
-      "description": "The §7.1 Event envelope. `seq` is the canonical total order (not `occurred_at`;\nclocks skew — both kept). Required fields are non-`Option`; the rest are optional\nper §7.1. `payload_hash`/`previous_event_hash` are reserved (R-10). The\n`redaction_status` field + `RedactionStatus` enum land with the redaction\nsub-feature commit (alongside the gate that enforces them).",
+      "description": "The §7.1 Event envelope. `seq` is the canonical total order (not `occurred_at`;\nclocks skew — both kept). Required fields are non-`Option`; the rest are optional\nper §7.1. `payload_hash`/`previous_event_hash` are reserved (R-10).\n`redaction_status` carries the §15 redaction state (the writer GATE enforces\n`redacted` before persist — `daemon::eventstore`).",
       "properties": {
         "action_request_id": {
           "type": [
@@ -167,6 +167,17 @@
         "recorded_at": {
           "type": "string"
         },
+        "redaction_engine_version": {
+          "description": "which Redactor engine redacted the payload (provenance; e.g. `prefix-v1`;\ndistinguishes 1.1 prefix-redacted from 1.7 entropy-redacted events)",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "redaction_status": {
+          "$ref": "#/$defs/RedactionStatus",
+          "description": "§15 redaction-before-persist state (writer gate enforces `redacted`)"
+        },
         "schema_version": {
           "type": "string"
         },
@@ -223,6 +234,7 @@
         "source_id",
         "correlation_id",
         "sensitivity",
+        "redaction_status",
         "payload_json",
         "schema_version"
       ],
@@ -303,6 +315,14 @@
         "conflict",
         "merged",
         "closed"
+      ],
+      "type": "string"
+    },
+    "RedactionStatus": {
+      "description": "§15 redaction state. The single-writer GATE refuses to persist any event\nthat is not `redacted`. A quarantined (unredactable) event is diverted —\nnot persisted — and a `SensitiveOutputRedacted` event recorded instead, so\nonly these 2 values ever reach the `events` table.",
+      "enum": [
+        "unredacted",
+        "redacted"
       ],
       "type": "string"
     },
@@ -467,6 +487,9 @@
     "pull_request": {
       "$ref": "#/$defs/PullRequest"
     },
+    "redaction_status": {
+      "$ref": "#/$defs/RedactionStatus"
+    },
     "sensitivity": {
       "$ref": "#/$defs/Sensitivity"
     },
@@ -509,9 +532,10 @@
     "event_envelope",
     "source_type",
     "sensitivity",
-    "visibility"
+    "visibility",
+    "redaction_status"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.6.0"
+  "x-contract-version": "0.7.0"
 }

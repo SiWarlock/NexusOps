@@ -8,6 +8,7 @@
 //! The redaction GATE lands in the L3 sub-feature; this layer is the spine.
 
 mod migrations;
+pub mod redaction;
 mod schema;
 
 use std::path::Path;
@@ -17,10 +18,14 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use nexusops_shared::actor::ActorType;
-use nexusops_shared::event_envelope::{EventEnvelope, Sensitivity, SourceType, Visibility};
+use nexusops_shared::event_envelope::{
+    EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility,
+};
+
 use nexusops_shared::ids::{
     ActionRequestId, AgentTeamId, EventId, ProjectId, SessionId, WorkspaceId,
 };
+pub use redaction::{PrefixRedactor, RedactionOutcome, Redactor};
 
 use crate::clock::Clock;
 use crate::idgen::IdGen;
@@ -40,6 +45,8 @@ pub enum EventStoreError {
     Open(rusqlite::Error),
     #[error("duplicate idempotency_key")]
     DuplicateIdempotencyKey,
+    #[error("refused to persist a non-redacted event (§15 redaction-before-persist)")]
+    RedactionRequired,
     #[error("io error: {0}")]
     Io(std::io::Error),
     #[error("migration failed: {0}")]
@@ -97,21 +104,29 @@ pub struct EventStore {
     conn: Connection,
     idgen: Box<dyn IdGen>,
     clock: Box<dyn Clock>,
+    redactor: Box<dyn Redactor>,
 }
 
 impl EventStore {
     /// Open (creating if needed) with WAL pragmas + forward-only migrations.
-    /// Refuses a db newer than this binary understands (§16).
+    /// Refuses a db newer than this binary understands (§16). The `redactor`
+    /// gates every payload before persist (§15).
     pub fn open(
         path: &Path,
         idgen: Box<dyn IdGen>,
         clock: Box<dyn Clock>,
+        redactor: Box<dyn Redactor>,
     ) -> Result<Self, EventStoreError> {
         let mut conn = Connection::open(path).map_err(EventStoreError::Write)?;
         schema::apply_pragmas(&conn).map_err(EventStoreError::Write)?;
         migrations::refuses_db_newer_than_supported(&conn)?;
-        migrations::run(&mut conn)?;
-        Ok(Self { conn, idgen, clock })
+        migrations::run(path, &mut conn)?;
+        Ok(Self {
+            conn,
+            idgen,
+            clock,
+            redactor,
+        })
     }
 
     /// Append one event. Assigns `seq` (canonical monotonic order), `event_id`,
@@ -122,6 +137,15 @@ impl EventStore {
         let actor = enum_wire(&i.actor_type)?;
         let source = enum_wire(&i.source_type)?;
         let sensitivity = enum_wire(&i.sensitivity)?;
+
+        // §15 redaction-before-persist GATE: route the payload through the Redactor
+        // and REFUSE to persist anything not `redacted` (fail-closed).
+        let outcome = self.redactor.redact(&i.payload_json);
+        if outcome.status != RedactionStatus::Redacted {
+            return Err(EventStoreError::RedactionRequired);
+        }
+        let redaction_status = enum_wire(&outcome.status)?;
+
         let event_id = self.idgen.new_event_id();
         let recorded_at = self.clock.now_rfc3339();
 
@@ -140,8 +164,9 @@ impl EventStore {
             "INSERT INTO events \
              (event_id, seq, event_type, event_version, occurred_at, recorded_at, \
               workspace_id, actor_type, actor_id, source_type, source_id, \
-              correlation_id, idempotency_key, sensitivity, payload_json, schema_version) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+              correlation_id, idempotency_key, sensitivity, payload_json, schema_version, \
+              redaction_status, redaction_engine_version) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
             rusqlite::params![
                 event_id.as_str(),
                 seq,
@@ -157,8 +182,10 @@ impl EventStore {
                 i.correlation_id,
                 i.idempotency_key,
                 sensitivity,
-                i.payload_json,
+                outcome.payload_json, // the REDACTED payload (§15)
                 i.schema_version,
+                redaction_status,
+                outcome.engine_version,
             ],
         );
         match res {
@@ -236,9 +263,10 @@ impl EventStore {
                 // columns 3.. are the COLS block (offset by the 3 leading cols)
                 match row_to_envelope_offset(row, 3) {
                     Ok(env) => Ok(DegradableEvent::Ok(Box::new(env))),
-                    Err(e) => Ok(DegradableEvent::Quarantined {
+                    // §15: the reason must NOT echo (possibly sensitive) row content.
+                    Err(_) => Ok(DegradableEvent::Quarantined {
                         seq,
-                        reason: e.to_string(),
+                        reason: "event reconstruction failed".to_string(),
                     }),
                 }
             })
@@ -296,7 +324,7 @@ const COLS: &str = "event_id, seq, event_type, event_version, occurred_at, recor
 workspace_id, project_id, actor_type, actor_id, source_type, source_id, correlation_id, \
 causation_id, action_request_id, approval_id, session_id, agent_team_id, workflow_run_id, \
 idempotency_key, sensitivity, visibility, payload_hash, previous_event_hash, schema_version, \
-payload_json";
+payload_json, redaction_status, redaction_engine_version";
 
 fn row_to_envelope(row: &rusqlite::Row) -> Result<EventEnvelope, EventStoreError> {
     row_to_envelope_offset(row, 0)
@@ -349,6 +377,8 @@ fn row_to_envelope_offset(
         previous_event_hash: go(23)?,
         schema_version: g(24)?,
         payload_json: g(25)?,
+        redaction_status: parse_enum::<RedactionStatus>(&g(26)?)?,
+        redaction_engine_version: go(27)?,
     })
 }
 

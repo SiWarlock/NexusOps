@@ -12,10 +12,13 @@ use crate::eventstore::{schema, EventStoreError};
 
 /// Highest migration index this binary understands. A db whose `user_version`
 /// exceeds this was written by a newer binary → refuse-safe (§16).
-pub const SUPPORTED_USER_VERSION: i64 = 1;
+pub const SUPPORTED_USER_VERSION: i64 = 2;
 
 fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(schema::MIGRATION_1_EVENTS)])
+    Migrations::new(vec![
+        M::up(schema::MIGRATION_1_EVENTS),
+        M::up(schema::MIGRATION_2_REDACTION),
+    ])
 }
 
 pub fn current_user_version(conn: &Connection) -> Result<i64, EventStoreError> {
@@ -54,17 +57,27 @@ fn backup_path(path: &Path, from: i64) -> std::path::PathBuf {
     std::path::PathBuf::from(p)
 }
 
-/// Run forward-only migrations to latest.
-///
-/// 1.1 has only the 0→1 migration (a fresh db has no irreplaceable data to
-/// protect), so this runs `to_latest` directly. The **auto-backup-before-raise +
-/// restore-on-failure** integrates here when migration 2 lands (L3) — wrapping
-/// this with [`backup_db`]/[`restore_db`] (implemented + directly tested now)
-/// for the first `from >= 1` raise. (§16)
-pub fn run(conn: &mut Connection) -> Result<(), EventStoreError> {
-    migrations()
-        .to_latest(conn)
-        .map_err(|e| EventStoreError::Migration(e.to_string()))
+/// Run forward-only migrations to latest. Before raising a db that already holds
+/// data (`from >= 1`, i.e. a real upgrade like 1→2), back the file up first and
+/// restore it on failure — the raw event log is irreplaceable (§16). A fresh db
+/// (`from == 0`) has nothing to protect.
+pub fn run(path: &Path, conn: &mut Connection) -> Result<(), EventStoreError> {
+    let from = current_user_version(conn)?;
+    let backed_up = (1..SUPPORTED_USER_VERSION).contains(&from);
+    if backed_up {
+        backup_db(path, from)?;
+    }
+    match migrations().to_latest(conn) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // best-effort in-place restore; the caller drops the conn on the Err
+            // return so the next open() reads the restored file.
+            if backed_up {
+                let _ = restore_db(path, from);
+            }
+            Err(EventStoreError::Migration(e.to_string()))
+        }
+    }
 }
 
 /// §16 version floor: a db newer than this binary understands is refused.

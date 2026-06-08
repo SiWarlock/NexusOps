@@ -46,6 +46,14 @@ wire_enum! {
     Visibility { User, Project, Workspace, System }
 }
 
+wire_enum! {
+    /// §15 redaction state. The single-writer GATE refuses to persist any event
+    /// that is not `redacted`. A quarantined (unredactable) event is diverted —
+    /// not persisted — and a `SensitiveOutputRedacted` event recorded instead, so
+    /// only these 2 values ever reach the `events` table.
+    RedactionStatus { Unredacted, Redacted }
+}
+
 /// A normalized event→object edge (`object_refs[]`, §7.1 / DATA_MODEL §2.2).
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
@@ -56,9 +64,9 @@ pub struct ObjectRef {
 
 /// The §7.1 Event envelope. `seq` is the canonical total order (not `occurred_at`;
 /// clocks skew — both kept). Required fields are non-`Option`; the rest are optional
-/// per §7.1. `payload_hash`/`previous_event_hash` are reserved (R-10). The
-/// `redaction_status` field + `RedactionStatus` enum land with the redaction
-/// sub-feature commit (alongside the gate that enforces them).
+/// per §7.1. `payload_hash`/`previous_event_hash` are reserved (R-10).
+/// `redaction_status` carries the §15 redaction state (the writer GATE enforces
+/// `redacted` before persist — `daemon::eventstore`).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
 pub struct EventEnvelope {
@@ -76,6 +84,8 @@ pub struct EventEnvelope {
     pub source_id: String,
     pub correlation_id: String,
     pub sensitivity: Sensitivity,
+    /// §15 redaction-before-persist state (writer gate enforces `redacted`)
+    pub redaction_status: RedactionStatus,
     pub payload_json: String,
     pub schema_version: String,
     // --- optional (§7.1) ---
@@ -92,6 +102,9 @@ pub struct EventEnvelope {
     pub object_refs: Vec<ObjectRef>,
     pub idempotency_key: Option<String>,
     pub visibility: Option<Visibility>,
+    /// which Redactor engine redacted the payload (provenance; e.g. `prefix-v1`;
+    /// distinguishes 1.1 prefix-redacted from 1.7 entropy-redacted events)
+    pub redaction_engine_version: Option<String>,
     pub payload_hash: Option<String>,        // reserved (R-10)
     pub previous_event_hash: Option<String>, // reserved (R-10)
 }

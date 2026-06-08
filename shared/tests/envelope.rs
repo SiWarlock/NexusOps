@@ -76,18 +76,25 @@ fn test_visibility_values() {
 }
 
 #[test]
+fn test_redaction_status_values() {
+    use nexusops_shared::event_envelope::RedactionStatus;
+    check_values(RedactionStatus::ALL, &["unredacted", "redacted"]);
+}
+
+#[test]
 fn test_unknown_enum_value_rejected() {
-    use nexusops_shared::event_envelope::{Sensitivity, SourceType, Visibility};
+    use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType, Visibility};
     assert!(serde_json::from_value::<SourceType>(serde_json::json!("not_a_source")).is_err());
     assert!(serde_json::from_value::<Sensitivity>(serde_json::json!("ultra_secret")).is_err());
     assert!(serde_json::from_value::<Visibility>(serde_json::json!("global")).is_err());
+    assert!(serde_json::from_value::<RedactionStatus>(serde_json::json!("partial")).is_err());
 }
 
 #[test]
 fn test_envelope_round_trips_with_required_and_optional_fields() {
     use nexusops_shared::actor::ActorType;
     use nexusops_shared::event_envelope::{
-        EventEnvelope, ObjectRef, Sensitivity, SourceType, Visibility,
+        EventEnvelope, ObjectRef, RedactionStatus, Sensitivity, SourceType, Visibility,
     };
     use nexusops_shared::ids::{ActionRequestId, EventId, ProjectId, SessionId, WorkspaceId};
 
@@ -106,6 +113,7 @@ fn test_envelope_round_trips_with_required_and_optional_fields() {
         source_id: "src_1".to_string(),
         correlation_id: "corr_1".to_string(),
         sensitivity: Sensitivity::Internal,
+        redaction_status: RedactionStatus::Redacted,
         payload_json: "{}".to_string(),
         schema_version: "event-envelope-v1".to_string(),
         // optional (§7.1)
@@ -122,6 +130,7 @@ fn test_envelope_round_trips_with_required_and_optional_fields() {
         }],
         idempotency_key: Some("idem_1".to_string()),
         visibility: Some(Visibility::Project),
+        redaction_engine_version: Some("prefix-v1".to_string()),
         payload_hash: None,        // reserved R-10
         previous_event_hash: None, // reserved R-10
     };
@@ -135,6 +144,6 @@ fn test_envelope_round_trips_with_required_and_optional_fields() {
 
 #[test]
 fn test_contract_version_bumped_past_0_5() {
-    // L1 extends the frozen contract → CONTRACT_VERSION advances to 0.6.0 (additive, semver minor).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.6.0");
+    // 1.1 extends the frozen contract → CONTRACT_VERSION advances (L1 0.6.0, L3 0.7.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.7.0");
 }

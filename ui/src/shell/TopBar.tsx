@@ -1,25 +1,12 @@
-import type { CSSProperties } from "react";
 import { Button } from "../design-system/kit";
 import type { ProjectActivityRow } from "../contracts/index";
 import type { ProjectSwitcherCounts } from "./derive";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 
-// Inline visually-hidden style. The accessible NAME of a closed-prop kit control
-// must come from a visually-hidden child INSIDE it (a wrapper aria-label would not
-// name the inner button) — Lesson §6 + §11.7. Uses the modern `clipPath` (not the
-// deprecated `clip`). TODO(6.5): replace with the global sr-only utility the theme
-// pass introduces (single source of truth).
-const SR_ONLY: CSSProperties = {
-  position: "absolute",
-  width: 1,
-  height: 1,
-  padding: 0,
-  margin: -1,
-  overflow: "hidden",
-  clipPath: "inset(50%)",
-  whiteSpace: "nowrap",
-  border: 0,
-};
+// The accessible NAME of a closed-prop kit control comes from a visually-hidden
+// child INSIDE it (a wrapper aria-label would not name the inner button) — Lesson
+// §6 + §11.7. The visually-hidden styling is the global `.sr-only` utility (6.5a
+// theme base — ui/src/theme/global.css), the single source of truth.
 
 /**
  * Top bar: back/forward history + the project switcher; Brain + Settings are
@@ -46,11 +33,11 @@ export function TopBar({
       <nav aria-label="History" style={{ display: "flex", gap: 4 }}>
         <Button variant="ghost" size="sm">
           <span aria-hidden="true">←</span>
-          <span style={SR_ONLY}>Back</span>
+          <span className="sr-only">Back</span>
         </Button>
         <Button variant="ghost" size="sm">
           <span aria-hidden="true">→</span>
-          <span style={SR_ONLY}>Forward</span>
+          <span className="sr-only">Forward</span>
         </Button>
       </nav>
       <ProjectSwitcher projects={projects} counts={counts} />

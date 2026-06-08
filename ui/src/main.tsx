@@ -4,6 +4,11 @@ import { createRoot } from "react-dom/client";
 // styles.css is the kit's @import manifest of tokens/*.css; consumers link only it
 // (it carries the global @media(prefers-reduced-motion) guard via motion.css).
 import "../../NexusOps-ui-kit/styles.css";
+// 6.5a Graphite Arc base/global theme — APPLIES the kit semantic tokens at the
+// document root (dark --surface-window canvas + Geist + scrollbar chrome + the
+// global .sr-only utility). Loads AFTER the kit tokens (so they resolve) and
+// BEFORE focus.css (disjoint selectors; the focus ring stays last).
+import "./theme/global.css";
 // Global :focus-visible ring on every interactive control (§11.6) — uses the kit
 // ring tokens; must load after the kit tokens so the custom properties resolve.
 import "./a11y/focus.css";

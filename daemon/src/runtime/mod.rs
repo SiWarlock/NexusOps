@@ -12,6 +12,8 @@
 //! L1 ships the write-actor + the `main.rs` entry + graceful shutdown; L2–L4 add the loops,
 //! the accept-loop, and the subscribe source.
 
+mod drainer;
 mod writer;
 
+pub use drainer::{spawn_drainer, spawn_reaper};
 pub use writer::{RuntimeError, WriteActor, WriteHandle};

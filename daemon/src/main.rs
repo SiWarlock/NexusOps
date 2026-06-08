@@ -8,12 +8,23 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::watch;
 
 use nexusopsd::bootstrap::{cold_start, BootstrapConfig};
 use nexusopsd::clock::SystemClock;
-use nexusopsd::eventstore::PrefixRedactor;
+use nexusopsd::eventstore::{JsonlMirror, PrefixRedactor};
 use nexusopsd::idgen::UlidGen;
-use nexusopsd::runtime::WriteActor;
+use nexusopsd::runtime::{spawn_drainer, spawn_reaper, WriteActor};
+
+/// outbox drain cadence (§12) — deliver due rows a few times a minute.
+const DRAINER_INTERVAL: Duration = Duration::from_secs(5);
+/// lease reap cadence (§17) — free expired leases periodically.
+const REAPER_INTERVAL: Duration = Duration::from_secs(30);
+/// the local JSONL audit/debug mirror sink (§10.4) within the app-support dir.
+const EVENTS_MIRROR_FILE: &str = "events.jsonl";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -29,7 +40,7 @@ async fn main() -> ExitCode {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let base_dir = production_base_dir()?;
     let cfg = BootstrapConfig {
-        base_dir,
+        base_dir: base_dir.clone(),
         idgen: Box::new(UlidGen),
         clock: Box::new(SystemClock),
         redactor: Box::new(PrefixRedactor),
@@ -41,13 +52,29 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // keep the PidLock bound for the daemon lifetime (single-instance); the write-actor owns the
-    // writable store (the sole mutation path). L2 spawns the drainer/reaper loops + L3 the UDS
-    // accept-loop off this handle.
+    // writable store (the sole mutation path). The drainer/reaper loops + (L3) the UDS accept-loop
+    // run off the write-actor handle.
     let (_pidlock, store, _version) = ctx.into_parts();
     let actor = WriteActor::spawn(store, Box::new(SystemClock));
+    let handle = actor.handle();
+
+    // L2 — the outbox-drainer + lease-reaper interval loops, stopped by the shutdown watch.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mirror = Arc::new(JsonlMirror::new(base_dir.join(EVENTS_MIRROR_FILE)));
+    let drainer = spawn_drainer(
+        handle.clone(),
+        mirror,
+        DRAINER_INTERVAL,
+        shutdown_rx.clone(),
+    );
+    let reaper = spawn_reaper(handle, REAPER_INTERVAL, shutdown_rx);
 
     wait_for_shutdown().await;
     eprintln!("nexusopsd: shutdown signal received; draining + exiting");
+    // stop the interval loops, then drain + close the writer.
+    let _ = shutdown_tx.send(true);
+    let _ = drainer.await;
+    let _ = reaper.await;
     actor.shutdown().await;
     // _pidlock drops here → the single-instance OS lock releases.
     Ok(())

@@ -31,7 +31,7 @@ pub use redaction::{PrefixRedactor, RedactionOutcome, Redactor};
 // migrations registry reference one canonical source).
 pub use schema::{MIGRATION_1_EVENTS, MIGRATION_2_REDACTION, MIGRATION_3_PROJECTIONS};
 // outbox delivery surface (the drainer + its destinations, §12/§17).
-pub use outbox::{DeliveryOutcome, Destination, DrainSummary, JsonlMirror};
+pub use outbox::{DeliveryOutcome, Destination, DrainSummary, JsonlMirror, DRAIN_BATCH_LIMIT};
 
 use crate::clock::Clock;
 use crate::idgen::IdGen;

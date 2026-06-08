@@ -11,9 +11,10 @@
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use nexusops_shared::ids::EventId;
+use nexusops_shared::ipc::{DeltaKind, ProjectionDelta, ProjectionName};
 
 use crate::clock::Clock;
 use crate::eventstore::{AppendIntent, Destination, DrainSummary, EventStore, EventStoreError};
@@ -22,6 +23,11 @@ use crate::locks::{LeaseError, LeaseKind, ResourceId};
 /// the bounded command-channel depth — backpressures a flood of mutation requests onto the
 /// senders rather than growing unbounded in front of the single writer.
 const COMMAND_CHANNEL_DEPTH: usize = 64;
+
+/// the subscribe broadcast channel capacity. A subscriber that falls > this far behind is dropped
+/// (sees `Lagged`) + must resync (re-`get_projection`) — the broadcast NEVER back-pressures the
+/// writer (forbidden #3: a reader must not block the writer).
+pub const BROADCAST_CAPACITY: usize = 256;
 
 /// Typed write-actor failures. `ActorGone` is the post-shutdown / dropped-actor case (a send or
 /// reply-recv failed) — distinct from the underlying store/lease errors so a caller can tell
@@ -62,9 +68,19 @@ enum Command {
 #[derive(Clone)]
 pub struct WriteHandle {
     tx: mpsc::Sender<Command>,
+    // a clone of the actor's broadcast sender — `subscribe()` mints receivers from it without
+    // touching the writer thread (the actor holds the authoritative sender for publishing).
+    deltas: broadcast::Sender<ProjectionDelta>,
 }
 
 impl WriteHandle {
+    /// Subscribe to the live `ProjectionDelta` stream (§6.1 subscribe). The returned receiver gets
+    /// every delta the writer publishes AFTER it commits; a receiver that lags > `BROADCAST_CAPACITY`
+    /// is dropped (`Lagged`) and must resync — it NEVER back-pressures the writer (forbidden #3).
+    pub fn subscribe(&self) -> broadcast::Receiver<ProjectionDelta> {
+        self.deltas.subscribe()
+    }
+
     /// Append an event through the single writer (the §15 redaction gate + in-band projections +
     /// outbox all run inside `EventStore::append`).
     pub async fn append(&self, intent: AppendIntent) -> Result<EventId, RuntimeError> {
@@ -121,13 +137,17 @@ impl WriteActor {
     /// `drain_once`/`reap_leases`). The thread blocks on the command channel; reads never reach it.
     pub fn spawn(store: EventStore, clock: Box<dyn Clock>) -> Self {
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_DEPTH);
+        // the broadcast sender lives in the actor thread (it publishes post-commit); the handle
+        // keeps a clone so `subscribe()` can mint receivers without touching the writer.
+        let (deltas, _) = broadcast::channel(BROADCAST_CAPACITY);
+        let actor_deltas = deltas.clone();
         let join = std::thread::Builder::new()
             .name("nexusops-write-actor".to_string())
-            .spawn(move || run_actor(store, clock, rx))
+            .spawn(move || run_actor(store, clock, rx, actor_deltas))
             // a daemon that cannot spawn its sole writer cannot run — fail loud at startup.
             .expect("spawn the write-actor thread");
         Self {
-            handle: WriteHandle { tx },
+            handle: WriteHandle { tx, deltas },
             join: Some(join),
         }
     }
@@ -154,12 +174,28 @@ impl WriteActor {
 /// reply. `blocking_recv` is correct here — this runs on a dedicated OS thread, NOT a tokio
 /// worker. The loop ends on `Shutdown` (or when every sender drops); `store`/`clock` then drop,
 /// closing the writer connection (WAL checkpoint on Connection drop).
-fn run_actor(mut store: EventStore, clock: Box<dyn Clock>, mut rx: mpsc::Receiver<Command>) {
+fn run_actor(
+    mut store: EventStore,
+    clock: Box<dyn Clock>,
+    mut rx: mpsc::Receiver<Command>,
+    deltas: broadcast::Sender<ProjectionDelta>,
+) {
     while let Some(cmd) = rx.blocking_recv() {
         match cmd {
             Command::Append { intent, reply } => {
+                // derive the publishable deltas from the intent BEFORE it's consumed by append.
+                let pending = deltas_for_append(&intent);
+                let result = store.append(*intent);
+                // PUBLISH-AFTER-COMMIT: only broadcast once the append durably committed. A failed
+                // (rolled-back) append publishes nothing. broadcast::send never blocks — a lagging
+                // subscriber is dropped, never back-pressures this writer (forbidden #3).
+                if result.is_ok() {
+                    for delta in pending {
+                        let _ = deltas.send(delta); // Err = no subscribers; not an error here.
+                    }
+                }
                 // ignore a dropped receiver — the caller gave up waiting; the write still committed.
-                let _ = reply.send(store.append(*intent));
+                let _ = reply.send(result);
             }
             Command::DrainOnce { dest, reply } => {
                 let _ = reply.send(store.drain_once(clock.as_ref(), dest.as_ref()));
@@ -170,4 +206,25 @@ fn run_actor(mut store: EventStore, clock: Box<dyn Clock>, mut rx: mpsc::Receive
             Command::Shutdown => break,
         }
     }
+}
+
+/// The live `ProjectionDelta`(s) an appended event produces — derived from its typed identity +
+/// `event_type` (mirrors the `object_refs::derive_refs` pattern: rebuildable, decoupled from the
+/// projector internals). 1.6b feeds only `SessionStarted` → a Session-projection Upsert; later
+/// event types add their mappings additively. The delta carries the id; the subscriber re-reads
+/// the full row via `get_projection` (row enrichment is a future improvement, consistent with the
+/// lag-resync policy).
+fn deltas_for_append(intent: &AppendIntent) -> Vec<ProjectionDelta> {
+    let mut out = Vec::new();
+    if intent.event_type == "SessionStarted" {
+        if let Some(sid) = &intent.session_id {
+            out.push(ProjectionDelta {
+                projection: ProjectionName::Session,
+                kind: DeltaKind::Upsert,
+                row: None,
+                id: Some(sid.as_str().to_string()),
+            });
+        }
+    }
+    out
 }

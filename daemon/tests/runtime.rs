@@ -8,19 +8,23 @@
 //! (drainer/reaper loops, accept-loop, subscribe) finalize against this handle post-Q1.
 
 use nexusops_shared::actor::ActorType;
-use nexusops_shared::event_envelope::{Sensitivity, SourceType};
-use nexusops_shared::ids::WorkspaceId;
+use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType};
+use nexusops_shared::ids::{SessionId, WorkspaceId};
 use nexusops_shared::ipc::{
-    GetProjectionParams, HelloAck, HelloFrame, ProjectionName, RpcRequest, RpcResponse, ServerFrame,
+    DeltaKind, GetProjectionParams, HelloAck, HelloFrame, ProjectionName, RpcRequest, RpcResponse,
+    ServerFrame,
 };
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{
-    open_read_only, AppendIntent, EventStore, JsonlMirror, PrefixRedactor, DRAIN_BATCH_LIMIT,
+    open_read_only, AppendIntent, EventStore, JsonlMirror, PrefixRedactor, RedactionOutcome,
+    Redactor, DRAIN_BATCH_LIMIT,
 };
 use nexusopsd::idgen::UlidGen;
 use nexusopsd::ipc::{current_euid, read_frame, write_frame};
 use nexusopsd::locks::{LeaseKind, OwnerId, ResourceId};
-use nexusopsd::runtime::{bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor};
+use nexusopsd::runtime::{
+    bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor, BROADCAST_CAPACITY,
+};
 
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream as StdUnixStream;
@@ -65,6 +69,28 @@ fn test_intent() -> AppendIntent {
         session_id: None,
         agent_team_id: None,
         visibility: None,
+    }
+}
+
+/// a SessionStarted intent with a session_id + a valid payload → the live delta source maps it to
+/// a Session-projection Upsert delta (L4).
+fn session_intent(session_id: &str) -> AppendIntent {
+    let mut i = test_intent();
+    i.session_id = Some(SessionId::parse(session_id).unwrap());
+    i.payload_json = r#"{"status":"active"}"#.to_string();
+    i
+}
+
+/// a Redactor that refuses to redact — forces `append` to fail the §15 gate (so the append rolls
+/// back, exercising "a rolled-back append publishes NO delta").
+struct NeverRedacts;
+impl Redactor for NeverRedacts {
+    fn redact(&self, payload_json: &str) -> RedactionOutcome {
+        RedactionOutcome {
+            status: RedactionStatus::Unredacted,
+            payload_json: payload_json.to_string(),
+            engine_version: "never".to_string(),
+        }
     }
 }
 
@@ -439,4 +465,87 @@ async fn test_read_projection_over_real_socket() {
 
     sd_tx.send(true).unwrap();
     let _ = accept.await;
+}
+
+// ---- L4 — live subscribe delta-source (broadcast publish-after-commit) --------
+
+#[tokio::test]
+async fn test_append_publishes_delta_after_commit() {
+    // publish-after-commit: a COMMITTED append publishes the matching ProjectionDelta to the
+    // write-actor's broadcast; a ROLLED-BACK append (refused by the §15 gate) publishes NOTHING.
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+
+    // committed → a Session Upsert delta is published.
+    handle
+        .append(session_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"))
+        .await
+        .expect("committed append");
+    let delta = rx
+        .recv()
+        .await
+        .expect("a committed append published a delta");
+    assert_eq!(delta.projection, ProjectionName::Session);
+    assert!(matches!(delta.kind, DeltaKind::Upsert));
+    assert_eq!(delta.id.as_deref(), Some("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"));
+    actor.shutdown().await;
+
+    // rolled-back (the redaction gate refuses) → NO delta is published.
+    let (_d2, path2) = temp_db();
+    let store2 = EventStore::open(
+        &path2,
+        Box::new(UlidGen),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        Box::new(NeverRedacts),
+    )
+    .unwrap();
+    let actor2 = WriteActor::spawn(store2, Box::new(FixedClock::new("2026-06-08T00:00:00Z")));
+    let handle2 = actor2.handle();
+    let mut rx2 = handle2.subscribe();
+    let refused = handle2
+        .append(session_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAW"))
+        .await;
+    assert!(refused.is_err(), "the §15 gate refused the append");
+    assert!(
+        rx2.try_recv().is_err(),
+        "a rolled-back append publishes no delta"
+    );
+    actor2.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_lagging_subscriber_never_stalls_writer() {
+    // forbidden #3 — a reader must NEVER back-pressure the writer. A subscriber that never drains
+    // its receiver lags; the writer keeps appending (broadcast::send never blocks), and the lagging
+    // receiver observes Lagged (dropped deltas), not a stalled writer.
+    use tokio::sync::broadcast::error::TryRecvError;
+
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe(); // a subscriber that NEVER drains (lags)
+
+    // append well past the broadcast capacity WITHOUT draining rx — every append must still commit.
+    for _ in 0..(BROADCAST_CAPACITY + 20) {
+        handle
+            .append(session_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"))
+            .await
+            .expect("the writer is never back-pressured by a lagging subscriber");
+    }
+
+    // the lagging receiver sees Lagged (deltas were dropped for it), proving no writer stall.
+    assert!(
+        matches!(rx.try_recv(), Err(TryRecvError::Lagged(_))),
+        "a lagging subscriber observes Lagged — the writer was not back-pressured (forbidden #3)"
+    );
+
+    actor.shutdown().await;
 }

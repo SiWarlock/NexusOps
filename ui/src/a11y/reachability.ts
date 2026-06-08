@@ -6,25 +6,34 @@
 // drive it with `.toThrow()` / `.not.toThrow()`.
 
 const INTERACTIVE_SELECTOR =
-  'button, a[href], [role="button"], [role="link"], input, select, summary';
+  'button, a[href], [role="button"], [role="link"], [role="option"], input, select, summary';
 
 const describeEl = (el: HTMLElement): string => {
   const role = el.getAttribute("role");
   return `<${el.tagName.toLowerCase()}${role ? ` role="${role}"` : ""}>`;
 };
 
+// The roving composites this audit understands: a member role inside its container
+// role (APG roving tabindex). tab→tablist (Settings), option→listbox (ProjectSwitcher).
+const ROVING_CONTAINER: Record<string, string> = {
+  tab: "tablist",
+  option: "listbox",
+};
+
 /**
- * A `role="tab"` at tabIndex=-1 is reachable IFF it's a roving member: its
- * `role="tablist"` ancestor has EXACTLY ONE tabIndex=0 tab. This whitelists APG
- * roving tabindex AND pins the one-tabstop invariant — a tablist with zero or
- * multiple tabstops is a real violation, not a roving widget.
+ * A roving member (a `role="tab"`/`"option"`) at tabIndex=-1 is reachable IFF its
+ * container (`role="tablist"`/`"listbox"`) has EXACTLY ONE tabIndex=0 member. This
+ * whitelists APG roving tabindex AND pins the one-tabstop invariant — a container
+ * with zero or multiple tabstops is a real violation, not a roving widget.
  */
-function isRovingTabMember(el: HTMLElement): boolean {
-  if (el.getAttribute("role") !== "tab") return false;
-  const tablist = el.closest('[role="tablist"]');
-  if (!tablist) return false;
-  const tabs = [...tablist.querySelectorAll<HTMLElement>('[role="tab"]')];
-  const tabstops = tabs.filter((t) => t.tabIndex === 0);
+function isRovingMember(el: HTMLElement): boolean {
+  const role = el.getAttribute("role");
+  const containerRole = role ? ROVING_CONTAINER[role] : undefined;
+  if (!containerRole) return false;
+  const container = el.closest(`[role="${containerRole}"]`);
+  if (!container) return false;
+  const members = [...container.querySelectorAll<HTMLElement>(`[role="${role}"]`)];
+  const tabstops = members.filter((m) => m.tabIndex === 0);
   return tabstops.length === 1;
 }
 
@@ -46,7 +55,7 @@ export function auditFocusable(container: HTMLElement): void {
   }
   for (const el of interactive) {
     if (el.tabIndex >= 0) continue;
-    if (isRovingTabMember(el)) continue;
+    if (isRovingMember(el)) continue;
     throw new Error(
       `reachability: unreachable control ${describeEl(el)} (tabIndex=${el.tabIndex})`,
     );

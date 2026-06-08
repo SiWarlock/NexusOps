@@ -49,6 +49,18 @@ describe("a11y reachability + wiring", () => {
     auditFocusable(container); // Settings (tab buttons; §9 net)
   });
 
+  it("shell_sweep_green_with_dropdown_open", async () => {
+    const { container } = render(<Shell gateway={new MockGatewayPort()} />);
+    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    auditFocusable(container); // dropdown closed — trigger only
+    // open the ProjectSwitcher dropdown → its roving listbox must sweep clean: the
+    // active option is the one tabstop, the rest are -1 roving members (§9 audit
+    // now covers role="option" in a one-tabstop listbox).
+    fireEvent.click(screen.getByRole("button", { name: /auth-service/i }));
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    auditFocusable(container); // dropdown open — options now in the swept set
+  });
+
   it("focus_stylesheet_is_imported", () => {
     // jsdom can't compute :focus-visible — pin the WIRING, not the pixel.
     expect(read("../main.tsx")).toMatch(/import\s+["'][^"']*a11y\/focus\.css["']/);

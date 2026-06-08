@@ -52,6 +52,39 @@ describe("auditFocusable classification", () => {
     expect(() => auditFocusable(zero.container)).toThrow(/unreachable control/);
   });
 
+  it("audit_passes_roving_option_in_listbox", () => {
+    // the roving classifier generalizes to listboxes: a one-tabstop listbox (one
+    // option tabIndex=0, the rest -1 role=option) passes — options are arrow-
+    // reachable roving members, not violations (slice 5 / the ProjectSwitcher).
+    const { container } = render(
+      <div role="listbox" aria-label="l">
+        <div role="option" tabIndex={0}>A</div>
+        <div role="option" tabIndex={-1}>B</div>
+        <div role="option" tabIndex={-1}>C</div>
+      </div>,
+    );
+    expect(() => auditFocusable(container)).not.toThrow();
+  });
+
+  it("audit_fails_option_not_in_one_tabstop_listbox", () => {
+    // a role=option at -1 with no listbox ancestor is unreachable
+    const orphan = render(
+      <div>
+        <div role="option" tabIndex={-1}>x</div>
+      </div>,
+    );
+    expect(() => auditFocusable(orphan.container)).toThrow(/unreachable control/);
+    // a listbox with MULTIPLE tabstops violates the one-tabstop invariant
+    const multi = render(
+      <div role="listbox" aria-label="l">
+        <div role="option" tabIndex={0}>A</div>
+        <div role="option" tabIndex={0}>B</div>
+        <div role="option" tabIndex={-1}>C</div>
+      </div>,
+    );
+    expect(() => auditFocusable(multi.container)).toThrow(/unreachable control/);
+  });
+
   it("audit_covers_visible_tabpanel", () => {
     // a visible tabpanel that isn't focusable → a violation (panels are now
     // audited). A valid button keeps the interactive-count check non-vacuous.

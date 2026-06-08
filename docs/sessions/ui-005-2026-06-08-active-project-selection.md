@@ -3,7 +3,7 @@
 - **Date:** 2026-06-08
 - **Phase:** Phase 7 (forward) — a daemon-independent UI-shell completion pulled forward (lead-directed measured continue); a single-slice round.
 - **Predecessor session:** [ui-004](ui-004-2026-06-08-graphite-arc-theme-pass-and-visual-gate.md)
-- **Successor session:** _(pending — fresh team after the auto-cycle; most remaining ui work is daemon-gated: parked 6.3d/e + the daemon-1.5 integration)_
+- **Successor session:** [ui-006 — daemon-independent polish round](ui-006-2026-06-08-daemon-independent-polish-round.md)
 - **Round commit:** `86727ec`. Suite **133 → 142 green**; tsc + oxlint clean.
 
 ## Why this session existed

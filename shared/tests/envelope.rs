@@ -147,6 +147,7 @@ fn test_contract_version_bumped_past_0_5() {
     // Each contract extension advances CONTRACT_VERSION: 1.1 → 0.6.0 (envelope) →
     // 0.7.0 (redaction); 1.2 → 0.8.0 (first event-type payload, SessionStarted);
     // 1.5 L2 → 0.9.0 (the IPC GatewayPort wire contract, §6.4); 1.5 L3 → 0.10.0 (the §6.1 RPC
-    // method envelopes + the `protocol_error` code, lead-ratified §6.4 gap resolution).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.10.0");
+    // method envelopes + the `protocol_error` code); 1.5 L4 → 0.11.0 (ServerFrame frame-type
+    // multiplexing + subscribe streaming: ProjectionDelta/DeltaKind/SubscribeParams).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.11.0");
 }

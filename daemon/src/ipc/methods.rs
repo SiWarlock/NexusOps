@@ -13,7 +13,7 @@ use rusqlite::Connection;
 
 use nexusops_shared::ipc::{
     Capabilities, GetProjectionParams, IpcErrorCode, ProjectionName, RpcRequest, RpcResponse,
-    WireError,
+    SubscribeParams, WireError,
 };
 
 use super::IpcError;
@@ -44,6 +44,7 @@ pub(crate) fn dispatch(req: &RpcRequest, db_path: &Path) -> Result<RpcResponse, 
     let outcome: Result<serde_json::Value, IpcErrorCode> = match req.method.as_str() {
         "get_capabilities" => Ok(capabilities_value()),
         "get_projection" => get_projection(&req.params, db_path)?,
+        "subscribe" => subscribe_ack(&req.params),
         _ => Err(IpcErrorCode::UnknownMethod),
     };
     Ok(match outcome {
@@ -58,6 +59,20 @@ pub(crate) fn dispatch(req: &RpcRequest, db_path: &Path) -> Result<RpcResponse, 
             error: Some(WireError { code }),
         },
     })
+}
+
+/// `subscribe`: RECOGNIZE + validate the subscription (the projection name) and ack it. The live
+/// delta stream over the connection (`push_subscription` fed by the EventStore broadcast) is
+/// **1.6-wired** with the accept-loop; 1.5 acks so a client knows the subscription registered.
+/// A malformed params is a client protocol violation (`protocol_error`).
+fn subscribe_ack(params: &serde_json::Value) -> Result<serde_json::Value, IpcErrorCode> {
+    let params: SubscribeParams =
+        serde_json::from_value(params.clone()).map_err(|_| IpcErrorCode::ProtocolError)?;
+    // echo the (validated) projection name; the delta stream follows once the 1.6 runtime wires it.
+    // ProjectionName is a unit-enum variant → serialization is infallible.
+    let name = serde_json::to_value(params.projection)
+        .expect("ProjectionName serializes to a JSON string infallibly");
+    Ok(serde_json::json!({ "subscribed": name }))
 }
 
 fn capabilities_value() -> serde_json::Value {

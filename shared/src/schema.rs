@@ -13,8 +13,9 @@ use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceT
 use crate::events::SessionStarted;
 use crate::ids::IdKind;
 use crate::ipc::{
-    Capabilities, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode, ProjectionName,
-    ProjectionScope, RpcRequest, RpcResponse, VersionSkewError, WireError,
+    Capabilities, DeltaKind, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode,
+    ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, RpcResponse, ServerFrame,
+    SubscribeParams, VersionSkewError, WireError,
 };
 use crate::objects::DesktopObjectKind;
 use crate::status::{
@@ -62,6 +63,11 @@ struct ContractBundle {
     rpc_response: RpcResponse,
     get_projection_params: GetProjectionParams,
     projection_scope: ProjectionScope,
+    // 1.5 L4 — frame-type multiplexing envelope + subscribe streaming (§6.4/§6.1)
+    server_frame: ServerFrame,
+    projection_delta: ProjectionDelta,
+    delta_kind: DeltaKind,
+    subscribe_params: SubscribeParams,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

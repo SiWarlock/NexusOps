@@ -179,3 +179,46 @@ pub struct ProjectionScope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
 }
+
+/// `subscribe` params (§6.1). `filter` is provisional (a per-projection scope; widens later).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SubscribeParams {
+    pub projection: ProjectionName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<serde_json::Value>,
+}
+
+/// The kind of projection change in a [`ProjectionDelta`] (§6.1). snake_case wire values.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeltaKind {
+    Upsert,
+    Remove,
+}
+
+/// A streamed projection delta (§6.1 subscribe) — matches the ui's `ProjectionDelta`: the changed
+/// projection, the change kind, and the row (on upsert) or just the id (on remove).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionDelta {
+    /// the changed projection (closed enum — reject-unknown both ways; serializes to the same
+    /// PascalCase string the ui's `ProjectionDelta` parses, but the daemon can't push a typo).
+    pub projection: ProjectionName,
+    pub kind: DeltaKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// The server→client **multiplexed frame envelope** (§6.4 frame-type tag). The internally-tagged
+/// `frame_type` discriminant lets the client demultiplex one connection: an RPC response vs a
+/// subscription push. The **Terminal-Channel tag space is RESERVED** — raw PTY frames are a
+/// Phase-3 decision (JSON-base64 vs a binary fast-path, made with throughput data); no variant yet.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "frame_type", rename_all = "snake_case")]
+pub enum ServerFrame {
+    RpcResponse(RpcResponse),
+    SubscriptionPush(ProjectionDelta),
+}

@@ -87,6 +87,14 @@
       ],
       "type": "object"
     },
+    "DeltaKind": {
+      "description": "The kind of projection change in a [`ProjectionDelta`] (§6.1). snake_case wire values.",
+      "enum": [
+        "upsert",
+        "remove"
+      ],
+      "type": "string"
+    },
     "DesktopObjectKind": {
       "description": "The 4 desktop-addendum object kinds (§5.3). Serialized snake_case.",
       "enum": [
@@ -403,6 +411,31 @@
       ],
       "type": "string"
     },
+    "ProjectionDelta": {
+      "additionalProperties": false,
+      "description": "A streamed projection delta (§6.1 subscribe) — matches the ui's `ProjectionDelta`: the changed\nprojection, the change kind, and the row (on upsert) or just the id (on remove).",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/DeltaKind"
+        },
+        "projection": {
+          "$ref": "#/$defs/ProjectionName",
+          "description": "the changed projection (closed enum — reject-unknown both ways; serializes to the same\nPascalCase string the ui's `ProjectionDelta` parses, but the daemon can't push a typo)."
+        },
+        "row": true
+      },
+      "required": [
+        "projection",
+        "kind"
+      ],
+      "type": "object"
+    },
     "ProjectionName": {
       "description": "The canonical closed projection-name enum (§6.1) — both daemon + ui reject-unknown. **Wire\nvalues are PascalCase** (the variant names verbatim — NO `rename_all`), matching the ui's\npinned `get_projection(\"Session\"|…)` literals + the §7 registry / R-5/R-6 architecture labels.\n`UsageLedger` is the architecture-canonical name (the ui's provisional `Usage` reconciles to it).",
       "enum": [
@@ -516,6 +549,72 @@
       ],
       "type": "string"
     },
+    "ServerFrame": {
+      "description": "The server→client **multiplexed frame envelope** (§6.4 frame-type tag). The internally-tagged\n`frame_type` discriminant lets the client demultiplex one connection: an RPC response vs a\nsubscription push. The **Terminal-Channel tag space is RESERVED** — raw PTY frames are a\nPhase-3 decision (JSON-base64 vs a binary fast-path, made with throughput data); no variant yet.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A JSON-RPC-style response (§6.1), correlated by `id`: exactly one of `result` / `error`.",
+          "properties": {
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/WireError"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "frame_type": {
+              "const": "rpc_response",
+              "type": "string"
+            },
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "result": true
+          },
+          "required": [
+            "frame_type",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A streamed projection delta (§6.1 subscribe) — matches the ui's `ProjectionDelta`: the changed\nprojection, the change kind, and the row (on upsert) or just the id (on remove).",
+          "properties": {
+            "frame_type": {
+              "const": "subscription_push",
+              "type": "string"
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/$defs/DeltaKind"
+            },
+            "projection": {
+              "$ref": "#/$defs/ProjectionName",
+              "description": "the changed projection (closed enum — reject-unknown both ways; serializes to the same\nPascalCase string the ui's `ProjectionDelta` parses, but the daemon can't push a typo)."
+            },
+            "row": true
+          },
+          "required": [
+            "frame_type",
+            "projection",
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Session": {
       "description": "Session lifecycle (17, R-4) — the driver-agnostic normalized vocabulary the\n§9.1 harness adapters map INTO. `stale` is time-derived (§5.1).",
       "enum": [
@@ -590,6 +689,20 @@
         "remote_relay"
       ],
       "type": "string"
+    },
+    "SubscribeParams": {
+      "additionalProperties": false,
+      "description": "`subscribe` params (§6.1). `filter` is provisional (a per-projection scope; widens later).",
+      "properties": {
+        "filter": true,
+        "projection": {
+          "$ref": "#/$defs/ProjectionName"
+        }
+      },
+      "required": [
+        "projection"
+      ],
+      "type": "object"
     },
     "Task": {
       "description": "Task / PlanTask superset (17, R-8).",
@@ -725,6 +838,9 @@
     "capabilities": {
       "$ref": "#/$defs/Capabilities"
     },
+    "delta_kind": {
+      "$ref": "#/$defs/DeltaKind"
+    },
     "desktop_object_kind": {
       "$ref": "#/$defs/DesktopObjectKind"
     },
@@ -749,6 +865,9 @@
     "project_brain": {
       "$ref": "#/$defs/ProjectBrain"
     },
+    "projection_delta": {
+      "$ref": "#/$defs/ProjectionDelta"
+    },
     "projection_name": {
       "$ref": "#/$defs/ProjectionName"
     },
@@ -770,6 +889,9 @@
     "sensitivity": {
       "$ref": "#/$defs/Sensitivity"
     },
+    "server_frame": {
+      "$ref": "#/$defs/ServerFrame"
+    },
     "session": {
       "$ref": "#/$defs/Session"
     },
@@ -778,6 +900,9 @@
     },
     "source_type": {
       "$ref": "#/$defs/SourceType"
+    },
+    "subscribe_params": {
+      "$ref": "#/$defs/SubscribeParams"
     },
     "task": {
       "$ref": "#/$defs/Task"
@@ -831,9 +956,13 @@
     "rpc_request",
     "rpc_response",
     "get_projection_params",
-    "projection_scope"
+    "projection_scope",
+    "server_frame",
+    "projection_delta",
+    "delta_kind",
+    "subscribe_params"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.10.0"
+  "x-contract-version": "0.11.0"
 }

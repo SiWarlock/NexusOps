@@ -9,7 +9,7 @@
 //!   L1 (1–4) — length-prefix framing (bounded) + getpeereid peer-auth + reject-path. ⚠️ safety-critical
 //!   L2 (5–7) — handshake + version negotiation + shared/ ipc schema.
 //!   L3 (8–10) — JSON-RPC dispatch + get_projection + get_capabilities.
-//!   L4 (11–12) — subscribe streaming + Terminal-Channel frame-type seam.              [pending]
+//!   L4 (11–14) — subscribe streaming + Terminal-Channel frame-type seam.
 
 use std::io::Read;
 use std::os::unix::io::AsRawFd;
@@ -330,7 +330,18 @@ fn client_session(client: &UnixStream, requests: &[RpcRequest]) -> Vec<RpcRespon
     }
     client.shutdown(Shutdown::Write).unwrap(); // EOF → the serve loop terminates
     let _ack: HelloAck = recv(client);
-    requests.iter().map(|_| recv(client)).collect()
+    // responses ride the frame-type-tagged ServerFrame envelope (§6.4) — unwrap the RpcResponse.
+    requests
+        .iter()
+        .map(
+            |_| match recv::<nexusops_shared::ipc::ServerFrame>(client) {
+                nexusops_shared::ipc::ServerFrame::RpcResponse(r) => r,
+                nexusops_shared::ipc::ServerFrame::SubscriptionPush(_) => {
+                    panic!("expected an RpcResponse frame, got a SubscriptionPush")
+                }
+            },
+        )
+        .collect()
 }
 
 // ---- Test 8 — get_projection returns rows over read-only WAL (§6.1) ----------
@@ -478,4 +489,158 @@ fn test_get_projection_scope_not_yet_enforced() {
         1,
         "scope is accepted but NOT enforced in MVP — the read is unscoped (all rows return)"
     );
+}
+
+// =========== L4 — subscribe streaming + frame-type seam (11–12) ===============
+
+use nexusops_shared::ipc::{DeltaKind, ProjectionDelta, ServerFrame, SubscribeParams};
+use nexusopsd::ipc::push_subscription;
+
+// ---- Test 11 — subscribe pushes a frame-type-tagged ProjectionDelta (§6.1) ---
+
+#[test]
+fn test_subscribe_pushes_projection_delta() {
+    // the PUSH MECHANISM: a delta source → `push_subscription` writes a `SubscriptionPush` frame.
+    // (The live delta source — EventStore.append → broadcast → subscriber — is 1.6-wired, like
+    // the accept-loop; this is the deterministic unit, the "ship mechanism, wire source at 1.6".)
+    let (server, client) = UnixStream::pair().unwrap();
+    let delta = ProjectionDelta {
+        projection: ProjectionName::Session,
+        kind: DeltaKind::Upsert,
+        row: Some(serde_json::json!({"session_id": "sess_1", "status": "active"})),
+        id: Some("sess_1".to_string()),
+    };
+
+    let mut w = &server;
+    let n = push_subscription(&mut w, std::iter::once(delta)).unwrap();
+    assert_eq!(n, 1, "one delta pushed");
+    drop(server); // close → the client reads the buffered frame then EOF
+
+    // the client receives a frame-type-tagged SubscriptionPush carrying the delta
+    let frame: ServerFrame = recv(&client);
+    match frame {
+        ServerFrame::SubscriptionPush(d) => {
+            assert_eq!(d.projection, ProjectionName::Session);
+            assert_eq!(d.kind, DeltaKind::Upsert);
+            assert_eq!(d.id.as_deref(), Some("sess_1"));
+        }
+        ServerFrame::RpcResponse(_) => panic!("expected a SubscriptionPush, got an RpcResponse"),
+    }
+}
+
+// ---- Test 12 — the frame-type tag distinguishes rpc-response vs push (§6.4) --
+
+#[test]
+fn test_frame_type_tag_distinguishes_streams() {
+    // both server→client frame kinds carry a distinguishing `frame_type` discriminant so the
+    // client can demultiplex one connection. The Terminal-Channel tag space is RESERVED (no
+    // variant yet — its encoding is a Phase-3 decision).
+    let rpc = ServerFrame::RpcResponse(RpcResponse {
+        id: 1,
+        result: Some(serde_json::json!({})),
+        error: None,
+    });
+    let push = ServerFrame::SubscriptionPush(ProjectionDelta {
+        projection: ProjectionName::Session,
+        kind: DeltaKind::Upsert,
+        row: None,
+        id: None,
+    });
+
+    let rpc_json = serde_json::to_value(&rpc).unwrap();
+    let push_json = serde_json::to_value(&push).unwrap();
+    assert_eq!(
+        rpc_json.get("frame_type").and_then(|v| v.as_str()),
+        Some("rpc_response"),
+        "rpc-response carries its frame-type tag"
+    );
+    assert_eq!(
+        push_json.get("frame_type").and_then(|v| v.as_str()),
+        Some("subscription_push"),
+        "subscription-push carries its frame-type tag"
+    );
+    assert_ne!(
+        rpc_json.get("frame_type"),
+        push_json.get("frame_type"),
+        "the two stream kinds are distinguishable on one connection"
+    );
+}
+
+// ---- Test 13 — the dispatch RECOGNIZES "subscribe" (not unknown_method) ------
+
+#[test]
+fn test_subscribe_method_recognized() {
+    // the dispatch recognizes "subscribe" as a valid §6.1 method and acks it (the live delta
+    // stream over the connection is 1.6-wired). It is NOT unknown_method.
+    let (_d, path) = temp_db();
+    seed_session(&path);
+    let (server, client) = UnixStream::pair().unwrap();
+    let uid = 1000u32;
+
+    let req = RpcRequest {
+        method: "subscribe".to_string(),
+        params: serde_json::to_value(SubscribeParams {
+            projection: ProjectionName::Session,
+            filter: None,
+        })
+        .unwrap(),
+        id: 9,
+    };
+    let responses = std::thread::scope(|s| {
+        let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
+        serve_connection(server, uid, uid, &path).expect("serve subscribe ack");
+        h.join().unwrap()
+    });
+
+    assert!(
+        responses[0].error.is_none(),
+        "subscribe is recognized, not unknown_method"
+    );
+    assert_eq!(
+        responses[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .get("subscribed")
+            .and_then(|v| v.as_str()),
+        Some("Session"),
+        "the ack echoes the validated projection name"
+    );
+}
+
+// ---- Test 14 — ServerFrame round-trips from the wire (serde tag robustness) --
+
+#[test]
+fn test_server_frame_roundtrips_from_wire() {
+    // pin the internally-tagged `ServerFrame` + `deny_unknown_fields`-on-inner combo against a
+    // serde upgrade: serialize → bytes → deserialize must reconstruct (both variants, both delta
+    // kinds). ServerFrame isn't PartialEq, so compare via the JSON value.
+    let frames = vec![
+        ServerFrame::RpcResponse(RpcResponse {
+            id: 5,
+            result: Some(serde_json::json!({"k": "v"})),
+            error: None,
+        }),
+        ServerFrame::SubscriptionPush(ProjectionDelta {
+            projection: ProjectionName::Session,
+            kind: DeltaKind::Upsert,
+            row: Some(serde_json::json!({"a": 1})),
+            id: Some("x".to_string()),
+        }),
+        ServerFrame::SubscriptionPush(ProjectionDelta {
+            projection: ProjectionName::Session,
+            kind: DeltaKind::Remove,
+            row: None,
+            id: Some("y".to_string()),
+        }),
+    ];
+    for f in &frames {
+        let bytes = serde_json::to_vec(f).unwrap();
+        let back: ServerFrame = serde_json::from_slice(&bytes).expect("ServerFrame round-trips");
+        assert_eq!(
+            serde_json::to_value(f).unwrap(),
+            serde_json::to_value(&back).unwrap(),
+            "the frame-type tag survives the serialize→deserialize round-trip"
+        );
+    }
 }

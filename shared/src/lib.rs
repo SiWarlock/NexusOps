@@ -20,8 +20,9 @@ pub mod status;
 /// VersionSkewError/Capabilities/WireError + the IpcErrorCode + ProjectionName enums,
 /// 1.5 L2). 0.10.0 (1.5 L3) adds the §6.1 RPC method envelopes (RpcRequest/RpcResponse/
 /// GetProjectionParams/ProjectionScope) + the `protocol_error` code (the lead-ratified §6.4
-/// gap resolution) — additive, but the new enum value + types bump the minor.
-pub const CONTRACT_VERSION: &str = "0.10.0";
+/// gap resolution). 0.11.0 (1.5 L4) adds the frame-type multiplexing envelope (ServerFrame) +
+/// subscribe streaming (ProjectionDelta/DeltaKind/SubscribeParams) — additive.
+pub const CONTRACT_VERSION: &str = "0.11.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

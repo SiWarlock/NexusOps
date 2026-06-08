@@ -20,10 +20,12 @@
 mod methods;
 mod peer;
 mod server;
+mod subscribe;
 mod transport;
 
 pub use peer::{authorize_peer, peer_uid};
 pub use server::serve_connection;
+pub use subscribe::push_subscription;
 pub use transport::{decode_len, encode_frame, read_frame, write_frame, MAX_FRAME_SIZE};
 
 /// Typed IPC failures — fail-closed (§15): a frame or peer that can't be validated is

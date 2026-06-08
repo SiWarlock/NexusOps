@@ -13,7 +13,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use nexusops_shared::ipc::{
-    self, Capabilities, HelloAck, HelloFrame, IpcErrorCode, RpcRequest, VersionSkewError, WireError,
+    self, Capabilities, HelloAck, HelloFrame, IpcErrorCode, RpcRequest, ServerFrame,
+    VersionSkewError, WireError,
 };
 
 use super::{authorize_peer, methods, read_frame, write_frame, IpcError};
@@ -99,8 +100,10 @@ pub fn serve_connection<S: Read + Write>(
                 return Err(IpcError::Protocol(format!("malformed request: {e}")));
             }
         };
-        let resp = methods::dispatch(&req, db_path)?;
-        let buf = serde_json::to_vec(&resp).map_err(|e| IpcError::Protocol(e.to_string()))?;
+        // wrap the response in the frame-type-tagged ServerFrame envelope (§6.4 multiplexing) so
+        // the client demuxes rpc-responses from subscription-push frames on one connection.
+        let frame = ServerFrame::RpcResponse(methods::dispatch(&req, db_path)?);
+        let buf = serde_json::to_vec(&frame).map_err(|e| IpcError::Protocol(e.to_string()))?;
         write_frame(&mut stream, &buf)?;
     }
     Ok(())

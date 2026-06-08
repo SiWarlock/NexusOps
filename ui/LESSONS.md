@@ -178,3 +178,16 @@ A theme/visual layer is **TDD-exempt** ([[10]]); how to execute one correctly, c
 3. **The VISUAL GATE is the acceptance**, not green tests ([[10]]). Run the dev server vs the prototype **served over HTTP** (`file://` blocks the prototype's relative kit scripts), compare every view + driven fixtures, capture per-view screenshots + a match/divergence notes table. It caught what tsc/oxlint/jsdom structurally CANNOT: the **`*/`-in-CSS-comment bug** (a comment token-glob like `--n-*/--ink-*` prematurely closes the comment and silently drops the *next* CSS rule — here the whole `body` reset) + the 6.5b surface divergence. Classify each divergence: **theme defect** (fix) vs **unbuilt later-phase feature / approved app-specific adaptation** (note, not a defect).
 4. **Structural refactors preserve reachability.** Flexbox→CSS-Grid restructured the Shell DOM; the suite (incl. the a11y/reachability audit) stayed green because landmarks/roles/testids/order were preserved — verify this, don't assume.
 5. **Theming preserves never-color-alone.** Severity colors are **ADDITIVE** to the existing glyph+label channel (§11.6 / forbidden #5), never a collapse to color-only; **derive the glyph from the severity** so they can't drift.
+
+## <a id="13"></a>13. UI selection/scope state lives over a FROZEN projection — daemon-independent, never a mutation
+
+**Date:** 2026-06-08.
+**Source slice:** P7.3(fwd) active-project selection (`86727ec`) — completing the inert ProjectSwitcher.
+
+A UI **selection / scope** (the active project; future filters/scopes) is **plain UI state** read over the **FROZEN projections** — it is **NOT** a daemon mutation, **NOT** a provisional contract, and **NOT** a Gateway intent. So it has **no `canSubmitIntent` gate** (that gate is for *mutations* — [[4]]) and **no daemon dependency**: it ships now without waiting on the parked mutation seam. Distinguish it sharply from the daemon-1.5 intent work — selecting/scoping/filtering what you *view* is daemon-independent; *changing* state is the parked intent path.
+
+Mechanics that worked:
+- **Context provider, mirroring `ReadOnlyProvider`** (`ActiveProjectProvider`/`useActiveProject`) — the project-scoped views (`ProjectGraph` re-roots, `SessionsTable` filters) read the selection via context, no prop-drill through `TopBar`; **the provider wraps the WHOLE shell** so a control inside `TopBar` can read it.
+- **Single-select via `aria-pressed`** — consistent with the existing view-switch segmented-control; the stricter WAI-ARIA radiogroup/listbox + the dropdown-popover widget are a deferred presentation polish.
+- **Stale selection re-scopes to a default** (`resolveActiveProject`) — a selected-then-removed id never becomes a ghost; `null` (no projects) = the unscoped/no-project-guard state.
+- **Cross-cutting triage stays GLOBAL** — the Command Center is "needs my attention *everywhere*"; don't scope it to the active project (only the genuinely project-scoped views re-root/filter).

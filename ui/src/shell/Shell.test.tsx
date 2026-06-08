@@ -85,4 +85,18 @@ describe("Shell", () => {
     });
     expect(await screen.findByRole("alert")).toBeTruthy(); // degraded banner shown
   });
+
+  it("view_switch_mounts_project_graph", async () => {
+    const { container } = render(<Shell gateway={new MockGatewayPort()} />);
+    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    // Command Center is the default content view
+    expect(container.querySelector('[aria-label="Command Center"]')).not.toBeNull();
+    expect(screen.queryByTestId("graph-canvas")).toBeNull();
+    // switching the content view to Project Graph mounts <ProjectGraph/> for
+    // the first project (reachable from the Shell — Step 7.5 entry point)
+    fireEvent.click(screen.getByRole("button", { name: /project graph/i }));
+    expect(screen.getByTestId("graph-canvas")).toBeTruthy();
+    // it's a switch, not a stack — Command Center is unmounted
+    expect(container.querySelector('[aria-label="Command Center"]')).toBeNull();
+  });
 });

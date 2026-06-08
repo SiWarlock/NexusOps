@@ -12,6 +12,7 @@ import { deriveProjectSwitcherCounts, type ProjectSwitcherCounts } from "./deriv
 import type { SidebarItem } from "./Sidebar";
 import { CommandCenter } from "../views/command/CommandCenter";
 import type { CommandItem } from "../views/command/group";
+import { ProjectGraph } from "../views/graph/ProjectGraph";
 import {
   toSessionItems,
   toPrItems,
@@ -60,6 +61,8 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
   );
   // Fail-safe: version stays "unknown" (→ read-only) until a handshake confirms it.
   const [version, setVersion] = useState<VersionCompat>("unknown");
+  // Which content view the main surface shows (6.3b). Command Center is default.
+  const [contentView, setContentView] = useState<"command" | "graph">("command");
 
   useEffect(() => client.onConnectionChange(setConnection), [client]);
 
@@ -157,9 +160,38 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
         <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
           <Sidebar items={sidebarItems} />
           <main style={{ flex: 1, minWidth: 0 }} aria-label="Main surface">
-            {/* Command Center is the default content view (6.3a). Graph /
-                Sessions / Terminal / Diff are the later 6.3 sub-slices. */}
-            <CommandCenter items={commandItems} />
+            {/* Content-view switch (6.3b): Command Center (default) | Project
+                Graph. Sessions / Terminal / Diff are the later 6.3 sub-slices. */}
+            <div
+              className="content-switch"
+              role="group"
+              aria-label="Content view"
+            >
+              <button
+                type="button"
+                aria-pressed={contentView === "command"}
+                onClick={() => setContentView("command")}
+              >
+                Command Center
+              </button>
+              <button
+                type="button"
+                aria-pressed={contentView === "graph"}
+                onClick={() => setContentView("graph")}
+              >
+                Project Graph
+              </button>
+            </div>
+            {contentView === "command" ? (
+              <CommandCenter items={commandItems} />
+            ) : (
+              <ProjectGraph
+                projectId={data.projects[0]?.project_id ?? ""}
+                projects={data.projects}
+                sessions={data.sessions}
+                pullRequests={data.pullRequests}
+              />
+            )}
           </main>
           <DrawerStack />
         </div>

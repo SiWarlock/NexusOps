@@ -24,17 +24,25 @@
 
 **Still open (non-blocking for Phase 1):** HITL — notarization run (0.2, Apple creds), credit-pool drain ≥6/15 (0.1) → then cat-4 SDK-vs-PTY + **0.5b** (re-freeze ExecutionProfile).
 
+**UI TRACK (`track/ui`) — Phase 6 in progress (round closed 2026-06-08).** ✅ **6.1 complete** (shell + design-system + connection/read-only — `fd9738b`/`39a87c6`/`402f4c5`) · ✅ **6.2 complete** (status binding: model + rendering — `b32c3c0`/`e2cebbc`) · ⏳ **6.3 PARTIAL** — 6.3a Command Center landed (`144b6b6`); **6.3b–6.3e remain**. **51 tests green**, tsc/oxlint/vite-build clean; built against frozen `shared/` 0.5.0 + `MockGatewayPort` + fixtures + `NexusOps-ui-kit` (real `UdsGatewayPort` integrates at daemon-1.5). **Next ui session target: 6.3b — Project Graph + a11y list/table fallback.** Round commit: _(this `/orchestrate-end` commit)_; pushed to `origin track/ui`. Implementer session doc: `ui-001-2026-06-08-phase6-shell-status-command-center.md`.
+
 ---
 
 ## Carry-forward to upcoming briefs
 
 Items the orchestrator MUST fold into upcoming slice briefs. **Triaged at every `/orchestrate-end`** — NOT append-only. New entries carry `(origin: YYYY-MM-DD <slice-id>)`.
 
-_(Empty for next-brief purposes — 1.1 has no carry-forward dependencies; it binds to the frozen `shared/` contracts + `ARCHITECTURE.md` directly. 0.5b inlined as a Phase-0 task. Two cross-track op-items spread to their consumer slices below.)_
+_(Triaged at the 2026-06-08 ui round close-out — 6 items, under the ~7 cap. **Next ui brief = 6.3b**; the two 6.3b items + the 6.3 nits are the immediate working set; the rest are cross-track spreads that auto-resolve at their consumer slice. Phase-scoped items were INLINED into their phases: ExecutionProfile/checking-banner/Repair-UI → 6.4; CC-task-sources → 7.3. The consumed Zod-gen item was DELETED.)_
 
-**Spread (kept; auto-resolve at the consumer slice):**
-- **ui track generates Zod from `contracts/schema/`** (`pnpm` broken → use `npx json-schema-to-zod`, per the 0.3 env note). `last-consumer-slice: ui-track open (Phase 6)` `(origin: 2026-06-07 P0.5)`
-- **Wire the §5.0 contract gates into CI** — schema-diff (test 9) + 3-way verify (test 8) + the Codex schema gate — no `.github/workflows/` exists yet; they run in `cargo test`/harness locally meanwhile. `last-consumer-slice: Phase 10 (release infra), or earlier if CI is stood up` `(origin: 2026-06-07 P0.5)`
+**Next ui brief (6.3b) working set:**
+- **6.3 view locator convention** — settle a CONSISTENT `data-item-id` namespacing across all 6.3 views before the §25 demo. Recommended: namespace as `machine:id` (matching the P6.3a React key), so a pathological cross-machine bare-id collision can't occur (P6.3a's `data-item-id` is bare; React key already collision-safe). `last-consumer-slice: 6.3b / before §25 demo` `(origin: 2026-06-08 P6.3a)`
+- **Extract a shared `SessionItem` shape/helper** — `sidebarItems` (P6.2b) and the sessions slice of `commandItems` (P6.3a) are structurally identical (both from `data.sessions`); extract when 6.3b lands to avoid drift. `last-consumer-slice: 6.3b` `(origin: 2026-06-08 P6.3a)`
+- **6.3 code-quality nits** — (a) narrow `compareByAttention` to the 0–5 `AttentionRank` type if a synthetic-rank caller appears; (b) `useMemo` the Shell's `sidebarItems`/`commandItems` when real subscriptions + larger counts land. `last-consumer-slice: 6.3` `(origin: 2026-06-08 P6.2a/P6.2b)`
+
+**Cross-track spreads (auto-resolve at the consumer slice):**
+- **Reconcile UI provisional object types → generated** when the daemon freezes object schemas. Replace `ui/src/contracts/provisional.ts` shapes (`SessionRow` + `ProjectActivityRow`/`PullRequestRow`/`ApprovalQueueRow`/`AuditEventRow` + the `ProjectionPageByName` registry) with generated ones + delete the PROVISIONAL banners; includes the `ProjectionDelta.row` projection-discrimination + closed projection-name set, and the **object-KEY strictness** harden — **RATIFIED (human) A-now → strict-at-freeze** (tolerant reads now; `.strict()` at freeze; enum-value reject-unknown stays strict throughout). `last-consumer-slice: first daemon object-schema bump (Phase 1/2)` `(origin: 2026-06-07 P6.1a)`
+- **ui ↔ daemon-1.5 integration** — when the real `UdsGatewayPort` (§6.4 framing/handshake) lands: (a) reconcile `SUPPORTED_PROTOCOL_RANGE` (UI provisionally pins `{min:1,max:1}` in `ui/src/connection/version.ts`) against the daemon's real §6.4 `protocol_version` (daemon-authored — confirm at integration); (b) swap the Shell's gateway default `MockGatewayPort` → the real client (mock → dev/test-only). `last-consumer-slice: ui ↔ daemon-1.5 (UDS GatewayPort)` `(origin: 2026-06-07 P6.1c)`
+- **Wire the §5.0 contract gates into CI** — schema-diff (test 9) + 3-way verify (test 8) + the Codex schema gate (no `.github/workflows/` yet; run via `cargo test`/harness locally meanwhile) **+ the ui-side TS drift test** (generated Zod `.options` === frozen `$defs`) + the `CONTRACT_VERSION`===`x-contract-version` pin + the pnpm/corepack-restore note (corepack shim broken → `npm i -g pnpm`; `ui/.npmrc verify-deps-before-run=false`). `last-consumer-slice: Phase 10 (release/CI infra), or earlier if CI is stood up` `(origin: 2026-06-07 P0.5; ui additions 2026-06-08)`
 
 _(LOCKED-text corrections + planning-doc reconciles are tracked in "Architecture-doc corrections" + the Phase-0-exit `/arch-finalize` reconcile list below.)_
 
@@ -359,20 +367,22 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Track / deps:** `ui` (biggest independent arm — open it the moment 0.5 lands). **Deps:** 0.5 only (frozen enums/projections/GatewayPort) + the existing NexusOps-ui-kit. **Parallel-with:** ALL of daemon-core + edges — builds against a mock gateway-client + fixture projections; integrate with the real daemon per slice once that slice's daemon-side contract is live (team-protocol rule).
 
-### 6.1 — App shell + design-system integration + daemon-connection/read-only mode
-- [ ] Tauri shell (top bar, project switcher, sidebar, right drawer stack, activity dock, status bar); link `NexusOps-ui-kit` tokens + components; **daemon-connection indicator** (connected/reconnecting/disconnected) distinct from LocalRunner health; **global READ-ONLY degraded mode** disabling all intent-submitting controls + banner/Repair.
-- [ ] Files: `ui/src/shell/` (NEW), `ui/src/lib/gateway-client.ts` (NEW: UDS client)
-- [ ] Cross-doc invariant: none
-- [ ] Tests: happy (shell renders from projections); edge (daemon disconnected → read-only mode disables approve/dispatch/commit); error (version-skew → "update required"); integration (UI never writes the DB; reconnect restores live state).
+### 6.1 — App shell + design-system integration + daemon-connection/read-only mode ✅ (6.1a fd9738b + 6.1b 39a87c6 + 6.1c 402f4c5)
+- [x] Tauri shell (top bar, project switcher, sidebar, right drawer stack, activity dock, status bar); link `NexusOps-ui-kit` tokens + components; **daemon-connection indicator** (connected/reconnecting/disconnected) distinct from LocalRunner health; **global READ-ONLY degraded mode** disabling all intent-submitting controls + banner/Repair (fail-safe `canSubmitIntent`; security-reviewer PASS).
+- [x] Files: `ui/src/{shell,contracts,gateway-client,connection}/` (NEW). _(Corrected: built `ui/src/gateway-client/` [interface + boundary + MockGatewayPort], NOT `ui/src/lib/gateway-client.ts`. The **real `UdsGatewayPort`** is deferred to the daemon-1.5 integration — mock-backed until then; see Carry-forward.)_
+- [x] Cross-doc invariant: none new (the generated Zod layer is a drift-caught consumer; rows added to `ui/CLAUDE.md`)
+- [x] Tests: happy (shell renders from projections); edge (daemon disconnected → read-only mode disables intent controls via `canSubmitIntent`); error (version-skew → "update required" + precedence); integration (UI never writes the DB; reconnect restores live state).
 
-### 6.2 — Status rendering binding + attention-rank table
-- [ ] StatusPill keys == §5.1 enum strings (all 10 machines, incl. 17 Session states + `changes_ready`); one canonical status→attention-rank table (no fall-through to idle) driving sidebar weight + queue membership + sort; four-channel "never color alone"; Approval vs ActionRequest as two surfaces.
-- [ ] Files: `ui/src/status/` (extended from kit), `shared/contracts/attention.ts` (NEW)
-- [ ] Cross-doc invariant: extended — the 9 status enums (Appendix A, §5.1)
-- [ ] Tests: happy (one pill per state of each machine); edge (waiting_on_permission/conflict/stale enter "Needs my attention"); error (unknown status → visible, not idle); integration (attention ordering matches PRD §5.2).
+### 6.2 — Status rendering binding + attention-rank table ✅ (6.2a b32c3c0 + 6.2b e2cebbc)
+- [x] StatusPill keys == §5.1 enum strings (all **9 frozen** machines — 113 states, incl. 17 Session states + `changes_ready`; ExecutionProfile held 0.5b → deferred); one canonical status→attention-rank table (drift-pinned, no fall-through to idle) driving sidebar weight + queue membership + sort; four-channel "never color alone"; Approval vs ActionRequest as two surfaces.
+- [x] Files: `ui/src/status/{attention,descriptors,worktree}.ts` (model, P6.2a) + `{StatusPill,AttentionMarker}.tsx` (rendering, P6.2b). _(Corrected from `shared/contracts/attention.ts`: attention-rank is UI render policy, not a frozen cross-language contract; the ui track does not write the frozen `shared/` crate — P6.2a Q4.)_
+- [x] Cross-doc invariant: extended — the status enums + the attention-rank table (rows in `ui/CLAUDE.md`, §5.1/§11.3)
+- [x] Tests: happy (one pill per state of each machine); edge (waiting_on_permission/conflict/stale enter "Needs my attention"); error (unknown status → visible, not idle — incl. the kit `||idle` guard); integration (attention ordering matches PRD §5.2).
+- [ ] **Widen `ProjectionDelta.row` to projection-discriminated** (currently `SessionRow`-specific) when non-Session subscriptions land here — not widened in 6.1b to avoid prematurely breaking the delta typing (cq-medium; tracked in Carry-forward → provisional reconcile). _(origin: 2026-06-07 P6.1b)_
 
-### 6.3 — Core screens (Command Center, Project Home/Graph, Sessions, Terminal, Editor/Diff)
-- [ ] Command Center triage (needs-attention/working/settled incl. a Changes-ready grouping); Project Graph **with list/table fallback**; Sessions list/board (dense table); Session Terminal (PTY + inline permission card); Code/Diff review with per-hunk actions.
+### 6.3 — Core screens (Command Center, Project Home/Graph, Sessions, Terminal, Editor/Diff) — ⏳ PARTIAL (6.3a landed)
+> **Decomposed:** 6.3a Command Center → 6.3b Graph+list/table-fallback → 6.3c Sessions → 6.3d Terminal → 6.3e Code/Diff. **Landed:** 6.3a (`144b6b6`). **Remaining:** 6.3b–6.3e. _(Next session target = 6.3b.)_
+- [ ] Command Center triage (needs-attention/working/settled incl. a Changes-ready grouping) ✅ **6.3a (144b6b6)**; Project Graph **with list/table fallback** ⏳ (6.3b); Sessions list/board (dense table) ⏳ (6.3c); Session Terminal (PTY + inline permission card) ⏳ (6.3d); Code/Diff review with per-hunk actions ⏳ (6.3e).
 - [ ] Files: `ui/src/views/{command,graph,sessions,terminal,code}/` (extended from kit)
 - [ ] Cross-doc invariant: none
 - [ ] Tests: happy (each screen renders fixtures); edge (graph list-fallback a11y equivalence — every node/edge appears as a row); error (empty/degraded states); integration (graph node → Inspector; session → terminal).
@@ -382,6 +392,10 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 - [ ] Files: `ui/src/views/{usage,settings}/`, `ui/src/recovery/`, `ui/src/a11y/` (NEW/extended)
 - [ ] Cross-doc invariant: none
 - [ ] Tests: happy (usage labels render; Codex shows "unknown"); edge (every drag has a button/menu path — TASK-5; focus ring on all controls); error (credit-pool near-exhaustion + hard-stop states); integration (recovery banner after restart; audit-integrity alert renders).
+- [ ] **Accessible names on shell controls + kit closed-props (§11.7)** — kit components have **closed prop types with no `HTMLAttributes`/`aria-*`/`data-*` passthrough** (confirmed across `Button` [aria-label], `StatusPill`/`AttentionMarker` [data-*]). Back/forward + icon-only controls need accessible names; the surface chip / markers route `aria-*`/`data-*` onto NexusOps wrapper elements as the current workaround. Resolve via a §11.7 kit component-contract addition (HTMLAttributes passthrough) or keep the wrapper pattern. _(origin: 2026-06-07 P6.1b; broadened P6.2b)_
+- [ ] **ExecutionProfile status descriptors/pill** — add the 10th machine's `(machine,status)` attention-rank descriptors + StatusPill mapping once its enum freezes (0.5b); surfaces in the Settings → Execution Profiles tab. The 6.2a completeness test iterates only the generated layer, so it won't fail until the enum lands. _(inlined from Carry-forward; origin: 2026-06-07 P6.2a → 0.5b gate)_
+- [ ] **"Checking/handshaking" degraded-banner variant** — `deriveDegradedState(connected, version=unknown)` → "ok" (no banner) while `canSubmitIntent` is FALSE; add a checking/handshaking banner so read-only is never silently unexplained once intent controls exist (currently unreachable-through-Shell + security-confirmed). _(inlined from Carry-forward; origin: 2026-06-07 P6.1c)_
+- [ ] **Real Repair / update-relaunch UI** — the DegradedBanner Repair affordance currently aliases `reconnect()` (named-distinct + TODO); wire the real repair (daemon-1.5) + the version-skew update/relaunch flow (§16, with packaging in Phase 10). _(inlined from Carry-forward; origin: 2026-06-07 P6.1c)_
 
 ### Acceptance criteria (6)
 - [ ] Projection-driven UI; read-only degraded mode works; status binding covers all 10 machines.
@@ -414,6 +428,7 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 - [ ] Files: `ui/src/views/tasks/` (extended from kit), `daemon/src/gateway/catalog.rs` (link actions)
 - [ ] Cross-doc invariant: extended — `tasks` table kind-scoped (Appendix A, §5.1 R-8)
 - [ ] Tests: happy (dispatch a task → session via Gateway); edge (drag + non-drag both dispatch); error (dispatch under offline → queued); integration (linking keeps ticket→session→worktree→PR traceable).
+- [ ] **Expand Command Center triage sources to include tasks** — P6.3a's Command Center sources = sessions+PRs+approvals only (no `proj_task` in Phase 6); add Task items to the CC triage groups once the Task/PlanProgress projection lands here. _(inlined from Carry-forward; origin: 2026-06-07 P6.3a)_
 
 ### Acceptance criteria (7)
 - [ ] Full PR Review Workspace with re-fetch-before-merge; integrations degrade gracefully offline.
@@ -580,3 +595,13 @@ Append-only, date-stamped, the orchestrator's framing of each round.
 - **Convention fixes:** `cargo fmt --check` added to the daemon preflight gate (Step-8 was clippy-only → 06f9576 needed fmt follow-up 407be7c). Banked LESSONS §1 (broken cargo shims) + §2 (wire-value-is-contract / §5.0 SoT pattern). Architecture corrections direct-edited (§5.0, §9, §18, Appendix A); planning-doc reconciles queued for the Phase-0-exit `/arch-finalize`.
 - **Next session target:** **user-invoked Phase-0-exit `/arch-finalize` re-validation** (sweep the planning-doc reconciles) → then fan-out: **Phase 1 / 1.1** (event store, daemon-core) ∥ **ui track**. **HELD on 1.1** until the re-validation completes + any moved contracts are reconciled into `shared/` (a 0.5b if frozen enums/IDs/§5.0 shifted).
 - **Reference:** implementer session doc `001-2026-06-07-phase0-spikes-and-contract-freeze.md`; commits 06f9576 (0.5) + 407be7c/94e4894/2bf198d/4f572dc (close-out).
+
+### 2026-06-08 — UI track: Phase 6 shell + status binding + Command Center (round 1)
+
+- **Completed (planning level):** opened the `ui` track on `track/ui` and built **6.1 (shell)** + **6.2 (status binding)** to completion and **6.3a (Command Center)** — 6 `/tdd` slices, all test-first, **51 tests green**, tsc/oxlint/vite-build clean. Built entirely against the frozen `shared/` 0.5.0 contract + a `MockGatewayPort` + fixtures + the `NexusOps-ui-kit` — the parallel-track plan validated (no daemon dependency consumed; real `UdsGatewayPort` integrates at daemon-1.5). Commits: `fd9738b`/`39a87c6`/`402f4c5` (6.1a/b/c), `b32c3c0`/`e2cebbc` (6.2a/b), `144b6b6` (6.3a), `de5b71d` (session doc).
+- **Decisions made:** contract enums **generated** from the frozen schema (checked-in artifact + drift + `CONTRACT_VERSION` pins), never hand-declared; kit consumed via **`@ui-kit` source alias + `resolve.dedupe`** (not the global bundle/vendored); read-only gate is **fail-safe + defense-in-depth** (canSubmitIntent = connected && version-compatible; daemon Gateway remains the INV-SEC-1 guard, security-reviewer PASS); attention-rank table is **UI render policy in `ui/src/status/`** (keyed by (machine,status), drift-pinned, no fall-through to idle); Command Center `changes_ready` extracted (disjoint, surfaced first). Banked `ui/LESSONS.md §1–6`.
+- **Escalations resolved:** **object-key strictness posture RATIFIED (human): A-now → strict-at-freeze** (tolerant reads now, `.strict()` at the daemon object-schema freeze; enum reject-unknown stays strict). User-directed clean round close-out at the 6.1+6.2+6.3a boundary (before the heavier 6.3b).
+- **Scope shifts:** decomposed 6.1 → 6.1a/b/c, 6.2 → 6.2a/b, 6.3 → 6.3a–e (orchestrator decomposition latitude). `attention.ts` resited `shared/` → `ui/src/status/` (UI render policy, not frozen contract). Carry-forward triaged (1 deleted / 4 inlined to 6.4+7.3 / 3 spread / 3 kept = the 6.3b working set).
+- **New blockers / open questions:** none new. Cross-track integration points tracked as spreads (object-schema-freeze reconcile, daemon-1.5 `UdsGatewayPort` + `SUPPORTED_PROTOCOL_RANGE`, §5.0 CI gates). ExecutionProfile (0.5b) + the closed-kit-props §11.7 a11y item inlined to their phases.
+- **Next session target:** **6.3b — Project Graph + a11y list/table fallback** (the §11.6 MUST), then 6.3c–e.
+- **Reference:** implementer session doc `ui-001-2026-06-08-phase6-shell-status-command-center.md`; briefs `docs/briefs/003–008`.

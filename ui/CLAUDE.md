@@ -106,6 +106,7 @@ Do not:
 3. **Submit a mutation as anything but a typed Gateway intent** — never call git, GitHub, or the daemon DB directly from the UI. Every change is a risk-classified, approved Action; bypassing the GatewayPort bypasses the audit + approval path. All daemon access goes through the single `gateway-client`.
 4. **Render Codex context-% as a number when it isn't reported** — show `"unknown"` when `supportsContextMetadata === false` (§9.1). Fabricating a percentage for an engine that doesn't expose one is a silent lie in the cockpit.
 5. **Communicate status by color alone** — use glyph + label + intensity (§11 never-color-alone). And never ship a graph without its list/table fallback, a control without a focus ring, or a drag without a non-drag equivalent (§11.6 a11y MUSTs).
+6. **Offer an intent-submitting control without consulting `canSubmitIntent`** — every mutation affordance (Gateway approve/deny, Dispatch, Brain Run-via-Gateway, commit/push) must be disabled in global READ-ONLY/degraded mode (§11.4); offering a mutation while the daemon is unreachable or version-skewed is a defense-in-depth breach. The gate is **fail-safe** (FALSE on unknown/initial; true only when confirmed connected + version-compatible — `ui/src/connection/read-only.ts`). It is defense-in-depth — the load-bearing INV-SEC-1 enforcement is daemon-side (§15), never the UI gate alone. See [[4]].
 
 <!-- ▲ END EXAMPLE BLOCK [id=forbidden-patterns] ▲ -->
 
@@ -117,7 +118,8 @@ Several typed models in this codebase are **contracts** mirrored in `ARCHITECTUR
 
 | Model | `ARCHITECTURE.md` section | Notes |
 |---|---|---|
-| <model> | §X | <field summary> |
+| Generated Zod contract layer (`ui/src/contracts/generated.ts` + `index.ts`) | §5.0, §5.1 | Generated, drift-caught consumer of the frozen `shared/contracts/schema/nexusops-contract.schema.json` (13 enum value-sets: 9 status machines + `ActorType`/`IdKind`/`DesktopObjectKind`). Never hand-edited; regen via `ui/scripts/gen-contracts.mjs`. Pinned by accept-all / reject-unknown / set+`.options` drift / `CONTRACT_VERSION`===`x-contract-version` tests (P6.1a). 6.2 extends with the status→attention-rank coupling. |
+| Status→attention-rank descriptor table (`ui/src/status/descriptors.ts` + `attention.ts`) | §11.3, §11.1, §5.1, §7.2 | UI-canonical (NOT a frozen cross-language contract — UI render policy): every frozen `(machine, status)` → `{attentionRank 0–5, visualKind, label}`. Single source for sidebar weight / queue membership / sort. **Completeness drift-pinned** to the generated `.options` (a daemon-added status fails the test until covered); no fall-through to idle (`waiting_on_permission`/`conflicts`/`blocked`=4, `stale`=3, `changes_ready`=4). Worktree status derived via two-axis precedence. ExecutionProfile deferred (0.5b). (P6.2a) |
 
 <!-- Starts empty (or with the first model if one exists). Populated as contract models land. -->
 
@@ -168,7 +170,12 @@ Lessons start at §1.
 
 | # | Date | Topic | Rule (one-liner) |
 |--:|---|---|---|
-| | | | |
+| 1 | 2026-06-07 | [Generated contract enums](LESSONS.md#1) | UI contract enums are generated from the frozen `shared/` schema (artifact + accept/reject/drift/version pins), never hand-declared; status/ID/actor fields delegate to the generated validators. |
+| 2 | 2026-06-07 | [Provisional object shapes](LESSONS.md#2) | Object shapes not yet frozen are provisional UI-local types (banner-marked, enum fields delegated, tolerant of unknown keys on reads); reconcile to generated shapes on the next contract bump. |
+| 3 | 2026-06-07 | [ui-kit consumption](LESSONS.md#3) | Consume `NexusOps-ui-kit` as tokens-via-`styles.css` + components-via-`@ui-kit`-source-alias (with `resolve.dedupe(["react","react-dom"])` for the out-of-root peer react), never the global bundle / vendored; reference the semantic token layer only. |
+| 4 | 2026-06-07 | [Fail-safe read-only gate](LESSONS.md#4) | The UI read-only/degraded gate is fail-safe (`canSubmitIntent` FALSE on unknown; true only confirmed connected + version-compatible) and defense-in-depth — never the sole mutation guard; the daemon Gateway (INV-SEC-1) is. |
+| 5 | 2026-06-07 | [Status→attention-rank table](LESSONS.md#5) | The status→attention-rank descriptor table is keyed by (machine, status), drift-pinned to the generated enums (completeness test), the single source for sidebar/queue/sort; no fall-through to idle (§11.3). |
+| 6 | 2026-06-07 | [Status rendering wrappers](LESSONS.md#6) | Render status via thin descriptor-bound wrappers over the kit (single source = the descriptor); guard the kit's `\|\|idle` silent fallback (unknown→visible); derive kit-kind validation from the kit STATUS map; route aria-*/data-* onto wrapper elements (kit props are closed). |
 
 <!-- Starts empty. Each row links to its `LESSONS.md` anchor. -->
 

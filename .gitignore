@@ -3,3 +3,6 @@ claude-code-tdd-agent-crew-scaffold/
 
 # Rust workspace build output (root ./Cargo.toml builds shared + daemon here).
 /target
+
+# Transient watchdog lock (scheduled-tasks daemon).
+.claude/scheduled_tasks.lock

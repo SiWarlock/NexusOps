@@ -259,6 +259,8 @@ CREATE TABLE proj_usage_ledger (
 
 `[MVP-SIMP]` MVP ships exactly these 8 (UX-critical: ProjectActivity, Session, ApprovalQueue, ProjectGraph, AuditTrail per EM `§24`; the other 3 round out the chains in SOM `§35`). Workflow-pack/cc-crew progress projections and richer usage breakdowns are `[DEFERRED]` to P1 (EM `§25`).
 
+**[IMPLEMENTED 1.2]** All **10** projection tables created (migration 3), incl. `proj_pull_request` + `proj_agent_team` (no DDL sketch existed above — authored minimal, status-bound to the frozen §5.1 PullRequest/AgentTeam enums; a fuller sketch reconciles when their projectors land in P7/P9). Projector **bodies**: 4 Phase-1-feedable (Session, ProjectGraph/object_refs, AuditTrail+FTS, ProjectActivity) folded **in-band** in the event-commit txn; the other 6 re-homed to their producing phases (ARCHITECTURE Appendix A + `daemon/CLAUDE.md` cross-doc). `(P1.2, brief 004)`
+
 ### 2.4 `projection_offsets` `[LOCKED — EM §12/§13.2]`
 
 ```sql
@@ -290,6 +292,8 @@ CREATE TABLE outbox (
 CREATE INDEX ix_outbox_due ON outbox(status, next_attempt_at);
 ```
 `[LOCKED — ADR-003]` event + projection + outbox writes commit in **one transaction** (the transactional-outbox pattern: a fact is never recorded without its delivery intents, and never delivered without being recorded). The Brain-notification adapter (ADR-005), GitHub/Linear syncers (ADR-007), the notifier, and the optional JSONL mirror (§10.4) all drain the outbox with backoff. Remote-relay delivery is a future destination `[DEFERRED — DFR §6]`.
+
+**[IMPLEMENTED 1.3]** `outbox` created (migration 4); rows written in the event-commit txn (recorded-iff-intended); the **§15 *sync* sink** — per-destination payload derives from the already-redacted event (filter-only). At-least-once drainer (`drain_once`: backoff + retryable/terminal + bounded dead-letter; `reset_in_flight` on `open`; idempotent consumers). `out_` id is **daemon-internal** (not a frozen contract ID); `jsonl_mirror` is the one Phase-1 real destination; the drainer Tokio spawn is 1.6-wired; the brain_mcp/github/linear/notifier destination adapters re-home to P8/P7/P10. `(P1.3, brief 005)`
 
 ### 2.6 `leases` — distributed locks `[LOCKED — ADR-008]`
 
@@ -465,6 +469,8 @@ CREATE VIRTUAL TABLE events_fts USING fts5(
 );
 ```
 `[PROPOSED]` FTS5 indexes the **redaction-safe audit projection**, not raw `payload_json` (avoids the event log becoming a secret-searchable dump; EM `§4.5`/`§9`). Powers the Command Center / audit search box.
+
+**[IMPLEMENTED 1.2 — deviation recorded]** 1.1 shipped a standalone `fts_events(event_id UNINDEXED, body)` scaffold (not the contentless `events_fts content='proj_audit_trail'` above); the 1.2 AuditTrail projector **populates `fts_events`** with the redaction-safe headline. The redaction-safety intent holds (indexes the rendered audit text, never `payload_json`). The contentless `content=`-linked form is a deferred refinement (no functional gap for MVP search). `(P1.2, brief 004 Q3)`
 
 ---
 

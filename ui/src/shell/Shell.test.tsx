@@ -99,4 +99,17 @@ describe("Shell", () => {
     // it's a switch, not a stack — Command Center is unmounted
     expect(container.querySelector('[aria-label="Command Center"]')).toBeNull();
   });
+
+  it("view_switch_mounts_sessions_table", async () => {
+    const { container } = render(<Shell gateway={new MockGatewayPort()} />);
+    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    // Command Center is the default content view
+    expect(container.querySelector('[aria-label="Command Center"]')).not.toBeNull();
+    expect(screen.queryByTestId("sessions-table")).toBeNull();
+    // selecting Sessions mounts <SessionsTable/>, reachable from the Shell (Step 7.5)
+    fireEvent.click(screen.getByRole("button", { name: /sessions/i }));
+    expect(screen.getByTestId("sessions-table")).toBeTruthy();
+    // switch-not-stack — Command Center is unmounted
+    expect(container.querySelector('[aria-label="Command Center"]')).toBeNull();
+  });
 });

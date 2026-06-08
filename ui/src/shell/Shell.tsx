@@ -13,6 +13,7 @@ import type { SidebarItem } from "./Sidebar";
 import { CommandCenter } from "../views/command/CommandCenter";
 import type { CommandItem } from "../views/command/group";
 import { ProjectGraph } from "../views/graph/ProjectGraph";
+import { SessionsTable } from "../views/sessions/SessionsTable";
 import {
   toSessionItems,
   toPrItems,
@@ -61,8 +62,10 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
   );
   // Fail-safe: version stays "unknown" (→ read-only) until a handshake confirms it.
   const [version, setVersion] = useState<VersionCompat>("unknown");
-  // Which content view the main surface shows (6.3b). Command Center is default.
-  const [contentView, setContentView] = useState<"command" | "graph">("command");
+  // Which content view the main surface shows (6.3b/6.3c). Command Center is default.
+  const [contentView, setContentView] = useState<"command" | "graph" | "sessions">(
+    "command",
+  );
 
   useEffect(() => client.onConnectionChange(setConnection), [client]);
 
@@ -181,16 +184,25 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
               >
                 Project Graph
               </button>
+              <button
+                type="button"
+                aria-pressed={contentView === "sessions"}
+                onClick={() => setContentView("sessions")}
+              >
+                Sessions
+              </button>
             </div>
             {contentView === "command" ? (
               <CommandCenter items={commandItems} />
-            ) : (
+            ) : contentView === "graph" ? (
               <ProjectGraph
                 projectId={data.projects[0]?.project_id ?? ""}
                 projects={data.projects}
                 sessions={data.sessions}
                 pullRequests={data.pullRequests}
               />
+            ) : (
+              <SessionsTable sessions={data.sessions} projects={data.projects} />
             )}
           </main>
           <DrawerStack />

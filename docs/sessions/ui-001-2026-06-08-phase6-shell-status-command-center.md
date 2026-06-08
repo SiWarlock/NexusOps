@@ -5,7 +5,7 @@
 - **Phase:** 6 (Frontend shell & projection-driven UI) — slices 6.1a/b/c, 6.2a/b, 6.3a
 - **Role:** ui-implementer (team `nexusops-ui`)
 - **Predecessor:** `001-2026-06-07-phase0-spikes-and-contract-freeze.md` (the 0.5 contract freeze `06f9576` that unblocked this track) — cross-track dependency, not an in-track predecessor
-- **Successor session:** _(next ui session — 6.3b Graph + list/table fallback)_
+- **Successor session:** [ui-002](ui-002-2026-06-08-phase6-graph-sessions-a11y-usage-settings-survival-topbar.md) (6.3b/6.3c + 6.4a/b/c/d/e — Graph · Sessions · a11y · Usage · Settings · Survival · TopBar-nav)
 
 ## Why this session existed
 

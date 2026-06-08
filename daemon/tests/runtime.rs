@@ -231,6 +231,32 @@ async fn test_drain_loop_survives_a_failed_pass() {
 }
 
 #[tokio::test]
+async fn test_reaper_loop_survives_a_failed_pass() {
+    // liveness (symmetric to the drainer): a failing reap pass must NOT kill the loop. Point the
+    // reaper at an already-shutdown actor → every pass fails (ActorGone); the loop logs + keeps
+    // ticking, and still shuts down cleanly.
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+    );
+    let handle = actor.handle();
+    actor.shutdown().await; // every handle.reap_leases → Err(ActorGone)
+
+    let (sd_tx, sd_rx) = watch::channel(false);
+    let loop_task = spawn_reaper(handle, Duration::from_millis(2), sd_rx);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(
+        !loop_task.is_finished(),
+        "a failing pass does NOT kill the reaper loop"
+    );
+    sd_tx.send(true).unwrap();
+    loop_task
+        .await
+        .expect("reaper loop joins cleanly on shutdown");
+}
+
+#[tokio::test]
 async fn test_reaper_loop_invokes_reap_once() {
     // §17 reaper spawn: the reaper task calls reap_leases on its tick. We seed an expired lease,
     // run the reaper with the actor's clock an hour ahead (so the lease is expired from its view),

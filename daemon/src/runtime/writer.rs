@@ -138,7 +138,9 @@ impl WriteActor {
     pub fn spawn(store: EventStore, clock: Box<dyn Clock>) -> Self {
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_DEPTH);
         // the broadcast sender lives in the actor thread (it publishes post-commit); the handle
-        // keeps a clone so `subscribe()` can mint receivers without touching the writer.
+        // keeps a clone so `subscribe()` can mint receivers without touching the writer. The
+        // initial receiver is discarded — the channel stays live as long as a Sender exists, and
+        // subscribers come from `handle.subscribe()`.
         let (deltas, _) = broadcast::channel(BROADCAST_CAPACITY);
         let actor_deltas = deltas.clone();
         let join = std::thread::Builder::new()
@@ -166,6 +168,19 @@ impl WriteActor {
         let _ = self.handle.tx.send(Command::Shutdown).await;
         if let Some(join) = self.join.take() {
             let _ = tokio::task::spawn_blocking(move || join.join()).await;
+        }
+    }
+}
+
+impl Drop for WriteActor {
+    fn drop(&mut self) {
+        // best-effort: if `shutdown()` wasn't called (early return / test panic / misuse), nudge
+        // the actor to exit promptly rather than linger until every handle clone drops. `try_send`
+        // is non-blocking (Drop must not block); a closed/full channel is fine — the JoinHandle
+        // then detaches the (already-exiting) thread, and the EventStore still WAL-checkpoints on
+        // drop. A no-op when `shutdown()` already took the join + closed the channel.
+        if self.join.is_some() {
+            let _ = self.handle.tx.try_send(Command::Shutdown);
         }
     }
 }

@@ -27,8 +27,14 @@ pub fn spawn_drainer(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
+        // skip (don't burst) ticks missed while a slow pass ran — a backlog must not flood the
+        // single writer with back-to-back drain commands.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
+                // shutdown takes priority over a ready tick (deterministic, prompt stop).
+                biased;
+                _ = shutdown.changed() => break,
                 _ = ticker.tick() => match handle.drain_once(dest.clone()).await {
                     Ok(summary) => {
                         if summary.delivered > 0 || summary.dead > 0 {
@@ -41,7 +47,6 @@ pub fn spawn_drainer(
                     // a failed pass is logged + survived — the loop keeps ticking (liveness).
                     Err(e) => eprintln!("nexusopsd: outbox drain pass failed: {e}"),
                 },
-                _ = shutdown.changed() => break,
             }
         }
     })
@@ -56,8 +61,11 @@ pub fn spawn_reaper(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
                 _ = ticker.tick() => match handle.reap_leases().await {
                     Ok(reaped) if !reaped.is_empty() => {
                         eprintln!("nexusopsd: reaped {} expired lease(s)", reaped.len());
@@ -65,7 +73,6 @@ pub fn spawn_reaper(
                     Ok(_) => {}
                     Err(e) => eprintln!("nexusopsd: lease reap pass failed: {e}"),
                 },
-                _ = shutdown.changed() => break,
             }
         }
     })

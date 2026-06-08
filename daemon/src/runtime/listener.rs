@@ -55,6 +55,9 @@ pub fn spawn_accept_loop(
     tokio::spawn(async move {
         loop {
             tokio::select! {
+                // shutdown takes priority over a pending accept (prompt, deterministic stop).
+                biased;
+                _ = shutdown.changed() => break,
                 accepted = listener.accept() => {
                     let stream = match accepted {
                         Ok((s, _addr)) => s,
@@ -102,7 +105,6 @@ pub fn spawn_accept_loop(
                         }
                     });
                 }
-                _ = shutdown.changed() => break,
             }
         }
     })

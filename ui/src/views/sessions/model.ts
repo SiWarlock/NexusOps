@@ -109,3 +109,49 @@ export function sortSessionRows(
     return primary !== 0 ? primary : a.id.localeCompare(b.id, "en");
   });
 }
+
+// UI filter state over the FROZEN Session projection (§13 family) — pure, no
+// daemon dep / mutation / intent. Project scoping is owned globally by the
+// active-project switcher (the Shell pre-filters rows), so there's no project
+// facet here — status + free text only.
+export interface SessionsFilter {
+  /** Free text; matched case-insensitively against name OR project name. */
+  text: string;
+  /** Exact status to keep, or null for "any status". */
+  status: string | null;
+}
+
+/**
+ * AND-compose the active facets. Both inactive → the input array unchanged
+ * (identity — a cheap no-op that also keeps referential stability). The text
+ * facet is trimmed, so whitespace-only is treated as no constraint.
+ */
+export function filterSessionRows(
+  rows: SessionRowVM[],
+  filter: SessionsFilter,
+): SessionRowVM[] {
+  const text = filter.text.trim().toLowerCase();
+  if (filter.status === null && text === "") return rows;
+  return rows.filter((row) => {
+    if (filter.status !== null && row.status !== filter.status) return false;
+    if (text !== "") {
+      // OR each field independently — never join them (a joined string would match
+      // a term straddling the field boundary, e.g. "<label end> <project start>").
+      const inName = row.label.toLowerCase().includes(text);
+      const inProject = row.projectName.toLowerCase().includes(text);
+      if (!inName && !inProject) return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * The distinct statuses present in the (UNFILTERED) rows, deduped + alphabetically
+ * ordered (deterministic). Computed off the full set so the filter options stay
+ * stable instead of collapsing as the active filter narrows the rows.
+ */
+export function distinctStatuses(rows: SessionRowVM[]): string[] {
+  return [...new Set(rows.map((r) => r.status))].toSorted((a, b) =>
+    a.localeCompare(b, "en"),
+  );
+}

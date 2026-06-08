@@ -12,6 +12,9 @@ const projects = projectActivityFixture.rows;
 const renderTable = (rows = sessions) =>
   render(<SessionsTable sessions={rows} projects={projects} />);
 
+const bodyRows = () =>
+  screen.getByTestId("sessions-table").querySelectorAll("tbody tr[data-item-id]");
+
 describe("SessionsTable view", () => {
   it("renders_a_row_per_session_attention_sorted", () => {
     renderTable();
@@ -91,5 +94,51 @@ describe("SessionsTable view", () => {
     const badge = row?.querySelector("[data-resume-mode]");
     expect(badge?.getAttribute("data-resume-mode")).toBe("resumed");
     expect(badge?.textContent).toContain("Resumed");
+  });
+
+  it("status_select_filters_rows", () => {
+    renderTable();
+    expect(bodyRows()).toHaveLength(sessions.length);
+    // choosing a status narrows to just the matching rows (control → filterSessionRows)
+    fireEvent.change(screen.getByLabelText(/filter by status/i), {
+      target: { value: "completed" },
+    });
+    const rows = bodyRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.getAttribute("data-item-id")).toBe("Session:session_fixture_4");
+  });
+
+  it("search_input_filters_rows", () => {
+    renderTable();
+    // typing a name/project substring narrows the visible rows
+    fireEvent.change(screen.getByLabelText(/search sessions/i), {
+      target: { value: "rate" },
+    });
+    const rows = bodyRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.getAttribute("data-item-id")).toBe("Session:session_fixture_2");
+  });
+
+  it("filtered_empty_shows_distinct_message_and_clear", () => {
+    renderTable();
+    // a filter that excludes every row → the FILTERED-empty state (distinct from
+    // truly-empty), with a Clear control; the truly-empty cell must NOT appear.
+    fireEvent.change(screen.getByLabelText(/search sessions/i), {
+      target: { value: "zzz_no_such_session" },
+    });
+    expect(screen.getByTestId("sessions-filtered-empty").textContent).toContain(
+      "No sessions match the filters",
+    );
+    expect(screen.queryByTestId("sessions-empty")).toBeNull();
+    // Clear filters restores all rows
+    fireEvent.click(screen.getByRole("button", { name: /clear filters/i }));
+    expect(bodyRows()).toHaveLength(sessions.length);
+  });
+
+  it("truly_empty_unchanged", () => {
+    renderTable([]);
+    // zero rows arriving → the existing truly-empty state, NOT the filtered-empty one
+    expect(screen.getByTestId("sessions-empty").textContent).toBe("No sessions.");
+    expect(screen.queryByTestId("sessions-filtered-empty")).toBeNull();
   });
 });

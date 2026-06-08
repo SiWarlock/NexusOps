@@ -10,11 +10,16 @@ import { describeResumeMode } from "../../recovery/model";
 import {
   buildSessionRows,
   sortSessionRows,
+  filterSessionRows,
+  distinctStatuses,
   naturalDir,
   DEFAULT_SORT,
+  type SessionsFilter,
   type SessionsSort,
   type SessionsSortKey,
 } from "./model";
+
+const NO_FILTER: SessionsFilter = { text: "", status: null };
 
 // O-2 survival display: a session's resumed-(live) vs replayed-(relaunched)
 // indicator — glyph + label (never color alone — §11.6).
@@ -60,11 +65,16 @@ function ariaSortFor(
  */
 export function SessionsTable({ sessions, projects }: SessionsTableProps) {
   const [sort, setSort] = useState<SessionsSort>(DEFAULT_SORT);
-  const rows = sortSessionRows(
-    buildSessionRows(sessions, projects),
-    sort.key,
-    sort.dir,
-  );
+  const [filter, setFilter] = useState<SessionsFilter>(NO_FILTER);
+
+  // Pipeline: build -> filter -> sort. Status options come from the UNFILTERED set
+  // (stable as the filter narrows). truly-empty (no rows at all) is distinct from
+  // filtered-empty (rows exist but the filter excludes all).
+  const built = buildSessionRows(sessions, projects);
+  const statuses = distinctStatuses(built);
+  const rows = sortSessionRows(filterSessionRows(built, filter), sort.key, sort.dir);
+  const trulyEmpty = built.length === 0;
+  const filteredEmpty = !trulyEmpty && rows.length === 0;
 
   // Click the active column → toggle direction; a new column → its natural dir.
   const onSort = (key: SessionsSortKey) =>
@@ -76,6 +86,33 @@ export function SessionsTable({ sessions, projects }: SessionsTableProps) {
 
   return (
     <div className="sessions" aria-label="Sessions">
+      <div className="sessions__filters" role="group" aria-label="Filter sessions">
+        <label className="sessions__filter">
+          <span className="sr-only">Filter by status</span>
+          <select
+            value={filter.status ?? ""}
+            onChange={(e) =>
+              setFilter((f) => ({ ...f, status: e.target.value || null }))
+            }
+          >
+            <option value="">All statuses</option>
+            {statuses.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="sessions__filter">
+          <span className="sr-only">Search sessions</span>
+          <input
+            type="search"
+            placeholder="Search sessions…"
+            value={filter.text}
+            onChange={(e) => setFilter((f) => ({ ...f, text: e.target.value }))}
+          />
+        </label>
+      </div>
       <table className="sessions__table" data-testid="sessions-table">
         <thead>
           <tr>
@@ -97,7 +134,16 @@ export function SessionsTable({ sessions, projects }: SessionsTableProps) {
           </tr>
         </thead>
         <tbody>
-          {rows.length === 0 ? (
+          {filteredEmpty ? (
+            <tr>
+              <td colSpan={COLUMNS.length + 1} data-testid="sessions-filtered-empty">
+                No sessions match the filters.{" "}
+                <button type="button" onClick={() => setFilter(NO_FILTER)}>
+                  Clear filters
+                </button>
+              </td>
+            </tr>
+          ) : rows.length === 0 ? (
             <tr>
               <td colSpan={COLUMNS.length + 1} data-testid="sessions-empty">
                 No sessions.

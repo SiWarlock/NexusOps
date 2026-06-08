@@ -6,7 +6,7 @@
 | **Phase** | Phase 1 (daemon foundation) — task 1.5 |
 | **Track / role** | `daemon` / daemon-implementer |
 | **Predecessor** | [004](004-2026-06-08-lease-locks-and-fencing.md) |
-| **Successor** | _(TBD — Phase 1.6 first-run bootstrap + the IPC-runtime bundle; a fresh team cycles for it)_ |
+| **Successor** | [006](006-2026-06-08-cold-start-bootstrap-and-runtime.md) — Phase 1.6a (cold-start bootstrap) + 1.6b (daemon runtime) |
 | **Commits** | **1.5:** `ae27f1d` (L1 framing+getpeereid) · `fb941e8` (L2 handshake+contract 0.9.0) · `c1c54e5` (L3 dispatch+read-methods+protocol_error 0.10.0) · `6690e41` (L4 subscribe+ServerFrame 0.11.0) — slice complete |
 | **Base** | merged `main` `48d9931` (post `track/ui`→main; the ui `GatewayPort` contract was the consumer surface) |
 

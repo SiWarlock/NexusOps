@@ -1,0 +1,319 @@
+/* 6.5c — Graphite Arc view + component panels. The 3rd theme layer: themes the
+   in-view panels (CommandCenter / Sessions / ProjectGraph / Settings / Usage) and
+   the banner + safety surfaces with kit SEMANTIC tokens, grounded against the
+   prototype rendering. Severity color is ADDITIVE to the existing glyph + label
+   (never color alone, section 11.6). Semantic layer only (section 11.1). */
+
+/* Per-panel scroll (refinement B): .main is overflow:hidden (shell.css); each view
+   owns its scroll region beneath the sticky content-switch toolbar. */
+.command-center,
+.sessions,
+.project-graph,
+.settings,
+.usage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ── Command Center ──────────────────────────────────────────────────────── */
+.command-center {
+  background: var(--surface-canvas);
+  padding: var(--sp-4) 0;
+}
+
+.command-center__group {
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.command-center__group-title {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-label);
+  font-weight: var(--fw-medium);
+  color: var(--text-secondary);
+}
+
+.command-center__group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.command-center__item {
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-2);
+}
+
+.command-center__item:hover {
+  background: var(--surface-hover);
+}
+
+.command-center__item-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.command-center__empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-label);
+}
+
+/* ── Dense tables (Sessions / Usage / Graph fallback) ────────────────────── */
+.sessions,
+.usage,
+.settings {
+  background: var(--surface-canvas);
+}
+
+.sessions__table,
+.usage__table,
+.project-graph__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-meta);
+}
+
+.sessions__table th,
+.usage__table th,
+.project-graph__table th {
+  text-align: left;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-sunken);
+  border-bottom: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  font-weight: var(--fw-medium);
+}
+
+.sessions__table td,
+.usage__table td,
+.project-graph__table td {
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Sort-header button — inherits the cell; the glyph + label stays (never color alone). */
+.sessions__table th button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* ── Project Graph ───────────────────────────────────────────────────────── */
+.project-graph {
+  background: var(--surface-canvas);
+}
+
+.project-graph__toolbar {
+  display: flex;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.project-graph__canvas {
+  background: var(--graph-canvas);
+  padding: var(--sp-8);
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: var(--sp-4);
+}
+
+.project-graph__node {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-2);
+}
+
+/* ── Settings (tablist + panels) ─────────────────────────────────────────── */
+.settings__tablist {
+  display: flex;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.settings__tablist [role="tab"] {
+  font: inherit;
+  color: var(--text-secondary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-2);
+  padding: var(--sp-2) var(--sp-4);
+  cursor: pointer;
+}
+
+.settings__tablist [role="tab"][aria-selected="true"] {
+  color: var(--text-primary);
+  background: var(--surface-active);
+  border-color: var(--border-strong);
+}
+
+.settings__panel {
+  padding: var(--sp-6) var(--sp-8);
+}
+
+.settings__pending {
+  color: var(--text-muted);
+}
+
+/* ── ProjectSwitcher — compact horizontal row (refinement A) ──────────────── */
+/* The prototype's single-select dropdown needs an active-project model (deferred
+   to Phase-7 project selection). Here the switcher compacts to a horizontal
+   scrollable row that fits the 44px top bar, keeping every name + count visible. */
+.project-switcher {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.project-switcher__item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-2);
+  font-size: var(--fs-label);
+}
+
+.project-switcher__name {
+  white-space: nowrap;
+}
+
+.project-switcher__counts {
+  display: inline-flex;
+  gap: var(--sp-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-meta);
+}
+
+/* ── Banner / safety severity surfaces ───────────────────────────────────── */
+/* Color is ADDITIVE — every surface keeps its glyph + label + severity channels
+   (never color alone, section 11.6); the background/border only reinforce. */
+
+.degraded-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-label);
+  background: var(--warning-surface);
+  border-bottom: 1px solid var(--warning-line);
+  color: var(--warning-ink);
+}
+
+.degraded-banner--update {
+  background: var(--danger-surface);
+  border-bottom-color: var(--danger-line);
+  color: var(--danger-ink);
+}
+
+.degraded-banner[data-degraded="checking"] {
+  background: var(--surface-sunken);
+  border-bottom-color: var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.degraded-banner button {
+  font: inherit;
+  color: inherit;
+  background: var(--surface-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-2);
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer;
+}
+
+.recovery-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-label);
+  background: var(--surface-sunken);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.recovery-banner[data-recovery-kind="recovery_failed"] {
+  background: var(--warning-surface);
+  border-bottom-color: var(--warning-line);
+  color: var(--warning-ink);
+}
+
+.recovery-banner__restart:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.audit-integrity-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-label);
+  background: var(--critical-surface);
+  border-bottom: 1px solid var(--critical-line);
+  color: var(--critical-ink);
+}
+
+.audit-integrity-alert[data-severity="warning"] {
+  background: var(--warning-surface);
+  border-bottom-color: var(--warning-line);
+  color: var(--warning-ink);
+}
+
+.audit-integrity-alert__message {
+  margin: 0;
+  flex: 1 1 100%;
+  color: var(--text-secondary);
+}
+
+.audit-integrity-alert__acknowledge:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.hard-conflict-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-label);
+  background: var(--danger-surface);
+  border-bottom: 1px solid var(--danger-line);
+  color: var(--danger-ink);
+}
+
+.hard-conflict-card p {
+  margin: 0;
+  flex: 1 1 100%;
+}
+
+.hard-conflict-card__never-auto-resolved {
+  color: var(--text-secondary);
+}
+
+.hard-conflict-card__resolve:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

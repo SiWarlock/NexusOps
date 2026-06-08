@@ -1,0 +1,152 @@
+/* 6.5b — Graphite Arc shell chrome + cockpit layout grid. The .shell region grid
+   plus region chrome (top bar / banner stack / sidebar / main / activity dock /
+   status bar), painting the kit SEMANTIC surfaces and borders. Layout metrics come
+   from the kit --shell-* tokens (tokens/space.css). Semantic layer only (the re-hue
+   promise, section 11.1) — never a primitive. */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--shell-sidebar-w) 1fr;
+  grid-template-rows: var(--shell-topbar-h) auto 1fr auto auto;
+  grid-template-areas:
+    "top    top"
+    "banner banner"
+    "side   main"
+    "dock   dock"
+    "status status";
+  height: 100vh;
+  min-height: 0;
+  position: relative; /* anchors the drawer-stack overlay */
+}
+
+/* Top bar — a thin chrome strip above the cockpit. */
+.topbar {
+  grid-area: top;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  height: var(--shell-topbar-h);
+  padding: 0 var(--sp-4);
+  background: var(--surface-panel);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.topbar nav {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.topbar__right {
+  margin-left: auto;
+  display: flex;
+  gap: var(--sp-2);
+}
+
+/* Banner stack — full-width row above side+main; auto-height, collapsing to 0
+   when nothing renders (degraded/recovery/audit-integrity/conflict all absent). */
+.banner-stack {
+  grid-area: banner;
+}
+
+/* Sidebar — the attention-ordered nav rail. */
+.sidebar {
+  grid-area: side;
+  width: var(--shell-sidebar-w);
+  min-width: 0;
+  overflow: auto;
+  background: var(--surface-panel);
+  border-right: 1px solid var(--border-default);
+}
+
+.sidebar ul {
+  list-style: none;
+  margin: 0;
+  padding: var(--sp-2) 0;
+}
+
+.sidebar__item {
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+}
+
+.sidebar__item-label {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Main content region. overflow:hidden — each view owns its scroll region beneath
+   the sticky content-switch toolbar (6.5c, refinement B). */
+.main {
+  grid-area: main;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Content-view switch toolbar — sticky atop the scrolling main. */
+.content-switch {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-window);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.content-switch button {
+  font: inherit;
+  color: var(--text-secondary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-2);
+  padding: var(--sp-2) var(--sp-6);
+  cursor: pointer;
+}
+
+.content-switch button[aria-pressed="true"] {
+  color: var(--text-primary);
+  background: var(--surface-active);
+  border-color: var(--border-strong);
+}
+
+/* Activity dock — the collapsible event timeline at the cockpit foot. */
+.activity-dock {
+  grid-area: dock;
+  background: var(--surface-panel);
+  border-top: 1px solid var(--border-default);
+  padding: var(--sp-2) var(--sp-4);
+}
+
+/* Status bar — the thin connection/health strip. */
+.status-bar {
+  grid-area: status;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  height: var(--shell-statusbar-h);
+  padding: 0 var(--sp-4);
+  background: var(--surface-panel);
+  border-top: 1px solid var(--border-default);
+  color: var(--text-secondary);
+}
+
+/* Right drawer stack — Brain/inspector drawers (Phase 8). An OVERLAY, not a
+   reserved grid column; collapses out of flow until a drawer is pushed. */
+.drawer-stack {
+  position: absolute;
+  top: var(--shell-topbar-h);
+  right: 0;
+  bottom: var(--shell-statusbar-h);
+  width: var(--shell-inspector-w);
+  background: var(--surface-panel);
+  border-left: 1px solid var(--border-default);
+}
+
+.drawer-stack:empty {
+  display: none; /* no drawer pushed → invisible, no reserved space */
+}

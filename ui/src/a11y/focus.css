@@ -1,0 +1,18 @@
+/* Global :focus-visible ring (§11.6 MUST — PRD §14.8): every interactive control
+   gets the kit ring tokens. ONE global rule via :where() — zero specificity, so a
+   component can still override if it must — NOT per-component focus styles. The
+   :focus-visible pseudo shows the ring for keyboard/AT focus only, not mouse.
+   Reduced-motion is handled by the kit's motion.css guard (in the styles.css
+   chain); this file adds no motion. */
+:where(
+    button,
+    a[href],
+    [role="button"],
+    [tabindex]:not([tabindex="-1"]),
+    input,
+    select,
+    summary
+  ):focus-visible {
+  outline: var(--ring-w) solid var(--focus-ring);
+  outline-offset: var(--ring-offset);
+}

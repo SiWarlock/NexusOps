@@ -80,4 +80,16 @@ describe("SessionsTable view", () => {
     // an explicit empty state with a message, not an empty/absent table body
     expect(screen.getByTestId("sessions-empty").textContent).toBe("No sessions.");
   });
+
+  it("session_shows_resume_mode_indicator", () => {
+    renderTable();
+    // session_fixture_1 carries resume_mode "resumed" → a glyph+label indicator
+    // (never color alone) in its row (O-2 survival display).
+    const row = screen
+      .getByTestId("sessions-table")
+      .querySelector('[data-item-id="Session:session_fixture_1"]');
+    const badge = row?.querySelector("[data-resume-mode]");
+    expect(badge?.getAttribute("data-resume-mode")).toBe("resumed");
+    expect(badge?.textContent).toContain("Resumed");
+  });
 });

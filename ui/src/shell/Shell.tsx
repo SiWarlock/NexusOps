@@ -7,6 +7,7 @@ import type {
   CreditPool,
   ProjectActivityRow,
   PullRequestRow,
+  RecoveryStatus,
   SessionRow,
   UsageRow,
 } from "../contracts/index";
@@ -30,6 +31,8 @@ import {
 } from "../connection/version";
 import type { ConnectionState } from "../connection/state";
 import { DegradedBanner } from "../connection/DegradedBanner";
+import { RecoveryBanner } from "../recovery/RecoveryBanner";
+import { recoveryStatusFixture } from "../recovery/fixtures";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
 import { DrawerStack } from "./DrawerStack";
@@ -57,7 +60,15 @@ interface ShellData {
  * reconnecting / version-skewed. The daemon Gateway remains the real INV-SEC-1
  * guard; this read-only gate is defense-in-depth.
  */
-export function Shell({ gateway }: { gateway?: GatewayPort }) {
+export function Shell({
+  gateway,
+  // O-2 survival display (6.4d): fixture-driven (recovered = non-intrusive) until
+  // the daemon survival-schema integration supplies real recovery state.
+  recovery = recoveryStatusFixture,
+}: {
+  gateway?: GatewayPort;
+  recovery?: RecoveryStatus;
+}) {
   // Stable client across renders (a fresh default per render would loop the effect).
   const [client] = useState<GatewayPort>(() => gateway ?? new MockGatewayPort());
   const [data, setData] = useState<ShellData | null>(null);
@@ -168,6 +179,9 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
           onRetry={handleRetry}
           onRepair={handleRepair}
         />
+        {/* Survival/recovery banner (O-2) — a DISTINCT surface from the transport
+            DegradedBanner above. Non-intrusive (renders nothing) when recovered. */}
+        <RecoveryBanner recovery={recovery} />
         <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
           <Sidebar items={sidebarItems} />
           <main style={{ flex: 1, minWidth: 0 }} aria-label="Main surface">

@@ -17,6 +17,7 @@ export const sessionPageFixture: SessionProjectionPage = {
       status: "active",
       title: "Refactor auth module",
       project_id: "project_fixture_1",
+      resume_mode: "resumed", // O-2: brought back live after restart
     },
     {
       session_id: "session_fixture_2",
@@ -29,6 +30,7 @@ export const sessionPageFixture: SessionProjectionPage = {
       status: "changes_ready",
       title: "Fix flaky integration test",
       project_id: "project_fixture_2",
+      resume_mode: "replayed", // O-2: relaunched from the event log after restart
     },
     {
       // terminal session — excluded from activeSessions counts (non-terminal filter).

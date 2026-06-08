@@ -19,6 +19,7 @@ describe("sessions table model", () => {
       label: "Refactor auth module",
       attentionRank: 1, // via describeStatus (single source)
       projectName: "auth-service", // project_id→ProjectActivity.name join (§4.2)
+      resumeMode: "resumed", // O-2 survival (6.4d) — carried from the session row
     });
     // a session in a different project resolves that project's name
     expect(rows.find((r) => r.id === "session_fixture_3")?.projectName).toBe(

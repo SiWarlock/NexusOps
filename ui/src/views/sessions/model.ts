@@ -3,7 +3,11 @@
 // enriched with its attention rank (descriptor table — single source) and its
 // project name (a pure project_id→ProjectActivity.name join, §4.2 — never invented
 // state). Base shape via the L1 toSessionItems mapper (no inline re-map — §8).
-import type { ProjectActivityRow, SessionRow } from "../../contracts/index";
+import type {
+  ProjectActivityRow,
+  ResumeMode,
+  SessionRow,
+} from "../../contracts/index";
 import { compareByAttention, type AttentionRank } from "../../status/attention";
 import { describeStatus } from "../../status/descriptors";
 import { toSessionItems } from "../../projections/items";
@@ -18,6 +22,8 @@ export interface SessionRowVM {
   label: string;
   attentionRank: AttentionRank;
   projectName: string;
+  /** O-2 survival: how the session came back after a restart (undefined if N/A). */
+  resumeMode?: ResumeMode;
 }
 
 export interface SessionsSort {
@@ -44,7 +50,8 @@ export function buildSessionRows(
   // toSessionItems is a 1:1 order-preserving map (§8), so the i-th item is the
   // i-th session — pair positionally to enrich without re-mapping the row inline.
   return toSessionItems(sessions).map((item, i) => {
-    const projectId = sessions[i]?.project_id;
+    const session = sessions[i];
+    const projectId = session?.project_id;
     return {
       ...item,
       attentionRank: describeStatus(item.machine, item.status).attentionRank,
@@ -53,6 +60,7 @@ export function buildSessionRows(
           ? NO_PROJECT
           : // unmatched project → the raw id stays visible
             (nameByProjectId.get(projectId) ?? projectId),
+      resumeMode: session?.resume_mode,
     };
   });
 }

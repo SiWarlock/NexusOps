@@ -1,7 +1,12 @@
 import { useState } from "react";
-import type { ProjectActivityRow, SessionRow } from "../../contracts/index";
+import type {
+  ProjectActivityRow,
+  ResumeMode,
+  SessionRow,
+} from "../../contracts/index";
 import { StatusPill } from "../../status/StatusPill";
 import { AttentionMarker } from "../../status/AttentionMarker";
+import { describeResumeMode } from "../../recovery/model";
 import {
   buildSessionRows,
   sortSessionRows,
@@ -10,6 +15,17 @@ import {
   type SessionsSort,
   type SessionsSortKey,
 } from "./model";
+
+// O-2 survival display: a session's resumed-(live) vs replayed-(relaunched)
+// indicator — glyph + label (never color alone — §11.6).
+function ResumeModeBadge({ mode }: { mode: ResumeMode }) {
+  const desc = describeResumeMode(mode);
+  return (
+    <span className="sessions__resume-mode" data-resume-mode={mode}>
+      <span aria-hidden="true">{desc.glyph}</span> {desc.label}
+    </span>
+  );
+}
 
 interface SessionsTableProps {
   sessions: SessionRow[];
@@ -75,12 +91,15 @@ export function SessionsTable({ sessions, projects }: SessionsTableProps) {
                 </button>
               </th>
             ))}
+            {/* Recovery is a display-only column (the resume-mode indicator) — not
+                a sort key, so a plain header (no sort button). */}
+            <th scope="col">Recovery</th>
           </tr>
         </thead>
         <tbody>
           {rows.length === 0 ? (
             <tr>
-              <td colSpan={COLUMNS.length} data-testid="sessions-empty">
+              <td colSpan={COLUMNS.length + 1} data-testid="sessions-empty">
                 No sessions.
               </td>
             </tr>
@@ -95,6 +114,9 @@ export function SessionsTable({ sessions, projects }: SessionsTableProps) {
                   <AttentionMarker rank={row.attentionRank} variant="dot" />
                 </td>
                 <td className="sessions__project">{row.projectName}</td>
+                <td className="sessions__recovery">
+                  {row.resumeMode ? <ResumeModeBadge mode={row.resumeMode} /> : "—"}
+                </td>
               </tr>
             ))
           )}

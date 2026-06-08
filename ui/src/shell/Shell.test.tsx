@@ -130,4 +130,18 @@ describe("Shell", () => {
     fireEvent.click(screen.getByRole("tab", { name: /usage/i }));
     expect(screen.getByTestId("usage-table")).toBeTruthy();
   });
+
+  it("shell_renders_recovery_banner", async () => {
+    render(
+      <Shell
+        gateway={new MockGatewayPort()}
+        recovery={{ state: "recovery_failed", affectedSessions: ["session_fixture_2"] }}
+      />,
+    );
+    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    // the post-restart recovery banner is reachable in the shell (Step 7.5),
+    // distinct from the transport degraded banner
+    const banner = screen.getByTestId("recovery-banner");
+    expect(banner.getAttribute("data-recovery-kind")).toBe("recovery_failed");
+  });
 });

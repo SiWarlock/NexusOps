@@ -14,12 +14,35 @@ const PullRequest = bundle.shape.PullRequest;
 const Approval = bundle.shape.Approval;
 const ActorType = bundle.shape.ActorType;
 
+// ─── Survival/recovery (PROVISIONAL — 6.4d) ──────────────────────────────────
+// The daemon's O-2 survival schema is NOT frozen. RecoveryState/ResumeMode/
+// RecoveryStatus are hand-declared provisional shapes (Lesson §2); they reconcile
+// at the daemon survival-schema freeze (Carry-forward provisional→generated spread).
+
+/** Post-restart recovery state (O-2, §11.4). PROVISIONAL. */
+export const RecoveryState = z.enum(["recovering", "recovered", "recovery_failed"]);
+export type RecoveryState = z.infer<typeof RecoveryState>;
+
+/** How a session was brought back after a restart (O-2): live vs relaunched. PROVISIONAL. */
+export const ResumeMode = z.enum(["resumed", "replayed"]);
+export type ResumeMode = z.infer<typeof ResumeMode>;
+
+/** The recovery status input (fixture-driven; daemon survival logic not built). */
+export const RecoveryStatus = z.object({
+  state: RecoveryState,
+  // sessions affected by a failed recovery (subject ids); empty/absent otherwise.
+  affectedSessions: z.array(z.string()).optional(),
+});
+export type RecoveryStatus = z.infer<typeof RecoveryStatus>;
+
 /** A single row of the Session projection (provisional shape). */
 export const SessionRow = z.object({
   session_id: z.string(),
   status: Session,
   title: z.string().optional(),
   project_id: z.string().optional(),
+  // O-2 survival display (PROVISIONAL): how the session came back after a restart.
+  resume_mode: ResumeMode.optional(),
 });
 export type SessionRow = z.infer<typeof SessionRow>;
 

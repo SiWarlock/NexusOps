@@ -1,8 +1,13 @@
 import { useEffect, useState } from "react";
 import type { GatewayPort } from "../gateway-client/types";
 import { MockGatewayPort } from "../gateway-client/mock";
-import type { AuditEventRow, ProjectActivityRow } from "../contracts/index";
+import type {
+  AuditEventRow,
+  ProjectActivityRow,
+  SessionRow,
+} from "../contracts/index";
 import { deriveProjectSwitcherCounts, type ProjectSwitcherCounts } from "./derive";
+import type { SidebarItem } from "./Sidebar";
 import { ReadOnlyProvider, type ConnectionStatus } from "../connection/read-only";
 import {
   checkVersionCompat,
@@ -21,6 +26,7 @@ interface ShellData {
   projects: ProjectActivityRow[];
   counts: Record<string, ProjectSwitcherCounts>;
   events: AuditEventRow[];
+  sessions: SessionRow[];
 }
 
 /**
@@ -67,7 +73,12 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
           approvals: approvals.rows,
         });
         setVersion(checkVersionCompat(caps));
-        setData({ projects: projects.rows, counts, events: audit.rows });
+        setData({
+          projects: projects.rows,
+          counts,
+          events: audit.rows,
+          sessions: sessions.rows,
+        });
       } catch (e) {
         if (!cancelled) setError(e);
       }
@@ -97,6 +108,14 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
   const status: ConnectionStatus = { connection, version };
   const degraded = deriveDegradedState(connection, version);
 
+  // Sessions drive the sidebar's attention-ordered items (§11.3 sidebar weight).
+  const sidebarItems: SidebarItem[] = data.sessions.map((s) => ({
+    id: s.session_id,
+    label: s.title ?? s.session_id,
+    machine: "Session",
+    status: s.status,
+  }));
+
   // Retry = re-attempt the transport (real). Repair is a DISTINCT affordance
   // (§16: deeper repair / update-relaunch) whose dedicated backing lands with
   // daemon-1.5 + Phase-10 packaging; until then it aliases reconnect. Named
@@ -117,7 +136,7 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
           onRepair={handleRepair}
         />
         <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-          <Sidebar />
+          <Sidebar items={sidebarItems} />
           <main style={{ flex: 1, minWidth: 0 }} aria-label="Main surface">
             {/* Screen contents (Command Center, Graph, Sessions, Terminal, Diff)
                 land in 6.3; the shell only provides the container here. */}

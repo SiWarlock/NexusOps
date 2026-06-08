@@ -3,7 +3,7 @@
 - **Date:** 2026-06-08
 - **Phase:** Phase 6 (UI track, `track/ui`) — the **6.5 visual layer**; closes Phase-6 logic + visual (modulo parked 6.3d/e).
 - **Predecessor session:** [ui-003](ui-003-2026-06-08-safety-state-display-and-checking-banner.md)
-- **Successor session:** _(pending — most remaining ui work is daemon-gated: parked 6.3d/e + the daemon-1.5 integration; Phase 7 PR-Review/Tasks is the next daemon-independent-ish UI surface)_
+- **Successor session:** [ui-005](ui-005-2026-06-08-active-project-selection.md) (active-project selection + view re-rooting — P7.3 fwd, daemon-independent)
 - **Round commits:** `c439379` (6.5a) · `b5618af` (6.5b) · `3b6135d` (6.5c). Suite **131 → 133 green**; tsc + oxlint clean throughout.
 
 ## Why this session existed

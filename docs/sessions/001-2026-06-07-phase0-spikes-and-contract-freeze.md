@@ -6,7 +6,7 @@
 | **Phase** | Phase 0 (pre-build spikes & contract freeze) |
 | **Track / role** | `daemon` / daemon-implementer |
 | **Predecessor** | — (first implementer session) |
-| **Successor** | _(TBD — Phase 1.1, after the out-of-band `/arch-finalize` re-validation)_ |
+| **Successor** | [002](002-2026-06-07-event-store.md) — Phase 1.1 event store |
 | **Commits** | `06f9576` (0.5 contract freeze) + this close-out's spike/harness/session-doc commit(s) |
 
 ---

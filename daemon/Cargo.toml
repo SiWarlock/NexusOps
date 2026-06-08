@@ -22,6 +22,9 @@ thiserror = "2"
 # pervasive event timestamping. "parsing" added in 1.3 for outbox backoff
 # arithmetic (Clock::now_plus_secs parses now + adds a Duration).
 time = { version = "0.3", features = ["formatting", "parsing"] }
+# getpeereid(2) FFI for the UDS peer-auth gate (§15 / safety rule #7 / ADR-004 — macOS/BSD,
+# NOT the Linux-only SO_PEERCRED). The unsafe call is isolated in ipc::peer::peer_uid (1.5 L1).
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

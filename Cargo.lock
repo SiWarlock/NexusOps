@@ -267,6 +267,7 @@ dependencies = [
 name = "nexusopsd"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "nexusops-shared",
  "rusqlite",
  "rusqlite_migration",

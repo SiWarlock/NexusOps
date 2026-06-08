@@ -360,6 +360,37 @@
       ],
       "type": "string"
     },
+    "SessionStarted": {
+      "additionalProperties": false,
+      "description": "`SessionStarted` payload. The session's **identity** (`session_id`/`project_id`)\nlives on the [`crate::event_envelope::EventEnvelope`] typed fields (so projectors\nderive `object_refs` + read-models from columns that survive a rebuild); this\npayload carries the type-specific session attributes the `proj_session` projector\nfolds. `status` binds to the frozen §5.1 [`Session`] machine — an unknown wire\nvalue fails closed at the parse boundary (reject-unknown, §15).",
+      "properties": {
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/Session"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
     "SourceType": {
       "description": "EM §8 source model — the subsystem that emitted the event (CLOSED MVP set, 15).",
       "enum": [
@@ -496,6 +527,9 @@
     "session": {
       "$ref": "#/$defs/Session"
     },
+    "session_started": {
+      "$ref": "#/$defs/SessionStarted"
+    },
     "source_type": {
       "$ref": "#/$defs/SourceType"
     },
@@ -533,9 +567,10 @@
     "source_type",
     "sensitivity",
     "visibility",
-    "redaction_status"
+    "redaction_status",
+    "session_started"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.7.0"
+  "x-contract-version": "0.8.0"
 }

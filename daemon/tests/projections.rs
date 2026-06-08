@@ -10,10 +10,12 @@
 //!   L3 (tests 10–13) — catch-up replay / rebuild / degraded-skip.    [added at L3]
 
 use nexusops_shared::actor::ActorType;
-use nexusops_shared::event_envelope::{Sensitivity, SourceType, Visibility};
+use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType, Visibility};
 use nexusops_shared::ids::{ProjectId, SessionId, WorkspaceId};
 use nexusopsd::clock::FixedClock;
-use nexusopsd::eventstore::{AppendIntent, EventStore, PrefixRedactor};
+use nexusopsd::eventstore::{
+    AppendIntent, EventStore, EventStoreError, PrefixRedactor, RedactionOutcome, Redactor,
+};
 
 // ---- fixtures ---------------------------------------------------------------
 
@@ -54,6 +56,46 @@ fn intent(payload: &str) -> AppendIntent {
         session_id: None,
         agent_team_id: None,
         visibility: None,
+    }
+}
+
+/// a SessionStarted intent carrying identity + a type-specific payload.
+fn session_intent(session_id: &SessionId, project_id: &ProjectId, payload: &str) -> AppendIntent {
+    let mut i = intent(payload);
+    i.session_id = Some(session_id.clone());
+    i.project_id = Some(project_id.clone());
+    i
+}
+
+/// count rows in `table` via a read-only connection.
+fn count(path: &std::path::Path, sql: &str) -> i64 {
+    nexusopsd::eventstore::open_read_only(path)
+        .unwrap()
+        .query_row(sql, [], |r| r.get(0))
+        .unwrap()
+}
+
+/// (last_seq, state) for a projector's offset row.
+fn offset(path: &std::path::Path, name: &str) -> (i64, String) {
+    nexusopsd::eventstore::open_read_only(path)
+        .unwrap()
+        .query_row(
+            "SELECT last_seq, state FROM projection_offsets WHERE projection_name=?1",
+            [name],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+}
+
+/// test Redactor that refuses to redact — exercises the §15 fail-closed gate.
+struct NeverRedacts;
+impl Redactor for NeverRedacts {
+    fn redact(&self, payload_json: &str) -> RedactionOutcome {
+        RedactionOutcome {
+            status: RedactionStatus::Unredacted,
+            payload_json: payload_json.to_string(),
+            engine_version: "never".to_string(),
+        }
     }
 }
 
@@ -172,4 +214,214 @@ fn test_append_intent_persists_identity_fields() {
         Some(Visibility::System),
         "visibility persisted (not the DDL default 'project')"
     );
+}
+
+// ======================= L2 — in-band apply (tests 4–9, 14) ==================
+
+// ---- Test 4 — append folds the session projection in-txn (§7) ---------------
+
+#[test]
+fn test_append_folds_session_projection_in_txn() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"starting\"}"))
+        .unwrap();
+
+    // one proj_session row, status bound to the §5.1 Session enum wire value
+    let status: String = nexusopsd::eventstore::open_read_only(&path)
+        .unwrap()
+        .query_row(
+            "SELECT status FROM proj_session WHERE session_id=?1",
+            [sid.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "starting", "status ∈ Session enum");
+    // offset advanced to this event's seq, atomically (§2.4)
+    assert_eq!(offset(&path, "session"), (1, "healthy".to_string()));
+}
+
+// ---- Test 5 — object_refs derived from typed identity fields (§2.2) ----------
+
+#[test]
+fn test_append_derives_object_refs() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"starting\"}"))
+        .unwrap();
+
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM object_refs"),
+        2,
+        "session + project refs"
+    );
+    let kinds: std::collections::BTreeSet<String> = {
+        let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+        let mut stmt = conn.prepare("SELECT object_type FROM object_refs").unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    assert!(kinds.contains("session") && kinds.contains("project"));
+}
+
+// ---- Test 6 — a projector failure never leaves the offset ahead (§2.4/§7.2) --
+
+#[test]
+fn test_offset_never_ahead_of_rows() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    // an unbindable status fails the session projector's §5.1 enum bind → degrade.
+    store
+        .append(session_intent(
+            &sid,
+            &pid,
+            "{\"status\":\"not_a_real_status\"}",
+        ))
+        .unwrap();
+
+    // the failing projector wrote NO row and its offset did NOT advance (savepoint
+    // rolled rows + offset back together) — never ahead of applied rows.
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_session"),
+        0,
+        "no row"
+    );
+    assert_eq!(
+        offset(&path, "session"),
+        (0, "degraded".to_string()),
+        "degraded, not ahead"
+    );
+    // the raw event still persisted (a projector must never corrupt the spine §7.2)
+    assert_eq!(store.read_all().unwrap().len(), 1, "event intact");
+    // a sibling projector (object_refs, status-agnostic) was unaffected — isolation
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM object_refs"),
+        2,
+        "siblings applied"
+    );
+}
+
+// ---- Test 7 — §15 redaction gate still fail-closed with apply wired ----------
+
+#[test]
+fn test_redaction_gate_still_fail_closed() {
+    let (_d, path) = temp_db();
+    let mut store = EventStore::open(
+        &path,
+        Box::new(nexusopsd::idgen::UlidGen),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        Box::new(NeverRedacts),
+    )
+    .unwrap();
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    let res = store.append(session_intent(&sid, &pid, "{\"status\":\"starting\"}"));
+    assert!(
+        matches!(res, Err(EventStoreError::RedactionRequired)),
+        "the §15 gate refuses before any projector runs"
+    );
+    // nothing persisted: not the event, not any projection
+    assert_eq!(count(&path, "SELECT COUNT(*) FROM events"), 0);
+    assert_eq!(count(&path, "SELECT COUNT(*) FROM proj_session"), 0);
+    assert_eq!(count(&path, "SELECT COUNT(*) FROM object_refs"), 0);
+}
+
+// ---- Test 8 — audit projection + FTS over the redaction-safe headline (§2.11) -
+
+#[test]
+fn test_audit_projection_populates_fts() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"starting\"}"))
+        .unwrap();
+
+    // a rendered audit row exists
+    assert_eq!(count(&path, "SELECT COUNT(*) FROM proj_audit_trail"), 1);
+    // and is searchable by its headline text via FTS (not the raw payload)
+    let hits = count(
+        &path,
+        "SELECT COUNT(*) FROM fts_events WHERE fts_events MATCH 'started'",
+    );
+    assert_eq!(hits, 1, "headline indexed for the audit search box");
+}
+
+// ---- Test 9 — one SessionStarted fans out, one txn (demo step 7) -------------
+
+#[test]
+fn test_session_started_fans_out() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"starting\"}"))
+        .unwrap();
+
+    // a single append populated proj_session AND the graph AND object_refs together
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_session"),
+        1,
+        "session"
+    );
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_graph_node"),
+        2,
+        "session + project nodes"
+    );
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_graph_edge"),
+        1,
+        "project owns session"
+    );
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM object_refs"),
+        2,
+        "normalized edges"
+    );
+}
+
+// ---- Test 14 — ProjectActivity counter rollup (increment-only until Phase 3) -
+
+#[test]
+fn test_session_started_increments_activity_counter() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(
+            &SessionId::new(),
+            &pid,
+            "{\"status\":\"starting\"}",
+        ))
+        .unwrap();
+    store
+        .append(session_intent(
+            &SessionId::new(),
+            &pid,
+            "{\"status\":\"starting\"}",
+        ))
+        .unwrap();
+
+    let active: i64 = nexusopsd::eventstore::open_read_only(&path)
+        .unwrap()
+        .query_row(
+            "SELECT active_sessions FROM proj_project_activity WHERE project_id=?1",
+            [pid.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(active, 2, "two SessionStarted → active_sessions counts 2");
 }

@@ -10,6 +10,7 @@ use schemars::JsonSchema;
 
 use crate::actor::ActorType;
 use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility};
+use crate::events::SessionStarted;
 use crate::ids::IdKind;
 use crate::objects::DesktopObjectKind;
 use crate::status::{
@@ -42,6 +43,8 @@ struct ContractBundle {
     sensitivity: Sensitivity,
     visibility: Visibility,
     redaction_status: RedactionStatus,
+    // 1.2 — first concrete event-type payload (§7.1 EventTypeRegistry)
+    session_started: SessionStarted,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

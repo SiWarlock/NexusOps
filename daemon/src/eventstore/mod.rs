@@ -212,6 +212,14 @@ impl EventStore {
         );
         match res {
             Ok(_) => {
+                // §7 in-band fan-out: fold the just-appended event into the read
+                // models WITHIN this txn, on the already-redacted payload (the §15
+                // gate ran above). A reader never sees an event whose projections
+                // haven't applied; a projector failure degrades (never aborts) the
+                // raw event (§7.2). Reading the row back (vs reusing the in-memory
+                // intent) means append + rebuild fold byte-identical envelopes.
+                let env = read_envelope_by_seq(&tx, seq)?;
+                crate::projections::apply_all(&tx, &env).map_err(projection_to_store_err)?;
                 tx.commit().map_err(EventStoreError::Write)?;
                 Ok(event_id)
             }
@@ -350,6 +358,33 @@ payload_json, redaction_status, redaction_engine_version";
 
 fn row_to_envelope(row: &rusqlite::Row) -> Result<EventEnvelope, EventStoreError> {
     row_to_envelope_offset(row, 0)
+}
+
+/// Reconstruct the canonical envelope of the row at `seq`, inside `tx` — so the
+/// in-band projection fold sees exactly what a later rebuild reconstructs (§7.2
+/// rebuild-equivalence). `object_refs` is empty here (projectors derive it).
+fn read_envelope_by_seq(
+    tx: &rusqlite::Transaction,
+    seq: i64,
+) -> Result<EventEnvelope, EventStoreError> {
+    match tx.query_row(
+        &format!("SELECT {COLS} FROM events WHERE seq = ?1"),
+        [seq],
+        |row| Ok(row_to_envelope(row)),
+    ) {
+        Ok(inner) => inner,
+        Err(e) => Err(EventStoreError::Write(e)),
+    }
+}
+
+/// Map a projection failure that escaped `apply_all` onto the store's error. Only a
+/// `Db` (infrastructure) error escapes — projector logic failures degrade in-place —
+/// so this fails the append closed on a genuine write fault (§15/§17).
+fn projection_to_store_err(e: crate::projections::ProjectionError) -> EventStoreError {
+    match e {
+        crate::projections::ProjectionError::Db(err) => EventStoreError::Write(err),
+        crate::projections::ProjectionError::Decode(s) => EventStoreError::Reconstruct(s),
+    }
 }
 
 /// Reconstruct an envelope from the `COLS` block starting at `base`.

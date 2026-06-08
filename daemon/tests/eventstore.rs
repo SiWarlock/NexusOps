@@ -178,7 +178,11 @@ fn test_migration_forward_only_with_backup_rollback() {
     // §16 backup/restore round-trip (the rollback primitive, WAL-safe)
     EventStore::backup_db(&path, 1).unwrap();
     {
+        // simulate raw data loss on a throwaway conn; FK off because migration 3 gave
+        // events child rows (object_refs/proj_audit_trail) — production never DELETEs
+        // from the append-only log, this is only to verify the restore primitive.
         let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "foreign_keys", false).unwrap();
         conn.execute("DELETE FROM events", []).unwrap();
     }
     EventStore::restore_db(&path, 1).unwrap();

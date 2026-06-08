@@ -8,10 +8,17 @@
 //! full rebuild, degraded-skip) lands in L3. Raw `events` are NEVER mutated by a
 //! projector — projection corruption must not corrupt the spine (§7.2).
 //!
-//! L1 ships the [`Projector`] trait + the typed error; the registry + `apply_all`
-//! wiring + the projector bodies land in L2, recovery in L3.
+//! L1 ships the [`Projector`] trait + the typed error; L2 adds the registry +
+//! `apply_all` + the projector bodies, recovery in L3.
 
-use rusqlite::Transaction;
+mod activity;
+mod audit;
+mod graph;
+mod object_refs;
+mod session;
+
+use rusqlite::{params, Transaction};
+use serde::Serialize;
 
 use nexusops_shared::event_envelope::EventEnvelope;
 
@@ -40,4 +47,120 @@ pub trait Projector {
     /// degrades this projector for this event (the engine handles the skip);
     /// it must not have committed partial rows the engine can't roll back.
     fn apply(&self, tx: &Transaction, env: &EventEnvelope) -> Result<(), ProjectionError>;
+}
+
+/// The registered projectors, in apply order. **`object_refs` is first**: the graph
+/// projector folds from the `object_refs` rows it writes (same txn). 1.2 ships the
+/// Phase-1-feedable bodies; the later-phase projectors (ApprovalQueue, Worktree,
+/// PullRequest, PlanProgress, AgentTeam, UsageLedger) get their bodies with the
+/// phase that emits their feeding events (their tables already exist, migration 3).
+fn projectors() -> Vec<Box<dyn Projector>> {
+    vec![
+        Box::new(object_refs::ObjectRefsProjector),
+        Box::new(session::SessionProjector),
+        Box::new(graph::GraphProjector),
+        Box::new(audit::AuditProjector),
+        Box::new(activity::ActivityProjector),
+    ]
+}
+
+/// Fold `env` into every registered read model, **in the caller's transaction** (the
+/// event-commit txn for the in-band path). This is the §7 fan-out: one event updates
+/// multiple projections atomically. A `Db` error fails the append closed; a projector
+/// logic failure is contained (degraded-skip), never propagated.
+pub fn apply_all(tx: &Transaction, env: &EventEnvelope) -> Result<(), ProjectionError> {
+    for p in projectors() {
+        apply_one(tx, p.as_ref(), env)?;
+    }
+    Ok(())
+}
+
+/// Apply one projector, owning offset advancement + degraded-skip. The fold runs
+/// inside a SAVEPOINT so a logic failure rolls its partial rows AND its (un-advanced)
+/// offset back together — the offset is never left ahead of the rows it represents
+/// (§2.4). Success advances `last_seq` to `env.seq`; a logic failure (or an event
+/// newer than this binary understands) marks the projector `degraded` (sticky) and
+/// SKIPS without advancing, so a later event is still processed (§7.2). A `Db` error
+/// is infrastructure failure → propagated (the append fails closed, §15/§17).
+pub(crate) fn apply_one(
+    tx: &Transaction,
+    p: &dyn Projector,
+    env: &EventEnvelope,
+) -> Result<(), ProjectionError> {
+    ensure_offset_row(tx, p.name())?;
+
+    if env.event_version as i64 > crate::eventstore::MAX_SUPPORTED_EVENT_VERSION {
+        mark_degraded(tx, p.name())?; // unfoldable by this binary → degrade, skip
+        return Ok(());
+    }
+
+    // a per-projector savepoint (quoted identifier; the name is a fixed-registry
+    // `&'static str`) brackets BOTH the projector's rows and its offset advance, so a
+    // failure rolls them back together (offset never ahead of rows). Unique names
+    // remove any reliance on release-before-reuse balancing across the loop.
+    let name = p.name();
+    tx.execute_batch(&format!("SAVEPOINT \"{name}\""))?;
+    match p.apply(tx, env) {
+        Ok(()) => {
+            advance_offset(tx, name, env)?;
+            tx.execute_batch(&format!("RELEASE \"{name}\""))?;
+            Ok(())
+        }
+        Err(ProjectionError::Decode(_)) => {
+            tx.execute_batch(&format!("ROLLBACK TO \"{name}\"; RELEASE \"{name}\""))?;
+            mark_degraded(tx, name)?;
+            Ok(())
+        }
+        Err(ProjectionError::Db(e)) => {
+            tx.execute_batch(&format!("ROLLBACK TO \"{name}\"; RELEASE \"{name}\""))?;
+            Err(ProjectionError::Db(e))
+        }
+    }
+}
+
+/// lazily create a projector's offset row (the registry is the source of truth for
+/// which projectors exist; offsets seed at `last_seq=0, healthy`).
+fn ensure_offset_row(tx: &Transaction, name: &str) -> Result<(), ProjectionError> {
+    tx.execute(
+        "INSERT OR IGNORE INTO projection_offsets (projection_name, last_seq, state) \
+         VALUES (?1, 0, 'healthy')",
+        params![name],
+    )?;
+    Ok(())
+}
+
+/// advance the cursor in the SAME txn as the rows (§2.4). A projector already flagged
+/// `degraded` STAYS degraded (sticky — a rebuild heals it) even as it folds later events.
+fn advance_offset(
+    tx: &Transaction,
+    name: &str,
+    env: &EventEnvelope,
+) -> Result<(), ProjectionError> {
+    tx.execute(
+        "UPDATE projection_offsets SET \
+           last_event_id = ?2, last_seq = ?3, last_processed_at = ?4, \
+           state = CASE WHEN state = 'degraded' THEN 'degraded' ELSE 'healthy' END \
+         WHERE projection_name = ?1",
+        params![name, env.event_id.as_str(), env.seq, env.recorded_at],
+    )?;
+    Ok(())
+}
+
+fn mark_degraded(tx: &Transaction, name: &str) -> Result<(), ProjectionError> {
+    tx.execute(
+        "UPDATE projection_offsets SET state = 'degraded' WHERE projection_name = ?1",
+        params![name],
+    )?;
+    Ok(())
+}
+
+/// A contract enum's canonical snake_case wire string — fail-closed: a value that
+/// won't render to a JSON string is a `Decode` error, never a silent empty column.
+pub(crate) fn wire_value<T: Serialize>(v: &T) -> Result<String, ProjectionError> {
+    match serde_json::to_value(v).map_err(|e| ProjectionError::Decode(e.to_string()))? {
+        serde_json::Value::String(s) => Ok(s),
+        _ => Err(ProjectionError::Decode(
+            "enum did not serialize to a string".into(),
+        )),
+    }
 }

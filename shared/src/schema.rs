@@ -13,7 +13,8 @@ use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceT
 use crate::events::SessionStarted;
 use crate::ids::IdKind;
 use crate::ipc::{
-    Capabilities, HelloAck, HelloFrame, IpcErrorCode, ProjectionName, VersionSkewError, WireError,
+    Capabilities, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode, ProjectionName,
+    ProjectionScope, RpcRequest, RpcResponse, VersionSkewError, WireError,
 };
 use crate::objects::DesktopObjectKind;
 use crate::status::{
@@ -56,6 +57,11 @@ struct ContractBundle {
     ipc_error_code: IpcErrorCode,
     wire_error: WireError,
     projection_name: ProjectionName,
+    // 1.5 L3 — the §6.1 JSON-RPC method request/response envelopes + get_projection params
+    rpc_request: RpcRequest,
+    rpc_response: RpcResponse,
+    get_projection_params: GetProjectionParams,
+    projection_scope: ProjectionScope,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

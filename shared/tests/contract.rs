@@ -487,6 +487,7 @@ fn test_ipc_contract_wire_values() {
             "unauthorized_peer",
             "policy_denied",
             "precondition_stale",
+            "protocol_error",
         ],
     );
     // §6.1 projection names — PascalCase (match the ui's pinned get_projection literals + the

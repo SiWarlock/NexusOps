@@ -10,12 +10,13 @@
 //! the authorized path after the ack.
 
 use std::io::{Read, Write};
+use std::path::Path;
 
 use nexusops_shared::ipc::{
-    self, Capabilities, HelloAck, HelloFrame, IpcErrorCode, VersionSkewError, WireError,
+    self, Capabilities, HelloAck, HelloFrame, IpcErrorCode, RpcRequest, VersionSkewError, WireError,
 };
 
-use super::{authorize_peer, read_frame, write_frame, IpcError};
+use super::{authorize_peer, methods, read_frame, write_frame, IpcError};
 
 /// Serve one accepted GatewayPort connection over a synchronous stream. `peer_uid` is the uid
 /// the accept-loop read via `getpeereid`; the rule-#7 auth gate is FIRST (a foreign uid is
@@ -27,6 +28,7 @@ pub fn serve_connection<S: Read + Write>(
     mut stream: S,
     peer_uid: u32,
     daemon_uid: u32,
+    db_path: &Path,
 ) -> Result<(), IpcError> {
     // Rule #7 (§15 / ADR-004): peer-auth before anything else — before any frame is read.
     authorize_peer(peer_uid, daemon_uid)?;
@@ -36,12 +38,10 @@ pub fn serve_connection<S: Read + Write>(
     let hello: HelloFrame = match serde_json::from_slice(&body) {
         Ok(h) => h,
         Err(e) => {
-            // a non-handshake first frame (a method, or garbage) → structured error + disconnect.
-            // NOTE: the closed §6.4 error-code set has no dedicated "bad first frame / handshake
-            // -required" code, so `unknown_method` is the closest available — flagged to the
-            // orchestrator (a §6.4 `protocol_error` code would be a LOCKED-contract change).
-            // Fail-closed regardless of the wire code (the connection disconnects, unserved).
-            write_wire_error(&mut stream, IpcErrorCode::UnknownMethod);
+            // a non-handshake first frame (a method, or garbage) is a protocol violation →
+            // `protocol_error` + disconnect (the §6.4 `protocol_error` code added per the
+            // lead-ratified gap resolution; distinct from an unknown method name).
+            write_wire_error(&mut stream, IpcErrorCode::ProtocolError);
             return Err(IpcError::Protocol(format!("expected HelloFrame: {e}")));
         }
     };
@@ -78,7 +78,31 @@ pub fn serve_connection<S: Read + Write>(
     let buf = serde_json::to_vec(&ack).map_err(|e| IpcError::Protocol(e.to_string()))?;
     write_frame(&mut stream, &buf)?;
 
-    // L3+ extends the authorized path here: the JSON-RPC method read/serve loop, then L4 subscribe.
+    // L3 — the §6.1 JSON-RPC read/serve loop: read request frames until the client half-closes
+    // (EOF), dispatch each (get_projection/get_capabilities over read-only WAL), write responses.
+    // A client error is a structured `WireError` response (loop continues); an infra read error
+    // disconnects. (L4 adds subscribe — which needs a read/write split; serve_connection's owned
+    // `S: Read + Write` suffices for this request→response loop, but L4 will take `UnixStream` or
+    // `try_clone` the halves so a push stream can write while the read half blocks.)
+    loop {
+        let body = match read_frame(&mut stream) {
+            Ok(b) => b,
+            // the client half-closed after its last request → a clean end of the session.
+            Err(IpcError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e),
+        };
+        let req: RpcRequest = match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                // a malformed request frame is a protocol violation → protocol_error + disconnect.
+                write_wire_error(&mut stream, IpcErrorCode::ProtocolError);
+                return Err(IpcError::Protocol(format!("malformed request: {e}")));
+            }
+        };
+        let resp = methods::dispatch(&req, db_path)?;
+        let buf = serde_json::to_vec(&resp).map_err(|e| IpcError::Protocol(e.to_string()))?;
+        write_frame(&mut stream, &buf)?;
+    }
     Ok(())
 }
 

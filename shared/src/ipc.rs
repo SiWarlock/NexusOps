@@ -65,6 +65,8 @@ pub struct Capabilities {
 }
 
 /// The §6.4 structured wire error codes (closed set; reject-unknown). snake_case wire values.
+/// `protocol_error` (a bad-first-frame / handshake-required / malformed-frame violation, distinct
+/// from `unknown_method`) was added in 1.5 per the lead-ratified §6.4 gap resolution (Option B).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum IpcErrorCode {
@@ -74,6 +76,7 @@ pub enum IpcErrorCode {
     UnauthorizedPeer,
     PolicyDenied,
     PreconditionStale,
+    ProtocolError,
 }
 
 impl IpcErrorCode {
@@ -85,6 +88,7 @@ impl IpcErrorCode {
         Self::UnauthorizedPeer,
         Self::PolicyDenied,
         Self::PreconditionStale,
+        Self::ProtocolError,
     ];
 }
 
@@ -129,4 +133,49 @@ impl ProjectionName {
         Self::AuditTrail,
         Self::UsageLedger,
     ];
+}
+
+/// A JSON-RPC-style method request (§6.1). `id` correlates the response; `params` is the
+/// method-specific argument object (the daemon validates it per-method).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RpcRequest {
+    pub method: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+    pub id: u64,
+}
+
+/// A JSON-RPC-style response (§6.1), correlated by `id`: exactly one of `result` / `error`.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RpcResponse {
+    pub id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<WireError>,
+}
+
+/// `get_projection` params (§6.1). `page` (pagination) is provisional and omitted for MVP.
+///
+/// **MVP NOTE:** `scope` is **accepted but NOT YET enforced** — the daemon returns the full
+/// projection table regardless of `scope.project_id` (the local same-uid peer has no tenancy
+/// boundary in MVP). Do not build client filtering that assumes the daemon honors `scope`;
+/// scope filtering (and the `ProjectId` newtype on the field) land when multi-project scoping does.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GetProjectionParams {
+    pub name: ProjectionName,
+    /// accepted but not yet enforced (see the struct note) — the read is unscoped in MVP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ProjectionScope>,
+}
+
+/// `get_projection` scope filter (§6.1; provisional — widens as scoping lands).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionScope {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }

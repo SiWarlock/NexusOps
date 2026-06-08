@@ -8,7 +8,7 @@
 //! Layered:
 //!   L1 (1–4) — length-prefix framing (bounded) + getpeereid peer-auth + reject-path. ⚠️ safety-critical
 //!   L2 (5–7) — handshake + version negotiation + shared/ ipc schema.
-//!   L3 (8–10) — JSON-RPC dispatch + get_projection + get_capabilities.                [pending]
+//!   L3 (8–10) — JSON-RPC dispatch + get_projection + get_capabilities.
 //!   L4 (11–12) — subscribe streaming + Terminal-Channel frame-type seam.              [pending]
 
 use std::io::Read;
@@ -120,8 +120,9 @@ fn test_unauthorized_peer_disconnects_unserved() {
     // if auth ran after a read, the handler would block on the absent HelloFrame forever).
     let (server, client) = UnixStream::pair().unwrap();
     let daemon_uid = 1000u32;
+    let (_d, path) = temp_db();
 
-    let outcome = serve_connection(server, daemon_uid + 1, daemon_uid);
+    let outcome = serve_connection(server, daemon_uid + 1, daemon_uid, &path);
     assert!(
         matches!(outcome, Err(IpcError::UnauthorizedPeer { .. })),
         "a foreign-uid connection is rejected by the handler"
@@ -168,9 +169,11 @@ fn test_handshake_hello_ack() {
         app_version: "0.1.0".to_string(),
     };
     send(&client, &hello);
+    client.shutdown(Shutdown::Write).unwrap(); // no methods follow → the serve loop exits at EOF
 
     // same-uid auth passes → in-range handshake → HelloAck written, handler returns Ok
-    serve_connection(server, uid, uid).expect("authorized in-range handshake succeeds");
+    let (_d, path) = temp_db();
+    serve_connection(server, uid, uid, &path).expect("authorized in-range handshake succeeds");
 
     let ack: HelloAck = recv(&client);
     assert_eq!(
@@ -201,7 +204,8 @@ fn test_version_skew_disconnects() {
     send(&client, &hello);
 
     // out-of-range → the handler writes a VersionSkewError and returns Err (disconnect)
-    let outcome = serve_connection(server, uid, uid);
+    let (_d, path) = temp_db();
+    let outcome = serve_connection(server, uid, uid, &path);
     assert!(
         matches!(outcome, Err(IpcError::VersionSkew { .. })),
         "an out-of-range protocol_version is a version-skew failure"
@@ -237,15 +241,17 @@ fn test_method_before_handshake_rejected() {
         &serde_json::json!({ "method": "get_capabilities", "id": 1 }),
     );
 
-    let outcome = serve_connection(server, uid, uid);
+    let (_d, path) = temp_db();
+    let outcome = serve_connection(server, uid, uid, &path);
     assert!(
         matches!(outcome, Err(IpcError::Protocol(_))),
         "a method frame before the handshake is a protocol violation"
     );
-    // the daemon wrote a structured WireError frame before disconnecting (the closest §6.4 code
-    // for a non-handshake first frame is unknown_method — see the §6.4 error-code-gap flag)
+    // the daemon wrote a structured WireError frame before disconnecting: a non-handshake first
+    // frame is a protocol violation → `protocol_error` (the §6.4 code added per the lead-ratified
+    // gap resolution — distinct from an unknown method name)
     let err: WireError = recv(&client);
-    assert_eq!(err.code, IpcErrorCode::UnknownMethod);
+    assert_eq!(err.code, IpcErrorCode::ProtocolError);
     // …and then disconnected: no method was served
     let mut r = &client;
     let mut buf = [0u8; 1];
@@ -253,5 +259,223 @@ fn test_method_before_handshake_rejected() {
         r.read(&mut buf).unwrap(),
         0,
         "disconnected; the pre-handshake method was never served"
+    );
+}
+
+// ============== L3 — JSON-RPC dispatch + read methods (8–10) ==================
+
+use std::net::Shutdown;
+use std::path::Path;
+
+use nexusops_shared::ipc::{
+    GetProjectionParams, ProjectionName, ProjectionScope, RpcRequest, RpcResponse,
+};
+
+fn temp_db() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nexusops.db");
+    (dir, path)
+}
+
+/// seed an event store with one `SessionStarted` (1.2 folds it into `proj_session`), then drop
+/// the writer so the IPC read-only WAL path reads a settled file.
+fn seed_session(path: &Path) {
+    use nexusops_shared::actor::ActorType;
+    use nexusops_shared::event_envelope::{Sensitivity, SourceType};
+    use nexusops_shared::ids::{ProjectId, SessionId, WorkspaceId};
+    use nexusopsd::clock::FixedClock;
+    use nexusopsd::eventstore::{AppendIntent, EventStore, PrefixRedactor};
+
+    let mut store = EventStore::open(
+        path,
+        Box::new(nexusopsd::idgen::UlidGen),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        Box::new(PrefixRedactor),
+    )
+    .unwrap();
+    store
+        .append(AppendIntent {
+            event_type: "SessionStarted".to_string(),
+            event_version: 1,
+            occurred_at: "2026-06-08T00:00:00Z".to_string(),
+            workspace_id: WorkspaceId::new(),
+            actor_type: ActorType::User,
+            actor_id: "u_1".to_string(),
+            source_type: SourceType::DesktopUi,
+            source_id: "src_1".to_string(),
+            correlation_id: "corr_1".to_string(),
+            sensitivity: Sensitivity::Internal,
+            payload_json: "{\"status\":\"active\"}".to_string(),
+            schema_version: "event-envelope-v1".to_string(),
+            idempotency_key: None,
+            project_id: Some(ProjectId::new()),
+            session_id: Some(SessionId::new()),
+            agent_team_id: None,
+            visibility: None,
+        })
+        .unwrap();
+}
+
+/// drive a full client session: handshake, then the given requests; half-close the write side
+/// so the daemon's serve loop sees EOF and returns. Returns the daemon's per-request responses.
+fn client_session(client: &UnixStream, requests: &[RpcRequest]) -> Vec<RpcResponse> {
+    let hello = HelloFrame {
+        protocol_version: 1,
+        client_kind: "desktop_ui".to_string(),
+        app_version: "0.1.0".to_string(),
+    };
+    send(client, &hello);
+    for req in requests {
+        send(client, req);
+    }
+    client.shutdown(Shutdown::Write).unwrap(); // EOF → the serve loop terminates
+    let _ack: HelloAck = recv(client);
+    requests.iter().map(|_| recv(client)).collect()
+}
+
+// ---- Test 8 — get_projection returns rows over read-only WAL (§6.1) ----------
+
+#[test]
+fn test_get_projection_returns_rows() {
+    let (_d, path) = temp_db();
+    seed_session(&path);
+    let (server, client) = UnixStream::pair().unwrap();
+    let uid = 1000u32;
+
+    let req = RpcRequest {
+        method: "get_projection".to_string(),
+        params: serde_json::to_value(GetProjectionParams {
+            name: ProjectionName::Session,
+            scope: None,
+        })
+        .unwrap(),
+        id: 1,
+    };
+    // serve over the seeded db (read-only WAL); the client gets the proj_session row(s)
+    let responses = std::thread::scope(|s| {
+        let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
+        serve_connection(server, uid, uid, &path).expect("serve get_projection");
+        h.join().unwrap()
+    });
+
+    assert_eq!(responses.len(), 1);
+    let resp = &responses[0];
+    assert_eq!(resp.id, 1, "response correlates by id");
+    assert!(resp.error.is_none(), "no error");
+    let rows = resp.result.as_ref().unwrap().as_array().unwrap();
+    assert_eq!(rows.len(), 1, "the seeded session row is returned");
+    assert_eq!(
+        rows[0].get("status").and_then(|v| v.as_str()),
+        Some("active"),
+        "the proj_session row carries the folded status"
+    );
+}
+
+// ---- Test 9 — an unfed projection returns its empty table, not an error ------
+
+#[test]
+fn test_get_projection_unfed_is_empty_not_error() {
+    let (_d, path) = temp_db();
+    seed_session(&path); // creates all proj_* tables; PullRequest's body is re-homed to 7.1
+    let (server, client) = UnixStream::pair().unwrap();
+    let uid = 1000u32;
+
+    let req = RpcRequest {
+        method: "get_projection".to_string(),
+        params: serde_json::to_value(GetProjectionParams {
+            name: ProjectionName::PullRequest,
+            scope: None,
+        })
+        .unwrap(),
+        id: 7,
+    };
+    let responses = std::thread::scope(|s| {
+        let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
+        serve_connection(server, uid, uid, &path).expect("serve unfed projection");
+        h.join().unwrap()
+    });
+
+    let resp = &responses[0];
+    assert!(resp.error.is_none(), "an unfed projection is NOT an error");
+    let rows = resp.result.as_ref().unwrap().as_array().unwrap();
+    assert_eq!(
+        rows.len(),
+        0,
+        "its (existing, empty) table returns zero rows"
+    );
+}
+
+// ---- Test 10 — unknown method → unknown_method; get_capabilities (§6.1) ------
+
+#[test]
+fn test_unknown_method_and_get_capabilities() {
+    let (_d, path) = temp_db();
+    seed_session(&path);
+    let (server, client) = UnixStream::pair().unwrap();
+    let uid = 1000u32;
+
+    let reqs = vec![
+        RpcRequest {
+            method: "get_capabilities".to_string(),
+            params: serde_json::Value::Null,
+            id: 1,
+        },
+        RpcRequest {
+            method: "frobnicate".to_string(), // not a §6.1 method
+            params: serde_json::Value::Null,
+            id: 2,
+        },
+    ];
+    let responses = std::thread::scope(|s| {
+        let h = s.spawn(|| client_session(&client, &reqs));
+        serve_connection(server, uid, uid, &path).expect("serve capabilities + unknown");
+        h.join().unwrap()
+    });
+
+    // get_capabilities → Capabilities{protocol_version, contract_version}
+    let caps: Capabilities = serde_json::from_value(responses[0].result.clone().unwrap()).unwrap();
+    assert_eq!(caps.protocol_version, 1);
+    assert_eq!(caps.contract_version, nexusops_shared::CONTRACT_VERSION);
+    // unknown method → a structured unknown_method error (not served, not a panic)
+    assert_eq!(
+        responses[1].error.as_ref().unwrap().code,
+        IpcErrorCode::UnknownMethod
+    );
+    assert!(responses[1].result.is_none());
+}
+
+// ---- Test (L3) — scope is accepted but NOT YET enforced (MVP; pins non-filtering) -
+
+#[test]
+fn test_get_projection_scope_not_yet_enforced() {
+    let (_d, path) = temp_db();
+    seed_session(&path);
+    let (server, client) = UnixStream::pair().unwrap();
+    let uid = 1000u32;
+
+    // a scope naming a project that does NOT exist — MVP does not filter, so the row still returns.
+    // This PINS the documented non-enforcement (so a future "scope ignored" isn't a silent surprise).
+    let req = RpcRequest {
+        method: "get_projection".to_string(),
+        params: serde_json::to_value(GetProjectionParams {
+            name: ProjectionName::Session,
+            scope: Some(ProjectionScope {
+                project_id: Some("proj_does_not_exist".to_string()),
+            }),
+        })
+        .unwrap(),
+        id: 3,
+    };
+    let responses = std::thread::scope(|s| {
+        let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
+        serve_connection(server, uid, uid, &path).expect("serve scoped projection");
+        h.join().unwrap()
+    });
+
+    let rows = responses[0].result.as_ref().unwrap().as_array().unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "scope is accepted but NOT enforced in MVP — the read is unscoped (all rows return)"
     );
 }

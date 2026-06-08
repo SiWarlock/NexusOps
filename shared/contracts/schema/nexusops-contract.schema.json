@@ -259,6 +259,30 @@
       ],
       "type": "object"
     },
+    "GetProjectionParams": {
+      "additionalProperties": false,
+      "description": "`get_projection` params (§6.1). `page` (pagination) is provisional and omitted for MVP.\n\n**MVP NOTE:** `scope` is **accepted but NOT YET enforced** — the daemon returns the full\nprojection table regardless of `scope.project_id` (the local same-uid peer has no tenancy\nboundary in MVP). Do not build client filtering that assumes the daemon honors `scope`;\nscope filtering (and the `ProjectId` newtype on the field) land when multi-project scoping does.",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ProjectionName"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectionScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "accepted but not yet enforced (see the struct note) — the read is unscoped in MVP."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "HelloAck": {
       "additionalProperties": false,
       "description": "daemon→client handshake success (§6.4): the negotiated protocol version + the daemon's\nbuild version + its capabilities.",
@@ -334,14 +358,15 @@
       "type": "string"
     },
     "IpcErrorCode": {
-      "description": "The §6.4 structured wire error codes (closed set; reject-unknown). snake_case wire values.",
+      "description": "The §6.4 structured wire error codes (closed set; reject-unknown). snake_case wire values.\n`protocol_error` (a bad-first-frame / handshake-required / malformed-frame violation, distinct\nfrom `unknown_method`) was added in 1.5 per the lead-ratified §6.4 gap resolution (Option B).",
       "enum": [
         "version_skew",
         "frame_too_large",
         "unknown_method",
         "unauthorized_peer",
         "policy_denied",
-        "precondition_stale"
+        "precondition_stale",
+        "protocol_error"
       ],
       "type": "string"
     },
@@ -394,6 +419,19 @@
       ],
       "type": "string"
     },
+    "ProjectionScope": {
+      "additionalProperties": false,
+      "description": "`get_projection` scope filter (§6.1; provisional — widens as scoping lands).",
+      "properties": {
+        "project_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "PullRequest": {
       "description": "PullRequest (11) — GitHub-authoritative cache (§7.2).",
       "enum": [
@@ -418,6 +456,54 @@
         "redacted"
       ],
       "type": "string"
+    },
+    "RpcRequest": {
+      "additionalProperties": false,
+      "description": "A JSON-RPC-style method request (§6.1). `id` correlates the response; `params` is the\nmethod-specific argument object (the daemon validates it per-method).",
+      "properties": {
+        "id": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "default": null
+        }
+      },
+      "required": [
+        "method",
+        "id"
+      ],
+      "type": "object"
+    },
+    "RpcResponse": {
+      "additionalProperties": false,
+      "description": "A JSON-RPC-style response (§6.1), correlated by `id`: exactly one of `result` / `error`.",
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WireError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "result": true
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
     },
     "Sensitivity": {
       "description": "§7.1/§15 sensitivity classification (EM §9). Terminal output defaults `restricted`.",
@@ -645,6 +731,9 @@
     "event_envelope": {
       "$ref": "#/$defs/EventEnvelope"
     },
+    "get_projection_params": {
+      "$ref": "#/$defs/GetProjectionParams"
+    },
     "hello_ack": {
       "$ref": "#/$defs/HelloAck"
     },
@@ -663,11 +752,20 @@
     "projection_name": {
       "$ref": "#/$defs/ProjectionName"
     },
+    "projection_scope": {
+      "$ref": "#/$defs/ProjectionScope"
+    },
     "pull_request": {
       "$ref": "#/$defs/PullRequest"
     },
     "redaction_status": {
       "$ref": "#/$defs/RedactionStatus"
+    },
+    "rpc_request": {
+      "$ref": "#/$defs/RpcRequest"
+    },
+    "rpc_response": {
+      "$ref": "#/$defs/RpcResponse"
     },
     "sensitivity": {
       "$ref": "#/$defs/Sensitivity"
@@ -729,9 +827,13 @@
     "capabilities",
     "ipc_error_code",
     "wire_error",
-    "projection_name"
+    "projection_name",
+    "rpc_request",
+    "rpc_response",
+    "get_projection_params",
+    "projection_scope"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.9.0"
+  "x-contract-version": "0.10.0"
 }

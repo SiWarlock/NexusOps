@@ -17,6 +17,7 @@
 //! Reads go over **read-only WAL** connections — the write-actor stays the sole writer
 //! (Forbidden #3 / LESSON §3).
 
+mod methods;
 mod peer;
 mod server;
 mod transport;
@@ -49,6 +50,10 @@ pub enum IpcError {
     /// a protocol violation — e.g. a non-handshake first frame, or a malformed handshake (§6.4).
     #[error("protocol violation: {0}")]
     Protocol(String),
+    /// a projection read failed over the read-only WAL connection (§6.1) — an infrastructure
+    /// error (vs a client error, which is a structured `WireError` response). Disconnects.
+    #[error("projection read error: {0}")]
+    Read(String),
     /// transport / syscall IO error. A `getpeereid` failure lands here → fail-closed (no uid
     /// is produced, so the peer can never be authorized).
     #[error("ipc io error: {0}")]

@@ -18,6 +18,8 @@
 
 ## Currently in progress
 
+- **⏸️ TEAM PAUSED 2026-06-08** (`/team-end`) — handoff `docs/team-handoffs/001-2026-06-08-phase1-eod.md` · last round-seal `41db7f0` (origin/main) · resume: 1.6a-L3 (ruling B) → 1.6c (ruling C) → 1.6d → 1.7 (briefs 027/028/029 ready, rulings baked). Next `/team-start daemon`.
+
 **PHASE 0 — DETERMINISTIC WORK COMPLETE (2026-06-07).** All 4 spikes landed (`docs/spikes/*.md`) + the **0.5 contract freeze landed (06f9576)** — the serial neck. Single-writer holds (0.4 → §18 written MEASURED); git2 reads relative-worktrees (0.3 → §9 corrected); #27203 confirmed, bg subagents forbidden (0.1); shared/ contracts frozen Option-A (0.5, §5.0). Toolchain RESOLVED (Lesson §1).
 
 **Phase-0-exit `/arch-finalize` re-validation COMPLETE + committed (2026-06-07, 1efff4b).** No frozen `shared/` contract moved (0 release-blockers; no 0.5b forced; ui track ungated). Drift swept forward to `ARCHITECTURE.md` (§5.1→Ten, §5.0 ratified, ADR-004 getpeereid/length-prefix, ADR-007 libgit2, EM §7 remote_client, DATA_MODEL/SOM/OQ/UI sweep). Audit: `docs/gap-audits/R2-phase0-exit-revalidation.json`. Hold released.

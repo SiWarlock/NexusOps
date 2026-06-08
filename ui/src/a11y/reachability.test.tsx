@@ -41,7 +41,12 @@ describe("a11y reachability + wiring", () => {
     // so a non-focusable control added to ANY view later is caught here.
     auditFocusable(container); // Command Center (default)
     // the view-switch controls are real (focusable) buttons
-    for (const name of [/command center/i, /project graph/i, /sessions/i]) {
+    for (const name of [
+      /command center/i,
+      /project graph/i,
+      /sessions/i,
+      /usage/i,
+    ]) {
       expect(screen.getByRole("button", { name })).toBeTruthy();
     }
 
@@ -52,6 +57,10 @@ describe("a11y reachability + wiring", () => {
     fireEvent.click(screen.getByRole("button", { name: /sessions/i }));
     expect(screen.getByTestId("sessions-table")).toBeTruthy();
     auditFocusable(container); // Sessions (incl. the sort-header buttons)
+
+    fireEvent.click(screen.getByRole("button", { name: /usage/i }));
+    expect(screen.getByTestId("usage-table")).toBeTruthy();
+    auditFocusable(container); // Usage (interim 4th view — keeps the §9 net complete)
   });
 
   it("focus_stylesheet_is_imported", () => {

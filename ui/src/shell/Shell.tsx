@@ -4,9 +4,11 @@ import { MockGatewayPort } from "../gateway-client/mock";
 import type {
   ApprovalQueueRow,
   AuditEventRow,
+  CreditPool,
   ProjectActivityRow,
   PullRequestRow,
   SessionRow,
+  UsageRow,
 } from "../contracts/index";
 import { deriveProjectSwitcherCounts, type ProjectSwitcherCounts } from "./derive";
 import type { SidebarItem } from "./Sidebar";
@@ -14,6 +16,7 @@ import { CommandCenter } from "../views/command/CommandCenter";
 import type { CommandItem } from "../views/command/group";
 import { ProjectGraph } from "../views/graph/ProjectGraph";
 import { SessionsTable } from "../views/sessions/SessionsTable";
+import { UsageDashboard } from "../views/usage/UsageDashboard";
 import {
   toSessionItems,
   toPrItems,
@@ -40,6 +43,8 @@ interface ShellData {
   sessions: SessionRow[];
   pullRequests: PullRequestRow[];
   approvals: ApprovalQueueRow[];
+  usage: UsageRow[];
+  creditPool: CreditPool | null;
 }
 
 /**
@@ -63,9 +68,9 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
   // Fail-safe: version stays "unknown" (→ read-only) until a handshake confirms it.
   const [version, setVersion] = useState<VersionCompat>("unknown");
   // Which content view the main surface shows (6.3b/6.3c). Command Center is default.
-  const [contentView, setContentView] = useState<"command" | "graph" | "sessions">(
-    "command",
-  );
+  const [contentView, setContentView] = useState<
+    "command" | "graph" | "sessions" | "usage"
+  >("command");
 
   useEffect(() => client.onConnectionChange(setConnection), [client]);
 
@@ -73,13 +78,14 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
     let cancelled = false;
     void (async () => {
       try {
-        const [projects, sessions, pullRequests, approvals, audit, caps] =
+        const [projects, sessions, pullRequests, approvals, audit, usage, caps] =
           await Promise.all([
             client.get_projection("ProjectActivity"),
             client.get_projection("Session"),
             client.get_projection("PullRequest"),
             client.get_projection("ApprovalQueue"),
             client.get_projection("AuditTrail"),
+            client.get_projection("Usage"),
             client.get_capabilities(),
           ]);
         if (cancelled) return;
@@ -97,6 +103,8 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
           sessions: sessions.rows,
           pullRequests: pullRequests.rows,
           approvals: approvals.rows,
+          usage: usage.rows,
+          creditPool: usage.creditPool ?? null,
         });
       } catch (e) {
         if (!cancelled) setError(e);
@@ -191,6 +199,13 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
               >
                 Sessions
               </button>
+              <button
+                type="button"
+                aria-pressed={contentView === "usage"}
+                onClick={() => setContentView("usage")}
+              >
+                Usage
+              </button>
             </div>
             {contentView === "command" ? (
               <CommandCenter items={commandItems} />
@@ -201,8 +216,10 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
                 sessions={data.sessions}
                 pullRequests={data.pullRequests}
               />
-            ) : (
+            ) : contentView === "sessions" ? (
               <SessionsTable sessions={data.sessions} projects={data.projects} />
+            ) : (
+              <UsageDashboard rows={data.usage} creditPool={data.creditPool} />
             )}
           </main>
           <DrawerStack />

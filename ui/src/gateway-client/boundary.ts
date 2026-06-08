@@ -17,6 +17,7 @@ import {
   ProjectionDelta,
   PullRequestProjectionPage,
   SessionProjectionPage,
+  UsageProjectionPage,
   type ProjectionPage,
 } from "../contracts/index";
 
@@ -41,6 +42,7 @@ const PAGE_SCHEMAS = {
   PullRequest: PullRequestProjectionPage,
   ApprovalQueue: ApprovalQueuePage,
   AuditTrail: AuditTrailPage,
+  Usage: UsageProjectionPage,
 } as const;
 
 /**

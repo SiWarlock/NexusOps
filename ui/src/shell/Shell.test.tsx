@@ -112,4 +112,16 @@ describe("Shell", () => {
     // switch-not-stack — Command Center is unmounted
     expect(container.querySelector('[aria-label="Command Center"]')).toBeNull();
   });
+
+  it("view_switch_mounts_usage_dashboard", async () => {
+    const { container } = render(<Shell gateway={new MockGatewayPort()} />);
+    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    expect(container.querySelector('[aria-label="Command Center"]')).not.toBeNull();
+    expect(screen.queryByTestId("usage-table")).toBeNull();
+    // selecting Usage mounts <UsageDashboard/>, reachable from the Shell (Step 7.5)
+    fireEvent.click(screen.getByRole("button", { name: /usage/i }));
+    expect(screen.getByTestId("usage-table")).toBeTruthy();
+    // switch-not-stack — Command Center is unmounted
+    expect(container.querySelector('[aria-label="Command Center"]')).toBeNull();
+  });
 });

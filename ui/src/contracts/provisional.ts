@@ -95,6 +95,48 @@ export const AuditTrailPage = z.object({
 });
 export type AuditTrailPage = z.infer<typeof AuditTrailPage>;
 
+// ─── Usage (PROVISIONAL — 6.4b) ──────────────────────────────────────────────
+// The daemon's usage/telemetry schema is NOT in the frozen contract. UsageRow +
+// metric_quality + Harness are hand-declared provisional shapes (Lesson §2); they
+// (incl. the credit-pool thresholds + enum delegation) reconcile at the daemon
+// usage-schema freeze — tracked in the MVP_TASKS Carry-forward provisional→generated
+// spread. No frozen MetricQuality/Harness enum exists yet, so these are local.
+
+/** Adapter-reported accuracy of a usage metric (§9.1 metric_quality). PROVISIONAL. */
+export const MetricQuality = z.enum(["exact", "estimated", "unavailable"]);
+export type MetricQuality = z.infer<typeof MetricQuality>;
+
+/** The agent harness a session runs under. PROVISIONAL (no frozen Harness enum). */
+export const Harness = z.enum(["claude", "codex"]);
+export type Harness = z.infer<typeof Harness>;
+
+/** Per-subject token/cost usage (§11.4). PROVISIONAL. */
+export const UsageRow = z.object({
+  subject_id: z.string(),
+  harness: Harness,
+  tokens: z.number(),
+  cost: z.number(),
+  metric_quality: MetricQuality,
+  // Codex reports no context metadata (§9.1 supportsContextMetadata=false) → null.
+  context_pct: z.number().nullable().optional(),
+});
+export type UsageRow = z.infer<typeof UsageRow>;
+
+/** The capped Agent-SDK credit pool (hard-stops — §0.1), distinct from token spend. */
+export const CreditPool = z.object({
+  used: z.number(),
+  limit: z.number(),
+});
+export type CreditPool = z.infer<typeof CreditPool>;
+
+export const UsageProjectionPage = z.object({
+  projection: z.literal("Usage"),
+  rows: z.array(UsageRow),
+  creditPool: CreditPool.nullable().optional(),
+  cursor: z.string().nullable().optional(),
+});
+export type UsageProjectionPage = z.infer<typeof UsageProjectionPage>;
+
 /**
  * Typed projection registry (provisional). Maps each projection name to its page
  * shape so get_projection / parseProjectionPage give precise per-name types.
@@ -105,6 +147,7 @@ export type ProjectionPageByName = {
   PullRequest: PullRequestProjectionPage;
   ApprovalQueue: ApprovalQueuePage;
   AuditTrail: AuditTrailPage;
+  Usage: UsageProjectionPage;
 };
 export type ProjectionName = keyof ProjectionPageByName;
 

@@ -30,6 +30,7 @@ import {
   sessionDeltaFixture,
   sessionPageFixture,
 } from "../projections/fixtures/proj_session";
+import { usageFixture } from "../projections/fixtures/proj_usage";
 import { parseDelta, parseProjectionPage } from "./boundary";
 
 const DEFAULT_PROTOCOL_VERSION = 1;
@@ -41,6 +42,7 @@ const FIXTURES: Record<ProjectionName, unknown> = {
   PullRequest: pullRequestFixture,
   ApprovalQueue: approvalQueueFixture,
   AuditTrail: auditTrailFixture,
+  Usage: usageFixture,
 };
 
 export interface MockGatewayOptions {

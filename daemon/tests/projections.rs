@@ -121,7 +121,7 @@ fn test_migration_3_creates_projection_tables() {
     // projections were introduced at migration 3; later migrations raise the version
     // further (the exact-version pin lives in each migration's own test).
     assert!(
-        store.user_version() >= 3,
+        store.user_version().unwrap() >= 3,
         "open migrates at/above the projections migration (3)"
     );
 
@@ -179,7 +179,7 @@ fn test_migration_3_over_existing_events_backs_up() {
     // pre-run snapshot keyed by the starting version, restored if any step fails)
     let store = open(&path);
     assert!(
-        store.user_version() >= 3,
+        store.user_version().unwrap() >= 3,
         "migrated through 3 (and any later migrations)"
     );
     let bak = std::path::PathBuf::from(format!("{}.bak-2", path.display()));

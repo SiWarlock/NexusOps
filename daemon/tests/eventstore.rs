@@ -9,6 +9,7 @@ use nexusops_shared::ids::WorkspaceId;
 use nexusopsd::clock::{Clock, FixedClock};
 use nexusopsd::eventstore::{
     AppendIntent, EventStore, EventStoreError, PrefixRedactor, RedactionOutcome, Redactor,
+    SUPPORTED_USER_VERSION,
 };
 use nexusopsd::idgen::{FixedIdGen, UlidGen};
 
@@ -173,7 +174,10 @@ fn test_migration_forward_only_with_backup_rollback() {
     {
         let mut store = open(&path);
         store.append(intent("2026-06-07T00:00:00Z", "{}")).unwrap();
-        assert!(store.user_version() >= 1, "migrations ran to >=1 on open");
+        assert!(
+            store.user_version().unwrap() >= 1,
+            "migrations ran to >=1 on open"
+        );
     }
     // §16 backup/restore round-trip (the rollback primitive, WAL-safe)
     EventStore::backup_db(&path, 1).unwrap();
@@ -414,5 +418,22 @@ fn test_auto_backup_before_migration_on_nonempty_db() {
     assert!(
         bak.exists(),
         "auto-backup wrote .bak-1 before the user_version raise"
+    );
+}
+
+// ---- Test (1.6a L1) — user_version() is a typed Result, never a -1 sentinel ---
+
+#[test]
+fn test_user_version_returns_typed_result() {
+    // 1.1 L2 carry-forward (§16 version-compat): the applied schema version must not be
+    // read as a silent -1 sentinel. `Result<u32, _>` makes -1 impossible BY CONSTRUCTION
+    // (a real read error is `Err`, never a magic integer the caller might branch on).
+    let (_d, path) = temp_db();
+    let store = open(&path);
+    let v: Result<u32, EventStoreError> = store.user_version();
+    assert_eq!(
+        v.unwrap(),
+        SUPPORTED_USER_VERSION as u32,
+        "a migrated DB reports the supported user_version as a typed Ok(u32)"
     );
 }

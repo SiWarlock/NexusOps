@@ -152,7 +152,11 @@ fn test_migration_5_creates_leases() {
     let (_d, path) = temp_db();
     let store = open(&path);
     // exact pin (this is M5's own migration test); relax to `>= 5` when M6 lands.
-    assert_eq!(store.user_version(), 5, "open migrates to user_version 5");
+    assert_eq!(
+        store.user_version().unwrap(),
+        5,
+        "open migrates to user_version 5"
+    );
     let t = tables(&path);
     assert!(t.contains("leases"), "migration 5 creates the leases table");
     assert!(

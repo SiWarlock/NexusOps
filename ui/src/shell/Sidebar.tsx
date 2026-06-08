@@ -24,27 +24,21 @@ export function Sidebar({ items = [] }: { items?: SidebarItem[] }) {
   ).length;
 
   return (
-    <aside className="sidebar" aria-label="Sidebar" style={{ width: 240 }}>
+    <aside className="sidebar" aria-label="Sidebar">
       <div className="sidebar__header">
         <span data-testid="needs-attention-count">{needsCount}</span>{" "}
         {needsCount === 1 ? "needs" : "need"} attention
       </div>
       <nav aria-label="Primary">
-        <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+        <ul>
           {ordered.map((item) => (
             <li
               key={`${item.machine}:${item.id}`}
               className="sidebar__item"
               data-item-id={`${item.machine}:${item.id}`}
-              style={{ display: "flex", alignItems: "stretch", gap: 6 }}
             >
               <AttentionMarker rank={item.attentionRank} variant="rail" />
-              <span
-                className="sidebar__item-label"
-                style={{ flex: 1, minWidth: 0 }}
-              >
-                {item.label}
-              </span>
+              <span className="sidebar__item-label">{item.label}</span>
               <StatusPill machine={item.machine} status={item.status} size="xs" />
             </li>
           ))}

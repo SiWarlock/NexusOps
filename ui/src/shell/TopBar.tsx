@@ -26,11 +26,8 @@ export function TopBar({
   onOpenSettings: () => void;
 }) {
   return (
-    <header
-      className="topbar"
-      style={{ display: "flex", alignItems: "center", gap: 8 }}
-    >
-      <nav aria-label="History" style={{ display: "flex", gap: 4 }}>
+    <header className="topbar">
+      <nav aria-label="History">
         <Button variant="ghost" size="sm">
           <span aria-hidden="true">←</span>
           <span className="sr-only">Back</span>
@@ -41,7 +38,7 @@ export function TopBar({
         </Button>
       </nav>
       <ProjectSwitcher projects={projects} counts={counts} />
-      <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+      <div className="topbar__right">
         <Button variant="ghost" size="sm">
           Brain
         </Button>

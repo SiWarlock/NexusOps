@@ -182,43 +182,41 @@ export function Shell({
 
   return (
     <ReadOnlyProvider value={status}>
-      <div
-        className="shell"
-        style={{ display: "flex", flexDirection: "column", height: "100vh" }}
-      >
+      <div className="shell">
         <TopBar
           projects={data.projects}
           counts={data.counts}
           onOpenSettings={() => setContentView("settings")}
         />
-        <DegradedBanner
-          degraded={degraded}
-          onRetry={handleRetry}
-          onRepair={handleRepair}
-        />
-        {/* Survival/recovery banner (O-2) — a DISTINCT surface from the transport
-            DegradedBanner above. Non-intrusive (renders nothing) when recovered. */}
-        <RecoveryBanner recovery={recovery} />
-        {/* §17 fail-closed / audit-integrity alert (#5) — prominent + non-
-            dismissible, rendered near the banner stack so the signal is seen. A
-            THIRD distinct safety concern beyond transport-degraded + survival. */}
-        <AuditIntegrityAlert integrity={safety.integrity} />
-        {/* §17 safety-state host (6.4d-2) — hosts the never-auto-resolved fencing/
-            hard-conflict card (#6). Non-intrusive when clean; the full 7-group
-            Human Input Queue host is Phase 8 (intent seam). */}
-        <div className="safety-host" data-testid="safety-host">
-          <HardConflictCard conflict={safety.conflict} />
+        {/* Banner stack (grid row) — the transport DegradedBanner, the survival
+            RecoveryBanner, and the §17 safety surfaces. Auto-height: collapses to
+            0 when every banner renders nothing. Three distinct concerns, stacked
+            full-width above the side+main row so the signals are seen. */}
+        <div className="banner-stack">
+          <DegradedBanner
+            degraded={degraded}
+            onRetry={handleRetry}
+            onRepair={handleRepair}
+          />
+          <RecoveryBanner recovery={recovery} />
+          {/* §17 fail-closed / audit-integrity alert (#5) — prominent + non-dismissible. */}
+          <AuditIntegrityAlert integrity={safety.integrity} />
+          {/* §17 safety-state host (6.4d-2) — hosts the never-auto-resolved fencing/
+              hard-conflict card (#6). Non-intrusive when clean; the full 7-group
+              Human Input Queue host is Phase 8 (intent seam). */}
+          <div className="safety-host" data-testid="safety-host">
+            <HardConflictCard conflict={safety.conflict} />
+          </div>
         </div>
-        <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-          <Sidebar items={sidebarItems} />
-          <main style={{ flex: 1, minWidth: 0 }} aria-label="Main surface">
-            {/* Content-view switch (6.3b): Command Center (default) | Project
-                Graph. Sessions / Terminal / Diff are the later 6.3 sub-slices. */}
-            <div
-              className="content-switch"
-              role="group"
-              aria-label="Content view"
-            >
+        <Sidebar items={sidebarItems} />
+        <main className="main" aria-label="Main surface">
+          {/* Content-view switch (6.3b): Command Center (default) | Project
+              Graph. Sessions / Terminal / Diff are the later 6.3 sub-slices. */}
+          <div
+            className="content-switch"
+            role="group"
+            aria-label="Content view"
+          >
               <button
                 type="button"
                 aria-pressed={contentView === "command"}
@@ -262,10 +260,9 @@ export function Shell({
             )}
           </main>
           <DrawerStack />
+          <ActivityDock events={data.events} />
+          <StatusBar connection={connection} />
         </div>
-        <ActivityDock events={data.events} />
-        <StatusBar connection={connection} />
-      </div>
     </ReadOnlyProvider>
   );
 }

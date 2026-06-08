@@ -9,6 +9,10 @@ import "../../NexusOps-ui-kit/styles.css";
 // global .sr-only utility). Loads AFTER the kit tokens (so they resolve) and
 // BEFORE focus.css (disjoint selectors; the focus ring stays last).
 import "./theme/global.css";
+// 6.5b Graphite Arc shell chrome + cockpit layout grid — paints the .shell region
+// grid + region chrome (topbar/sidebar/main/dock/status/banner) from semantic
+// tokens. After global.css (base canvas), before focus.css.
+import "./theme/shell.css";
 // Global :focus-visible ring on every interactive control (§11.6) — uses the kit
 // ring tokens; must load after the kit tokens so the custom properties resolve.
 import "./a11y/focus.css";

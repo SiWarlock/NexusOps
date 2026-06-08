@@ -5,6 +5,7 @@ import { cleanup, render, screen, fireEvent, within } from "@testing-library/rea
 import { Shell } from "../shell/Shell";
 import { MockGatewayPort } from "../gateway-client/mock";
 import { projectActivityFixture } from "../projections/fixtures/proj_project_activity";
+import { auditFocusable } from "./reachability";
 
 afterEach(cleanup);
 
@@ -12,24 +13,11 @@ afterEach(cleanup);
 // wiring that jsdom can't compute (it never applies :focus-visible / @media).
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 
-// Audit one rendered view: every actionable control is keyboard-focusable.
-// `el.tabIndex` reflects the effective tab order — 0 for natively-focusable
-// elements (button/a[href]/input/…) or an explicit `tabindex>=0`, and -1 if
-// removed from the order OR a non-focusable element (e.g. a `div[role="button"]`
-// with no tabindex). So one `>= 0` check catches both "tabindex=-1 on an
-// actionable" and "role=button on a non-focusable element". Non-vacuous: a view
-// must have ≥1 control.
-function auditFocusable(container: HTMLElement) {
-  const interactive = [
-    ...container.querySelectorAll<HTMLElement>(
-      'button, a[href], [role="button"], [role="link"], input, select, summary',
-    ),
-  ];
-  expect(interactive.length).toBeGreaterThan(0);
-  for (const el of interactive) {
-    expect(el.tabIndex).toBeGreaterThanOrEqual(0);
-  }
-}
+// auditFocusable (the §9 classifier) lives in ./reachability — roving-aware (a
+// tabIndex=-1 tab in a one-tabstop tablist is reachable) + tabpanel-aware; it
+// throws on a violation, so calling it directly fails the test if any control in
+// the swept view is unreachable. Its classification is unit-tested in
+// reachability.classify.test.tsx.
 
 describe("a11y reachability + wiring", () => {
   it("every_interactive_control_is_keyboard_focusable", async () => {

@@ -33,6 +33,7 @@ import {
 import type { ConnectionState } from "../connection/state";
 import { DegradedBanner } from "../connection/DegradedBanner";
 import { RecoveryBanner } from "../recovery/RecoveryBanner";
+import { resumeModesBySessionId } from "../recovery/model";
 import { recoveryStatusFixture } from "../recovery/fixtures";
 import { HardConflictCard } from "../safety/HardConflictCard";
 import { AuditIntegrityAlert } from "../safety/AuditIntegrityAlert";
@@ -183,6 +184,9 @@ export function Shell({
   // the same session items open the Command Center list — mapped once, reused.
   const sessionItems = toSessionItems(data.sessions);
   const sidebarItems: SidebarItem[] = sessionItems;
+  // O-2 resume indicators: an id-keyed side map (Lesson §8 — surfaces resume mode
+  // on the sidebar's shared ProjectionItem WITHOUT widening the item).
+  const resumeModes = resumeModesBySessionId(data.sessions);
 
   // Command Center items: sessions + PRs + approvals (the wired projections;
   // tasks join when a Task/PlanProgress projection lands — Phase 7). Routed
@@ -235,7 +239,7 @@ export function Shell({
             <HardConflictCard conflict={safety.conflict} />
           </div>
         </div>
-        <Sidebar items={sidebarItems} />
+        <Sidebar items={sidebarItems} resumeModes={resumeModes} />
         <main className="main" aria-label="Main surface">
           {/* Content-view switch (6.3b): Command Center (default) | Project
               Graph. Sessions / Terminal / Diff are the later 6.3 sub-slices. */}

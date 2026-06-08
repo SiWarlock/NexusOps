@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { describeRecovery, describeResumeMode } from "./model";
+import {
+  describeRecovery,
+  describeResumeMode,
+  resumeModesBySessionId,
+} from "./model";
+import type { SessionRow } from "../contracts/index";
 
 describe("recovery model", () => {
   it("recovery_state_to_banner_descriptor", () => {
@@ -33,5 +38,35 @@ describe("recovery model", () => {
     expect(replayed.glyph).toBeTruthy();
     expect(resumed.glyph).not.toBe(replayed.glyph);
     expect(resumed.label).not.toBe(replayed.label);
+  });
+});
+
+describe("resumeModesBySessionId (id-keyed side map)", () => {
+  const sessions: SessionRow[] = [
+    { session_id: "a", status: "idle", title: "A", resume_mode: "replayed" },
+    { session_id: "b", status: "idle", title: "B" }, // fresh-started — no resume_mode
+    { session_id: "c", status: "idle", title: "C", resume_mode: "resumed" },
+  ];
+
+  it("resume_map_includes_only_sessions_with_a_mode", () => {
+    const map = resumeModesBySessionId(sessions);
+    // only resumed/replayed sessions get an entry; a fresh-started session is absent
+    expect("a" in map).toBe(true);
+    expect("c" in map).toBe(true);
+    expect("b" in map).toBe(false);
+  });
+
+  it("resume_map_keys_by_session_id", () => {
+    const map = resumeModesBySessionId(sessions);
+    // keyed by session_id; value is the exact ResumeMode (the §8 side-map mechanism)
+    expect(map).toEqual({ a: "replayed", c: "resumed" });
+  });
+
+  it("resume_map_empty_when_none", () => {
+    // zero sessions, and sessions with no mode at all → {} (the no-indicator state)
+    expect(resumeModesBySessionId([])).toEqual({});
+    expect(
+      resumeModesBySessionId([{ session_id: "x", status: "idle", title: "X" }]),
+    ).toEqual({});
   });
 });

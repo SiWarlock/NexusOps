@@ -3,7 +3,7 @@
 // descriptor. Display only — the daemon survival logic (O-2) is fixture-driven
 // here, and the restart-session INTENT is parked (daemon-1.5). The §17 safety-
 // state surfaces (conflict / audit-integrity) are a SEPARATE slice (6.4d-2).
-import type { RecoveryState, ResumeMode } from "../contracts/index";
+import type { RecoveryState, ResumeMode, SessionRow } from "../contracts/index";
 
 export interface RecoveryBannerDescriptor {
   kind: RecoveryState;
@@ -55,4 +55,20 @@ const RESUME_MODE: Record<ResumeMode, { glyph: string; label: string }> = {
 
 export function describeResumeMode(mode: ResumeMode): ResumeModeDescriptor {
   return { mode, ...RESUME_MODE[mode] };
+}
+
+/**
+ * Session-id → ResumeMode side map for surfacing resume indicators on a
+ * shared-shape widget (the sidebar's ProjectionItem) WITHOUT widening that item
+ * (Lesson §8). Only sessions that actually resumed/replayed get an entry —
+ * fresh-started sessions are absent (no entry → no indicator).
+ */
+export function resumeModesBySessionId(
+  sessions: SessionRow[],
+): Record<string, ResumeMode> {
+  const map: Record<string, ResumeMode> = {};
+  for (const s of sessions) {
+    if (s.resume_mode !== undefined) map[s.session_id] = s.resume_mode;
+  }
+  return map;
 }

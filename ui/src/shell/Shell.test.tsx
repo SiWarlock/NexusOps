@@ -234,6 +234,20 @@ describe("Shell", () => {
     expect(screen.getByTestId("graph-canvas")).toBeTruthy();
   });
 
+  it("shell_sidebar_shows_resume_indicator_from_session_data", async () => {
+    const { container } = render(<Shell gateway={new MockGatewayPort()} />);
+    // MockGatewayPort sets all projections atomically (one setData), so projects
+    // loaded ⇒ sessions present too — this gate is race-free.
+    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    // the Shell builds the resume-mode side map from data.sessions and passes it to
+    // the Sidebar (Step 7.5 live path): session_fixture_1 carries resume_mode
+    // "resumed" → its sidebar item shows the indicator (Lesson §8 — no item widening)
+    const item = container.querySelector(
+      '.sidebar [data-item-id="Session:session_fixture_1"] [data-resume-mode]',
+    );
+    expect(item?.getAttribute("data-resume-mode")).toBe("resumed");
+  });
+
   it("shell_renders_recovery_banner", async () => {
     render(
       <Shell

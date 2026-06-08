@@ -7,7 +7,7 @@ import {
   type SettingsTab,
   type SettingsTabKey,
 } from "./tabs";
-import { isRovingKey, nextTabIndex } from "./roving";
+import { isRovingKey, nextTabIndex } from "../../a11y/roving";
 
 interface SettingsProps {
   usage: UsageRow[];

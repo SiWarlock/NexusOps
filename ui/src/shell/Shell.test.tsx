@@ -38,9 +38,14 @@ const rejectingGateway: GatewayPort = {
 describe("Shell", () => {
   it("shell_renders_projects_from_projection", async () => {
     render(<Shell gateway={new MockGatewayPort()} />);
-    // exactly the fixture's projects, none invented
+    // loaded — the switcher trigger shows the active project (auth-service)
+    await screen.findByText(projectActivityFixture.rows[0]!.name);
+    // open the switcher dropdown → it lists EXACTLY the projection's projects (none
+    // invented); query within the listbox so the trigger's copy doesn't double-match
+    fireEvent.click(screen.getByRole("button", { name: /auth-service/i }));
+    const listbox = screen.getByRole("listbox");
     for (const project of projectActivityFixture.rows) {
-      expect(await screen.findByText(project.name)).toBeTruthy();
+      expect(within(listbox).getByText(project.name)).toBeTruthy();
     }
   });
 
@@ -195,8 +200,10 @@ describe("Shell", () => {
   it("shell_active_project_reroots_graph_and_filters_sessions", async () => {
     render(<Shell gateway={new MockGatewayPort()} />);
     await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded (auth-service)
-    // default active = the first project; select billing (project_fixture_2) in the switcher
-    fireEvent.click(screen.getByRole("button", { name: /billing/i }));
+    // default active = the first project (auth-service); open the switcher dropdown
+    // and select billing (project_fixture_2) — selection now flows via the popover
+    fireEvent.click(screen.getByRole("button", { name: /auth-service/i })); // open switcher
+    fireEvent.click(screen.getByRole("option", { name: /billing/i })); // select billing
     // (a) the graph re-roots at the active project (billing), not the hardcoded projects[0]
     fireEvent.click(screen.getByRole("button", { name: /project graph/i }));
     fireEvent.click(screen.getByRole("button", { name: /^list$/i }));

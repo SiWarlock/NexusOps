@@ -1,7 +1,8 @@
-// Pure roving-tabindex key mapping for WAI-ARIA composite widgets (APG Tabs).
-// Widget-agnostic: the caller passes the current index + member count, so this is
-// reused by the Settings tablist and (slice 5) the ProjectSwitcher dropdown. The
-// caller owns focus + activation; this only computes the target index.
+// Pure roving-tabindex key mapping for WAI-ARIA composite widgets (APG). Shared
+// a11y primitive (co-located with reachability.ts) — re-homed from views/settings/
+// so both the Settings tablist and the ProjectSwitcher listbox consume one source.
+// Widget-agnostic: the caller passes the current index + member count, so this
+// computes the target index only; the caller owns focus + activation.
 
 /** A horizontal tablist's roving keys. */
 const ROVING_KEYS = new Set(["ArrowRight", "ArrowLeft", "Home", "End"]);

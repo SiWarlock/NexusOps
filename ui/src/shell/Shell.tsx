@@ -12,6 +12,11 @@ import { deriveProjectSwitcherCounts, type ProjectSwitcherCounts } from "./deriv
 import type { SidebarItem } from "./Sidebar";
 import { CommandCenter } from "../views/command/CommandCenter";
 import type { CommandItem } from "../views/command/group";
+import {
+  toSessionItems,
+  toPrItems,
+  toApprovalItems,
+} from "../projections/items";
 import { ReadOnlyProvider, type ConnectionStatus } from "../connection/read-only";
 import {
   checkVersionCompat,
@@ -116,35 +121,18 @@ export function Shell({ gateway }: { gateway?: GatewayPort }) {
   const status: ConnectionStatus = { connection, version };
   const degraded = deriveDegradedState(connection, version);
 
-  // Sessions drive the sidebar's attention-ordered items (§11.3 sidebar weight).
-  const sidebarItems: SidebarItem[] = data.sessions.map((s) => ({
-    id: s.session_id,
-    label: s.title ?? s.session_id,
-    machine: "Session",
-    status: s.status,
-  }));
+  // Sessions drive the sidebar's attention-ordered items (§11.3 sidebar weight);
+  // the same session items open the Command Center list — mapped once, reused.
+  const sessionItems = toSessionItems(data.sessions);
+  const sidebarItems: SidebarItem[] = sessionItems;
 
   // Command Center items: sessions + PRs + approvals (the wired projections;
-  // tasks join when a Task/PlanProgress projection lands — Phase 7).
+  // tasks join when a Task/PlanProgress projection lands — Phase 7). Routed
+  // through the shared mappers (no inline re-map — P6.3b).
   const commandItems: CommandItem[] = [
-    ...data.sessions.map((s) => ({
-      id: s.session_id,
-      label: s.title ?? s.session_id,
-      machine: "Session",
-      status: s.status,
-    })),
-    ...data.pullRequests.map((pr) => ({
-      id: pr.pr_number,
-      label: pr.title ?? `PR #${pr.pr_number}`,
-      machine: "PullRequest",
-      status: pr.status,
-    })),
-    ...data.approvals.map((a) => ({
-      id: a.approval_id,
-      label: a.title ?? a.approval_id,
-      machine: "Approval",
-      status: a.status,
-    })),
+    ...sessionItems,
+    ...toPrItems(data.pullRequests),
+    ...toApprovalItems(data.approvals),
   ];
 
   // Retry = re-attempt the transport (real). Repair is a DISTINCT affordance

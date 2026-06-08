@@ -22,7 +22,7 @@ function GroupItem({ item }: { item: RankedCommandItem }) {
   return (
     <li
       className="command-center__item"
-      data-item-id={item.id}
+      data-item-id={`${item.machine}:${item.id}`}
       style={{ display: "flex", alignItems: "stretch", gap: 6 }}
     >
       <AttentionMarker rank={item.attentionRank} variant="rail" />

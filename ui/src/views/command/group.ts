@@ -6,13 +6,10 @@ import {
   type AttentionRank,
 } from "../../status/attention";
 import { describeStatus } from "../../status/descriptors";
+import type { ProjectionItem } from "../../projections/items";
 
-export interface CommandItem {
-  id: string;
-  label: string;
-  machine: string;
-  status: string;
-}
+/** A Command Center entry — the shared projection-item shape (id/label/machine/status). */
+export type CommandItem = ProjectionItem;
 
 export interface RankedCommandItem extends CommandItem {
   attentionRank: AttentionRank;

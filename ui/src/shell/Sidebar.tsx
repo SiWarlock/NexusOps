@@ -2,13 +2,10 @@ import { describeStatus } from "../status/descriptors";
 import { compareByAttention, needsMyAttention } from "../status/attention";
 import { AttentionMarker } from "../status/AttentionMarker";
 import { StatusPill } from "../status/StatusPill";
+import type { ProjectionItem } from "../projections/items";
 
-export interface SidebarItem {
-  id: string;
-  label: string;
-  machine: string;
-  status: string;
-}
+/** A sidebar entry — the shared projection-item shape (id/label/machine/status). */
+export type SidebarItem = ProjectionItem;
 
 /**
  * Left sidebar (§11.3): items are attention-ordered (compareByAttention, higher
@@ -36,9 +33,9 @@ export function Sidebar({ items = [] }: { items?: SidebarItem[] }) {
         <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
           {ordered.map((item) => (
             <li
-              key={item.id}
+              key={`${item.machine}:${item.id}`}
               className="sidebar__item"
-              data-item-id={item.id}
+              data-item-id={`${item.machine}:${item.id}`}
               style={{ display: "flex", alignItems: "stretch", gap: 6 }}
             >
               <AttentionMarker rank={item.attentionRank} variant="rail" />

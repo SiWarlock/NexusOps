@@ -28,12 +28,26 @@ describe("Sidebar attention wiring", () => {
     const ids = [...container.querySelectorAll("[data-item-id]")].map((el) =>
       el.getAttribute("data-item-id"),
     );
-    expect(ids).toEqual(["s2", "s4", "s3", "s1"]); // ranks 5, 4, 2, 0
+    // ranks 5, 4, 2, 0 — namespaced `${machine}:${id}` locator (P6.3b convention)
+    expect(ids).toEqual(["Session:s2", "Session:s4", "Session:s3", "Session:s1"]);
   });
 
   it("sidebar_needs_attention_count", () => {
     render(<Sidebar items={items} />);
     // needs-attention = ranks {4,5} → s2 + s4
     expect(screen.getByTestId("needs-attention-count").textContent).toBe("2");
+  });
+
+  it("sidebar_item_locator_is_machine_namespaced", () => {
+    // One convention, no special-case emitter: every data-item-id is
+    // `${machine}:${id}`, collision-safe (P6.3b — brief Q5 "for status items").
+    const { container } = render(
+      <Sidebar
+        items={[{ id: "42", label: "a", machine: "Session", status: "idle" }]}
+      />,
+    );
+    expect(container.querySelector('[data-item-id="Session:42"]')).not.toBeNull();
+    // the bare-id locator is gone (was `data-item-id={item.id}`)
+    expect(container.querySelector('[data-item-id="42"]')).toBeNull();
   });
 });

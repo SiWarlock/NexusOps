@@ -17,8 +17,23 @@ describe("CommandCenter triage view", () => {
     const renderedIds = [...container.querySelectorAll("[data-item-id]")]
       .map((el) => el.getAttribute("data-item-id"))
       .toSorted();
-    // exactly the input items rendered — none invented (forbidden #2)
-    expect(renderedIds).toEqual(["x1", "x2", "x3"]);
+    // exactly the input items rendered — none invented (forbidden #2); the
+    // locator is the collision-safe `${machine}:${id}` convention (P6.3b).
+    expect(renderedIds).toEqual(["PullRequest:x2", "Session:x1", "Session:x3"]);
+  });
+
+  it("item_locator_is_machine_namespaced", () => {
+    // The 6.3 view locator convention: data-item-id === `${machine}:${id}`,
+    // collision-safe across machines (a bare id could collide cross-machine).
+    const items: CommandItem[] = [
+      { id: "77", label: "PR 77", machine: "PullRequest", status: "open" },
+    ];
+    const { container } = render(<CommandCenter items={items} />);
+    expect(
+      container.querySelector('[data-item-id="PullRequest:77"]'),
+    ).not.toBeNull();
+    // the bare-id locator is gone (was `data-item-id={item.id}` in 6.3a)
+    expect(container.querySelector('[data-item-id="77"]')).toBeNull();
   });
 
   it("empty_group_shows_empty_state", () => {
@@ -30,7 +45,7 @@ describe("CommandCenter triage view", () => {
     expect(screen.queryByTestId("empty-needsAttention")).toBeNull();
     expect(
       container.querySelector(
-        '[data-group="needsAttention"] [data-item-id="only"]',
+        '[data-group="needsAttention"] [data-item-id="Session:only"]',
       ),
     ).not.toBeNull();
     // the other three groups render an explicit empty state, not absent

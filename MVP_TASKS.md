@@ -20,7 +20,11 @@
 
 **PHASE 0 — DETERMINISTIC WORK COMPLETE (2026-06-07).** All 4 spikes landed (`docs/spikes/*.md`) + the **0.5 contract freeze landed (06f9576)** — the serial neck. Single-writer holds (0.4 → §18 written MEASURED); git2 reads relative-worktrees (0.3 → §9 corrected); #27203 confirmed, bg subagents forbidden (0.1); shared/ contracts frozen Option-A (0.5, §5.0). Toolchain RESOLVED (Lesson §1).
 
-**PHASE BOUNDARY — ✅ Phase-0-exit `/arch-finalize` re-validation COMPLETE (2026-06-07).** Fork (a) resolved: the upstream planning + spec drift was swept FORWARD to the binding `ARCHITECTURE.md` (DECISIONS ADR-007/004, DATA_MODEL §2.3/§2.9/§4/§5/§6.4/§8, EM §7, SHARED_OBJECT_MODEL, OPEN_QUESTIONS, UI_RECONCILIATION) + §5.1 header reconciled to **Ten** + **§5.0 ratified**. **A 5-dim adversarial gap audit confirmed NO frozen `shared/` contract moved (0 release-blockers) → no 0.5b reconciliation forced; the UI track is NOT gated by drift.** Hold can be released → both arms unblocked against the frozen contracts: **(b)** open the **ui track** ∥ **(c)** **Phase 1 / 1.1** (event store, daemon-core). cat-4 (SDK-vs-PTY) + D14 (demo-viability) remain correctly **tracked-open** (unchanged). Audit detail: `docs/gap-audits/R2-phase0-exit-revalidation.json`.
+**Phase-0-exit `/arch-finalize` re-validation COMPLETE + committed (2026-06-07, 1efff4b).** No frozen `shared/` contract moved (0 release-blockers; no 0.5b forced; ui track ungated). Drift swept forward to `ARCHITECTURE.md` (§5.1→Ten, §5.0 ratified, ADR-004 getpeereid/length-prefix, ADR-007 libgit2, EM §7 remote_client, DATA_MODEL/SOM/OQ/UI sweep). Audit: `docs/gap-audits/R2-phase0-exit-revalidation.json`. Hold released.
+
+**PHASE 1 — IN PROGRESS (daemon-core fan-out).** **1.1 event store ✅ LANDED** (df753aa+b998f20+61089ea; 0.7.0; 31 tests; §15 fail-closed redaction gate; entropy → blocking 1.7). **1.2 projection engine ✅ LANDED** (c8c6c72+a1dc482+e66c659; in-band fold in the event-commit txn + offsets + `object_refs` + catch-up-replay/full-rebuild/degraded-skip + the 4 Phase-1-feedable projectors; `SessionStarted`/CONTRACT_VERSION 0.8.0; 6 projector bodies re-homed Option-A; brief 004). **1.3 transactional outbox ✅ LANDED** (343cc09+707845a; in-txn write + §15 sync-sink gate + at-least-once `drain_once` [backoff/retryable/terminal/bounded dead-letter] + crash-recovery + `jsonl_mirror`; 4 destination adapters re-homed; brief 005). **56 tests; security PASS §15/§17/§7.2.**
+
+**PROACTIVE CONTEXT CYCLE (2026-06-08).** 1.2 + 1.3 landed clean (5 slice commits); proactive close-out at the **clean 1.3 boundary** (impl 63% — below ACTION 75%) so 1.4 runs on a fresh budget rather than cycling mid-slice (applies the 1.1 HARD-STOP lesson). Both teammates cycle: impl `/session-end` (session doc `003`, 3302cf1) + orch `/orchestrate-end` (this round commit + push). **Next session target: 1.4 — lease locks + fencing tokens + single-instance** (deps 1.1 met; `leases` table + monotonic fencing + pidlock + reaper). **(b)** the **ui track** remains the user's to open (parallel, ungated). **Open Finding → 1.6:** §17 corrupt-row-on-`open` (`catch_up_replay` strict-reconstruct → daemon-won't-start; human-ratified defer Option A; 1.6 decides skip-vs-refuse + audit-integrity).
 
 **Still open (non-blocking for Phase 1):** HITL — notarization run (0.2, Apple creds), credit-pool drain ≥6/15 (0.1) → then cat-4 SDK-vs-PTY + **0.5b** (re-freeze ExecutionProfile).
 
@@ -43,6 +47,15 @@ _(Triaged at the 2026-06-08 **round-6** ui close-out (daemon-independent polish 
 - **⏸️ PARKED daemon-1.5 ui slices (Decision C)** — **6.3d (Session Terminal + inline permission card)** + **6.3e (Code/Diff review + per-hunk actions)** are deferred until the daemon freezes the contracts they consume — the **Terminal Channel (§6.4)** + the **mutation/intent-submission surface** (the gateway-client's `submit_action`/`approve` methods, today read-only — `gateway-client/types.ts`). **Rationale (Decision C, human-delegated):** 6.3d's permission card is the UI's FIRST mutation path (INV-SEC-1 / forbidden #6) — a safety contract is the worst thing to build provisionally + reconcile; the contract-freeze-before-consume foundation (Option-A+ discipline) + the parallel-track rule (consume a daemon contract only once stable — reads qualified, this mutation surface does not) both forbid building it now. **Build ONCE against the real frozen contract.** The intent seam, when it lands, serves ALL consumers (permission card, per-hunk actions, Dispatch, Brain Run-via-Gateway, notifications toggle, restart-session, policy grants). **Unblocks at:** daemon mutation/intent-submission + Terminal-Channel contract freeze (cross-track timing the human controls). `last-consumer-slice: daemon mutation/Terminal-Channel contract freeze` `(origin: 2026-06-07 P6.3d-escalation / Decision C)`
 - **⏸️ Stale-precondition re-approval treatment (deferred, P6.4d-2 Step-2.5 TWEAK)** — `stale_precondition` (preview≠reality at execute, §17/§6.2) is a **RE-APPROVABLE** flow (regenerate preview + require fresh approval), **NOT** the never-auto-resolved hard-conflict card — so it was scoped OUT of 6.4d-2 L1 (fencing-only; the card's "never auto-resolved" copy must be true of every state it shows). Its display treatment belongs with the **approval/preview surface + the parked intent seam** (Gateway modal / 6.3d-e) — build it there when the intent seam lands. `last-consumer-slice: daemon mutation/intent-submission contract freeze (with the approval/preview surface)` `(origin: 2026-06-08 P6.4d-2 / Step-2.5 TWEAK)`
 - **Wire the §5.0 contract gates into CI** — schema-diff (test 9) + 3-way verify (test 8) + the Codex schema gate (no `.github/workflows/` yet; run via `cargo test`/harness locally meanwhile) **+ the ui-side TS drift test** (generated Zod `.options` === frozen `$defs`) + the `CONTRACT_VERSION`===`x-contract-version` pin + the pnpm/corepack-restore note (corepack shim broken → `npm i -g pnpm`; `ui/.npmrc verify-deps-before-run=false`). `last-consumer-slice: Phase 10 (release/CI infra), or earlier if CI is stood up` `(origin: 2026-06-07 P0.5; ui additions 2026-06-08)`
+**1.1 L1 arch-note refinements (deferred; non-blocking):**
+- **`Timestamp` newtype (`format:date-time`)** across the envelope + future event types — `occurred_at`/`recorded_at` are currently RFC3339 `String` (valid, but no schema `format`). Production refinement; apply when the event-type registry accretes. `(origin: 2026-06-07 P1.1)`
+- **`seq` schema `minimum:1`** annotation (the L2 writer enforces monotonic ≥1; document it in the schema). Minor. `(origin: 2026-06-07 P1.1)`
+- **`workflow_run_id` reconcile** — ∉ the LOCKED 22 IDs; `String` placeholder in the envelope. Resolve: ≡ `workflow_instance_id` (wfi_) vs a genuinely distinct concept needing a new kind (**if new kind → LOCKED-22 contract escalation**). Route to a `/arch-finalize` reconcile or a documented String. `(origin: 2026-06-07 P1.1)`
+- **1.1 L3 §16 follow-up** (→ 1.6, which owns migrations backup/rollback): `migrations::run` skips backup when `from==0` (fresh DB — correct), and a restore-failure currently surfaces only as a generic `Migration` error → give it a typed restore-failure path + the "rolled back to vN" UX (§16). `last-consumer-slice: 1.6` `(origin: 2026-06-07 P1.1 L3)`
+
+**Spread (kept; auto-resolve at the consumer slice):**
+- **ui track generates Zod from `contracts/schema/`** (`pnpm` broken → use `npx json-schema-to-zod`, per the 0.3 env note). `last-consumer-slice: ui-track open (Phase 6)` `(origin: 2026-06-07 P0.5)`
+- **Wire the §5.0 contract gates into CI** — schema-diff (test 9) + 3-way verify (test 8) + the Codex schema gate — no `.github/workflows/` exists yet; they run in `cargo test`/harness locally meanwhile. `last-consumer-slice: Phase 10 (release infra), or earlier if CI is stood up` `(origin: 2026-06-07 P0.5)`
 
 _(LOCKED-text corrections + planning-doc reconciles are tracked in "Architecture-doc corrections" + the Phase-0-exit `/arch-finalize` reconcile list below.)_
 
@@ -174,23 +187,26 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Track / deps:** `daemon-core` (critical path / long pole). **Deps:** 0.4, 0.5. **Parallel-with:** Phase 6 (ui, via mock GatewayPort + fixture projections).
 
-### 1.1 — Event store: append-only events + envelope + FTS5
-- [ ] WAL SQLite opened with the §1 pragmas; `events` table per `§7.1` envelope (incl. reserved `payload_hash`/`previous_event_hash`); `seq` canonical order; FTS5 over the redaction-safe audit projection; `user_version` migration runner.
-- [ ] Files: `daemon/src/eventstore/` (NEW: schema, writer, migrations), `shared/contracts/event_envelope` (extended)
-- [ ] Cross-doc invariant: NEW — Event envelope + actor/source/sensitivity/visibility enums (Appendix A, §7.1)
-- [ ] Tests: happy (append + read back by seq); edge (out-of-order occurred_at vs seq; clock skew uses both timestamps); error (unknown event_version → degraded marker, no crash; corrupt payload → quarantine); integration (golden event log replays deterministically via injectable IdGen/Clock).
+### 1.1 — Event store: append-only events + envelope + FTS5 — ✅ **LANDED** (df753aa + b998f20 + 61089ea)
+- [x] WAL SQLite opened with the §2 pragmas; `events` table per `§7.1` envelope (incl. reserved `payload_hash`/`previous_event_hash`); `seq` canonical order (atomic, `BEGIN IMMEDIATE`); `user_version` migration runner + §16 backup/rollback. — **§15 redaction gate fail-closed** (never persists `unredacted`; `redaction_status` + prefix Redactor); single-write-actor (read-only WAL readers); CONTRACT_VERSION 0.7.0. _(FTS5 scaffolding → populated with the AuditTrail projection in 1.2.)_
+- [x] Files: root Cargo workspace + `daemon/` crate; `daemon/src/{lib,clock,idgen}` + `eventstore/{mod,schema,migrations,writer,redaction}` + tests; `shared/` envelope contract (extended, §5.0).
+- [x] Cross-doc invariant: Event envelope + 4 enums (`source_type`[15 closed]/`sensitivity`/`visibility`/`redaction_status`) + `redaction_status`/`redaction_engine_version` columns — written to Appendix A / §7.1 / DATA_MODEL §2.1 / `daemon/CLAUDE.md` (0.6.0 envelope → 0.7.0 redaction). LESSONS §3 (single-write-actor).
+- [x] Tests: 31 workspace (append/seq-canonical/single-writer/fail-closed-redaction[test 4]/secret-masked/audit-write-fail-closed/idempotency/migration+backup-restore/degrade/quarantine/golden-log/wal-pragmas) + 3-way verify @ 0.7.0; security-reviewer PASS all invariants.
 
-### 1.2 — Projection engine + the MVP projections + offsets
-- [ ] Projection workers fold events → the MVP `proj_*` tables (ProjectActivity, Session, ApprovalQueue, Worktree, PullRequest, PlanProgress, ProjectGraph, AgentTeam, AuditTrail, UsageLedger) + `object_refs`; advance `projection_offsets` in the same txn; startup replay + full rebuild; degraded handling.
-- [ ] Files: `daemon/src/projections/` (NEW)
-- [ ] Cross-doc invariant: extended — projection rows mirror the §5.1 status enums
-- [ ] Tests: happy (event → projection update); edge (rebuild-equivalence: full replay == incremental fold); error (projector exception → `state='degraded'`, skip, raw events intact); integration (single SessionStarted fans out to proj_session + proj_project_graph in one txn — demo step 7).
+**Spawned:** entropy fallback + quarantine→`SensitiveOutputRedacted` + §15 property/fuzz → **1.7** (blocking); §16 migration restore-failure typing → **1.6**; AppendIntent/object_refs → **1.2** (Carry-forward).
 
-### 1.3 — Transactional outbox
-- [ ] `outbox` table; event + projection + outbox commit in one txn; drainers for destinations (brain_mcp, github, linear, notifier, jsonl_mirror) with backoff + retryable/terminal classification.
-- [ ] Files: `daemon/src/eventstore/outbox.rs` (NEW), `daemon/src/projections/` (extended)
-- [ ] Cross-doc invariant: none
-- [ ] Tests: happy (drain delivers once); edge (retryable 429/5xx backoff vs terminal 401/403 → dead after budget); error (crash between event-commit and delivery → redelivered, no double-apply); integration (outbox is the only path events reach external destinations).
+### 1.2 — Projection engine + the MVP projections + offsets — ✅ **LANDED** (c8c6c72 + a1dc482 + e66c659)
+- [x] Projection workers fold events → the MVP `proj_*` tables (ProjectActivity, Session, ApprovalQueue, Worktree, PullRequest, PlanProgress, ProjectGraph, AgentTeam, AuditTrail, UsageLedger) + `object_refs`; advance `projection_offsets` in the same txn; startup replay + full rebuild; degraded handling. — **engine + offsets + `object_refs` + catch-up-replay/full-rebuild/degraded-skip + the 4 Phase-1-feedable projectors landed in-band in the event-commit txn; 6 projector bodies re-homed (scope below).**
+- [x] **Projector scope (Option-A, human-approved 2026-06-07):** the engine + **all 10 table DDLs** + `object_refs` + `projection_offsets` land here; **projector BODIES = the 4 Phase-1-feedable** (Session, ProjectGraph/object_refs, AuditTrail+FTS, ProjectActivity). The other **6 re-homed to their producing phases** (each lands with its real event contract + tests; nothing dropped): ApprovalQueue→**2.1**, UsageLedger→**3.1**, Worktree→**5.2**, PullRequest→**7.1**, PlanProgress→**9.2**, AgentTeam→**9.3**. All 10 DDLs kept in 1.2 so the ui track fixtures every projection schema. `(origin: 2026-06-07 P1.2, brief 004)`
+- [x] Files: `daemon/src/projections/` (NEW) — `{mod,schema,session,graph,audit,activity,object_refs}.rs`; `shared/src/events.rs` (`SessionStarted`, CONTRACT_VERSION 0.8.0); `eventstore/{mod,schema,migrations}.rs` (extended)
+- [x] Cross-doc invariant: extended — projection status columns bind the frozen §5.1 enums; **EventTypeRegistry** (`SessionStarted`/0.8.0) + projection-surface rows written to Appendix A / `daemon/CLAUDE.md` cross-doc / DATA_MODEL §2.3. LESSONS §4.
+- [x] Tests: happy (event → projection update); edge (rebuild-equivalence: full replay == incremental fold); error (projector exception → `state='degraded'`, skip, raw events intact); integration (single SessionStarted fans out to proj_session + proj_project_graph in one txn — demo step 7). — **15 tests; §17 strict-reconstruct-on-`open` Finding → 1.6.**
+
+### 1.3 — Transactional outbox — ✅ **LANDED** (343cc09 + 707845a)
+- [x] `outbox` table; event + projection + outbox commit in one txn; drainers for destinations (brain_mcp, github, linear, notifier, jsonl_mirror) with backoff + retryable/terminal classification. — **outbox table (migration 4) + in-txn write + §15 sync-sink gate + `drain_once` (backoff/retryable/terminal/bounded dead-letter) + crash-recovery (`reset_in_flight` on `open`) + `jsonl_mirror` landed; the 4 external destination adapters re-homed (Option-A): brain_mcp→8.1, github/linear→7.1, notifier→10.2; Tokio drainer spawn + bounded drain-pass → 1.6.**
+- [x] Files: `daemon/src/eventstore/outbox.rs` (NEW), `daemon/src/{clock,idgen}.rs` (extended), `daemon/Cargo.toml` (time "parsing")
+- [x] Cross-doc invariant: none frozen — `out_` id + `destination`/`status` enums are **daemon-internal** (no CONTRACT_VERSION bump); recorded in Appendix A / `daemon/CLAUDE.md` cross-doc / DATA_MODEL §2.5. LESSONS §5.
+- [x] Tests: happy (drain delivers once); edge (retryable 429/5xx backoff vs terminal 401/403 → dead after budget); error (crash between event-commit and delivery → redelivered, no double-apply); integration (outbox is the only path events reach external destinations). — **9 tests; full suite 56 green; security PASS.**
 
 ### 1.4 — Lease locks + fencing tokens + single-instance
 - [ ] `leases` table (resource_id, owner_id, monotonic fencing_token, heartbeat, expires_at); owner-guarded renew; expired-lease reclaim mints a new token; `pidlock` single-instance; lease reaper background task.
@@ -206,14 +222,26 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 ### 1.6 — First-run bootstrap + migrations backup/rollback + version-compat
 - [ ] Cold-start ordering (§16): install launchd Background Item / detached spawn → pidlock → reclaim stale socket → create app-support dir → create+migrate DB → register desktop-host Device + LocalRunner → bind UDS. Pre-migration DB backup + restore-on-failure; `app_version↔user_version` floor (refuse-if-too-new); version-compat matrix.
+- [ ] **Degradable catch-up replay on `open` (§17 — re-homed from the 1.2 L3 Finding; human-ratified defer 2026-06-07, Option A)** — 1.2's `catch_up_replay` reconstructs via the **strict** read path, so one corrupt event row aborts `open` → daemon won't start (no in-product recovery; `rebuild_projections` sits behind the failing `open`). §17 (line 391) requires the read path to **quarantine/degrade + continue** (`read_all_degradable`), not crash. **1.6 must DECIDE + TEST the semantics (not just swap readers):** the §17-correct behavior for a corrupt EVENT row — **degrade/skip-and-continue** (`read_all_degradable`) **vs refuse-safely + restore `.bak`** — carries an **audit-integrity dimension** (skip-and-continue could *silently drop a real event*). **Flag to the human at 1.6 if the skip-vs-refuse call turns load-bearing.** **Bundle:** a replay-time `redaction_status='unredacted'` **quarantine-skip** (security-medium; non-producible via the write gate today — defense-in-depth on replay). Tests: corrupt row → `open` recovers per the chosen semantics (degrades-not-crashes, or refuses-safely + restores `.bak`); legacy unredacted row → quarantine-skipped. `(origin: 2026-06-07 P1.2 L3 — security+cq HIGH Finding; human-ratified defer + skip-vs-refuse design mandate)`
+- [ ] **Wire the daemon-runtime Tokio tasks (re-homed from 1.3)** — spawn the outbox `drain_once` loop on an interval (the 1.3 `drain_once` unit + `reset_in_flight`-on-`open` are ready; the *spawn* lands here, §12); **bound a single drain pass (LIMIT/batch)** so a large backlog can't starve the writer (1.3 security-low deferral). `(origin: 2026-06-08 P1.3)`
+- [ ] **`eventstore::user_version()` → `Result<u32>` (inlined from 1.1 L2 via 1.2 triage)** — currently returns a `-1` sentinel on error; make it typed while in the version-compat code. Minor robustness. `(origin: 2026-06-07 P1.1 L2; triaged 2026-06-08)`
 - [ ] Files: `daemon/src/bootstrap.rs` (NEW), `daemon/src/eventstore/migrations.rs` (extended)
 - [ ] Cross-doc invariant: NEW — Device, LocalRunner (Appendix A, §5.3); Version-compatibility matrix (§16)
 - [ ] Tests: happy (clean first run creates DB + runs migrations); edge (stale socket reclaimed; second instance refused); error (bad migration → restore `.bak`, refuse-safely; downgraded binary sees newer DB → refuse); integration (daemon restart resumes against existing DB).
 
+### 1.7 — Redactor: entropy fallback (OQ-SEC-2) — 🔒 **BLOCKING Phase-1 acceptance** (human, 2026-06-07)
+- [ ] Extend the 1.1 `Redactor` (token-prefix high-recall set) with the **Shannon-entropy fallback on `KEY=value` lines** (OQ-SEC-2, §15) so full secret-detection recall doesn't drift. The 1.1 fail-closed gate + `redaction_status` already enforce the invariant; this raises *recall*. Same redactor gates all 3 sinks (persist/embed/sync, §15).
+- [ ] Files: `daemon/src/eventstore/redaction.rs` (extended) or `daemon/src/policy/redactor.rs` (per the 1.1 placement decision).
+- [ ] Cross-doc invariant: none (refines the §15 redactor; OQ-SEC-2 resolves).
+- [ ] Tests: happy (entropy fallback catches a high-entropy `KEY=value` secret the prefix set misses); edge (low-entropy config value NOT redacted — no false-positive storm); error (unredactable high-confidence secret → quarantine + `SensitiveOutputRedacted`); integration (all 3 sinks gated by the same redactor).
+- [ ] **Absorbs the L3-deferred §15 items** (1.1's prefix Redactor redacts-or-passes, never quarantines): wire the **quarantine → `SensitiveOutputRedacted` emission** path + the **§15 property/fuzz test** (no secret persists `unredacted` across fuzzed payloads). `(origin: 2026-06-07 P1.1 L3)`
+- [ ] **Human chose this as a blocking task** (not a loose Step-9 flag) specifically so secret-detection recall can't silently drift below the §15 bar.
+
 ### Acceptance criteria (1)
 - [ ] Daemon starts detached, single-instance, survives UI restart; event store is the sole writer.
 - [ ] Projections rebuild deterministically; offsets crash-safe; `/preflight` clean.
-- [ ] Lease fencing rejects stale holders; UDS peer-auth + handshake enforced.
+- [ ] Lease fencing rejects stale holders; UDS peer-auth (`getpeereid`) + handshake enforced.
+- [ ] **§15 redaction: 1.1 fail-closed gate + `redaction_status` AND the 1.7 entropy fallback (OQ-SEC-2) both landed** — no event persists `unredacted`; full prefix+entropy recall. (Gate is the blocking bar.)
 
 ---
 
@@ -227,6 +255,7 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 ### 2.1 — Gateway pipeline + ActionRequest/ActionPlan model + mutation methods
 - [ ] `submit_action`/`submit_action_plan`/`preview_action`/`approve`/`deny` GatewayPort methods; the staged pipeline; `action_requests`/`approvals` durable rows; the two split state machines (R-5); authoritative `ActionExecution*` events emitted ONLY by the Gateway.
+- [ ] **proj_approval_queue projector body (re-homed from 1.2, Option-A)** — fold the Gateway's `ActionRequested`/`Approval*` events → `proj_approval_queue` (the Human Input Queue read model, AG §8; `sort_key` risk DESC, age). Table DDL pre-created in 1.2 (migration 3); this lands the projector + its event contract + tests. `(origin: 2026-06-07 P1.2)`
 - [ ] Files: `daemon/src/gateway/` (NEW: pipeline, request, approval), `daemon/src/ipc/` (extended)
 - [ ] Cross-doc invariant: NEW — ActionRequest, ActionPlan/ActionPlanStep, Approval, ActionResult, ActorRef, ResourceRef, EvidenceRef, PolicyDecision (Appendix A, §6.2)
 - [ ] Tests: happy (single action: submit→preview→approve→execute→succeeded events); edge (bundled plan: step-by-step approval, approve-all excludes critical/4); error (deny-with-reason; expired approval); integration (Brain/agent/UI all reach mutation only via submit_*).
@@ -266,6 +295,7 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 ### 3.1 — HarnessAdapter contract + normalized types + capabilities
 - [ ] The trait `{launch, stream_status, intercept_mutation, read_transcript, telemetry_heartbeat, resume, capabilities}` + normalized types (NormalizedStatus[17], TelemetrySample{context_pct:Option, metric_quality}, MutationIntercept, TranscriptRef, ResumeResult) + `HarnessCapabilities` (10 fields); per-harness coverage matrix.
+- [ ] **proj_usage_ledger projector body (re-homed from 1.2, Option-A)** — fold telemetry/usage events (derived from `TelemetrySample`) → `proj_usage_ledger` rollups (tokens/context/cost per day|project|session|model, `metric_quality`, §18). Table DDL pre-created in 1.2 (migration 3); this lands the projector + its event contract + tests. `(origin: 2026-06-07 P1.2)`
 - [ ] Files: `daemon/src/harness/mod.rs` (NEW), `shared/contracts/harness` (NEW)
 - [ ] Cross-doc invariant: NEW — HarnessAdapter trait + normalized types, HarnessCapabilities, Per-harness coverage matrix (Appendix A, §9.1)
 - [ ] Tests: happy (both adapters satisfy the trait); edge (Codex `supportsContextMetadata=false` → context None); error (unsupported capability surfaced, not faked); integration (a shared conformance suite runs against recorded fixtures for both).
@@ -343,6 +373,7 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 ### 5.2 — Dual git backend + worktree lifecycle (Gateway actions)
 - [ ] git2 for status/diff/log/branch reads (projection refresh, live re-read before mutate); git CLI for `git.create_worktree`/`create_branch`/commit/checkout/merge as Gateway actions; derived worktree status precedence (§7.2); git watcher (hooks + git2).
+- [ ] **proj_worktree projector body (re-homed from 1.2, Option-A; incl. the Q6 two-axis precedence fn)** — fold worktree events + live git2 reads → `proj_worktree` with the git+overlay status precedence (§7.2; §5.1 R-7). Table DDL pre-created in 1.2 (migration 3); this lands the projector + precedence fn + tests. `(origin: 2026-06-07 P1.2)`
 - [ ] Files: `daemon/src/git/` (NEW: reads, cli_mutations, worktree, watcher)
 - [ ] Cross-doc invariant: extended — Worktree status (Appendix A, §5.1)
 - [ ] Tests: happy (create worktree + branch via Gateway); edge (relative-worktrees repo → CLI-read fallback per 0.3; precedence collapse locked/conflicts>dirty); error (dirty/conflict worktree mutation gated); integration (worktree status matches the user's terminal git).
@@ -436,6 +467,8 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 ### 7.1 — GitHub + Linear integration (read/link first)
 - [ ] octocrab (issues/PRs/checks) + gh-token bootstrap else Device Flow; Linear SDK (PKCE/key, 24h refresh); `integration_connections` (keychain); reads cached as projections; integration-failure contract (§17).
+- [ ] **proj_pull_request projector body (re-homed from 1.2, Option-A)** — fold GitHub PR sync events → `proj_pull_request` (the GitHub-authoritative synced cache w/ `pr_checked_at`; status ∈ PullRequest[11], §7.2). Table DDL pre-created in 1.2 (migration 3); this lands the projector + its event contract + tests. `(origin: 2026-06-07 P1.2)`
+- [ ] **github + linear outbox-drainer adapters (re-homed from 1.3, Option-A)** — the `Destination` impls the 1.3 outbox drains: GitHub/Linear delivery (octocrab / Linear SDK) with the §17 retryable/terminal classification feeding the drainer's backoff + bounded dead-letter. The drainer framework + `drain_once` already landed in 1.3 (`343cc09`/`707845a`). `(origin: 2026-06-08 P1.3)`
 - [ ] Files: `daemon/src/integrations/{github,linear}/` (NEW)
 - [ ] Cross-doc invariant: none
 - [ ] Tests: happy (list issues/PRs); edge (token expiry → re-auth card; rate-limit backoff); error (offline → stale projection + queued writes); integration (auth bootstrap order: gh token → device flow → keychain).
@@ -470,6 +503,7 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 ### 8.1 — Brain MCP sidecar lifecycle + notification→event adapter
 - [ ] Spawn/own the Brain stdio MCP sidecar (`rmcp`); ping/restart/backoff/process-group-kill; MCP-notification→event mapping (BrainEventMapping); Brain outbox payload (redacted envelope, object_refs by shared ID); degrade gracefully when absent/stale (`brain_status_reported_at`).
+- [ ] **brain_mcp outbox-drainer adapter (re-homed from 1.3, Option-A)** — the `Destination` impl delivering the redacted Brain outbox payload (envelope minus restricted/secret, §7.1/§13.1) the 1.3 drainer drains. Drainer framework already in 1.3. `(origin: 2026-06-08 P1.3)`
 - [ ] Files: `daemon/src/brainclient/` (NEW)
 - [ ] Cross-doc invariant: NEW — BrainEventMapping (Appendix A, §13.1)
 - [ ] Tests: happy (sidecar starts, notifications → events); edge (Brain stale → degraded banner, platform unaffected); error (in-flight call timeout → fail brain.* action, respawn); integration (Brain reaches mutations only via Gateway — INV-SEC-1).
@@ -502,12 +536,14 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 ### 9.2 — cc-crew parsers (plan + architecture anchors) + Plan view
 - [ ] MVP_TASKS.md/ARCHITECTURE.md §N anchor parsers → ImplementationPlan + PlanTask; Plan view (Phase→Track→PlanTask, anchors, AC, dispatch); plan-task linking stored in platform metadata (no write-back in MVP).
+- [ ] **proj_plan_progress projector body (re-homed from 1.2, Option-A)** — fold plan/task events (`ImplementationPlanUpdated` + task-status changes) → `proj_plan_progress` (status ∈ Task[17] R-8). Table DDL pre-created in 1.2 (migration 3); this lands the projector + its event contract + tests. `(origin: 2026-06-07 P1.2)`
 - [ ] Files: `daemon/src/workflow/parsers/` (NEW), `ui/src/views/plan/` (extended from kit)
 - [ ] Cross-doc invariant: extended — PlanTask kind-scoped (Appendix A, §5.1 R-8)
 - [ ] Tests: happy (parse a plan → PlanTasks with anchors); edge (ambiguous structure → raw-preview fallback); error (missing anchors degrade w/ warnings); integration (dispatch a plan task → session linked to the plan task — demo step 5).
 
 ### 9.3 — AgentTeam object + projection (modeling only)
 - [ ] `agent_teams` registry + `proj_agent_team` projection over the 9-state machine (R-6); team membership/role on sessions; `active_teams` counter; graph team/lead/orchestrator/worker nodes. (Full `/team-start` orchestration is P1, §19.2.)
+- [ ] **proj_agent_team projector body (re-homed from 1.2, Option-A)** — the `proj_agent_team` table DDL was pre-created in 1.2 (migration 3); this task builds the projector body over it (already in the deliverable above). `(origin: 2026-06-07 P1.2)`
 - [ ] Files: `daemon/src/eventstore` (agent_teams table), `daemon/src/projections/agent_team.rs` (NEW), `ui/src/views/team/` (extended from kit)
 - [ ] Cross-doc invariant: extended — AgentTeam status (Appendix A, §5.1 R-6)
 - [ ] Tests: happy (team object created + status renders); edge (worker session shows team + role); error (orchestration actions are P1-gated/absent); integration (active_teams counter derives from team status).
@@ -534,6 +570,7 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 ### 10.2 — Native notifications (notifier) + settings
 - [ ] `notifier` module → macOS UserNotifications for SessionWaitingOnHumanInput/Permission, CheckFailed, SessionCompleted; per-type toggles; permission state + request; redacted lock-screen previews; in-app bell mirror.
+- [ ] **notifier outbox-drainer adapter (re-homed from 1.3, Option-A)** — the `Destination` impl delivering notifier events the 1.3 outbox drains → macOS UserNotifications (redacted previews). Drainer framework already in 1.3. `(origin: 2026-06-08 P1.3)`
 - [ ] Files: `daemon/src/notifier/` (NEW), `ui/src/views/settings/notifications.tsx` (NEW)
 - [ ] Cross-doc invariant: none
 - [ ] Tests: happy (waiting session → notification); edge (permission not granted → degraded, in-app only); error (previews redacted — no secrets); integration (notifier consumes outbox events).
@@ -571,9 +608,11 @@ Deferred items with come-back guidance. (Seeded from `ARCHITECTURE.md §19.2`; e
 
 Open scope/design questions awaiting resolution.
 
+- **[RESOLVED 2026-06-07 — §15 safety-design, human-decided] 1.1 redaction sequencing = Option (a+).** 1.1 ships the **`redaction_status` column + `Redactor` trait + fail-closed gate** (never persist `redaction_status='unredacted'`) + the **high-recall token-prefix Redactor**; the **entropy fallback (OQ-SEC-2) is a BLOCKING Phase-1 task (1.7)**, not a fast-follow — chosen so secret-detection recall can't drift. Pin the §15 invariant with the fail-closed test (the load-bearing assertion). `redaction_status` on the envelope = cross-doc invariant → Appendix A / §7.1 / DATA_MODEL §2.1 atomic edit at 1.1 Step 9. `(origin: 2026-06-07 P1.1)`
 - **[RESOLVED 2026-06-07 — cat-4, user-locked] Cross-language contract source-of-truth = Option A.** Rust `shared` crate = native authority (newtypes, serde-closed enums); `schemars` → **JSON Schema as a first-class, versioned, CI-diff-gated published artifact** (`shared/contracts/schema/`, `CONTRACT_VERSION`); TS Zod + Python Pydantic generated from it (drift-caught); reject-unknown end-to-end. Documented at **`ARCHITECTURE.md §5.0`** (direct anchored edit, owner-locked). This is the mechanism for ALL contract surfaces, not just 0.5. `(origin: 2026-06-07 P0.5)`
 - **[cat-4 / load-bearing — PENDING ≥6/15 DRAIN] SDK-vs-PTY primary driver for Claude (O-4 / ADR-006).** The 2026-06-15 Anthropic policy gives SDK/`-p` a separate **capped** Agent-SDK credit pool that **hard-stops with no fallback**; the interactive terminal is exempt (`RESEARCH.md:65` [VERIFIED]). This **may invert ADR-006**'s Option-C-Hybrid lean (SDK-driven primary). **Not decided agent-only.** Phase-0 0.1 LANDED the measurable half: **decision criterion + both branches recorded** (`docs/spikes/OQ-HARN-SPIKE-7.md §3`); **#27203 confirmed** present on CC 2.1.168 (bg subagents stay forbidden — §9.1 unchanged). **Still open:** the deciding **drain measurement = HITL checklist** (`§5`), user runs ≥ 6/15**. Orchestrator carries the resolved call back to the lead/user with the drain data. **Blocks** freezing any 0.5 supervision-touching contract surface. `(origin: 2026-06-07 P0.1)`
 - **[tracked — Phase 10, not blocking] D14 demo-viability contradiction.** Brain-optional (design) vs demo-mandatory (PRD §25) vs SDK-can-halt (credit-pool) are in tension for the end-to-end demo. Carry as a known Phase-10 concern; resolve before the integration/deploy gate. `(origin: 2026-06-07, D14 audit)`
+- **[OPEN — §17 design, deferred to 1.6; flag the human if load-bearing] Corrupt-event-row recovery on `open` = skip-vs-refuse.** 1.2's `catch_up_replay` aborts `open` on a corrupt event row (strict reconstruct). The §17-correct fix is degradable reconstruction — but the *behavior* is a design decision: **degrade/skip-and-continue** (`read_all_degradable`) **vs refuse-safely + restore `.bak`**, with an **audit-integrity dimension** (skip-and-continue could silently drop a real event). 1.6 must decide + test the semantics (not just swap readers); bundle the replay-time legacy-`unredacted` quarantine-skip. Human-ratified the *defer* (Option A); the skip-vs-refuse call resolves at 1.6. `(origin: 2026-06-08 P1.2 L3 Finding)`
 - _(Phase 0 also populated §18 perf numbers (0.4 → written into `ARCHITECTURE.md §18`). §13.1 Brain transport still resolves later.)_
 
 ---
@@ -609,6 +648,27 @@ Applied this round (2026-06-07), committed atomically with the round commit:
 ## Log
 
 Append-only, date-stamped, the orchestrator's framing of each round.
+
+### 2026-06-08 — Phase 1.2 (projections) + 1.3 (outbox) — read-model + reliable side-effects
+
+- **Completed:** **1.2 projection engine LANDED** (3-commit: `c8c6c72` schema+AppendIntent identity fields + migration 3 [10 proj_* + object_refs + projection_offsets] / `a1dc482` in-band apply [4 feedable projectors + `SessionStarted`/0.8.0 + §15 regression guard] / `e66c659` recovery [catch-up replay + full rebuild + degraded-skip]). **1.3 transactional outbox LANDED** (2-commit: `343cc09` table+in-txn-write+§15-sync-sink-gate / `707845a` drainer [at-least-once, backoff, retryable/terminal, bounded dead-letter] + crash-recovery + jsonl_mirror). 56 tests; security PASS §15/§17/§7.2 on every layer; session doc `003`.
+- **Decisions made:** **Projections fold in-band in the event-commit txn** (locked by §7/§2.4), savepoint-isolated per projector (logic error degrades+skips; Db error fails the append closed); offsets advance same-txn (never ahead of rows); status columns bind the frozen §5.1 enums (LESSONS §4). **object_refs are DERIVED** from typed fields, not caller-supplied (rebuild-safety — impl finding, corrected the brief default). **`SessionStarted` = first EventTypeRegistry payload in `shared/`** per §5.0 → CONTRACT_VERSION 0.8.0. **Outbox = the §15 sync sink** (payload from the already-redacted event; LESSONS §5); `out_` id daemon-internal (not a frozen contract ID); at-least-once via in_flight-claim-before-deliver + reset-on-open.
+- **Scope shifts (Option-A sequencing, human-ratified):** 1.2 ships the engine + all 10 table DDLs + the 4 Phase-1-feedable projector bodies; **6 projector bodies re-homed** to producing phases (ApprovalQueue→2.1, UsageLedger→3.1, Worktree→5.2, PullRequest→7.1, PlanProgress→9.2, AgentTeam→9.3). 1.3 ships the engine + jsonl_mirror; **4 destination adapters re-homed** (brain_mcp→8.1, github/linear→7.1, notifier→10.2) + the drainer Tokio-spawn/bounded-pass→1.6. All origin-marked (nothing dropped).
+- **Findings:** **§17 corrupt-row-on-`open`** — `catch_up_replay` reconstructs via the strict read path → one corrupt event row aborts `open` (daemon-won't-start), contradicting §17's degrade/quarantine read path. Both reviewers HIGH; not producible by current code (writer can't persist a corrupt row). **Human-ratified defer (Option A) → task 1.6** (decide skip-vs-refuse semantics + audit-integrity; bundle the replay-time legacy-`unredacted` quarantine-skip).
+- **Process:** 3rd ship→next-layer wake-gap (1.3 L2→L3) caught by the lead's watchdog; `drive-multicommit-slices` lesson sharpened to 3 mechanisms (fold next-layer into SHIP + re-wake on any "proceeding" + roll straight into next-layer RED). Per-LAYER context monitoring held (no repeat of the 1.1 86% blowout).
+- **Round close trigger:** **proactive cycle** at the clean 1.3 boundary (impl 63%, below ACTION 75%) — recommended by orch + approved by the lead/user — so 1.4 runs on a fresh budget instead of cycling mid-slice.
+- **Next session target:** **1.4 — lease locks + fencing tokens + single-instance** (`leases` table + monotonic fencing + pidlock + reaper; deps 1.1 met). ui track remains the user's to open (ungated).
+- **Reference:** implementer session doc `003-2026-06-08-projections-and-outbox.md`; briefs `004-P1-2-projections.md` + `005-P1-3-outbox.md`.
+
+### 2026-06-07 — Phase 1.1: event store (the trust-core spine) + HARD-STOP cycle
+
+- **Completed:** **1.1 event store LANDED** as a 3-commit slice — `df753aa` (§7.1 envelope contract + source/sensitivity/visibility enums, 0.6.0) + `b998f20` (root Cargo workspace + `daemon/` crate + single-writer WAL store: atomic `seq` in `BEGIN IMMEDIATE`, read-only WAL readers, `user_version` migrations + §16 backup/rollback, injectable Clock/IdGen, degrade/quarantine on read §17) + `61089ea` (**§15 redaction gate**: `redaction_status` + `RedactionStatus` + `Redactor` trait + fail-closed writer gate + prefix Redactor + migration 2, 0.7.0). 31 workspace tests + 3-way verify; security-reviewer PASS on every invariant.
+- **Decisions made:** **§15 redaction sequencing = Option (a+)** (human-decided) — `redaction_status` column + fail-closed gate + prefix Redactor in 1.1; the entropy fallback (OQ-SEC-2) made a **BLOCKING Phase-1 task (1.7)** so recall can't drift. Build-layout: a **root Cargo workspace** (shared+daemon). `CONTRACT_VERSION` = semver-on-contract (0.5.0→0.6.0→0.7.0). `source_type` declared **closed** (15, EM §8 "Examples"→closed). `causation_id` typed `EventId`.
+- **Scope shifts:** entropy fallback + quarantine→`SensitiveOutputRedacted` + §15 property/fuzz test → **1.7**; §16 migration restore-failure typing → **1.6**; AppendIntent-grows + object_refs table → **1.2**. None weaken the shipped §15 gate (the blocking bar).
+- **Process:** 1.1's multi-commit cadence surfaced two team-comms lessons — (a) I second-guessed an in-flight freeze-once/then-extend directive (4 crossed messages; resolved by anchoring on the committed artifact); (b) the impl idled after each layer commit (wake-gap ×2) → orchestrator must **drive layer→layer** (banked to auto-memory). LESSONS §3 (single-write-actor + atomic seq). `cargo fmt --check` added to the preflight gate (1.1-prior).
+- **Round close trigger:** **HARD-STOP context cycle** — daemon-implementer hit **86%** mid-slice (the per-slice gate missed a long multi-commit climb). 1.1 finished clean first (slice-atomicity), then both teammates cycle (impl `/session-end` → session doc `002`/`59d39ad`; orch `/orchestrate-end` = this round commit + push). Fresh successors spawn; **1.2 halted** for them.
+- **Next session target:** **1.2 — projection engine + MVP projections + offsets** (deps 1.1 met; consumes the event log, fills the AuditTrail FTS5; folds in the Carry-forward 1.2 items). The **ui track** remains the user's to open (parallel, ungated).
+- **Reference:** implementer session doc `002-2026-06-07-event-store.md`; brief `003-P1-1-event-store.md`.
 
 ### 2026-06-07 — Phase 0: spikes + 0.5 contract freeze (the serial neck)
 

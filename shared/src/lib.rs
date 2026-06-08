@@ -6,6 +6,8 @@
 //! consumed (generated) by the TS UI (Zod) and the Python Brain (Pydantic).
 
 pub mod actor;
+pub mod event_envelope;
+pub mod events;
 pub mod ids;
 pub mod objects;
 pub mod schema;
@@ -13,7 +15,9 @@ pub mod status;
 
 /// The frozen-contract version, stamped into the emitted JSON Schema and asserted
 /// to agree across Rust / schema / Zod / Pydantic (the §5.0 propagation contract).
-pub const CONTRACT_VERSION: &str = "0.5.0";
+/// 0.8.0 adds the first concrete event-type payload (`SessionStarted`, 1.2) to the
+/// registry — additive over the 0.7.0 envelope+redaction surface.
+pub const CONTRACT_VERSION: &str = "0.8.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

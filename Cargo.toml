@@ -1,0 +1,8 @@
+# NexusOps Rust workspace root (1.1 L2). Members: the cross-language contract
+# authority (`shared`) + the daemon trust core (`daemon`). The throwaway Phase-0
+# spike crates under daemon/spikes/ are their own workspaces (auto-excluded;
+# listed in `exclude` belt-and-suspenders).
+[workspace]
+resolver = "2"
+members = ["shared", "daemon"]
+exclude = ["daemon/spikes/sqlite-loadtest", "daemon/spikes/git2-worktree-check"]

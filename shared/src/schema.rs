@@ -9,6 +9,8 @@
 use schemars::JsonSchema;
 
 use crate::actor::ActorType;
+use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility};
+use crate::events::SessionStarted;
 use crate::ids::IdKind;
 use crate::objects::DesktopObjectKind;
 use crate::status::{
@@ -35,6 +37,14 @@ struct ContractBundle {
     actor_type: ActorType,
     id_kind: IdKind,
     desktop_object_kind: DesktopObjectKind,
+    // 1.1 (L1) — Event envelope + the 3 new enums (§7.1)
+    event_envelope: EventEnvelope,
+    source_type: SourceType,
+    sensitivity: Sensitivity,
+    visibility: Visibility,
+    redaction_status: RedactionStatus,
+    // 1.2 — first concrete event-type payload (§7.1 EventTypeRegistry)
+    session_started: SessionStarted,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

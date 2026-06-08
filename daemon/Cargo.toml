@@ -1,0 +1,30 @@
+# nexusopsd — the Rust daemon (trust core). The single audited mutator + sole
+# DB writer (§4, §15 INV-SEC-1). 1.1 lands the event-store spine.
+[package]
+name = "nexusopsd"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+nexusops-shared = { path = "../shared" }
+# rusqlite pinned 0.34 (bundled): satisfies rusqlite_migration 2 (^0.34) while
+# staying on libsqlite3-sys 0.31 — 0.40's libsqlite3-sys 0.38 uses the unstable
+# `cfg_select` and won't build on stable 1.93 (see OQ-DATA-SPIKE-3).
+rusqlite = { version = "0.34", features = ["bundled"] }
+rusqlite_migration = "2"
+ulid = "1.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2"
+# RFC3339 UTC timestamps for the prod SystemClock (DATA_MODEL §2.1). Dep beyond
+# the brief's list (rusqlite/migration/ulid) — flag at Step-9; justified by
+# pervasive event timestamping. "parsing" added in 1.3 for outbox backoff
+# arithmetic (Clock::now_plus_secs parses now + adds a Duration).
+time = { version = "0.3", features = ["formatting", "parsing"] }
+
+[dev-dependencies]
+tempfile = "3"
+# integration tests inject corrupt/future-version rows directly to exercise the
+# read-path degrade/quarantine (§17) without a pub test-backdoor in the API.
+rusqlite = { version = "0.34", features = ["bundled"] }

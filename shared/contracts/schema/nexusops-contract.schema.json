@@ -68,6 +68,25 @@
       ],
       "type": "string"
     },
+    "Capabilities": {
+      "additionalProperties": false,
+      "description": "`get_capabilities` / `HelloAck` capabilities (§6.4). Matches the ui's pinned `Capabilities`\n(`protocol_version` + `contract_version`).",
+      "properties": {
+        "contract_version": {
+          "type": "string"
+        },
+        "protocol_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "contract_version"
+      ],
+      "type": "object"
+    },
     "DesktopObjectKind": {
       "description": "The 4 desktop-addendum object kinds (§5.3). Serialized snake_case.",
       "enum": [
@@ -240,6 +259,52 @@
       ],
       "type": "object"
     },
+    "HelloAck": {
+      "additionalProperties": false,
+      "description": "daemon→client handshake success (§6.4): the negotiated protocol version + the daemon's\nbuild version + its capabilities.",
+      "properties": {
+        "capabilities": {
+          "$ref": "#/$defs/Capabilities"
+        },
+        "daemon_version": {
+          "type": "string"
+        },
+        "protocol_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "daemon_version",
+        "capabilities"
+      ],
+      "type": "object"
+    },
+    "HelloFrame": {
+      "additionalProperties": false,
+      "description": "The first client→daemon frame (§6.4 handshake). No method is served until a successful\nhandshake. `deny_unknown_fields` rejects a non-Hello first frame (reject-unknown, §15).",
+      "properties": {
+        "app_version": {
+          "type": "string"
+        },
+        "client_kind": {
+          "type": "string"
+        },
+        "protocol_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "client_kind",
+        "app_version"
+      ],
+      "type": "object"
+    },
     "IdKind": {
       "description": "The 22 shared ID kinds (§5.2). Serialized snake_case (== the ID field name).",
       "enum": [
@@ -265,6 +330,18 @@
         "event_id",
         "artifact_id",
         "evidence_item_id"
+      ],
+      "type": "string"
+    },
+    "IpcErrorCode": {
+      "description": "The §6.4 structured wire error codes (closed set; reject-unknown). snake_case wire values.",
+      "enum": [
+        "version_skew",
+        "frame_too_large",
+        "unknown_method",
+        "unauthorized_peer",
+        "policy_denied",
+        "precondition_stale"
       ],
       "type": "string"
     },
@@ -298,6 +375,22 @@
         "transcript_ingestion_active",
         "reindex_required",
         "error"
+      ],
+      "type": "string"
+    },
+    "ProjectionName": {
+      "description": "The canonical closed projection-name enum (§6.1) — both daemon + ui reject-unknown. **Wire\nvalues are PascalCase** (the variant names verbatim — NO `rename_all`), matching the ui's\npinned `get_projection(\"Session\"|…)` literals + the §7 registry / R-5/R-6 architecture labels.\n`UsageLedger` is the architecture-canonical name (the ui's provisional `Usage` reconciles to it).",
+      "enum": [
+        "ProjectActivity",
+        "Session",
+        "ApprovalQueue",
+        "Worktree",
+        "PullRequest",
+        "PlanProgress",
+        "ProjectGraph",
+        "AgentTeam",
+        "AuditTrail",
+        "UsageLedger"
       ],
       "type": "string"
     },
@@ -435,6 +528,33 @@
       ],
       "type": "string"
     },
+    "VersionSkewError": {
+      "additionalProperties": false,
+      "description": "daemon→client handshake failure on version skew (§6.4): the daemon's supported range + the\nclient's offered version, so the ui can render \"update required\" (its `update_required` path).",
+      "properties": {
+        "client_protocol_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "supported_max": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "supported_min": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "supported_min",
+        "supported_max",
+        "client_protocol_version"
+      ],
+      "type": "object"
+    },
     "Visibility": {
       "description": "§7.1 visibility scope.",
       "enum": [
@@ -444,6 +564,19 @@
         "system"
       ],
       "type": "string"
+    },
+    "WireError": {
+      "additionalProperties": false,
+      "description": "A structured daemon→client error frame (§6.4). Carries one of the closed [`IpcErrorCode`]s.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/IpcErrorCode"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
     },
     "WorkflowInstance": {
       "description": "WorkflowInstance (12, R-7).",
@@ -503,17 +636,32 @@
     "approval": {
       "$ref": "#/$defs/Approval"
     },
+    "capabilities": {
+      "$ref": "#/$defs/Capabilities"
+    },
     "desktop_object_kind": {
       "$ref": "#/$defs/DesktopObjectKind"
     },
     "event_envelope": {
       "$ref": "#/$defs/EventEnvelope"
     },
+    "hello_ack": {
+      "$ref": "#/$defs/HelloAck"
+    },
+    "hello_frame": {
+      "$ref": "#/$defs/HelloFrame"
+    },
     "id_kind": {
       "$ref": "#/$defs/IdKind"
     },
+    "ipc_error_code": {
+      "$ref": "#/$defs/IpcErrorCode"
+    },
     "project_brain": {
       "$ref": "#/$defs/ProjectBrain"
+    },
+    "projection_name": {
+      "$ref": "#/$defs/ProjectionName"
     },
     "pull_request": {
       "$ref": "#/$defs/PullRequest"
@@ -536,8 +684,14 @@
     "task": {
       "$ref": "#/$defs/Task"
     },
+    "version_skew_error": {
+      "$ref": "#/$defs/VersionSkewError"
+    },
     "visibility": {
       "$ref": "#/$defs/Visibility"
+    },
+    "wire_error": {
+      "$ref": "#/$defs/WireError"
     },
     "workflow_instance": {
       "$ref": "#/$defs/WorkflowInstance"
@@ -568,9 +722,16 @@
     "sensitivity",
     "visibility",
     "redaction_status",
-    "session_started"
+    "session_started",
+    "hello_frame",
+    "hello_ack",
+    "version_skew_error",
+    "capabilities",
+    "ipc_error_code",
+    "wire_error",
+    "projection_name"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.8.0"
+  "x-contract-version": "0.9.0"
 }

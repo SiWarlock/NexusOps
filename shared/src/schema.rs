@@ -12,6 +12,9 @@ use crate::actor::ActorType;
 use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility};
 use crate::events::SessionStarted;
 use crate::ids::IdKind;
+use crate::ipc::{
+    Capabilities, HelloAck, HelloFrame, IpcErrorCode, ProjectionName, VersionSkewError, WireError,
+};
 use crate::objects::DesktopObjectKind;
 use crate::status::{
     ActionRequest, AgentTeam, Approval, ProjectBrain, PullRequest, Session, Task, WorkflowInstance,
@@ -45,6 +48,14 @@ struct ContractBundle {
     redaction_status: RedactionStatus,
     // 1.2 — first concrete event-type payload (§7.1 EventTypeRegistry)
     session_started: SessionStarted,
+    // 1.5 L2 — the IPC GatewayPort wire contract (§6.4) + the §6.1 projection-name enum
+    hello_frame: HelloFrame,
+    hello_ack: HelloAck,
+    version_skew_error: VersionSkewError,
+    capabilities: Capabilities,
+    ipc_error_code: IpcErrorCode,
+    wire_error: WireError,
+    projection_name: ProjectionName,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

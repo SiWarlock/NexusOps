@@ -145,6 +145,7 @@ fn test_envelope_round_trips_with_required_and_optional_fields() {
 #[test]
 fn test_contract_version_bumped_past_0_5() {
     // Each contract extension advances CONTRACT_VERSION: 1.1 → 0.6.0 (envelope) →
-    // 0.7.0 (redaction); 1.2 → 0.8.0 (first event-type payload, SessionStarted).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.8.0");
+    // 0.7.0 (redaction); 1.2 → 0.8.0 (first event-type payload, SessionStarted);
+    // 1.5 L2 → 0.9.0 (the IPC GatewayPort wire contract, §6.4).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.9.0");
 }

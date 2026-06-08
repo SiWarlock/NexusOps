@@ -23,7 +23,7 @@ mod transport;
 
 pub use peer::{authorize_peer, peer_uid};
 pub use server::serve_connection;
-pub use transport::{decode_len, encode_frame, MAX_FRAME_SIZE};
+pub use transport::{decode_len, encode_frame, read_frame, write_frame, MAX_FRAME_SIZE};
 
 /// Typed IPC failures — fail-closed (§15): a frame or peer that can't be validated is
 /// rejected, never served. The §6.4 *wire* error-code enum (`version_skew`, `unknown_method`,
@@ -37,6 +37,18 @@ pub enum IpcError {
     /// the connected peer's uid ≠ the daemon uid (safety rule #7) — connection refused.
     #[error("unauthorized peer: uid {peer_uid} != daemon uid {daemon_uid}")]
     UnauthorizedPeer { peer_uid: u32, daemon_uid: u32 },
+    /// the client's handshake `protocol_version` is outside the daemon's supported range (§6.4).
+    #[error(
+        "version skew: client protocol {client_version} not in [{supported_min}, {supported_max}]"
+    )]
+    VersionSkew {
+        client_version: u32,
+        supported_min: u32,
+        supported_max: u32,
+    },
+    /// a protocol violation — e.g. a non-handshake first frame, or a malformed handshake (§6.4).
+    #[error("protocol violation: {0}")]
+    Protocol(String),
     /// transport / syscall IO error. A `getpeereid` failure lands here → fail-closed (no uid
     /// is produced, so the peer can never be authorized).
     #[error("ipc io error: {0}")]

@@ -7,7 +7,7 @@
 //!
 //! Layered:
 //!   L1 (1–4) — length-prefix framing (bounded) + getpeereid peer-auth + reject-path. ⚠️ safety-critical
-//!   L2 (5–7) — handshake + version negotiation + shared/ ipc schema.                  [pending]
+//!   L2 (5–7) — handshake + version negotiation + shared/ ipc schema.
 //!   L3 (8–10) — JSON-RPC dispatch + get_projection + get_capabilities.                [pending]
 //!   L4 (11–12) — subscribe streaming + Terminal-Channel frame-type seam.              [pending]
 
@@ -15,8 +15,12 @@ use std::io::Read;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 
+use nexusops_shared::ipc::{
+    Capabilities, HelloAck, HelloFrame, IpcErrorCode, VersionSkewError, WireError,
+};
 use nexusopsd::ipc::{
-    authorize_peer, decode_len, encode_frame, peer_uid, serve_connection, IpcError, MAX_FRAME_SIZE,
+    authorize_peer, decode_len, encode_frame, peer_uid, read_frame, serve_connection, write_frame,
+    IpcError, MAX_FRAME_SIZE,
 };
 
 // ===================== L1 — framing + peer-auth (1–4) ========================
@@ -131,5 +135,123 @@ fn test_unauthorized_peer_disconnects_unserved() {
         client.read(&mut buf).unwrap(),
         0,
         "server disconnected (EOF) without serving a method"
+    );
+}
+
+// ================= L2 — handshake + version negotiation (5–7) =================
+
+/// frame + send a serializable value over a client handle (the test acts as the ui client).
+fn send<T: serde::Serialize>(stream: &UnixStream, value: &T) {
+    let mut w = stream;
+    let body = serde_json::to_vec(value).expect("send: serialize value");
+    write_frame(&mut w, &body).expect("send: write frame");
+}
+
+/// read one frame and deserialize it (the test reads the daemon's response).
+fn recv<T: serde::de::DeserializeOwned>(stream: &UnixStream) -> T {
+    let mut r = stream;
+    let body = read_frame(&mut r).expect("recv: read frame");
+    serde_json::from_slice(&body).expect("recv: deserialize frame")
+}
+
+// ---- Test 5 — handshake: in-range HelloFrame → HelloAck (§6.4) ---------------
+
+#[test]
+fn test_handshake_hello_ack() {
+    let (server, client) = UnixStream::pair().unwrap();
+    let uid = 1000u32;
+
+    // the client sends the handshake first (buffered in the socket), then the handler reads it
+    let hello = HelloFrame {
+        protocol_version: 1,
+        client_kind: "desktop_ui".to_string(),
+        app_version: "0.1.0".to_string(),
+    };
+    send(&client, &hello);
+
+    // same-uid auth passes → in-range handshake → HelloAck written, handler returns Ok
+    serve_connection(server, uid, uid).expect("authorized in-range handshake succeeds");
+
+    let ack: HelloAck = recv(&client);
+    assert_eq!(
+        ack.protocol_version, 1,
+        "ack echoes the negotiated protocol_version"
+    );
+    assert_eq!(
+        ack.capabilities.contract_version,
+        nexusops_shared::CONTRACT_VERSION,
+        "capabilities carry the daemon's CONTRACT_VERSION (§5.0)"
+    );
+    // capabilities shape matches the ui's pinned `Capabilities` (protocol_version + contract_version)
+    let _: Capabilities = ack.capabilities;
+}
+
+// ---- Test 6 — handshake: out-of-range protocol_version → VersionSkewError ----
+
+#[test]
+fn test_version_skew_disconnects() {
+    let (server, client) = UnixStream::pair().unwrap();
+    let uid = 1000u32;
+
+    let hello = HelloFrame {
+        protocol_version: 99, // outside SUPPORTED_PROTOCOL_RANGE {1,1}
+        client_kind: "desktop_ui".to_string(),
+        app_version: "0.1.0".to_string(),
+    };
+    send(&client, &hello);
+
+    // out-of-range → the handler writes a VersionSkewError and returns Err (disconnect)
+    let outcome = serve_connection(server, uid, uid);
+    assert!(
+        matches!(outcome, Err(IpcError::VersionSkew { .. })),
+        "an out-of-range protocol_version is a version-skew failure"
+    );
+
+    let skew: VersionSkewError = recv(&client);
+    assert_eq!(skew.client_protocol_version, 99);
+    assert_eq!(
+        skew.supported_max, 1,
+        "the daemon advertises its supported range"
+    );
+
+    // no method is served — after the skew frame the connection is closed (EOF)
+    let mut r = &client;
+    let mut buf = [0u8; 1];
+    assert_eq!(
+        r.read(&mut buf).unwrap(),
+        0,
+        "disconnected after the skew, no method served"
+    );
+}
+
+// ---- Test 7 — a non-handshake first frame is rejected + disconnects ----------
+
+#[test]
+fn test_method_before_handshake_rejected() {
+    let (server, client) = UnixStream::pair().unwrap();
+    let uid = 1000u32;
+
+    // a method-shaped first frame (NOT a HelloFrame) — handshake-first is violated
+    send(
+        &client,
+        &serde_json::json!({ "method": "get_capabilities", "id": 1 }),
+    );
+
+    let outcome = serve_connection(server, uid, uid);
+    assert!(
+        matches!(outcome, Err(IpcError::Protocol(_))),
+        "a method frame before the handshake is a protocol violation"
+    );
+    // the daemon wrote a structured WireError frame before disconnecting (the closest §6.4 code
+    // for a non-handshake first frame is unknown_method — see the §6.4 error-code-gap flag)
+    let err: WireError = recv(&client);
+    assert_eq!(err.code, IpcErrorCode::UnknownMethod);
+    // …and then disconnected: no method was served
+    let mut r = &client;
+    let mut buf = [0u8; 1];
+    assert_eq!(
+        r.read(&mut buf).unwrap(),
+        0,
+        "disconnected; the pre-handshake method was never served"
     );
 }

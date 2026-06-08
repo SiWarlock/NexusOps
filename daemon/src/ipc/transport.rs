@@ -5,6 +5,8 @@
 //! prefix **before** the body buffer is allocated, so an oversized declared length can never
 //! drive an oversized allocation (the anti-DoS pin).
 
+use std::io::{Read, Write};
+
 use super::IpcError;
 
 /// Fixed anti-DoS cap on a single frame's JSON body (§6.4). 8 MiB: the ui's outbound frames
@@ -43,4 +45,25 @@ pub fn decode_len(prefix: &[u8; 4]) -> Result<usize, IpcError> {
         });
     }
     Ok(len)
+}
+
+/// Read one wire frame from `r`: the 4-byte big-endian length prefix, then the body. The
+/// length is bounded via [`decode_len`] **before** the body buffer is allocated, so this is
+/// the production read path where the anti-DoS cap actually fires. A short stream (EOF mid
+/// frame) surfaces as an `IpcError::Io`.
+pub fn read_frame<R: Read>(r: &mut R) -> Result<Vec<u8>, IpcError> {
+    let mut prefix = [0u8; 4];
+    r.read_exact(&mut prefix)?;
+    let len = decode_len(&prefix)?; // rejects > MAX_FRAME_SIZE before the alloc below
+    let mut body = vec![0u8; len];
+    r.read_exact(&mut body)?;
+    Ok(body)
+}
+
+/// Write `body` as one wire frame to `w` (encode + `write_all`). Refuses an oversized body via
+/// [`encode_frame`].
+pub fn write_frame<W: Write>(w: &mut W, body: &[u8]) -> Result<(), IpcError> {
+    let framed = encode_frame(body)?;
+    w.write_all(&framed)?;
+    Ok(())
 }

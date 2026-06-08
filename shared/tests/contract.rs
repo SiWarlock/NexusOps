@@ -470,3 +470,40 @@ fn test_schema_artifact_matches_rust() {
         "schema drift — regenerate with `cargo run --bin emit_schema` and commit"
     );
 }
+
+// ---- Test (1.5 L2) — IPC wire contract values pinned (§6.1/§6.4) -------------
+
+#[test]
+fn test_ipc_contract_wire_values() {
+    use nexusops_shared::ipc::{IpcErrorCode, ProjectionName};
+
+    // §6.4 structured error codes — snake_case, the closed ADR-004 set
+    check_values(
+        IpcErrorCode::ALL,
+        &[
+            "version_skew",
+            "frame_too_large",
+            "unknown_method",
+            "unauthorized_peer",
+            "policy_denied",
+            "precondition_stale",
+        ],
+    );
+    // §6.1 projection names — PascalCase (match the ui's pinned get_projection literals + the
+    // §7 registry labels; `UsageLedger` is canonical, not the ui's provisional `Usage`)
+    check_values(
+        ProjectionName::ALL,
+        &[
+            "ProjectActivity",
+            "Session",
+            "ApprovalQueue",
+            "Worktree",
+            "PullRequest",
+            "PlanProgress",
+            "ProjectGraph",
+            "AgentTeam",
+            "AuditTrail",
+            "UsageLedger",
+        ],
+    );
+}

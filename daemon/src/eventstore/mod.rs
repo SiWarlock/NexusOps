@@ -26,14 +26,18 @@ use nexusops_shared::ids::{
     ActionRequestId, AgentTeamId, EventId, ProjectId, SessionId, WorkspaceId,
 };
 pub use redaction::{PrefixRedactor, RedactionOutcome, Redactor};
+// migration DDL constants (re-exported so the projection-migration test + the
+// migrations registry reference one canonical source).
+pub use schema::{MIGRATION_1_EVENTS, MIGRATION_2_REDACTION, MIGRATION_3_PROJECTIONS};
 
 use crate::clock::Clock;
 use crate::idgen::IdGen;
 
 pub use migrations::SUPPORTED_USER_VERSION;
 
-/// the highest `event_version` this binary can fully reconstruct (§17)
-const MAX_SUPPORTED_EVENT_VERSION: i64 = 1;
+/// the highest `event_version` this binary can fully reconstruct (§17). Shared
+/// with `projections` (the degraded-skip path treats a newer version as unfoldable).
+pub(crate) const MAX_SUPPORTED_EVENT_VERSION: i64 = 1;
 
 /// Typed event-store failures — fail-closed (§15/§17): a write that cannot
 /// durably + validly persist returns an error, never a silent success.
@@ -73,6 +77,14 @@ pub struct AppendIntent {
     pub payload_json: String,
     pub schema_version: String,
     pub idempotency_key: Option<String>,
+    // --- 1.2 identity/edge fields (the 1.1-carry-forward AppendIntent extension) ---
+    // Typed `Option`/newtypes (Q4), not bare strings — these are events-table columns
+    // AND the source the projectors DERIVE `object_refs` + read-models from (§2.2).
+    pub project_id: Option<ProjectId>,
+    pub session_id: Option<SessionId>,
+    pub agent_team_id: Option<AgentTeamId>,
+    /// §7.1 visibility; `None` persists the DDL default `project`.
+    pub visibility: Option<Visibility>,
 }
 
 /// A read result that degrades instead of crashing on a malformed row (§17).
@@ -137,6 +149,12 @@ impl EventStore {
         let actor = enum_wire(&i.actor_type)?;
         let source = enum_wire(&i.source_type)?;
         let sensitivity = enum_wire(&i.sensitivity)?;
+        // `None` → the DDL default `project` (the column is NOT NULL); an explicit
+        // value persists verbatim. Fail-closed if a Visibility can't render.
+        let visibility = match &i.visibility {
+            Some(v) => enum_wire(v)?,
+            None => "project".to_string(),
+        };
 
         // §15 redaction-before-persist GATE: route the payload through the Redactor
         // and REFUSE to persist anything not `redacted` (fail-closed).
@@ -163,10 +181,10 @@ impl EventStore {
         let res = tx.execute(
             "INSERT INTO events \
              (event_id, seq, event_type, event_version, occurred_at, recorded_at, \
-              workspace_id, actor_type, actor_id, source_type, source_id, \
-              correlation_id, idempotency_key, sensitivity, payload_json, schema_version, \
-              redaction_status, redaction_engine_version) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+              workspace_id, project_id, actor_type, actor_id, source_type, source_id, \
+              correlation_id, session_id, agent_team_id, idempotency_key, sensitivity, \
+              visibility, payload_json, schema_version, redaction_status, redaction_engine_version) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
             rusqlite::params![
                 event_id.as_str(),
                 seq,
@@ -175,13 +193,17 @@ impl EventStore {
                 i.occurred_at,
                 recorded_at,
                 i.workspace_id.as_str(),
+                i.project_id.as_ref().map(|x| x.as_str()),
                 actor,
                 i.actor_id,
                 source,
                 i.source_id,
                 i.correlation_id,
+                i.session_id.as_ref().map(|x| x.as_str()),
+                i.agent_team_id.as_ref().map(|x| x.as_str()),
                 i.idempotency_key,
                 sensitivity,
+                visibility,
                 outcome.payload_json, // the REDACTED payload (§15)
                 i.schema_version,
                 redaction_status,

@@ -40,6 +40,10 @@ fn intent(occurred_at: &str, payload: &str) -> AppendIntent {
         payload_json: payload.to_string(),
         schema_version: "event-envelope-v1".to_string(),
         idempotency_key: None,
+        project_id: None,
+        session_id: None,
+        agent_team_id: None,
+        visibility: None,
     }
 }
 
@@ -268,6 +272,10 @@ fn test_golden_log_deterministic_replay() {
             payload_json: format!("{{\"n\":{n}}}"),
             schema_version: "event-envelope-v1".to_string(),
             idempotency_key: None,
+            project_id: None,
+            session_id: None,
+            agent_team_id: None,
+            visibility: None,
         }
     }
     let golden = |path: &std::path::Path| -> Vec<EventEnvelope> {

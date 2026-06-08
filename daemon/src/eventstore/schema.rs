@@ -69,3 +69,199 @@ pub const MIGRATION_2_REDACTION: &str = "\
 ALTER TABLE events ADD COLUMN redaction_status TEXT NOT NULL DEFAULT 'unredacted';
 ALTER TABLE events ADD COLUMN redaction_engine_version TEXT;
 ";
+
+/// Migration 3 (1.2 projections) — `object_refs` (§2.2), `projection_offsets`
+/// (§2.4), and the 10 MVP projection tables (§2.3; ProjectGraph is node+edge, so
+/// 11 physical `proj_*` tables). Forward-only over a 1.1-era (v2) db (which already
+/// holds `events`), backed up before the raise (§16). Status columns are plain TEXT
+/// at the DDL level; the projectors fail-closed-bind them to the frozen §5.1 enums
+/// before write. `proj_pull_request` + `proj_agent_team` shapes are authored here
+/// (the §2.3 SQL sketch predates the R-5/R-6 reconciliation → arch-note at Step 9).
+pub const MIGRATION_3_PROJECTIONS: &str = "\
+-- normalized event→object edges (§2.2): the ProjectGraph backbone + per-object timelines
+CREATE TABLE object_refs (
+  event_id    TEXT NOT NULL REFERENCES events(event_id),
+  object_type TEXT NOT NULL,
+  object_id   TEXT NOT NULL,
+  PRIMARY KEY (event_id, object_type, object_id)
+);
+CREATE INDEX ix_object_refs_obj ON object_refs(object_type, object_id);
+
+-- per-projector cursor (§2.4): last_seq advances in the SAME txn as the rows it writes
+CREATE TABLE projection_offsets (
+  projection_name   TEXT PRIMARY KEY,
+  last_event_id     TEXT,
+  last_seq          INTEGER NOT NULL DEFAULT 0,
+  last_processed_at TEXT,
+  state             TEXT NOT NULL DEFAULT 'healthy',  -- healthy|rebuilding|degraded
+  schema_version    INTEGER NOT NULL DEFAULT 1
+);
+
+-- 1. ProjectActivity (§2.3) — sidebar/Command-Center counters
+CREATE TABLE proj_project_activity (
+  project_id         TEXT PRIMARY KEY,
+  active_sessions    INTEGER NOT NULL DEFAULT 0,
+  waiting_sessions   INTEGER NOT NULL DEFAULT 0,
+  failed_sessions    INTEGER NOT NULL DEFAULT 0,
+  idle_sessions      INTEGER NOT NULL DEFAULT 0,
+  completed_sessions INTEGER NOT NULL DEFAULT 0,
+  active_teams       INTEGER NOT NULL DEFAULT 0,
+  open_prs           INTEGER NOT NULL DEFAULT 0,
+  blocked_tasks      INTEGER NOT NULL DEFAULT 0,
+  updated_at_seq     INTEGER NOT NULL
+);
+
+-- 2. Session (§2.3; §5.1 Session) — derived current state of every session
+CREATE TABLE proj_session (
+  session_id           TEXT PRIMARY KEY,
+  project_id           TEXT NOT NULL,
+  agent_team_id        TEXT,
+  display_name         TEXT,
+  harness              TEXT,
+  model                TEXT,
+  execution_profile_id TEXT,
+  worktree_id          TEXT,
+  branch_name          TEXT,
+  linked_task_id       TEXT,
+  linked_plan_task_id  TEXT,
+  linked_pr_id         TEXT,
+  workflow_command_id  TEXT,
+  status               TEXT NOT NULL,  -- §5.1 Session (17)
+  context_usage_pct    REAL,
+  token_usage_json     TEXT,
+  cost_estimate        REAL,
+  pending_approvals    INTEGER NOT NULL DEFAULT 0,
+  last_heartbeat_at    TEXT,
+  started_at           TEXT,
+  completed_at         TEXT,
+  updated_at_seq       INTEGER NOT NULL
+);
+CREATE INDEX ix_proj_session_project ON proj_session(project_id, status);
+
+-- 3. ApprovalQueue (§2.3; §5.1 Approval) — Human Input Queue read model
+CREATE TABLE proj_approval_queue (
+  approval_id       TEXT PRIMARY KEY,
+  action_request_id TEXT NOT NULL,
+  project_id        TEXT,
+  session_id        TEXT,
+  agent_team_id     TEXT,
+  risk_level        INTEGER NOT NULL,
+  status            TEXT NOT NULL,   -- §5.1 Approval (10)
+  requester_type    TEXT NOT NULL,
+  requester_id      TEXT NOT NULL,
+  preview_summary   TEXT,
+  requested_at      TEXT NOT NULL,
+  expires_at        TEXT,
+  sort_key          TEXT,
+  updated_at_seq    INTEGER NOT NULL
+);
+CREATE INDEX ix_approval_queue_open ON proj_approval_queue(status, risk_level, requested_at);
+
+-- 4. Worktree (§2.3; §5.1 Worktree two-axis) — git-truth fields refreshed live via git2 (Phase 5)
+CREATE TABLE proj_worktree (
+  worktree_id      TEXT PRIMARY KEY,
+  project_id       TEXT NOT NULL,
+  repo_id          TEXT NOT NULL,
+  path             TEXT NOT NULL,
+  branch_name      TEXT,
+  base_branch      TEXT,
+  owner_session_id TEXT,
+  owner_team_id    TEXT,
+  linked_task_id   TEXT,
+  status           TEXT NOT NULL,
+  dirty_state      TEXT,
+  ahead_count      INTEGER,
+  behind_count     INTEGER,
+  last_commit_sha  TEXT,
+  pr_status        TEXT,
+  git_checked_at   TEXT,
+  updated_at_seq   INTEGER NOT NULL
+);
+
+-- 5. PlanProgress (§2.3; §5.1 Task) — plan/task tree with links
+CREATE TABLE proj_plan_progress (
+  plan_task_id           TEXT PRIMARY KEY,
+  implementation_plan_id TEXT NOT NULL,
+  project_id             TEXT NOT NULL,
+  phase                  TEXT,
+  title                  TEXT,
+  status                 TEXT NOT NULL,  -- §5.1 Task (17)
+  linked_session_ids_json TEXT,
+  linked_pr_ids_json     TEXT,
+  linked_ticket_ids_json TEXT,
+  architecture_anchor    TEXT,
+  updated_at_seq         INTEGER NOT NULL
+);
+
+-- 6. PullRequest (§7.2; §5.1 PullRequest) — GitHub-authoritative synced cache.
+--    Shape authored at 1.2 (no §2.3 sketch existed) → reconcile into DATA_MODEL §2.3.
+CREATE TABLE proj_pull_request (
+  pr_id          TEXT PRIMARY KEY,
+  project_id     TEXT,
+  repo_id        TEXT,
+  pr_number      INTEGER,
+  title          TEXT,
+  status         TEXT NOT NULL,   -- §5.1 PullRequest (11)
+  head_branch    TEXT,
+  base_branch    TEXT,
+  pr_checked_at  TEXT,
+  updated_at_seq INTEGER NOT NULL
+);
+
+-- 7. ProjectGraph (§2.3) — nodes + edges read model; built from object_refs (§2.2)
+CREATE TABLE proj_graph_node (
+  node_id    TEXT NOT NULL,
+  node_type  TEXT NOT NULL,
+  project_id TEXT,
+  label      TEXT,
+  status     TEXT,
+  attrs_json TEXT,
+  PRIMARY KEY (node_type, node_id)
+);
+CREATE TABLE proj_graph_edge (
+  src_type   TEXT NOT NULL, src_id TEXT NOT NULL,
+  dst_type   TEXT NOT NULL, dst_id TEXT NOT NULL,
+  edge_type  TEXT NOT NULL,
+  project_id TEXT,
+  PRIMARY KEY (src_type, src_id, dst_type, dst_id, edge_type)
+);
+
+-- 8. AgentTeam (R-6; §5.1 AgentTeam) — shape authored at 1.2 → reconcile into §2.3.
+CREATE TABLE proj_agent_team (
+  agent_team_id  TEXT PRIMARY KEY,
+  project_id     TEXT,
+  display_name   TEXT,
+  status         TEXT NOT NULL,   -- §5.1 AgentTeam (9)
+  updated_at_seq INTEGER NOT NULL
+);
+
+-- 9. AuditTrail (§2.3/§14) — human-readable ordered timeline (rendered, redaction-safe rows)
+CREATE TABLE proj_audit_trail (
+  event_id     TEXT PRIMARY KEY REFERENCES events(event_id),
+  seq          INTEGER NOT NULL,
+  project_id   TEXT,
+  occurred_at  TEXT NOT NULL,
+  scope_json   TEXT,
+  headline     TEXT NOT NULL,
+  actor_label  TEXT,
+  outcome      TEXT,
+  sensitivity  TEXT NOT NULL
+);
+CREATE INDEX ix_audit_scope ON proj_audit_trail(project_id, seq);
+
+-- 10. UsageLedger (§2.3/§18) — tokens/context/cost rollups
+CREATE TABLE proj_usage_ledger (
+  ledger_id            TEXT PRIMARY KEY,
+  project_id           TEXT,
+  session_id           TEXT,
+  execution_profile_id TEXT,
+  model                TEXT,
+  bucket_day           TEXT,
+  tokens_in            INTEGER,
+  tokens_out           INTEGER,
+  context_pct_max      REAL,
+  cost_estimate        REAL,
+  metric_quality       TEXT,
+  updated_at_seq       INTEGER NOT NULL
+);
+";

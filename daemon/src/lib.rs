@@ -9,3 +9,4 @@
 pub mod clock;
 pub mod eventstore;
 pub mod idgen;
+pub mod projections;

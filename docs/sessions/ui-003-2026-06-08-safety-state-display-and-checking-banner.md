@@ -3,7 +3,7 @@
 - **Date:** 2026-06-08
 - **Phase:** Phase 6 (UI track, `track/ui`) — the **last Phase-6 logic items** before the 6.5 theme pass.
 - **Predecessor session:** [ui-002](ui-002-2026-06-08-phase6-graph-sessions-a11y-usage-settings-survival-topbar.md)
-- **Successor session:** _(pending — 6.5 Graphite Arc theme pass)_
+- **Successor session:** [ui-004](ui-004-2026-06-08-graphite-arc-theme-pass-and-visual-gate.md) (6.5 Graphite Arc theme pass + the full visual gate — closes Phase-6 visual)
 - **Round commits:** `ff2f8d6` (P6.4d-2 L1) · `503b6a2` (P6.4d-2 L2) · `5f40149` (P6.4 checking-banner). Suite **116 → 131 green**; tsc + oxlint clean throughout.
 
 ## Why this session existed

@@ -50,3 +50,16 @@ The 0.5 freeze settled two conventions every future contract surface (event-type
 **(b) The source-of-truth propagation is fixed by `ARCHITECTURE.md §5.0` (Option A):** Rust `shared` crate = native authority (newtypes for IDs, serde-closed enums) → `schemars` emits a **first-class, versioned, diff-gated** JSON Schema artifact (`shared/contracts/schema/`) → TS Zod + Python Pydantic are **generated** from that artifact → a self-contained 3-way value-set equality harness proves they agree. Do **not** hand-author a consumer's types or invert the authority (an external IDL/codegen-into-the-trust-core was rejected — it generates bare types in the safety-critical module and fights the newtype posture). Every new contract addition extends the Rust authority and regenerates the artifact; the diff-gate catches drift.
 
 **Rule:** Freeze the *wire value* (snake_case `TEXT`), not the identifier — pin it with a round-trip test; and author every contract in Rust (`shared/`) per §5.0, regenerating the published schema + consumers (never hand-write a consumer or invert the authority).
+
+## <a id="3"></a>3. Single-write-actor — one writable `Connection`; everything else read-only WAL; canonical `seq` in one `BEGIN IMMEDIATE` txn
+
+**Date:** 2026-06-07.
+**Source slice:** 1.1 L2 (event store).
+
+The §15 single-mutator invariant has a concrete enforced shape in the daemon: **exactly one writable rusqlite `Connection`** (owned by the write-actor); **every other access opens a read-only WAL connection** (`Connection::open_with_flags(..., SQLITE_OPEN_READ_ONLY)` / `open_read_only`). A read-path that can't even *construct* a writable handle can't violate single-mutator by construction — enforce it at the type/connection level, not by convention.
+
+The canonical `seq` (the total event order, §7.1) must be assigned **atomically**: the `SELECT max(seq)+1` and the `INSERT` go in **one `BEGIN IMMEDIATE` transaction**, not two statements. `BEGIN IMMEDIATE` takes the write lock up front, so two concurrent appends can't read the same max and produce a gap/duplicate. A borrow-checker-only "one writer" guarantee is **not** enough — the *transaction boundary* is what makes the ordering atomic (1.1 L2 security-reviewer high finding).
+
+Pair this with an **injectable `Clock` + `IdGen`** (constructor-injected; fakes in tests) so the event log — `seq`, `event_id` (ULID), `recorded_at` — replays **byte-identically** in the golden-log test. Determinism-for-testability is a daemon-wide seam (root `CLAUDE.md` "Determinism-for-testability"), not a per-slice afterthought.
+
+**Rule:** One writable `Connection` (the write-actor); all other access is read-only WAL (`open_read_only`). Assign the canonical `seq` via `SELECT max+1` + `INSERT` inside one `BEGIN IMMEDIATE` txn (atomic order, not borrow-checker-only). Inject `Clock`+`IdGen` so the log replays deterministically.

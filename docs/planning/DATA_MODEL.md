@@ -73,7 +73,9 @@ CREATE TABLE events (
   idempotency_key     TEXT,                    -- dedup (EM §23, AG §16.1)
   sensitivity         TEXT NOT NULL,           -- EM §9: public|internal|confidential|secret|restricted
   visibility          TEXT NOT NULL DEFAULT 'project',  -- user|project|workspace|system
-  payload_json        TEXT NOT NULL,           -- type-specific (CHECK json_valid) — NO large artifacts, refs only
+  redaction_status    TEXT NOT NULL,           -- §15: 'unredacted'|'redacted'; writer fail-closes — NEVER persists 'unredacted' (1.1)
+  redaction_engine_version TEXT,               -- which Redactor processed the payload (prefix vs 1.7 entropy); NULL pre-redaction
+  payload_json        TEXT NOT NULL,           -- type-specific (CHECK json_valid) — NO large artifacts, refs only; redacted-before-INSERT (§15)
   payload_hash        TEXT,                    -- sha256(payload_json), reserved/used for dedup + future chain
   previous_event_hash TEXT,                    -- RESERVED — hash chain post-MVP [DEFERRED — ADR-003]
   schema_version      TEXT,                    -- 'event-envelope-v1' (provenance, EM §6)

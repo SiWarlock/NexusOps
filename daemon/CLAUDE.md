@@ -122,6 +122,7 @@ Several typed models in this codebase are **contracts** mirrored in `ARCHITECTUR
 | Actor enum (R-2) | §7.1 / §5.3 / Appendix A | **Frozen in `shared/` (0.5).** 10 values incl. `remote_client` (legacy EM §7 `remote_device` superseded). |
 | Desktop-addendum objects (4) | §5.3 / Appendix A | **Frozen in `shared/` (0.5).** LocalRunner + EventProjection (MVP-live); Device + RemoteClient (deferred iOS scaffolding). |
 | Contract SoT mechanism | §5.0 | Option A: Rust authority → schemars JSON-Schema (`shared/contracts/schema/`, versioned, diff-gated) → generated Zod/Pydantic. The pattern for every future contract addition. |
+| Event envelope + enums | §7.1 / Appendix A | **Frozen in `shared/` across 1.1: envelope + `source_type`(15, **closed**)/`sensitivity`(5)/`visibility`(4) @ 0.6.0 (df753aa); `redaction_status`(unredacted\|redacted, §15) + `redaction_engine_version` @ 0.7.0 (redaction commit).** EventEnvelope + ObjectRef; `deny_unknown_fields` (reject-unknown); `redaction_status`/`redaction_engine_version` = new DATA_MODEL §2.1 columns; the writer **fail-closes** (never persists `redaction_status='unredacted'`); `causation_id` = `EventId`. |
 | `ActionRequest` | §6.2 | typed mutation envelope; risk class + approval state. Lands Phase 2 (2.1). |
 
 <!-- Populated as contract models land. The four 0.5 rows above are the frozen foundation (the serial neck). -->
@@ -187,6 +188,7 @@ Lessons start at §1.
 |--:|---|---|---|
 | 1 | 2026-06-07 | [Broken cargo shims](LESSONS.md#1) | `rustup default stable` won't fix *broken* (vs missing) `~/.cargo/bin` proxies — repoint each to the `rustup` binary, then verify with plain shims |
 | 2 | 2026-06-07 | [Wire value is the contract; SoT = §5.0](LESSONS.md#2) | Freeze the snake_case wire value (not the identifier; pin with a round-trip test); author every contract in Rust `shared/` per §5.0, regenerating the published schema + consumers — never hand-write a consumer or invert the authority |
+| 3 | 2026-06-07 | [Single-write-actor + atomic seq](LESSONS.md#3) | One writable `Connection` (write-actor); all else read-only WAL (`open_read_only`); assign canonical `seq` via `SELECT max+1`+`INSERT` in one `BEGIN IMMEDIATE` txn (atomic, not borrow-checker-only); inject `Clock`+`IdGen` for deterministic replay |
 
 <!-- Starts empty. Each row links to its `LESSONS.md` anchor. Populate as the project accretes. -->
 

@@ -20,7 +20,11 @@
 
 **PHASE 0 — DETERMINISTIC WORK COMPLETE (2026-06-07).** All 4 spikes landed (`docs/spikes/*.md`) + the **0.5 contract freeze landed (06f9576)** — the serial neck. Single-writer holds (0.4 → §18 written MEASURED); git2 reads relative-worktrees (0.3 → §9 corrected); #27203 confirmed, bg subagents forbidden (0.1); shared/ contracts frozen Option-A (0.5, §5.0). Toolchain RESOLVED (Lesson §1).
 
-**PHASE BOUNDARY — ✅ Phase-0-exit `/arch-finalize` re-validation COMPLETE (2026-06-07).** Fork (a) resolved: the upstream planning + spec drift was swept FORWARD to the binding `ARCHITECTURE.md` (DECISIONS ADR-007/004, DATA_MODEL §2.3/§2.9/§4/§5/§6.4/§8, EM §7, SHARED_OBJECT_MODEL, OPEN_QUESTIONS, UI_RECONCILIATION) + §5.1 header reconciled to **Ten** + **§5.0 ratified**. **A 5-dim adversarial gap audit confirmed NO frozen `shared/` contract moved (0 release-blockers) → no 0.5b reconciliation forced; the UI track is NOT gated by drift.** Hold can be released → both arms unblocked against the frozen contracts: **(b)** open the **ui track** ∥ **(c)** **Phase 1 / 1.1** (event store, daemon-core). cat-4 (SDK-vs-PTY) + D14 (demo-viability) remain correctly **tracked-open** (unchanged). Audit detail: `docs/gap-audits/R2-phase0-exit-revalidation.json`.
+**Phase-0-exit `/arch-finalize` re-validation COMPLETE + committed (2026-06-07, 1efff4b).** No frozen `shared/` contract moved (0 release-blockers; no 0.5b forced; ui track ungated). Drift swept forward to `ARCHITECTURE.md` (§5.1→Ten, §5.0 ratified, ADR-004 getpeereid/length-prefix, ADR-007 libgit2, EM §7 remote_client, DATA_MODEL/SOM/OQ/UI sweep). Audit: `docs/gap-audits/R2-phase0-exit-revalidation.json`. Hold released.
+
+**PHASE 1 — IN PROGRESS (daemon-core fan-out).** **1.1 event store ✅ LANDED** (3-commit slice: df753aa envelope + b998f20 single-writer store + 61089ea §15 redaction gate; CONTRACT_VERSION 0.7.0; 31 tests; security PASS). §15 redaction-before-persist is fail-closed (the human chose Option a+; redaction_status + gate + prefix Redactor; entropy → blocking task 1.7). brief 003.
+
+**⚠️ HARD-STOP CONTEXT CYCLE (2026-06-07).** daemon-implementer hit 86% mid-slice (the per-slice gate missed a long multi-commit climb); 1.1 finished clean first (slice-atomicity), then both teammates cycle: impl `/session-end` (session doc `002`, 59d39ad) + orch `/orchestrate-end` (this round commit + push). **1.2 is HALTED — the fresh successor picks it up.** Next session target: **1.2 — projection engine + MVP projections + offsets** (deps 1.1 met; consumes the event log + fills the AuditTrail FTS5). **(b)** the **ui track** remains the user's to open (parallel, ungated).
 
 **Still open (non-blocking for Phase 1):** HITL — notarization run (0.2, Apple creds), credit-pool drain ≥6/15 (0.1) → then cat-4 SDK-vs-PTY + **0.5b** (re-freeze ExecutionProfile).
 
@@ -31,6 +35,13 @@
 Items the orchestrator MUST fold into upcoming slice briefs. **Triaged at every `/orchestrate-end`** — NOT append-only. New entries carry `(origin: YYYY-MM-DD <slice-id>)`.
 
 _(Empty for next-brief purposes — 1.1 has no carry-forward dependencies; it binds to the frozen `shared/` contracts + `ARCHITECTURE.md` directly. 0.5b inlined as a Phase-0 task. Two cross-track op-items spread to their consumer slices below.)_
+
+**1.1 L1 arch-note refinements (deferred; non-blocking):**
+- **`Timestamp` newtype (`format:date-time`)** across the envelope + future event types — `occurred_at`/`recorded_at` are currently RFC3339 `String` (valid, but no schema `format`). Production refinement; apply when the event-type registry accretes. `(origin: 2026-06-07 P1.1)`
+- **`seq` schema `minimum:1`** annotation (the L2 writer enforces monotonic ≥1; document it in the schema). Minor. `(origin: 2026-06-07 P1.1)`
+- **`workflow_run_id` reconcile** — ∉ the LOCKED 22 IDs; `String` placeholder in the envelope. Resolve: ≡ `workflow_instance_id` (wfi_) vs a genuinely distinct concept needing a new kind (**if new kind → LOCKED-22 contract escalation**). Route to a `/arch-finalize` reconcile or a documented String. `(origin: 2026-06-07 P1.1)`
+- **1.1 L2 follow-ups** (mostly consumed by 1.2): `AppendIntent` grows to carry the optional envelope fields (project_id/session_id/agent_team_id/causation_id/action_request_id/approval_id/workflow_run_id/visibility/object_refs/app_version) as 1.2+ callers need them (visibility currently always DDL-default `project`); the **`object_refs` normalized table (DATA_MODEL §2.2)** is deferred to **1.2** (empty on read in 1.1); `eventstore::user_version()` returns a `-1` sentinel on error → consider `Result<u32>`. `last-consumer-slice: 1.2` `(origin: 2026-06-07 P1.1)`
+- **1.1 L3 §16 follow-up** (→ 1.6, which owns migrations backup/rollback): `migrations::run` skips backup when `from==0` (fresh DB — correct), and a restore-failure currently surfaces only as a generic `Migration` error → give it a typed restore-failure path + the "rolled back to vN" UX (§16). `last-consumer-slice: 1.6` `(origin: 2026-06-07 P1.1 L3)`
 
 **Spread (kept; auto-resolve at the consumer slice):**
 - **ui track generates Zod from `contracts/schema/`** (`pnpm` broken → use `npx json-schema-to-zod`, per the 0.3 env note). `last-consumer-slice: ui-track open (Phase 6)` `(origin: 2026-06-07 P0.5)`
@@ -166,11 +177,13 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Track / deps:** `daemon-core` (critical path / long pole). **Deps:** 0.4, 0.5. **Parallel-with:** Phase 6 (ui, via mock GatewayPort + fixture projections).
 
-### 1.1 — Event store: append-only events + envelope + FTS5
-- [ ] WAL SQLite opened with the §1 pragmas; `events` table per `§7.1` envelope (incl. reserved `payload_hash`/`previous_event_hash`); `seq` canonical order; FTS5 over the redaction-safe audit projection; `user_version` migration runner.
-- [ ] Files: `daemon/src/eventstore/` (NEW: schema, writer, migrations), `shared/contracts/event_envelope` (extended)
-- [ ] Cross-doc invariant: NEW — Event envelope + actor/source/sensitivity/visibility enums (Appendix A, §7.1)
-- [ ] Tests: happy (append + read back by seq); edge (out-of-order occurred_at vs seq; clock skew uses both timestamps); error (unknown event_version → degraded marker, no crash; corrupt payload → quarantine); integration (golden event log replays deterministically via injectable IdGen/Clock).
+### 1.1 — Event store: append-only events + envelope + FTS5 — ✅ **LANDED** (df753aa + b998f20 + 61089ea)
+- [x] WAL SQLite opened with the §2 pragmas; `events` table per `§7.1` envelope (incl. reserved `payload_hash`/`previous_event_hash`); `seq` canonical order (atomic, `BEGIN IMMEDIATE`); `user_version` migration runner + §16 backup/rollback. — **§15 redaction gate fail-closed** (never persists `unredacted`; `redaction_status` + prefix Redactor); single-write-actor (read-only WAL readers); CONTRACT_VERSION 0.7.0. _(FTS5 scaffolding → populated with the AuditTrail projection in 1.2.)_
+- [x] Files: root Cargo workspace + `daemon/` crate; `daemon/src/{lib,clock,idgen}` + `eventstore/{mod,schema,migrations,writer,redaction}` + tests; `shared/` envelope contract (extended, §5.0).
+- [x] Cross-doc invariant: Event envelope + 4 enums (`source_type`[15 closed]/`sensitivity`/`visibility`/`redaction_status`) + `redaction_status`/`redaction_engine_version` columns — written to Appendix A / §7.1 / DATA_MODEL §2.1 / `daemon/CLAUDE.md` (0.6.0 envelope → 0.7.0 redaction). LESSONS §3 (single-write-actor).
+- [x] Tests: 31 workspace (append/seq-canonical/single-writer/fail-closed-redaction[test 4]/secret-masked/audit-write-fail-closed/idempotency/migration+backup-restore/degrade/quarantine/golden-log/wal-pragmas) + 3-way verify @ 0.7.0; security-reviewer PASS all invariants.
+
+**Spawned:** entropy fallback + quarantine→`SensitiveOutputRedacted` + §15 property/fuzz → **1.7** (blocking); §16 migration restore-failure typing → **1.6**; AppendIntent/object_refs → **1.2** (Carry-forward).
 
 ### 1.2 — Projection engine + the MVP projections + offsets
 - [ ] Projection workers fold events → the MVP `proj_*` tables (ProjectActivity, Session, ApprovalQueue, Worktree, PullRequest, PlanProgress, ProjectGraph, AgentTeam, AuditTrail, UsageLedger) + `object_refs`; advance `projection_offsets` in the same txn; startup replay + full rebuild; degraded handling.
@@ -202,10 +215,19 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 - [ ] Cross-doc invariant: NEW — Device, LocalRunner (Appendix A, §5.3); Version-compatibility matrix (§16)
 - [ ] Tests: happy (clean first run creates DB + runs migrations); edge (stale socket reclaimed; second instance refused); error (bad migration → restore `.bak`, refuse-safely; downgraded binary sees newer DB → refuse); integration (daemon restart resumes against existing DB).
 
+### 1.7 — Redactor: entropy fallback (OQ-SEC-2) — 🔒 **BLOCKING Phase-1 acceptance** (human, 2026-06-07)
+- [ ] Extend the 1.1 `Redactor` (token-prefix high-recall set) with the **Shannon-entropy fallback on `KEY=value` lines** (OQ-SEC-2, §15) so full secret-detection recall doesn't drift. The 1.1 fail-closed gate + `redaction_status` already enforce the invariant; this raises *recall*. Same redactor gates all 3 sinks (persist/embed/sync, §15).
+- [ ] Files: `daemon/src/eventstore/redaction.rs` (extended) or `daemon/src/policy/redactor.rs` (per the 1.1 placement decision).
+- [ ] Cross-doc invariant: none (refines the §15 redactor; OQ-SEC-2 resolves).
+- [ ] Tests: happy (entropy fallback catches a high-entropy `KEY=value` secret the prefix set misses); edge (low-entropy config value NOT redacted — no false-positive storm); error (unredactable high-confidence secret → quarantine + `SensitiveOutputRedacted`); integration (all 3 sinks gated by the same redactor).
+- [ ] **Absorbs the L3-deferred §15 items** (1.1's prefix Redactor redacts-or-passes, never quarantines): wire the **quarantine → `SensitiveOutputRedacted` emission** path + the **§15 property/fuzz test** (no secret persists `unredacted` across fuzzed payloads). `(origin: 2026-06-07 P1.1 L3)`
+- [ ] **Human chose this as a blocking task** (not a loose Step-9 flag) specifically so secret-detection recall can't silently drift below the §15 bar.
+
 ### Acceptance criteria (1)
 - [ ] Daemon starts detached, single-instance, survives UI restart; event store is the sole writer.
 - [ ] Projections rebuild deterministically; offsets crash-safe; `/preflight` clean.
-- [ ] Lease fencing rejects stale holders; UDS peer-auth + handshake enforced.
+- [ ] Lease fencing rejects stale holders; UDS peer-auth (`getpeereid`) + handshake enforced.
+- [ ] **§15 redaction: 1.1 fail-closed gate + `redaction_status` AND the 1.7 entropy fallback (OQ-SEC-2) both landed** — no event persists `unredacted`; full prefix+entropy recall. (Gate is the blocking bar.)
 
 ---
 
@@ -532,6 +554,7 @@ Deferred items with come-back guidance. (Seeded from `ARCHITECTURE.md §19.2`; e
 
 Open scope/design questions awaiting resolution.
 
+- **[RESOLVED 2026-06-07 — §15 safety-design, human-decided] 1.1 redaction sequencing = Option (a+).** 1.1 ships the **`redaction_status` column + `Redactor` trait + fail-closed gate** (never persist `redaction_status='unredacted'`) + the **high-recall token-prefix Redactor**; the **entropy fallback (OQ-SEC-2) is a BLOCKING Phase-1 task (1.7)**, not a fast-follow — chosen so secret-detection recall can't drift. Pin the §15 invariant with the fail-closed test (the load-bearing assertion). `redaction_status` on the envelope = cross-doc invariant → Appendix A / §7.1 / DATA_MODEL §2.1 atomic edit at 1.1 Step 9. `(origin: 2026-06-07 P1.1)`
 - **[RESOLVED 2026-06-07 — cat-4, user-locked] Cross-language contract source-of-truth = Option A.** Rust `shared` crate = native authority (newtypes, serde-closed enums); `schemars` → **JSON Schema as a first-class, versioned, CI-diff-gated published artifact** (`shared/contracts/schema/`, `CONTRACT_VERSION`); TS Zod + Python Pydantic generated from it (drift-caught); reject-unknown end-to-end. Documented at **`ARCHITECTURE.md §5.0`** (direct anchored edit, owner-locked). This is the mechanism for ALL contract surfaces, not just 0.5. `(origin: 2026-06-07 P0.5)`
 - **[cat-4 / load-bearing — PENDING ≥6/15 DRAIN] SDK-vs-PTY primary driver for Claude (O-4 / ADR-006).** The 2026-06-15 Anthropic policy gives SDK/`-p` a separate **capped** Agent-SDK credit pool that **hard-stops with no fallback**; the interactive terminal is exempt (`RESEARCH.md:65` [VERIFIED]). This **may invert ADR-006**'s Option-C-Hybrid lean (SDK-driven primary). **Not decided agent-only.** Phase-0 0.1 LANDED the measurable half: **decision criterion + both branches recorded** (`docs/spikes/OQ-HARN-SPIKE-7.md §3`); **#27203 confirmed** present on CC 2.1.168 (bg subagents stay forbidden — §9.1 unchanged). **Still open:** the deciding **drain measurement = HITL checklist** (`§5`), user runs ≥ 6/15**. Orchestrator carries the resolved call back to the lead/user with the drain data. **Blocks** freezing any 0.5 supervision-touching contract surface. `(origin: 2026-06-07 P0.1)`
 - **[tracked — Phase 10, not blocking] D14 demo-viability contradiction.** Brain-optional (design) vs demo-mandatory (PRD §25) vs SDK-can-halt (credit-pool) are in tension for the end-to-end demo. Carry as a known Phase-10 concern; resolve before the integration/deploy gate. `(origin: 2026-06-07, D14 audit)`
@@ -570,6 +593,16 @@ Applied this round (2026-06-07), committed atomically with the round commit:
 ## Log
 
 Append-only, date-stamped, the orchestrator's framing of each round.
+
+### 2026-06-07 — Phase 1.1: event store (the trust-core spine) + HARD-STOP cycle
+
+- **Completed:** **1.1 event store LANDED** as a 3-commit slice — `df753aa` (§7.1 envelope contract + source/sensitivity/visibility enums, 0.6.0) + `b998f20` (root Cargo workspace + `daemon/` crate + single-writer WAL store: atomic `seq` in `BEGIN IMMEDIATE`, read-only WAL readers, `user_version` migrations + §16 backup/rollback, injectable Clock/IdGen, degrade/quarantine on read §17) + `61089ea` (**§15 redaction gate**: `redaction_status` + `RedactionStatus` + `Redactor` trait + fail-closed writer gate + prefix Redactor + migration 2, 0.7.0). 31 workspace tests + 3-way verify; security-reviewer PASS on every invariant.
+- **Decisions made:** **§15 redaction sequencing = Option (a+)** (human-decided) — `redaction_status` column + fail-closed gate + prefix Redactor in 1.1; the entropy fallback (OQ-SEC-2) made a **BLOCKING Phase-1 task (1.7)** so recall can't drift. Build-layout: a **root Cargo workspace** (shared+daemon). `CONTRACT_VERSION` = semver-on-contract (0.5.0→0.6.0→0.7.0). `source_type` declared **closed** (15, EM §8 "Examples"→closed). `causation_id` typed `EventId`.
+- **Scope shifts:** entropy fallback + quarantine→`SensitiveOutputRedacted` + §15 property/fuzz test → **1.7**; §16 migration restore-failure typing → **1.6**; AppendIntent-grows + object_refs table → **1.2**. None weaken the shipped §15 gate (the blocking bar).
+- **Process:** 1.1's multi-commit cadence surfaced two team-comms lessons — (a) I second-guessed an in-flight freeze-once/then-extend directive (4 crossed messages; resolved by anchoring on the committed artifact); (b) the impl idled after each layer commit (wake-gap ×2) → orchestrator must **drive layer→layer** (banked to auto-memory). LESSONS §3 (single-write-actor + atomic seq). `cargo fmt --check` added to the preflight gate (1.1-prior).
+- **Round close trigger:** **HARD-STOP context cycle** — daemon-implementer hit **86%** mid-slice (the per-slice gate missed a long multi-commit climb). 1.1 finished clean first (slice-atomicity), then both teammates cycle (impl `/session-end` → session doc `002`/`59d39ad`; orch `/orchestrate-end` = this round commit + push). Fresh successors spawn; **1.2 halted** for them.
+- **Next session target:** **1.2 — projection engine + MVP projections + offsets** (deps 1.1 met; consumes the event log, fills the AuditTrail FTS5; folds in the Carry-forward 1.2 items). The **ui track** remains the user's to open (parallel, ungated).
+- **Reference:** implementer session doc `002-2026-06-07-event-store.md`; brief `003-P1-1-event-store.md`.
 
 ### 2026-06-07 — Phase 0: spikes + 0.5 contract freeze (the serial neck)
 

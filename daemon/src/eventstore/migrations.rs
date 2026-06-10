@@ -12,7 +12,7 @@ use crate::eventstore::{schema, EventStoreError};
 
 /// Highest migration index this binary understands. A db whose `user_version`
 /// exceeds this was written by a newer binary → refuse-safe (§16).
-pub const SUPPORTED_USER_VERSION: i64 = 5;
+pub const SUPPORTED_USER_VERSION: i64 = 6;
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
@@ -21,6 +21,7 @@ fn migrations() -> Migrations<'static> {
         M::up(schema::MIGRATION_3_PROJECTIONS),
         M::up(schema::MIGRATION_4_OUTBOX),
         M::up(schema::MIGRATION_5_LEASES),
+        M::up(schema::MIGRATION_6_QUARANTINE),
     ])
 }
 

@@ -310,3 +310,21 @@ CREATE TABLE leases (
 );
 CREATE INDEX ix_leases_expiry ON leases(expires_at);
 ";
+
+/// Migration 6 (1.6c §17 degradable replay) — the `quarantine` table (USER-RULED Option C).
+/// When startup replay (`catch_up_replay`/`rebuild`) hits a corrupt or unredacted event row it
+/// QUARANTINES it: the raw `events` row is preserved UNTOUCHED (§17 — the spine is never mutated),
+/// the gap is recorded here (forensics + dedup), the projector offset is marked degraded, and
+/// replay CONTINUES (the daemon STARTS). `audit_emitted` dedups the L2 audit-integrity event
+/// across re-detection (a catch-up re-read of a trailing row + a full rebuild both re-detect the
+/// same seq → ON CONFLICT(seq) DO NOTHING preserves this flag, so the event emits once per seq).
+/// **Daemon-internal** — NOT a `shared/` contract (the UI/Brain never read `quarantine`),
+/// analogous to the 1.3 outbox / 1.4 leases: no CONTRACT_VERSION bump.
+pub const MIGRATION_6_QUARANTINE: &str = "\
+CREATE TABLE quarantine (
+  seq           INTEGER PRIMARY KEY,
+  reason        TEXT NOT NULL,
+  detected_at   TEXT NOT NULL,
+  audit_emitted INTEGER NOT NULL DEFAULT 0
+);
+";

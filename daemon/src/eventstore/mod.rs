@@ -43,6 +43,12 @@ pub use migrations::SUPPORTED_USER_VERSION;
 /// with `projections` (the degraded-skip path treats a newer version as unfoldable).
 pub(crate) const MAX_SUPPORTED_EVENT_VERSION: i64 = 1;
 
+/// Explicit "unknown seq" marker for a quarantined row whose `seq` column itself is unreadable
+/// (1.6a-L1 cq cleanup — replaces the implicit `-1` sentinel). Used ONLY for the genuinely-
+/// unreadable-seq case; a readable seq is always preserved verbatim in the quarantine record,
+/// so this never flows into version/seq logic as a silent sentinel.
+pub(crate) const UNKNOWN_SEQ: i64 = -1;
+
 /// Typed event-store failures — fail-closed (§15/§17): a write that cannot
 /// durably + validly persist returns an error, never a silent success.
 #[derive(Debug, thiserror::Error)]
@@ -294,8 +300,9 @@ impl EventStore {
         Ok(out)
     }
 
-    /// All events, degrading (unknown version) or quarantining (corrupt) bad rows
-    /// instead of crashing (§17).
+    /// All events, degrading (unknown version) or quarantining (corrupt / unredacted) bad rows
+    /// instead of crashing (§17). The per-row classification is shared with the replay-scoped
+    /// [`read_events_after_degradable`] via [`classify_degradable_row`].
     pub fn read_all_degradable(&self) -> Result<Vec<DegradableEvent>, EventStoreError> {
         let mut stmt = self
             .conn
@@ -304,61 +311,7 @@ impl EventStore {
             ))
             .map_err(EventStoreError::Write)?;
         let rows = stmt
-            .query_map([], |row| {
-                // a bad/unreadable leading column quarantines THAT row — it must
-                // not abort the whole replay (§17 resilience). An unreadable `seq` is
-                // handled like its sibling columns below (quarantine-on-unreadable, not a
-                // silent `.unwrap_or(-1)`): -1 is then an EXPLICIT "unknown seq" marker on
-                // a quarantined row, never a sentinel that flows into version/event logic.
-                let seq: i64 = match row.get(0) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        return Ok(DegradableEvent::Quarantined {
-                            seq: -1,
-                            reason: "unreadable seq".to_string(),
-                        })
-                    }
-                };
-                let event_version: i64 = match row.get(1) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        return Ok(DegradableEvent::Quarantined {
-                            seq,
-                            reason: "unreadable event_version".to_string(),
-                        })
-                    }
-                };
-                let payload_json: String = match row.get(2) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        return Ok(DegradableEvent::Quarantined {
-                            seq,
-                            reason: "unreadable payload_json".to_string(),
-                        })
-                    }
-                };
-                if event_version > MAX_SUPPORTED_EVENT_VERSION {
-                    return Ok(DegradableEvent::Degraded {
-                        seq,
-                        reason: format!("unknown event_version {event_version}"),
-                    });
-                }
-                if serde_json::from_str::<serde_json::Value>(&payload_json).is_err() {
-                    return Ok(DegradableEvent::Quarantined {
-                        seq,
-                        reason: "corrupt payload_json".to_string(),
-                    });
-                }
-                // columns 3.. are the COLS block (offset by the 3 leading cols)
-                match row_to_envelope_offset(row, 3) {
-                    Ok(env) => Ok(DegradableEvent::Ok(Box::new(env))),
-                    // §15: the reason must NOT echo (possibly sensitive) row content.
-                    Err(_) => Ok(DegradableEvent::Quarantined {
-                        seq,
-                        reason: "event reconstruction failed".to_string(),
-                    }),
-                }
-            })
+            .query_map([], classify_degradable_row)
             .map_err(EventStoreError::Write)?;
         let mut out = Vec::new();
         for r in rows {
@@ -538,25 +491,27 @@ fn read_envelope_by_seq(
     }
 }
 
-/// Reconstruct envelopes for events with `seq > after_seq`, in canonical order — the
-/// input the projection catch-up replay / rebuild folds (`projections::*`). Reads on
-/// the given connection (typically the replay txn). `object_refs` is empty here;
-/// projectors derive it (so a rebuild reproduces it deterministically, §2.2/§7.2).
-pub(crate) fn read_events_after(
+/// Reconstruct envelopes for events with `seq > after_seq`, in canonical order — the input the
+/// projection catch-up replay / rebuild folds (`projections::*`). **Degradable** (§17): a corrupt
+/// / unredacted row becomes a `Quarantined` and an unknown-version row a `Degraded` instead of
+/// aborting the read, so one bad row never crashes `open` (1.6c superseded the prior strict reader;
+/// `object_refs` is empty here — projectors derive it, so a rebuild reproduces it deterministically,
+/// §2.2/§7.2). Shares per-row classification with [`EventStore::read_all_degradable`].
+pub(crate) fn read_events_after_degradable(
     conn: &Connection,
     after_seq: i64,
-) -> Result<Vec<EventEnvelope>, EventStoreError> {
+) -> Result<Vec<DegradableEvent>, EventStoreError> {
     let mut stmt = conn
         .prepare(&format!(
-            "SELECT {COLS} FROM events WHERE seq > ?1 ORDER BY seq"
+            "SELECT seq, event_version, payload_json, {COLS} FROM events WHERE seq > ?1 ORDER BY seq"
         ))
         .map_err(EventStoreError::Write)?;
     let rows = stmt
-        .query_map([after_seq], |row| Ok(row_to_envelope(row)))
+        .query_map([after_seq], classify_degradable_row)
         .map_err(EventStoreError::Write)?;
     let mut out = Vec::new();
     for r in rows {
-        out.push(r.map_err(EventStoreError::Write)??);
+        out.push(r.map_err(EventStoreError::Write)?);
     }
     Ok(out)
 }
@@ -574,6 +529,76 @@ fn projection_to_store_err(e: crate::projections::ProjectionError) -> EventStore
                 "projection offset anomaly: '{projector}' write touched {rows} rows (expected 1)"
             ))
         }
+    }
+}
+
+/// Classify one row of a `SELECT seq, event_version, payload_json, {COLS} …` degradable read
+/// (§17). A bad/unreadable leading column quarantines THAT row (never aborts the whole read);
+/// an unknown `event_version` DEGRADES (a newer binary folds it — not an integrity violation);
+/// a reconstruction failure or an `unredacted` row QUARANTINES. **§15: a `reason` is a STRUCTURAL
+/// descriptor and must NEVER echo row content** — the serde reconstruction error (which would
+/// quote the offending value) is deliberately discarded. An unreadable `seq` uses the explicit
+/// [`UNKNOWN_SEQ`] marker, never an implicit `-1`.
+fn classify_degradable_row(row: &rusqlite::Row) -> rusqlite::Result<DegradableEvent> {
+    let seq: i64 = match row.get(0) {
+        Ok(s) => s,
+        Err(_) => {
+            return Ok(DegradableEvent::Quarantined {
+                seq: UNKNOWN_SEQ,
+                reason: "unreadable seq".to_string(),
+            })
+        }
+    };
+    let event_version: i64 = match row.get(1) {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(DegradableEvent::Quarantined {
+                seq,
+                reason: "unreadable event_version".to_string(),
+            })
+        }
+    };
+    let payload_json: String = match row.get(2) {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(DegradableEvent::Quarantined {
+                seq,
+                reason: "unreadable payload_json".to_string(),
+            })
+        }
+    };
+    if event_version > MAX_SUPPORTED_EVENT_VERSION {
+        // unknown version → DEGRADE (store raw + degraded marker, don't crash; a newer binary
+        // folds it). NOT a quarantine — no integrity violation. The version number is not content.
+        return Ok(DegradableEvent::Degraded {
+            seq,
+            reason: format!("unknown event_version {event_version}"),
+        });
+    }
+    if serde_json::from_str::<serde_json::Value>(&payload_json).is_err() {
+        return Ok(DegradableEvent::Quarantined {
+            seq,
+            reason: "corrupt payload_json".to_string(),
+        });
+    }
+    // columns 3.. are the COLS block (offset by the 3 leading cols).
+    match row_to_envelope_offset(row, 3) {
+        // §15 replay-side defense-in-depth: a row that somehow carries `unredacted` (non-
+        // producible via the write gate) is QUARANTINED, never folded — a projection must
+        // never surface an unredacted payload. The reason carries no row content.
+        Ok(env) if env.redaction_status == RedactionStatus::Unredacted => {
+            Ok(DegradableEvent::Quarantined {
+                seq,
+                reason: "unredacted row (replay-side §15 defense)".to_string(),
+            })
+        }
+        Ok(env) => Ok(DegradableEvent::Ok(Box::new(env))),
+        // §15: the reason must NOT echo (possibly sensitive) row content — a structural
+        // descriptor only, NOT the serde error (which would quote the offending value).
+        Err(_) => Ok(DegradableEvent::Quarantined {
+            seq,
+            reason: "event reconstruction failed".to_string(),
+        }),
     }
 }
 
@@ -666,4 +691,16 @@ fn is_idempotency_violation(e: &rusqlite::Error) -> bool {
             && msg.contains("idempotency_key");
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    // 1.6c test 7 (1.6a-L1 cq cleanup, re-homed): the unreadable-`seq` quarantine marker is a
+    // NAMED const, not an implicit `-1` flowing into version/seq logic. A readable seq is always
+    // preserved verbatim (pinned end-to-end by `tests/replay.rs::test_corrupt_row…` quarantining
+    // at the REAL seq); this const is reserved ONLY for the genuinely-unreadable-`seq` case.
+    #[test]
+    fn unknown_seq_is_the_explicit_unreadable_marker() {
+        assert_eq!(super::UNKNOWN_SEQ, -1);
+    }
 }

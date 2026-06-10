@@ -590,6 +590,27 @@
       ],
       "type": "object"
     },
+    "SensitiveOutputRedacted": {
+      "additionalProperties": false,
+      "description": "`SensitiveOutputRedacted` payload (§15 redaction-before-persist). Emitted when the Redactor\ndetects a high-confidence secret it CANNOT safely redact in place — the original event is\n**diverted (NOT persisted)** and this record is appended in its place (`event_envelope.rs`\nRedactionStatus doc). Carries forensic metadata ONLY: the diverted event's `event_type`, a\nredaction-safe **structural** `reason`, and the `detector` that fired — NEVER the secret or\nany byte of the diverted payload (§15; mirrors the 1.6c AuditIntegrityViolation content-free\nrecord). In MVP the prefix+entropy Redactor masks in place and never triggers this; it is\nthe §15 \"can't safely redact → divert\" safety net for an alternate/future Redactor.",
+      "properties": {
+        "detector": {
+          "type": "string"
+        },
+        "original_event_type": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "original_event_type",
+        "reason",
+        "detector"
+      ],
+      "type": "object"
+    },
     "Sensitivity": {
       "description": "§7.1/§15 sensitivity classification (EM §9). Terminal output defaults `restricted`.",
       "enum": [
@@ -953,6 +974,9 @@
     "rpc_response": {
       "$ref": "#/$defs/RpcResponse"
     },
+    "sensitive_output_redacted": {
+      "$ref": "#/$defs/SensitiveOutputRedacted"
+    },
     "sensitivity": {
       "$ref": "#/$defs/Sensitivity"
     },
@@ -1018,6 +1042,7 @@
     "device_id",
     "local_runner_id",
     "audit_integrity_violation",
+    "sensitive_output_redacted",
     "hello_frame",
     "hello_ack",
     "version_skew_error",
@@ -1036,5 +1061,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.13.0"
+  "x-contract-version": "0.14.0"
 }

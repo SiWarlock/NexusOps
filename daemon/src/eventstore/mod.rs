@@ -22,12 +22,12 @@ use nexusops_shared::actor::ActorType;
 use nexusops_shared::event_envelope::{
     EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility,
 };
-use nexusops_shared::events::AuditIntegrityViolation;
+use nexusops_shared::events::{AuditIntegrityViolation, SensitiveOutputRedacted};
 
 use nexusops_shared::ids::{
     ActionRequestId, AgentTeamId, EventId, ProjectId, SessionId, WorkspaceId,
 };
-pub use redaction::{PrefixRedactor, RedactionOutcome, Redactor};
+pub use redaction::{PrefixRedactor, QuarantineSignal, RedactionOutcome, Redactor};
 // migration DDL constants (re-exported so the projection-migration test + the
 // migrations registry reference one canonical source).
 pub use schema::{MIGRATION_1_EVENTS, MIGRATION_2_REDACTION, MIGRATION_3_PROJECTIONS};
@@ -210,6 +210,17 @@ impl EventStore {
         // §15 redaction-before-persist GATE: route the payload through the Redactor
         // and REFUSE to persist anything not `redacted` (fail-closed).
         let outcome = self.redactor.redact(&i.payload_json);
+        // §15 quarantine-DIVERT: the Redactor flagged a high-confidence secret it CANNOT safely
+        // redact in place → do NOT persist the original; record a content-free
+        // `SensitiveOutputRedacted` in its place. Guard against recursion: a quarantine signal on
+        // a `SensitiveOutputRedacted` event itself is fail-closed (we can't even redact our own
+        // audit record) — never divert a divert.
+        if let Some(q) = outcome.quarantine {
+            if i.event_type == SensitiveOutputRedacted::EVENT_TYPE {
+                return Err(EventStoreError::RedactionRequired);
+            }
+            return self.divert_quarantined(&i, q);
+        }
         if outcome.status != RedactionStatus::Redacted {
             return Err(EventStoreError::RedactionRequired);
         }
@@ -282,6 +293,57 @@ impl EventStore {
             Err(e) if is_idempotency_violation(&e) => Err(EventStoreError::DuplicateIdempotencyKey),
             Err(e) => Err(EventStoreError::Write(e)),
         }
+    }
+
+    /// §15 quarantine divert: append a content-free [`SensitiveOutputRedacted`] in place of an
+    /// event the Redactor could not safely redact. Preserves the diverted event's routing /
+    /// identity envelope fields for forensics (workspace/project/actor/source/session/…) but
+    /// NOT its payload — the SOR carries only `{original_event_type, reason, detector}` (no secret
+    /// byte). Flows through the normal `append`: the §15 gate + projector fold run on the
+    /// content-free payload (→ Redacted → persists); the recursion guard in `append` stops a
+    /// divert-of-a-divert. The original payload never touches `events`.
+    fn divert_quarantined(
+        &mut self,
+        original: &AppendIntent,
+        q: QuarantineSignal,
+    ) -> Result<EventId, EventStoreError> {
+        let payload = serde_json::to_string(&SensitiveOutputRedacted {
+            original_event_type: original.event_type.clone(),
+            reason: q.reason,
+            detector: q.detector,
+        })
+        .map_err(|e| EventStoreError::Reconstruct(e.to_string()))?;
+        let sor = AppendIntent {
+            event_type: SensitiveOutputRedacted::EVENT_TYPE.to_string(),
+            event_version: 1,
+            payload_json: payload,
+            // preserve the diverted event's routing/identity for forensics; drop its payload.
+            occurred_at: original.occurred_at.clone(),
+            workspace_id: original.workspace_id.clone(),
+            actor_type: original.actor_type,
+            actor_id: original.actor_id.clone(),
+            source_type: original.source_type,
+            source_id: original.source_id.clone(),
+            correlation_id: original.correlation_id.clone(),
+            // a content-free audit record — classify it by the record's OWN sensitivity
+            // (Internal), NOT the diverted event's (which may be Restricted/Secret); inheriting
+            // would over-classify a payload-free row + skew downstream access control (mirrors the
+            // 1.6c AuditIntegrityViolation, which is Internal).
+            sensitivity: Sensitivity::Internal,
+            schema_version: original.schema_version.clone(),
+            // namespace the dedup key (mirrors the AIV `audit-integrity-{seq}` idiom): a retry of
+            // the same diverted event dedups to the ONE SOR, while never COLLIDING with an
+            // unrelated event that legitimately holds the original key. `None` stays `None`.
+            idempotency_key: original
+                .idempotency_key
+                .as_ref()
+                .map(|k| format!("divert-{k}")),
+            project_id: original.project_id.clone(),
+            session_id: original.session_id.clone(),
+            agent_team_id: original.agent_team_id.clone(),
+            visibility: original.visibility,
+        };
+        self.append(sor)
     }
 
     /// All events in canonical `seq` order. Strict — a malformed row is an error

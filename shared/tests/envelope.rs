@@ -150,6 +150,7 @@ fn test_contract_version_bumped_past_0_5() {
     // method envelopes + the `protocol_error` code); 1.5 L4 → 0.11.0 (ServerFrame frame-type
     // multiplexing + subscribe streaming: ProjectionDelta/DeltaKind/SubscribeParams);
     // 1.6a L3 → 0.12.0 (Device/LocalRunner registration event payloads, §5.3/§16);
-    // 1.6c L2 → 0.13.0 (the §17 AuditIntegrityViolation event payload, Option C).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.13.0");
+    // 1.6c L2 → 0.13.0 (the §17 AuditIntegrityViolation event payload, Option C);
+    // 1.7 L2 → 0.14.0 (the §15 SensitiveOutputRedacted quarantine-divert event payload).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.14.0");
 }

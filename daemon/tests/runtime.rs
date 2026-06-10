@@ -96,6 +96,7 @@ impl Redactor for NeverRedacts {
             status: RedactionStatus::Unredacted,
             payload_json: payload_json.to_string(),
             engine_version: "never".to_string(),
+            quarantine: None,
         }
     }
 }

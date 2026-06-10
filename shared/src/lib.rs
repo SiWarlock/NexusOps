@@ -27,7 +27,9 @@ pub mod status;
 /// §5.3/§16 bootstrap self-registration) — additive EventTypeRegistry rows.
 /// 0.13.0 (1.6c L2) adds the §17 AuditIntegrityViolation event payload (Option C —
 /// the loud, consumer-visible record emitted when startup replay quarantines a row).
-pub const CONTRACT_VERSION: &str = "0.13.0";
+/// 0.14.0 (1.7 L2) adds the §15 SensitiveOutputRedacted event payload — the
+/// redaction "can't safely redact → divert the event + record this instead" net.
+pub const CONTRACT_VERSION: &str = "0.14.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

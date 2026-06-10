@@ -11,7 +11,8 @@ use schemars::JsonSchema;
 use crate::actor::ActorType;
 use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility};
 use crate::events::{
-    AuditIntegrityViolation, DeviceRegistered, LocalRunnerRegistered, SessionStarted,
+    AuditIntegrityViolation, DeviceRegistered, LocalRunnerRegistered, SensitiveOutputRedacted,
+    SessionStarted,
 };
 use crate::ids::IdKind;
 use crate::ipc::{
@@ -59,6 +60,8 @@ struct ContractBundle {
     local_runner_id: LocalRunnerId,
     // 1.6c L2 — the §17 audit-integrity event payload (Option C "loud record")
     audit_integrity_violation: AuditIntegrityViolation,
+    // 1.7 L2 — the §15 quarantine-divert event payload (can't-safely-redact → divert)
+    sensitive_output_redacted: SensitiveOutputRedacted,
     // 1.5 L2 — the IPC GatewayPort wire contract (§6.4) + the §6.1 projection-name enum
     hello_frame: HelloFrame,
     hello_ack: HelloAck,

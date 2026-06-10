@@ -23,6 +23,21 @@ pub struct RedactionOutcome {
     pub status: RedactionStatus,
     pub payload_json: String,
     pub engine_version: String,
+    /// `Some` when the Redactor detected a high-confidence secret it CANNOT safely redact in
+    /// place (§15) → the writer DIVERTS: it does not persist the original; it records a
+    /// `SensitiveOutputRedacted` instead. `None` is the normal persist/refuse path. Quarantine
+    /// is a writer-path decision — `RedactionStatus` (the persisted column) stays at its frozen
+    /// two values. The MVP `PrefixRedactor` masks in place and never sets this (Q2).
+    pub quarantine: Option<QuarantineSignal>,
+}
+
+/// The content-free signal a Redactor raises to DIVERT an event it can't safely redact (§15).
+/// Carries forensic metadata ONLY — a redaction-safe **structural** reason + the detector that
+/// fired — NEVER the secret or any byte of the payload (mirrors the 1.6c content-free record).
+#[derive(Debug, Clone)]
+pub struct QuarantineSignal {
+    pub reason: String,
+    pub detector: String,
 }
 
 /// Routes a payload through redaction before persist (§15). Owned by `policy`
@@ -73,6 +88,9 @@ impl Redactor for PrefixRedactor {
             status: RedactionStatus::Redacted,
             payload_json: masked,
             engine_version: ENGINE_VERSION.to_string(),
+            // the MVP redactor masks in place — it never diverts (Q2). The quarantine/divert
+            // path stays wired in the writer for an alternate Redactor (§15 safety net).
+            quarantine: None,
         }
     }
 }

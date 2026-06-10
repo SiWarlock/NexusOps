@@ -67,3 +67,25 @@ impl AuditIntegrityViolation {
     /// SessionStarted/Device/LocalRunner literals consolidate in a later non-safety slice).
     pub const EVENT_TYPE: &'static str = "AuditIntegrityViolation";
 }
+
+/// `SensitiveOutputRedacted` payload (§15 redaction-before-persist). Emitted when the Redactor
+/// detects a high-confidence secret it CANNOT safely redact in place — the original event is
+/// **diverted (NOT persisted)** and this record is appended in its place (`event_envelope.rs`
+/// RedactionStatus doc). Carries forensic metadata ONLY: the diverted event's `event_type`, a
+/// redaction-safe **structural** `reason`, and the `detector` that fired — NEVER the secret or
+/// any byte of the diverted payload (§15; mirrors the 1.6c AuditIntegrityViolation content-free
+/// record). In MVP the prefix+entropy Redactor masks in place and never triggers this; it is
+/// the §15 "can't safely redact → divert" safety net for an alternate/future Redactor.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct SensitiveOutputRedacted {
+    pub original_event_type: String,
+    pub reason: String,
+    pub detector: String,
+}
+
+impl SensitiveOutputRedacted {
+    /// The EventTypeRegistry name — ONE home, referenced by the daemon divert path + the audit
+    /// projector (the new type adds no bare string-literal to the dup set).
+    pub const EVENT_TYPE: &'static str = "SensitiveOutputRedacted";
+}

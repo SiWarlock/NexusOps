@@ -671,3 +671,48 @@ fn test_audit_integrity_violation_wire_contract() {
         "AuditIntegrityViolation"
     );
 }
+
+// ---- 1.7 L2 — the §15 quarantine-divert event (SensitiveOutputRedacted) ----------------
+
+#[test]
+fn test_sensitive_output_redacted_wire_contract() {
+    use nexusops_shared::events::SensitiveOutputRedacted;
+
+    // {original_event_type, reason, detector} round-trips snake_case; content-free (§15).
+    let v = SensitiveOutputRedacted {
+        original_event_type: "SessionStarted".to_string(),
+        reason: "high-confidence secret could not be safely bounded".to_string(),
+        detector: "entropy-kv".to_string(),
+    };
+    let j = serde_json::to_value(&v).unwrap();
+    assert!(
+        j.get("original_event_type").is_some(),
+        "original_event_type wire field"
+    );
+    assert!(j.get("reason").is_some(), "reason wire field");
+    assert!(j.get("detector").is_some(), "detector wire field");
+    assert_eq!(
+        serde_json::from_value::<SensitiveOutputRedacted>(j).unwrap(),
+        v,
+        "SensitiveOutputRedacted round-trips"
+    );
+    // deny_unknown_fields (reject-unknown, §5.0/§15)
+    let rogue = serde_json::json!({
+        "original_event_type": "X", "reason": "y", "detector": "z", "extra": true
+    });
+    assert!(
+        serde_json::from_value::<SensitiveOutputRedacted>(rogue).is_err(),
+        "unknown field rejected"
+    );
+    // the event-type name has ONE home (the daemon emit path + the audit projector)
+    assert_eq!(
+        SensitiveOutputRedacted::EVENT_TYPE,
+        "SensitiveOutputRedacted"
+    );
+}
+
+#[test]
+fn test_contract_version_bumped_for_sensitive_output_redacted() {
+    // the new event type accretes the EventTypeRegistry → minor CONTRACT_VERSION bump (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.14.0");
+}

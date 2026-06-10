@@ -19,8 +19,13 @@ export const DesktopObjectKind = shape.DesktopObjectKind;
 export const IdKind = shape.IdKind;
 export const ProjectBrain = shape.ProjectBrain;
 export const PullRequest = shape.PullRequest;
+// 0.8.0 additions (daemon Phase 1 event-store/redaction contract surface).
+export const RedactionStatus = shape.RedactionStatus;
+export const Sensitivity = shape.Sensitivity;
 export const Session = shape.Session;
+export const SourceType = shape.SourceType;
 export const Task = shape.Task;
+export const Visibility = shape.Visibility;
 export const WorkflowInstance = shape.WorkflowInstance;
 export const WorktreeGit = shape.WorktreeGit;
 export const WorktreeOverlay = shape.WorktreeOverlay;
@@ -37,8 +42,12 @@ export const validators: Record<string, EnumValidator> = {
   IdKind,
   ProjectBrain,
   PullRequest,
+  RedactionStatus,
+  Sensitivity,
   Session,
+  SourceType,
   Task,
+  Visibility,
   WorkflowInstance,
   WorktreeGit,
   WorktreeOverlay,

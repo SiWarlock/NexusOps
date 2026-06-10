@@ -1,4 +1,13 @@
 import { useEffect, useState } from "react";
+import {
+  Brain,
+  CodeXml,
+  FileDiff,
+  LayoutGrid,
+  ListChecks,
+  Package,
+  ScrollText,
+} from "lucide-react";
 import type { GatewayPort } from "../gateway-client/types";
 import { MockGatewayPort } from "../gateway-client/mock";
 import type {
@@ -13,12 +22,12 @@ import type {
   UsageRow,
 } from "../contracts/index";
 import { deriveProjectSwitcherCounts, type ProjectSwitcherCounts } from "./derive";
-import type { SidebarItem } from "./Sidebar";
 import { CommandCenter } from "../views/command/CommandCenter";
 import type { CommandItem } from "../views/command/group";
 import { ProjectGraph } from "../views/graph/ProjectGraph";
 import { SessionsTable } from "../views/sessions/SessionsTable";
 import { Settings } from "../views/settings/Settings";
+import { PlaceholderView } from "../views/Placeholder";
 import {
   toSessionItems,
   toPrItems,
@@ -47,8 +56,7 @@ import { useViewHistory } from "./view-history";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
 import { DrawerStack } from "./DrawerStack";
-import { ActivityDock } from "./ActivityDock";
-import { StatusBar } from "./StatusBar";
+import { EventDock } from "./EventDock";
 
 interface ShellData {
   projects: ProjectActivityRow[];
@@ -67,9 +75,13 @@ interface ShellData {
  * renders the chrome from them. It also surfaces the transport degraded state:
  * a ReadOnlyProvider exposes connected+version-compatible to every control's
  * canSubmitIntent gate (fail-safe FALSE until confirmed), a ConnectionIndicator
- * sits in the StatusBar, and a DegradedBanner appears when disconnected /
+ * sits in the EventDock strip, and a DegradedBanner appears when disconnected /
  * reconnecting / version-skewed. The daemon Gateway remains the real INV-SEC-1
  * guard; this read-only gate is defense-in-depth.
+ *
+ * Chrome anatomy is the prototype's (kit-shell.jsx): TopBar, the workspace
+ * Sidebar (project tree + view nav), the main surface routed by the sidebar
+ * nav (view-history back/forward), and the bottom EventDock.
  */
 export function Shell({
   gateway,
@@ -93,9 +105,9 @@ export function Shell({
   );
   // Fail-safe: version stays "unknown" (→ read-only) until a handshake confirms it.
   const [version, setVersion] = useState<VersionCompat>("unknown");
-  // Which content view the main surface shows (6.3b/6.3c). Command Center is the
-  // default; back/forward navigate the view history (§11.2 — pure UI state, no
-  // daemon dep, Lesson §13 family). `navigate` is the single nav entry point.
+  // Which content view the main surface shows. Command Center is the default;
+  // back/forward navigate the view history (§11.2 — pure UI state, no daemon dep,
+  // Lesson §13 family). `navigate` is the single nav entry point.
   const {
     current: contentView,
     canBack,
@@ -107,6 +119,9 @@ export function Shell({
   // Active-project selection (P7.3): UI scope state over the frozen projects
   // projection. null until the user picks; defaults to the first project (below).
   const [rawActiveProjectId, setActiveProject] = useState<string | null>(null);
+  // The session the Session Terminal view targets (sidebar tree click — pure UI
+  // selection state, Lesson §13 family).
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
 
   useEffect(() => client.onConnectionChange(setConnection), [client]);
 
@@ -173,6 +188,7 @@ export function Shell({
   // first project (default scope), else null at zero-projects (the graph's
   // no-projects guard). resolveActiveProject guards the stale-ID case.
   const activeProjectId = resolveActiveProject(data.projects, rawActiveProjectId);
+  const activeProject = data.projects.find((p) => p.project_id === activeProjectId);
   // The "checking" (connected + version-unknown) window surfaces at the real
   // daemon-1.5 reconnect re-handshake; the MockGatewayPort resolves version
   // together with data (one Promise.all behind the !data load gate), so the
@@ -180,19 +196,22 @@ export function Shell({
   // Carry-forward spread.
   const degraded = deriveDegradedState(connection, version);
 
-  // Sessions drive the sidebar's attention-ordered items (§11.3 sidebar weight);
-  // the same session items open the Command Center list — mapped once, reused.
-  const sessionItems = toSessionItems(data.sessions);
-  const sidebarItems: SidebarItem[] = sessionItems;
+  // Global waiting-on-you count (the HIQ badge in TopBar + Sidebar): summed
+  // across projects — triage is cross-cutting (Lesson §13: Command Center GLOBAL).
+  const waiting = Object.values(data.counts).reduce(
+    (sum, c) => sum + c.waitingOnYou,
+    0,
+  );
+
   // O-2 resume indicators: an id-keyed side map (Lesson §8 — surfaces resume mode
-  // on the sidebar's shared ProjectionItem WITHOUT widening the item).
+  // on the sidebar's session rows WITHOUT widening the row).
   const resumeModes = resumeModesBySessionId(data.sessions);
 
   // Command Center items: sessions + PRs + approvals (the wired projections;
   // tasks join when a Task/PlanProgress projection lands — Phase 7). Routed
   // through the shared mappers (no inline re-map — P6.3b).
   const commandItems: CommandItem[] = [
-    ...sessionItems,
+    ...toSessionItems(data.sessions),
     ...toPrItems(data.pullRequests),
     ...toApprovalItems(data.approvals),
   ];
@@ -204,6 +223,11 @@ export function Shell({
   const handleRetry = () => client.reconnect();
   const handleRepair = () => client.reconnect(); // TODO(daemon-1.5/Phase 10): real repair/update-relaunch flow.
 
+  const openSession = (s: SessionRow) => {
+    setSelectedSessionId(s.session_id);
+    navigate("terminal");
+  };
+
   return (
     <ReadOnlyProvider value={status}>
       {/* ActiveProjectProvider wraps the WHOLE shell (incl. TopBar) so the
@@ -213,6 +237,8 @@ export function Shell({
         <TopBar
           projects={data.projects}
           counts={data.counts}
+          connection={connection}
+          waiting={waiting}
           onOpenSettings={() => navigate("settings")}
           onBack={back}
           onForward={forward}
@@ -239,64 +265,100 @@ export function Shell({
             <HardConflictCard conflict={safety.conflict} />
           </div>
         </div>
-        <Sidebar items={sidebarItems} resumeModes={resumeModes} />
+        <Sidebar
+          projects={data.projects}
+          sessions={data.sessions}
+          counts={data.counts}
+          view={contentView}
+          onNavigate={navigate}
+          selectedSessionId={selectedSessionId}
+          onOpenSession={openSession}
+          waiting={waiting}
+          resumeModes={resumeModes}
+        />
         <main className="main" aria-label="Main surface">
-          {/* Content-view switch (6.3b): Command Center (default) | Project
-              Graph. Sessions / Terminal / Diff are the later 6.3 sub-slices. */}
-          <div
-            className="content-switch"
-            role="group"
-            aria-label="Content view"
-          >
-              <button
-                type="button"
-                aria-pressed={contentView === "command"}
-                onClick={() => navigate("command")}
-              >
-                Command Center
-              </button>
-              <button
-                type="button"
-                aria-pressed={contentView === "graph"}
-                onClick={() => navigate("graph")}
-              >
-                Project Graph
-              </button>
-              <button
-                type="button"
-                aria-pressed={contentView === "sessions"}
-                onClick={() => navigate("sessions")}
-              >
-                Sessions
-              </button>
-              {/* Settings is reached via the TopBar (§11.2 nav model), not here —
-                  the view-switch carries content surfaces only. */}
-            </div>
-            {contentView === "command" ? (
-              <CommandCenter items={commandItems} />
-            ) : contentView === "graph" ? (
-              <ProjectGraph
-                projectId={activeProjectId ?? ""}
-                projects={data.projects}
-                sessions={data.sessions}
-                pullRequests={data.pullRequests}
-              />
-            ) : contentView === "sessions" ? (
+          {contentView === "command" ? (
+            <CommandCenter items={commandItems} />
+          ) : contentView === "graph" ? (
+            <ProjectGraph
+              projectId={activeProjectId ?? ""}
+              projects={data.projects}
+              sessions={data.sessions}
+              pullRequests={data.pullRequests}
+            />
+          ) : contentView === "terminal" ? (
+            // Session Terminal: the live PTY surface is daemon-gated (6.3d/e —
+            // terminal channel). Until it lands, the view hosts the Sessions
+            // table (real projection data + filters) as the session list.
+            <section aria-label="Session Terminal" className="terminal-view">
               <SessionsTable
                 sessions={filterByActiveProject(data.sessions, activeProjectId)}
                 projects={data.projects}
               />
-            ) : (
-              // Settings folds the Usage dashboard into its Usage tab (§11.2).
-              // Reached ONLY via the TopBar's onOpenSettings — no view-switch
-              // button sets contentView="settings" (§11.2 nav model).
-              <Settings usage={data.usage} creditPool={data.creditPool} />
-            )}
-          </main>
-          <DrawerStack />
-          <ActivityDock events={data.events} />
-          <StatusBar connection={connection} />
-        </div>
+            </section>
+          ) : contentView === "settings" ? (
+            // Settings folds the Usage dashboard into its Usage tab (§11.2).
+            // Reached via the TopBar gear (§11.2 nav model).
+            <Settings usage={data.usage} creditPool={data.creditPool} />
+          ) : contentView === "projects" ? (
+            <PlaceholderView
+              title="Projects Overview"
+              icon={<LayoutGrid size={18} />}
+              blockedOn="the Projects Overview slice (this rebuild, next chunk)"
+            />
+          ) : contentView === "plan" ? (
+            <PlaceholderView
+              title="Plan"
+              icon={<ListChecks size={18} />}
+              blockedOn="the Plan projection (workflow-pack parser integration)"
+            />
+          ) : contentView === "editor" ? (
+            <PlaceholderView
+              title="Editor"
+              icon={<CodeXml size={18} />}
+              blockedOn="the worktree file-access daemon contract"
+            />
+          ) : contentView === "code" ? (
+            <PlaceholderView
+              title="Code / Diff Review"
+              icon={<FileDiff size={18} />}
+              blockedOn="the diff/worktree daemon contract (Phase 7 PR review)"
+            />
+          ) : contentView === "team" ? (
+            <PlaceholderView
+              title="Agent Team"
+              icon={<Brain size={18} />}
+              blockedOn="the AgentTeam projection (daemon team contracts)"
+            />
+          ) : contentView === "packs" ? (
+            <PlaceholderView
+              title="Workflow Packs"
+              icon={<Package size={18} />}
+              blockedOn="the WorkflowInstance projection (pack registry contract)"
+            />
+          ) : contentView === "brain" ? (
+            <PlaceholderView
+              title="Project Brain"
+              icon={<Brain size={18} />}
+              blockedOn="the Brain sidecar contract (Phase 8)"
+            />
+          ) : (
+            <PlaceholderView
+              title="Audit Trail"
+              icon={<ScrollText size={18} />}
+              blockedOn="the Audit Trail view slice (this rebuild, next chunk)"
+            />
+          )}
+        </main>
+        <DrawerStack />
+        <EventDock
+          events={data.events}
+          connection={connection}
+          projectId={activeProjectId}
+          projectName={activeProject?.name}
+          onOpenAudit={() => navigate("audit")}
+        />
+      </div>
       </ActiveProjectProvider>
     </ReadOnlyProvider>
   );

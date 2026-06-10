@@ -6,9 +6,23 @@
 // any stranded forward entries; back/forward move only the cursor.
 import { useCallback, useReducer } from "react";
 
-/** The four content views the main surface can show (§11.2). Settings is reached
- *  via the TopBar, but it's a uniform history entry like the rest. */
-export type ViewName = "command" | "graph" | "sessions" | "settings";
+/** The content views the main surface can show (§11.2) — the prototype's full
+ *  cockpit view set (kit-shell.jsx VIEWS + PLATFORM_VIEWS + projects/team/brain).
+ *  Settings is reached via the TopBar, but it's a uniform history entry like the
+ *  rest. */
+export type ViewName =
+  | "command"
+  | "projects"
+  | "graph"
+  | "plan"
+  | "editor"
+  | "terminal"
+  | "code"
+  | "team"
+  | "packs"
+  | "brain"
+  | "audit"
+  | "settings";
 
 /** History as a stack + a cursor — `stack[cursor]` is the current view. */
 export interface ViewHistoryState {

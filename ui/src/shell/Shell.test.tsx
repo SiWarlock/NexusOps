@@ -11,6 +11,15 @@ import { fencingConflictFixture } from "../safety/fixtures";
 
 afterEach(cleanup);
 
+// The first project's name renders in BOTH the switcher trigger and the sidebar
+// workspace tree (prototype chrome) — the load gate awaits all matches.
+const awaitLoaded = () =>
+  screen.findAllByText(projectActivityFixture.rows[0]!.name);
+
+// The switcher trigger carries the stable "Switch project" title (the project
+// name itself appears in several chrome regions).
+const switcherTrigger = () => screen.getByTitle("Switch project");
+
 // A gateway that simulates the boundary REJECTING a malformed daemon payload —
 // get_projection rejects with a real BoundaryValidationError (built from an
 // actual failed parse), exactly as the validated seam would on bad bytes.
@@ -38,11 +47,10 @@ const rejectingGateway: GatewayPort = {
 describe("Shell", () => {
   it("shell_renders_projects_from_projection", async () => {
     render(<Shell gateway={new MockGatewayPort()} />);
-    // loaded — the switcher trigger shows the active project (auth-service)
-    await screen.findByText(projectActivityFixture.rows[0]!.name);
+    await awaitLoaded();
     // open the switcher dropdown → it lists EXACTLY the projection's projects (none
-    // invented); query within the listbox so the trigger's copy doesn't double-match
-    fireEvent.click(screen.getByRole("button", { name: /auth-service/i }));
+    // invented); query within the listbox so the chrome's copies don't double-match
+    fireEvent.click(switcherTrigger());
     const listbox = screen.getByRole("listbox");
     for (const project of projectActivityFixture.rows) {
       expect(within(listbox).getByText(project.name)).toBeTruthy();
@@ -55,22 +63,31 @@ describe("Shell", () => {
     expect(await screen.findByTestId("shell-load-error")).toBeTruthy();
   });
 
-  it("shell_activity_dock_collapsed_and_expanded", async () => {
+  it("shell_event_dock_collapsed_and_expanded", async () => {
     render(<Shell gateway={new MockGatewayPort()} />);
-    // wait for load
-    await screen.findByText(projectActivityFixture.rows[0]!.name);
+    await awaitLoaded();
     // collapsed by default: the event timeline is not shown
     expect(screen.queryByTestId("activity-timeline")).toBeNull();
-    // expand → timeline appears, bound to the audit projection events
+    // expand → timeline appears, bound to the audit projection events (scoped to
+    // the active project — auth-service)
     fireEvent.click(screen.getByRole("button", { name: /activity/i }));
     const timeline = await screen.findByTestId("activity-timeline");
     expect(timeline).toBeTruthy();
     expect(timeline.textContent).toContain("session.started");
   });
 
+  it("shell_event_dock_full_audit_navigates", async () => {
+    render(<Shell gateway={new MockGatewayPort()} />);
+    await awaitLoaded();
+    fireEvent.click(screen.getByRole("button", { name: /activity/i }));
+    fireEvent.click(screen.getByRole("button", { name: /full audit/i }));
+    // the audit view mounts (placeholder surface until the audit slice lands)
+    expect(screen.getByTestId("placeholder-audit-trail")).toBeTruthy();
+  });
+
   it("shell_kit_token_layer_applied", async () => {
     const { container } = render(<Shell gateway={new MockGatewayPort()} />);
-    await screen.findByText(projectActivityFixture.rows[0]!.name);
+    await awaitLoaded();
     // a kit component renders with CSS custom-property REFERENCES in its inline
     // style (jsdom doesn't load styles.css, so the var() tokens aren't resolved
     // here — this pins that the kit's token-driven styling is wired, not that a
@@ -83,7 +100,7 @@ describe("Shell", () => {
     // banner), not just a prop rerender.
     const mock = new MockGatewayPort();
     render(<Shell gateway={mock} />);
-    await screen.findByText(projectActivityFixture.rows[0]!.name);
+    await awaitLoaded();
     expect(screen.queryByRole("alert")).toBeNull(); // connected + compatible → no banner
 
     act(() => {
@@ -92,61 +109,68 @@ describe("Shell", () => {
     expect(await screen.findByRole("alert")).toBeTruthy(); // degraded banner shown
   });
 
-  it("view_switch_mounts_project_graph", async () => {
+  it("sidebar_nav_mounts_project_graph", async () => {
     const { container } = render(<Shell gateway={new MockGatewayPort()} />);
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    await awaitLoaded();
     // Command Center is the default content view
     expect(container.querySelector('[aria-label="Command Center"]')).not.toBeNull();
     expect(screen.queryByTestId("graph-canvas")).toBeNull();
-    // switching the content view to Project Graph mounts <ProjectGraph/> for
-    // the first project (reachable from the Shell — Step 7.5 entry point)
+    // the sidebar nav mounts <ProjectGraph/> for the active project (Step 7.5)
     fireEvent.click(screen.getByRole("button", { name: /project graph/i }));
     expect(screen.getByTestId("graph-canvas")).toBeTruthy();
     // it's a switch, not a stack — Command Center is unmounted
     expect(container.querySelector('[aria-label="Command Center"]')).toBeNull();
   });
 
-  it("view_switch_mounts_sessions_table", async () => {
+  it("sidebar_nav_mounts_session_terminal_with_sessions_table", async () => {
     const { container } = render(<Shell gateway={new MockGatewayPort()} />);
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
-    // Command Center is the default content view
-    expect(container.querySelector('[aria-label="Command Center"]')).not.toBeNull();
+    await awaitLoaded();
     expect(screen.queryByTestId("sessions-table")).toBeNull();
-    // selecting Sessions mounts <SessionsTable/>, reachable from the Shell (Step 7.5)
-    fireEvent.click(screen.getByRole("button", { name: /sessions/i }));
+    // Session Terminal hosts the sessions table (real projection data) until the
+    // daemon terminal channel lands (6.3d/e — flagged, not faked)
+    fireEvent.click(screen.getByRole("button", { name: /session terminal/i }));
+    expect(
+      container.querySelector('[aria-label="Session Terminal"]'),
+    ).not.toBeNull();
     expect(screen.getByTestId("sessions-table")).toBeTruthy();
-    // switch-not-stack — Command Center is unmounted
     expect(container.querySelector('[aria-label="Command Center"]')).toBeNull();
   });
 
   it("topbar_settings_opens_settings_view", async () => {
     const { container } = render(<Shell gateway={new MockGatewayPort()} />);
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    await awaitLoaded();
     expect(container.querySelector('[aria-label="Command Center"]')).not.toBeNull();
     expect(screen.queryByRole("tablist")).toBeNull();
-    // §11.2 nav: the TopBar Settings control opens the Settings view (it's the only
-    // "Settings" button now — the view-switch dropped it, so no scoping needed)
+    // §11.2 nav: the TopBar Settings control opens the Settings view
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     expect(screen.getByRole("tablist")).toBeTruthy();
     expect(container.querySelector('[aria-label="Command Center"]')).toBeNull();
   });
 
-  it("view_switch_no_longer_offers_settings", async () => {
+  it("sidebar_nav_offers_prototype_views_not_settings", async () => {
     render(<Shell gateway={new MockGatewayPort()} />);
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
-    // the content-view switch is content surfaces only — CC / Graph / Sessions
-    const viewSwitch = screen.getByRole("group", { name: "Content view" });
-    expect(within(viewSwitch).getAllByRole("button").map((b) => b.textContent)).toEqual([
-      "Command Center",
-      "Project Graph",
-      "Sessions",
-    ]);
-    expect(within(viewSwitch).queryByRole("button", { name: /settings/i })).toBeNull();
+    await awaitLoaded();
+    // the sidebar nav carries the prototype view set; Settings lives in the
+    // TopBar only (§11.2 nav model)
+    const sidebar = screen.getByRole("navigation", { name: "Sidebar" });
+    for (const name of [
+      /command center/i,
+      /project graph/i,
+      /^plan$/i,
+      /^editor$/i,
+      /session terminal/i,
+      /code \/ diff review/i,
+      /workflow packs/i,
+      /audit trail/i,
+    ]) {
+      expect(within(sidebar).getByRole("button", { name })).toBeTruthy();
+    }
+    expect(within(sidebar).queryByRole("button", { name: /settings/i })).toBeNull();
   });
 
   it("settings_still_reachable_and_functional", async () => {
     render(<Shell gateway={new MockGatewayPort()} />);
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    await awaitLoaded();
     // Settings (the 6.4c tablist + Usage tab) is reachable + functional via TopBar
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     fireEvent.click(screen.getByRole("tab", { name: /usage/i }));
@@ -160,7 +184,7 @@ describe("Shell", () => {
         safety={{ conflict: fencingConflictFixture, integrity: null }}
       />,
     );
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    await awaitLoaded();
     // the §17 hard-conflict card is reachable in the shell (Step 7.5) with its
     // parked (disabled) resolution control — a distinct safety surface
     const card = screen.getByTestId("hard-conflict-card");
@@ -178,7 +202,7 @@ describe("Shell", () => {
         }}
       />,
     );
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    await awaitLoaded();
     // the §17 fail-closed audit-integrity alert is reachable in the shell (Step
     // 7.5), non-dismissible (its acknowledge is parked/disabled)
     const alert = screen.getByTestId("audit-integrity-alert");
@@ -191,7 +215,7 @@ describe("Shell", () => {
 
   it("shell_safety_clean_by_default_renders_no_safety_surfaces", async () => {
     render(<Shell gateway={new MockGatewayPort()} />);
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    await awaitLoaded();
     // default safety fixture is clean → neither surface intrudes (like 6.4d recovered)
     expect(screen.queryByTestId("hard-conflict-card")).toBeNull();
     expect(screen.queryByTestId("audit-integrity-alert")).toBeNull();
@@ -199,11 +223,11 @@ describe("Shell", () => {
 
   it("shell_active_project_reroots_graph_and_filters_sessions", async () => {
     render(<Shell gateway={new MockGatewayPort()} />);
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded (auth-service)
+    await awaitLoaded();
     // default active = the first project (auth-service); open the switcher dropdown
-    // and select billing (project_fixture_2) — selection now flows via the popover
-    fireEvent.click(screen.getByRole("button", { name: /auth-service/i })); // open switcher
-    fireEvent.click(screen.getByRole("option", { name: /billing/i })); // select billing
+    // and select billing (project_fixture_2) — selection flows via the popover
+    fireEvent.click(switcherTrigger());
+    fireEvent.click(screen.getByRole("option", { name: /billing/i }));
     // (a) the graph re-roots at the active project (billing), not the hardcoded projects[0]
     fireEvent.click(screen.getByRole("button", { name: /project graph/i }));
     fireEvent.click(screen.getByRole("button", { name: /^list$/i }));
@@ -212,8 +236,9 @@ describe("Shell", () => {
         .getByTestId("graph-table")
         .querySelector('[data-item-id="project:project_fixture_2"]'),
     ).not.toBeNull();
-    // (b) the Sessions view filters to the active project (billing has 2 sessions)
-    fireEvent.click(screen.getByRole("button", { name: /sessions/i }));
+    // (b) the Session Terminal's table filters to the active project (billing has
+    // 2 sessions)
+    fireEvent.click(screen.getByRole("button", { name: /session terminal/i }));
     const rows = screen
       .getByTestId("sessions-table")
       .querySelectorAll("tbody tr[data-item-id]");
@@ -222,14 +247,14 @@ describe("Shell", () => {
 
   it("shell_history_nav_round_trips_content", async () => {
     const { container } = render(<Shell gateway={new MockGatewayPort()} />);
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    await awaitLoaded();
     // Command Center is the default content view; history has no back yet.
     expect(container.querySelector('[aria-label="Command Center"]')).not.toBeNull();
     expect(screen.getByRole("button", { name: /back/i })).toHaveProperty(
       "disabled",
       true,
     );
-    // navigate Command → Graph via the view-switch (a real nav, pushes history)
+    // navigate Command → Graph via the sidebar nav (a real nav, pushes history)
     fireEvent.click(screen.getByRole("button", { name: /project graph/i }));
     expect(screen.getByTestId("graph-canvas")).toBeTruthy();
     // TopBar Back is now live and returns the Command surface
@@ -241,11 +266,22 @@ describe("Shell", () => {
     expect(screen.getByTestId("graph-canvas")).toBeTruthy();
   });
 
+  it("shell_sidebar_session_click_opens_terminal", async () => {
+    const { container } = render(<Shell gateway={new MockGatewayPort()} />);
+    await awaitLoaded();
+    // clicking a session row in the workspace tree opens the Session Terminal
+    // view targeting it (selection is pure UI state — Lesson §13)
+    fireEvent.click(
+      container.querySelector('[data-item-id="Session:session_fixture_1"]')!,
+    );
+    expect(container.querySelector('[aria-label="Session Terminal"]')).not.toBeNull();
+  });
+
   it("shell_sidebar_shows_resume_indicator_from_session_data", async () => {
     const { container } = render(<Shell gateway={new MockGatewayPort()} />);
     // MockGatewayPort sets all projections atomically (one setData), so projects
     // loaded ⇒ sessions present too — this gate is race-free.
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    await awaitLoaded();
     // the Shell builds the resume-mode side map from data.sessions and passes it to
     // the Sidebar (Step 7.5 live path): session_fixture_1 carries resume_mode
     // "resumed" → its sidebar item shows the indicator (Lesson §8 — no item widening)
@@ -262,7 +298,7 @@ describe("Shell", () => {
         recovery={{ state: "recovery_failed", affectedSessions: ["session_fixture_2"] }}
       />,
     );
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    await awaitLoaded();
     // the post-restart recovery banner is reachable in the shell (Step 7.5),
     // distinct from the transport degraded banner
     const banner = screen.getByTestId("recovery-banner");

@@ -169,40 +169,9 @@
   color: var(--text-muted);
 }
 
-/* ── ProjectSwitcher — compact horizontal row (refinement A) ──────────────── */
-/* The prototype's single-select dropdown needs an active-project model (deferred
-   to Phase-7 project selection). Here the switcher compacts to a horizontal
-   scrollable row that fits the 44px top bar, keeping every name + count visible. */
-.project-switcher {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  min-width: 0;
-  overflow-x: auto;
-}
-
-.project-switcher__item {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex: none;
-  padding: var(--sp-2) var(--sp-3);
-  background: var(--surface-input);
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-2);
-  font-size: var(--fs-label);
-}
-
-.project-switcher__name {
-  white-space: nowrap;
-}
-
-.project-switcher__counts {
-  display: inline-flex;
-  gap: var(--sp-2);
-  color: var(--text-secondary);
-  font-size: var(--fs-meta);
-}
+/* (The old compact-row ProjectSwitcher styles are gone — the switcher is the
+   prototype's dropdown-popover, styled inline in ProjectSwitcher.tsx; its root
+   must NOT be an overflow container or the popover clips.) */
 
 /* ── Banner / safety severity surfaces ───────────────────────────────────── */
 /* Color is ADDITIVE — every surface keeps its glyph + label + severity channels

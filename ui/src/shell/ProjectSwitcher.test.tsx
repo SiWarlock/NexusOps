@@ -47,9 +47,10 @@ describe("ProjectSwitcher dropdown — popover shell (L1)", () => {
     expect(options).toHaveLength(projects.length);
     const active = options.find((o) => o.getAttribute("aria-selected") === "true");
     expect(active?.getAttribute("data-project-id")).toBe("project_fixture_2");
-    expect(active?.querySelector(".project-switcher__active")?.textContent).toBe(
-      "✓ Active",
-    );
+    // ✓ check glyph (aria-hidden svg) + the sr-only "Active" label — never color alone
+    const activeMark = active?.querySelector(".project-switcher__active");
+    expect(activeMark?.querySelector('[aria-hidden="true"]')).not.toBeNull();
+    expect(activeMark?.querySelector(".sr-only")?.textContent).toBe("Active");
     // the inactive option is not selected (never color alone — aria-selected, not hue)
     const inactive = options.find((o) => o.getAttribute("data-project-id") === "project_fixture_1");
     expect(inactive?.getAttribute("aria-selected")).toBe("false");

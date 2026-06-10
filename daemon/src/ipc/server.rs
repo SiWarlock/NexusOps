@@ -9,15 +9,18 @@
 //! disconnect). The JSON-RPC dispatch + read methods (L3) and subscribe streaming (L4) extend
 //! the authorized path after the ack.
 
-use std::io::{Read, Write};
+use std::io::Write;
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use nexusops_shared::ipc::{
-    self, Capabilities, HelloAck, HelloFrame, IpcErrorCode, RpcRequest, ServerFrame,
-    VersionSkewError, WireError,
+    self, Capabilities, HelloAck, HelloFrame, IpcErrorCode, ProjectionDelta, RpcRequest,
+    ServerFrame, SubscribeParams, VersionSkewError, WireError,
 };
+use tokio::sync::broadcast;
 
-use super::{authorize_peer, methods, read_frame, write_frame, IpcError};
+use super::{authorize_peer, methods, read_frame, run_push_loop, write_frame, IpcError};
 
 /// Serve one accepted GatewayPort connection over a synchronous stream. `peer_uid` is the uid
 /// the accept-loop read via `getpeereid`; the rule-#7 auth gate is FIRST (a foreign uid is
@@ -25,11 +28,12 @@ use super::{authorize_peer, methods, read_frame, write_frame, IpcError};
 /// handshake: a valid in-range `HelloFrame` → `HelloAck`; otherwise a structured error frame is
 /// written and the connection disconnects (the stream drops on the error return). L3/L4 extend
 /// the authorized post-ack path with the JSON-RPC serve loop + subscribe streaming.
-pub fn serve_connection<S: Read + Write>(
-    mut stream: S,
+pub fn serve_connection(
+    mut stream: UnixStream,
     peer_uid: u32,
     daemon_uid: u32,
     db_path: &Path,
+    deltas: broadcast::Sender<ProjectionDelta>,
 ) -> Result<(), IpcError> {
     // Rule #7 (§15 / ADR-004): peer-auth before anything else — before any frame is read.
     authorize_peer(peer_uid, daemon_uid)?;
@@ -79,12 +83,11 @@ pub fn serve_connection<S: Read + Write>(
     let buf = serde_json::to_vec(&ack).map_err(|e| IpcError::Protocol(e.to_string()))?;
     write_frame(&mut stream, &buf)?;
 
-    // L3 — the §6.1 JSON-RPC read/serve loop: read request frames until the client half-closes
+    // L3/L4 — the §6.1 JSON-RPC read/serve loop: read request frames until the client half-closes
     // (EOF), dispatch each (get_projection/get_capabilities over read-only WAL), write responses.
     // A client error is a structured `WireError` response (loop continues); an infra read error
-    // disconnects. (L4 adds subscribe — which needs a read/write split; serve_connection's owned
-    // `S: Read + Write` suffices for this request→response loop, but L4 will take `UnixStream` or
-    // `try_clone` the halves so a push stream can write while the read half blocks.)
+    // disconnects. A `subscribe` (1.6d) additionally spawns a push stream on a `try_clone`'d write
+    // half (the read/write split) so deltas push while this loop keeps blocking on the next frame.
     loop {
         let body = match read_frame(&mut stream) {
             Ok(b) => b,
@@ -100,6 +103,46 @@ pub fn serve_connection<S: Read + Write>(
                 return Err(IpcError::Protocol(format!("malformed request: {e}")));
             }
         };
+        // §6.1 subscribe (1.6d) — a subscribe makes this a DEDICATED push connection: there is
+        // exactly ONE writer at any time, so frames never interleave. The receiver is minted BEFORE
+        // the ack (a delta published right after the ack isn't missed — broadcast delivers only to
+        // receivers live at send time); the ack is written by THIS thread while no push thread yet
+        // exists (no race); the push thread is spawned only if the ack SUCCEEDED (no drift vs
+        // subscribe_ack's validation); then this thread goes READ-ONLY until EOF — it writes nothing
+        // more, so it can never race the (now sole-writer) push thread. Exactly one push thread per
+        // connection. MVP: 1 subscription/conn; multiplexing RPC + a subscription on one connection
+        // (and the `subscription_id` that enables it) is deferred — a subscribe connection is dedicated.
+        if req.method == "subscribe" {
+            if let Ok(params) = serde_json::from_value::<SubscribeParams>(req.params.clone()) {
+                let rx = deltas.subscribe();
+                let ack = methods::dispatch(&req, db_path)?;
+                let accepted = ack.error.is_none();
+                let buf = serde_json::to_vec(&ServerFrame::RpcResponse(ack))
+                    .map_err(|e| IpcError::Protocol(e.to_string()))?;
+                write_frame(&mut stream, &buf)?;
+                if accepted {
+                    // the push thread is the SOLE writer henceforth (detached — it self-terminates
+                    // on Lagged/Closed/write-fail via `shutdown(Both)`, which also unblocks the read
+                    // below). Reachable only post-auth + post-handshake (rule #7 stays first).
+                    let write_half = stream.try_clone().map_err(IpcError::Io)?;
+                    std::thread::spawn(move || run_push_loop(write_half, rx, params.projection));
+                    // block on a SINGLE read: it returns when the client disconnects (EOF) OR sends
+                    // any further frame (unsupported on a dedicated subscribe connection). This holds
+                    // the serve task (+ its semaphore permit) for the connection's life and detects
+                    // disconnect, while writing NOTHING (so it never races the push thread). Either
+                    // outcome → close.
+                    let _ = read_frame(&mut stream);
+                    // close the socket BOTH directions so the client sees EOF AND the push thread's
+                    // next write fails → it exits. Dropping `stream` alone wouldn't close the socket
+                    // — the push thread's `try_clone`'d fd would keep it half-open.
+                    let _ = stream.shutdown(Shutdown::Both);
+                    return Ok(());
+                }
+                // a rejected subscribe (error ack) consumes nothing — keep serving the connection.
+                continue;
+            }
+            // a malformed SubscribeParams falls through to dispatch → the protocol_error ack below.
+        }
         // wrap the response in the frame-type-tagged ServerFrame envelope (§6.4 multiplexing) so
         // the client demuxes rpc-responses from subscription-push frames on one connection.
         let frame = ServerFrame::RpcResponse(methods::dispatch(&req, db_path)?);

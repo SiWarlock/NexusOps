@@ -81,6 +81,13 @@ impl WriteHandle {
         self.deltas.subscribe()
     }
 
+    /// A clone of the post-commit broadcast SENDER — handed to the GatewayPort accept-loop so each
+    /// served connection can mint its own subscriber receiver (`.subscribe()`) per `subscribe`
+    /// request, without coupling the `ipc` serve layer to `WriteHandle` (1.6d subscribe-SERVE).
+    pub fn delta_sender(&self) -> broadcast::Sender<ProjectionDelta> {
+        self.deltas.clone()
+    }
+
     /// Append an event through the single writer (the §15 redaction gate + in-band projections +
     /// outbox all run inside `EventStore::append`).
     pub async fn append(&self, intent: AppendIntent) -> Result<EventId, RuntimeError> {

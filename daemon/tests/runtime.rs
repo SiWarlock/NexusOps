@@ -34,6 +34,12 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
+/// throwaway broadcast sender for `spawn_accept_loop`'s `deltas` param on accept-loop tests that
+/// don't exercise the live subscribe push (1.6d; the serve-layer push is covered by tests/ipc.rs).
+fn no_deltas() -> tokio::sync::broadcast::Sender<nexusops_shared::ipc::ProjectionDelta> {
+    tokio::sync::broadcast::channel(1).0
+}
+
 fn temp_db() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nexusops.db");
@@ -381,7 +387,14 @@ async fn test_foreign_peer_rejected_in_accept_path() {
     let listener = bind(&sock).unwrap();
     let (sd_tx, sd_rx) = watch::channel(false);
     let wrong_daemon_uid = current_euid().wrapping_add(1); // ≠ our real peer uid
-    let accept = spawn_accept_loop(listener, path.clone(), wrong_daemon_uid, 8, sd_rx);
+    let accept = spawn_accept_loop(
+        listener,
+        path.clone(),
+        wrong_daemon_uid,
+        8,
+        no_deltas(),
+        sd_rx,
+    );
 
     let sock2 = sock.clone();
     let rejected = tokio::task::spawn_blocking(move || client_rejected(&sock2))
@@ -407,7 +420,7 @@ async fn test_connection_cap_enforced() {
     let listener = bind(&sock).unwrap();
     let (sd_tx, sd_rx) = watch::channel(false);
     let uid = current_euid();
-    let accept = spawn_accept_loop(listener, path.clone(), uid, 1, sd_rx); // cap = 1
+    let accept = spawn_accept_loop(listener, path.clone(), uid, 1, no_deltas(), sd_rx); // cap = 1
 
     let sock_a = sock.clone();
     // A handshakes + keeps the connection open → holds the single permit (acquired before its ack).
@@ -441,7 +454,7 @@ async fn test_connection_permit_released_on_close() {
     let listener = bind(&sock).unwrap();
     let (sd_tx, sd_rx) = watch::channel(false);
     let uid = current_euid();
-    let accept = spawn_accept_loop(listener, path.clone(), uid, 1, sd_rx); // cap = 1
+    let accept = spawn_accept_loop(listener, path.clone(), uid, 1, no_deltas(), sd_rx); // cap = 1
 
     let sock_a = sock.clone();
     let _resp = tokio::task::spawn_blocking(move || {
@@ -476,7 +489,7 @@ async fn test_read_projection_over_real_socket() {
     let listener = bind(&sock).unwrap();
     let (sd_tx, sd_rx) = watch::channel(false);
     let uid = current_euid();
-    let accept = spawn_accept_loop(listener, path.clone(), uid, 8, sd_rx);
+    let accept = spawn_accept_loop(listener, path.clone(), uid, 8, no_deltas(), sd_rx);
 
     let sock2 = sock.clone();
     let resp =

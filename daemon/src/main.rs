@@ -62,6 +62,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (_pidlock, store, _version) = ctx.into_parts();
     let actor = WriteActor::spawn(store, Box::new(SystemClock));
     let handle = actor.handle();
+    // the post-commit broadcast sender for the accept-loop's per-connection live subscribers (1.6d);
+    // captured before `handle` is moved into the reaper below.
+    let deltas = handle.delta_sender();
 
     // L2 — the outbox-drainer + lease-reaper interval loops, stopped by the shutdown watch.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -83,6 +86,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         db_path,
         current_euid(),
         MAX_CONNECTIONS,
+        deltas,
         shutdown_rx,
     );
 

@@ -122,7 +122,7 @@ fn test_unauthorized_peer_disconnects_unserved() {
     let daemon_uid = 1000u32;
     let (_d, path) = temp_db();
 
-    let outcome = serve_connection(server, daemon_uid + 1, daemon_uid, &path);
+    let outcome = serve_connection(server, daemon_uid + 1, daemon_uid, &path, no_deltas());
     assert!(
         matches!(outcome, Err(IpcError::UnauthorizedPeer { .. })),
         "a foreign-uid connection is rejected by the handler"
@@ -155,6 +155,13 @@ fn recv<T: serde::de::DeserializeOwned>(stream: &UnixStream) -> T {
     serde_json::from_slice(&body).expect("recv: deserialize frame")
 }
 
+/// a throwaway broadcast sender for the `serve_connection` `deltas` param on tests that don't
+/// exercise the live subscribe push (1.6d). The handshake / RPC / auth tests never `subscribe`,
+/// so the sender is never `.subscribe()`'d; `test_subscriber_receives_delta_frame` passes a real one.
+fn no_deltas() -> tokio::sync::broadcast::Sender<nexusops_shared::ipc::ProjectionDelta> {
+    tokio::sync::broadcast::channel(1).0
+}
+
 // ---- Test 5 — handshake: in-range HelloFrame → HelloAck (§6.4) ---------------
 
 #[test]
@@ -173,7 +180,8 @@ fn test_handshake_hello_ack() {
 
     // same-uid auth passes → in-range handshake → HelloAck written, handler returns Ok
     let (_d, path) = temp_db();
-    serve_connection(server, uid, uid, &path).expect("authorized in-range handshake succeeds");
+    serve_connection(server, uid, uid, &path, no_deltas())
+        .expect("authorized in-range handshake succeeds");
 
     let ack: HelloAck = recv(&client);
     assert_eq!(
@@ -205,7 +213,7 @@ fn test_version_skew_disconnects() {
 
     // out-of-range → the handler writes a VersionSkewError and returns Err (disconnect)
     let (_d, path) = temp_db();
-    let outcome = serve_connection(server, uid, uid, &path);
+    let outcome = serve_connection(server, uid, uid, &path, no_deltas());
     assert!(
         matches!(outcome, Err(IpcError::VersionSkew { .. })),
         "an out-of-range protocol_version is a version-skew failure"
@@ -242,7 +250,7 @@ fn test_method_before_handshake_rejected() {
     );
 
     let (_d, path) = temp_db();
-    let outcome = serve_connection(server, uid, uid, &path);
+    let outcome = serve_connection(server, uid, uid, &path, no_deltas());
     assert!(
         matches!(outcome, Err(IpcError::Protocol(_))),
         "a method frame before the handshake is a protocol violation"
@@ -365,7 +373,7 @@ fn test_get_projection_returns_rows() {
     // serve over the seeded db (read-only WAL); the client gets the proj_session row(s)
     let responses = std::thread::scope(|s| {
         let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
-        serve_connection(server, uid, uid, &path).expect("serve get_projection");
+        serve_connection(server, uid, uid, &path, no_deltas()).expect("serve get_projection");
         h.join().unwrap()
     });
 
@@ -402,7 +410,7 @@ fn test_get_projection_unfed_is_empty_not_error() {
     };
     let responses = std::thread::scope(|s| {
         let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
-        serve_connection(server, uid, uid, &path).expect("serve unfed projection");
+        serve_connection(server, uid, uid, &path, no_deltas()).expect("serve unfed projection");
         h.join().unwrap()
     });
 
@@ -439,7 +447,8 @@ fn test_unknown_method_and_get_capabilities() {
     ];
     let responses = std::thread::scope(|s| {
         let h = s.spawn(|| client_session(&client, &reqs));
-        serve_connection(server, uid, uid, &path).expect("serve capabilities + unknown");
+        serve_connection(server, uid, uid, &path, no_deltas())
+            .expect("serve capabilities + unknown");
         h.join().unwrap()
     });
 
@@ -479,7 +488,7 @@ fn test_get_projection_scope_not_yet_enforced() {
     };
     let responses = std::thread::scope(|s| {
         let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
-        serve_connection(server, uid, uid, &path).expect("serve scoped projection");
+        serve_connection(server, uid, uid, &path, no_deltas()).expect("serve scoped projection");
         h.join().unwrap()
     });
 
@@ -588,7 +597,7 @@ fn test_subscribe_method_recognized() {
     };
     let responses = std::thread::scope(|s| {
         let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
-        serve_connection(server, uid, uid, &path).expect("serve subscribe ack");
+        serve_connection(server, uid, uid, &path, no_deltas()).expect("serve subscribe ack");
         h.join().unwrap()
     });
 
@@ -643,4 +652,159 @@ fn test_server_frame_roundtrips_from_wire() {
             "the frame-type tag survives the serialize→deserialize round-trip"
         );
     }
+}
+
+// ---- Test 11 (1.6d) — a subscribed client receives the LIVE SubscriptionPush frame ----
+
+#[test]
+fn test_subscriber_receives_delta_frame() {
+    use nexusops_shared::ipc::{
+        DeltaKind, ProjectionDelta, ProjectionName, RpcRequest, ServerFrame, SubscribeParams,
+    };
+    use tokio::sync::broadcast;
+
+    // §6.1 subscribe LIVE (1.6d closes the carved-out 1.6b L4 piece): after acking a subscribe,
+    // the serve layer subscribes a broadcast::Receiver BEFORE writing the ack (so a delta published
+    // right after the ack is never missed), try_clones the write half, and pushes each MATCHING
+    // ProjectionDelta as a frame-tagged ServerFrame::SubscriptionPush while the read half blocks.
+    let (_d, path) = temp_db();
+    seed_session(&path);
+    let (server, client) = UnixStream::pair().unwrap();
+    let uid = 1000u32;
+    // `_keepalive` retains a Receiver so the channel stays open + `send` never errors "no receivers";
+    // `deltas` is the test's publish handle (standing in for the write-actor's post-commit broadcast).
+    // `_keepalive` is HELD alive (a named binding, not a dropped `_`) so the channel stays open +
+    // `send` never errors "no receivers"; it just isn't read.
+    let (deltas, _keepalive) = broadcast::channel::<ProjectionDelta>(16);
+
+    // the client signals "subscribed (ack read)" so the test publishes only once the serve-side
+    // receiver is live (broadcast delivers only to receivers present at send time).
+    let (subscribed_tx, subscribed_rx) = std::sync::mpsc::channel::<()>();
+
+    let push = std::thread::scope(|s| {
+        let deltas_serve = deltas.clone();
+        s.spawn(move || {
+            let _ = serve_connection(server, uid, uid, &path, deltas_serve);
+        });
+        let client_h = s.spawn(move || {
+            send(
+                &client,
+                &HelloFrame {
+                    protocol_version: 1,
+                    client_kind: "desktop_ui".to_string(),
+                    app_version: "0.1.0".to_string(),
+                },
+            );
+            let _ack: HelloAck = recv(&client);
+            send(
+                &client,
+                &RpcRequest {
+                    method: "subscribe".to_string(),
+                    params: serde_json::to_value(SubscribeParams {
+                        projection: ProjectionName::Session,
+                        filter: None,
+                    })
+                    .unwrap(),
+                    id: 1,
+                },
+            );
+            let _sub_ack: ServerFrame = recv(&client); // the subscribe ack (frame-tagged RpcResponse)
+            subscribed_tx.send(()).unwrap();
+            recv::<ServerFrame>(&client) // the next server→client frame is the live push
+        });
+        subscribed_rx.recv().unwrap();
+        deltas
+            .send(ProjectionDelta {
+                projection: ProjectionName::Session,
+                kind: DeltaKind::Upsert,
+                row: None,
+                id: Some("sess_x".to_string()),
+            })
+            .unwrap();
+        client_h.join().unwrap()
+    });
+
+    match push {
+        ServerFrame::SubscriptionPush(d) => {
+            assert_eq!(
+                d.projection,
+                ProjectionName::Session,
+                "the pushed delta is the subscribed projection"
+            );
+            assert_eq!(
+                d.id.as_deref(),
+                Some("sess_x"),
+                "the pushed delta carries the appended id"
+            );
+        }
+        other => panic!("expected ServerFrame::SubscriptionPush, got {other:?}"),
+    }
+}
+
+// ---- Test 11b (1.6d) — a subscribe connection is DEDICATED (no concurrent main-loop writes) ----
+
+#[test]
+fn test_subscribe_connection_is_dedicated() {
+    use nexusops_shared::ipc::{ProjectionDelta, ProjectionName, RpcRequest, SubscribeParams};
+    use std::io::Read;
+    use tokio::sync::broadcast;
+
+    // after subscribing, the connection is push-only: a further RPC request makes the server CLOSE
+    // (no second main-loop response write that could race the push thread → no frame interleave).
+    // The client sees EOF, never a second RpcResponse. This pins the §6.4 single-writer enforcement.
+    let (_d, path) = temp_db();
+    seed_session(&path);
+    let (server, client) = UnixStream::pair().unwrap();
+    let uid = 1000u32;
+    let (deltas, _keepalive) = broadcast::channel::<ProjectionDelta>(16);
+
+    let closed = std::thread::scope(|s| {
+        let deltas_serve = deltas.clone();
+        s.spawn(move || {
+            let _ = serve_connection(server, uid, uid, &path, deltas_serve);
+        });
+        let client_h = s.spawn(move || {
+            send(
+                &client,
+                &HelloFrame {
+                    protocol_version: 1,
+                    client_kind: "desktop_ui".to_string(),
+                    app_version: "0.1.0".to_string(),
+                },
+            );
+            let _ack: HelloAck = recv(&client);
+            send(
+                &client,
+                &RpcRequest {
+                    method: "subscribe".to_string(),
+                    params: serde_json::to_value(SubscribeParams {
+                        projection: ProjectionName::Session,
+                        filter: None,
+                    })
+                    .unwrap(),
+                    id: 1,
+                },
+            );
+            let _sub_ack: ServerFrame = recv(&client);
+            // a SECOND request on the (now dedicated) subscribe connection → the server closes.
+            send(
+                &client,
+                &RpcRequest {
+                    method: "get_capabilities".to_string(),
+                    params: serde_json::Value::Null,
+                    id: 2,
+                },
+            );
+            // the connection is closed (read returns EOF), never a second RpcResponse.
+            let mut buf = [0u8; 1];
+            let mut r = &client;
+            r.read(&mut buf).unwrap()
+        });
+        client_h.join().unwrap()
+    });
+
+    assert_eq!(
+        closed, 0,
+        "a request after subscribe → the dedicated connection is CLOSED (EOF), never a 2nd response"
+    );
 }

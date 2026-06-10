@@ -125,19 +125,5 @@
   color: var(--danger-ink);
 }
 
-/* Right drawer stack — Brain/inspector drawers (Phase 8). An OVERLAY, not a
-   reserved grid column; collapses out of flow until a drawer is pushed. */
-.drawer-stack {
-  position: absolute;
-  top: var(--shell-topbar-h);
-  right: 0;
-  bottom: var(--shell-statusbar-h);
-  width: var(--shell-inspector-w);
-  background: var(--surface-panel);
-  border-left: 1px solid var(--border-default);
-  z-index: var(--z-drawer, 30);
-}
-
-.drawer-stack:empty {
-  display: none; /* no drawer pushed → invisible, no reserved space */
-}
+/* (The old reserved drawer-stack region is gone — Brain/inspector/queue/task
+   drawers are prototype Overlay surfaces: ui/src/overlays/Overlay.tsx.) */

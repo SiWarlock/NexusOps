@@ -291,6 +291,8 @@ export function Sidebar({
   onOpenSession = () => {},
   waiting = 0,
   resumeModes = {},
+  onHumanInput,
+  onTasks,
 }: {
   projects?: ProjectActivityRow[];
   sessions?: SessionRow[];
@@ -303,6 +305,10 @@ export function Sidebar({
   waiting?: number;
   /** id-keyed side map (Lesson §8) — resume indicators without widening the row. */
   resumeModes?: Record<string, ResumeMode>;
+  /** Opens the Human Input queue drawer (absent → disabled). */
+  onHumanInput?: () => void;
+  /** Opens the Task Inbox drawer (absent → disabled). */
+  onTasks?: () => void;
 }) {
   const [projectsExp, setProjectsExp] = useState(true);
   const grouped = sessionsByProject(sessions);
@@ -397,11 +403,11 @@ export function Sidebar({
           <NavBtn key={v.id} {...v} view={view} onNavigate={onNavigate} />
         ))}
 
-        {/* Human Input queue — DISABLED until the HIQ overlay lands (flagged). */}
         <button
           type="button"
-          disabled
-          title="Human Input queue — arrives with the overlay slice"
+          disabled={!onHumanInput}
+          onClick={onHumanInput}
+          title="Human Input queue (⌘⇧H)"
           style={{
             display: "flex",
             alignItems: "center",
@@ -411,7 +417,7 @@ export function Sidebar({
             padding: "0 8px",
             borderRadius: "var(--r-2)",
             border: "none",
-            cursor: "default",
+            cursor: onHumanInput ? "pointer" : "default",
             font: "var(--fw-medium) var(--fs-label) var(--font-sans)",
             background: "transparent",
             color: waiting > 0 ? "var(--attention-ink)" : "var(--text-faint)",
@@ -441,11 +447,11 @@ export function Sidebar({
             </span>
           ) : null}
         </button>
-        {/* Task Inbox — DISABLED until the Task Inbox overlay lands (flagged). */}
         <button
           type="button"
-          disabled
-          title="Task Inbox — arrives with the overlay slice"
+          disabled={!onTasks}
+          onClick={onTasks}
+          title="Task Inbox (⌘⇧P)"
           style={{
             display: "flex",
             alignItems: "center",
@@ -455,7 +461,7 @@ export function Sidebar({
             padding: "0 8px",
             borderRadius: "var(--r-2)",
             border: "none",
-            cursor: "default",
+            cursor: onTasks ? "pointer" : "default",
             font: "var(--fw-medium) var(--fs-label) var(--font-sans)",
             background: "transparent",
             color: "var(--text-secondary)",

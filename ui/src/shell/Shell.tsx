@@ -53,8 +53,24 @@ import { sessionDisplayFixture } from "./display-meta";
 import { useViewHistory } from "./view-history";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
-import { DrawerStack } from "./DrawerStack";
 import { EventDock } from "./EventDock";
+import { CommandPalette, type PaletteAction } from "../overlays/CommandPalette";
+import { HumanInputQueue } from "../overlays/HumanInputQueue";
+import { TaskInbox } from "../overlays/TaskInbox";
+import { GatewayModal } from "../overlays/GatewayModal";
+import { BrainDrawer } from "../overlays/BrainDrawer";
+import { InspectorDrawer } from "../overlays/InspectorDrawer";
+import type { GraphNode } from "../views/graph/model";
+
+/** Which overlay surface is open (one at a time — prototype behavior). */
+type OverlayState =
+  | { kind: "palette" }
+  | { kind: "hiq" }
+  | { kind: "tasks" }
+  | { kind: "brain" }
+  | { kind: "gateway"; approval: ApprovalQueueRow }
+  | { kind: "inspect"; node: GraphNode }
+  | null;
 
 interface ShellData {
   projects: ProjectActivityRow[];
@@ -120,8 +136,30 @@ export function Shell({
   // The session the Session Terminal view targets (sidebar tree click — pure UI
   // selection state, Lesson §13 family).
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  // The open overlay surface (palette / HIQ / tasks / brain / gateway / inspector).
+  const [overlay, setOverlay] = useState<OverlayState>(null);
 
   useEffect(() => client.onConnectionChange(setConnection), [client]);
+
+  // Global shortcuts (prototype bindings): ⌘K palette · ⌘⇧P tasks · ⌘⇧H queue.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const key = e.key.toLowerCase();
+      if (key === "k" && !e.shiftKey) {
+        e.preventDefault();
+        setOverlay((o) => (o?.kind === "palette" ? null : { kind: "palette" }));
+      } else if (e.shiftKey && key === "p") {
+        e.preventDefault();
+        setOverlay((o) => (o?.kind === "tasks" ? null : { kind: "tasks" }));
+      } else if (e.shiftKey && key === "h") {
+        e.preventDefault();
+        setOverlay((o) => (o?.kind === "hiq" ? null : { kind: "hiq" }));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -220,6 +258,35 @@ export function Shell({
     navigate(sessionDisplayFixture[s.session_id]?.team ? "team" : "terminal");
   };
 
+  const pending = pendingApprovals(data.approvals);
+  const waitingRows = waitingSessions(data.sessions);
+
+  // Palette actions route to views (navigate) or overlay surfaces.
+  const onPaletteAction = (a: PaletteAction) => {
+    if (a.kind === "view") {
+      navigate(a.view);
+      return;
+    }
+    if (a.overlay === "brain") setOverlay({ kind: "brain" });
+    else if (a.overlay === "tasks") setOverlay({ kind: "tasks" });
+    else if (a.overlay === "hiq") setOverlay({ kind: "hiq" });
+    else if (pending[0]) setOverlay({ kind: "gateway", approval: pending[0] });
+  };
+
+  // Inspector "Open" jumps to the node's surface (live navigation).
+  const onInspectorOpen = (node: GraphNode) => {
+    setOverlay(null);
+    const rawId = node.id.split(":")[1] ?? "";
+    if (node.type === "session") {
+      const row = data.sessions.find((s) => s.session_id === rawId);
+      if (row) openSession(row);
+    } else if (node.type === "pull_request") {
+      navigate("code");
+    } else {
+      navigate("command");
+    }
+  };
+
   return (
     <ReadOnlyProvider value={status}>
       {/* ActiveProjectProvider wraps the WHOLE shell (incl. TopBar) so the
@@ -232,7 +299,15 @@ export function Shell({
           connection={connection}
           waiting={waiting}
           onOpenSettings={() => navigate("settings")}
-          onOpenBrain={() => navigate("brain")}
+          onOpenBrain={() => setOverlay({ kind: "brain" })}
+          onOpenPalette={() => setOverlay({ kind: "palette" })}
+          onOpenTasks={() => setOverlay({ kind: "tasks" })}
+          onOpenHiq={() => setOverlay({ kind: "hiq" })}
+          onOpenGateway={
+            pending[0]
+              ? () => setOverlay({ kind: "gateway", approval: pending[0]! })
+              : undefined
+          }
           onBack={back}
           onForward={forward}
           canBack={canBack}
@@ -268,6 +343,8 @@ export function Shell({
           onOpenSession={openSession}
           waiting={waiting}
           resumeModes={resumeModes}
+          onHumanInput={() => setOverlay({ kind: "hiq" })}
+          onTasks={() => setOverlay({ kind: "tasks" })}
         />
         <main className="main" aria-label="Main surface">
           {contentView === "command" ? (
@@ -276,8 +353,8 @@ export function Shell({
             // triage is cross-cutting).
             <CommandCenter
               sessions={filterByActiveProject(data.sessions, activeProjectId)}
-              approvals={pendingApprovals(data.approvals)}
-              waiting={waitingSessions(data.sessions)}
+              approvals={pending}
+              waiting={waitingRows}
               usage={data.usage}
               creditPool={data.creditPool}
               events={data.events}
@@ -292,6 +369,7 @@ export function Shell({
               sessions={data.sessions}
               pullRequests={data.pullRequests}
               usage={data.usage}
+              onInspect={(node) => setOverlay({ kind: "inspect", node })}
             />
           ) : contentView === "terminal" ? (
             // Session Terminal: header/status are real; the PTY well is daemon-
@@ -338,7 +416,6 @@ export function Shell({
             />
           )}
         </main>
-        <DrawerStack />
         <EventDock
           events={data.events}
           connection={connection}
@@ -346,6 +423,40 @@ export function Shell({
           projectName={activeProject?.name}
           onOpenAudit={() => navigate("audit")}
         />
+        {/* Overlay surfaces (one at a time — prototype behavior). */}
+        {overlay?.kind === "palette" ? (
+          <CommandPalette onClose={() => setOverlay(null)} onAction={onPaletteAction} />
+        ) : overlay?.kind === "hiq" ? (
+          <HumanInputQueue
+            approvals={pending}
+            waiting={waitingRows}
+            onClose={() => setOverlay(null)}
+            onOpenApproval={(a) => setOverlay({ kind: "gateway", approval: a })}
+            onOpenSession={(s) => {
+              setOverlay(null);
+              openSession(s);
+            }}
+          />
+        ) : overlay?.kind === "tasks" ? (
+          <TaskInbox onClose={() => setOverlay(null)} />
+        ) : overlay?.kind === "gateway" ? (
+          <GatewayModal approval={overlay.approval} onClose={() => setOverlay(null)} />
+        ) : overlay?.kind === "brain" ? (
+          <BrainDrawer
+            onClose={() => setOverlay(null)}
+            onExpand={() => {
+              setOverlay(null);
+              navigate("brain");
+            }}
+          />
+        ) : overlay?.kind === "inspect" ? (
+          <InspectorDrawer
+            node={overlay.node}
+            usage={data.usage}
+            onClose={() => setOverlay(null)}
+            onOpen={onInspectorOpen}
+          />
+        ) : null}
       </div>
       </ActiveProjectProvider>
     </ReadOnlyProvider>

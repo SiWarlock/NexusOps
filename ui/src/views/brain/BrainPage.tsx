@@ -144,11 +144,17 @@ function BrainMsg({ m }: { m: BrainMsgFx }) {
  * and Run-via-Gateway is disabled (the Brain PROPOSES only — invariant #10).
  * Mode/scope are pure local UI state.
  */
-export function BrainPage() {
+export function BrainPage({ drawer = false }: { drawer?: boolean }) {
   return (
     <div
       aria-label="Project Brain"
-      style={{ display: "grid", gridTemplateColumns: "1fr 280px", height: "100%", background: "var(--surface-canvas)", minHeight: 0 }}
+      style={{
+        display: "grid",
+        gridTemplateColumns: drawer ? "1fr" : "1fr 280px",
+        height: "100%",
+        background: "var(--surface-canvas)",
+        minHeight: 0,
+      }}
     >
       {/* chat column */}
       <div style={{ display: "grid", gridTemplateRows: "auto 1fr auto", minHeight: 0, minWidth: 0 }}>
@@ -265,7 +271,8 @@ export function BrainPage() {
         </div>
       </div>
 
-      {/* right rail: memory & decisions */}
+      {/* right rail: memory & decisions (hidden in drawer mode) */}
+      {drawer ? null : (
       <aside
         style={{
           borderLeft: "1px solid var(--border-default)",
@@ -311,6 +318,7 @@ export function BrainPage() {
           ))}
         </div>
       </aside>
+      )}
     </div>
   );
 }

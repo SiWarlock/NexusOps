@@ -122,6 +122,10 @@ export function TopBar({
   waiting = 0,
   onOpenSettings,
   onOpenBrain,
+  onOpenPalette,
+  onOpenTasks,
+  onOpenHiq,
+  onOpenGateway,
   onBack,
   onForward,
   canBack,
@@ -133,8 +137,16 @@ export function TopBar({
   /** Global waiting-on-you count (HIQ badge). */
   waiting?: number;
   onOpenSettings: () => void;
-  /** Opens the Brain page (the drawer arrives with the overlay slice). */
+  /** Opens the Brain drawer. */
   onOpenBrain?: () => void;
+  /** Opens the ⌘K command palette. */
+  onOpenPalette?: () => void;
+  /** Opens the Task Inbox drawer. */
+  onOpenTasks?: () => void;
+  /** Opens the Human Input queue drawer. */
+  onOpenHiq?: () => void;
+  /** Opens the Gateway modal on the first pending approval (absent → disabled). */
+  onOpenGateway?: (() => void) | undefined;
   onBack: () => void;
   onForward: () => void;
   canBack: boolean;
@@ -203,11 +215,12 @@ export function TopBar({
           </span>
         ) : null}
       </span>
-      {/* ⌘K command field — DISABLED until the command palette overlay lands. */}
+      {/* ⌘K command field — opens the command palette. */}
       <button
         type="button"
-        disabled
-        title="Command palette — arrives with the overlay slice"
+        disabled={!onOpenPalette}
+        onClick={onOpenPalette}
+        title="Search or run a command (⌘K)"
         style={{
           marginLeft: "auto",
           width: 320,
@@ -240,13 +253,18 @@ export function TopBar({
       </button>
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <RuntimePill connection={connection} />
-        <IconButton label="Task Inbox" disabled>
+        <IconButton label="Task Inbox" disabled={!onOpenTasks} onClick={onOpenTasks}>
           <Inbox size={16} />
         </IconButton>
-        <IconButton label="Human input queue" badge={waiting > 0 ? waiting : undefined} disabled>
+        <IconButton
+          label="Human input queue"
+          badge={waiting > 0 ? waiting : undefined}
+          disabled={!onOpenHiq}
+          onClick={onOpenHiq}
+        >
           <Bell size={16} />
         </IconButton>
-        <IconButton label="Action Gateway" disabled>
+        <IconButton label="Action Gateway" disabled={!onOpenGateway} onClick={onOpenGateway}>
           <ShieldCheck size={16} />
         </IconButton>
         <Button

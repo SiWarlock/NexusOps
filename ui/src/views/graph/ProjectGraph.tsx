@@ -24,6 +24,8 @@ interface ProjectGraphProps {
   sessions: SessionRow[];
   pullRequests: PullRequestRow[];
   usage?: UsageRow[];
+  /** Node activation opens the Inspector drawer (overlay) when provided. */
+  onInspect?: (node: GraphNode) => void;
 }
 
 // §11.6: a node's accessible name carries type + status + attention — HUMAN
@@ -136,6 +138,7 @@ export function ProjectGraph({
   sessions,
   pullRequests,
   usage = [],
+  onInspect,
 }: ProjectGraphProps) {
   const [view, setView] = useState<GraphView>("graph");
   const [sel, setSel] = useState<string | null>(null);
@@ -333,7 +336,10 @@ export function ProjectGraph({
               >
                 <FocusableNode
                   label={nodeAccessibleName(node)}
-                  onActivate={() => setSel(node.id)}
+                  onActivate={() => {
+                    setSel(node.id);
+                    onInspect?.(node);
+                  }}
                 >
                   <KitGraphNode
                     kind={KIT_KIND[node.type] ?? "project"}
@@ -347,7 +353,10 @@ export function ProjectGraph({
                     beacon={node.attentionRank === 5}
                     meta={metaOf(node)}
                     selected={sel === node.id}
-                    onClick={() => setSel(node.id)}
+                    onClick={() => {
+                      setSel(node.id);
+                      onInspect?.(node);
+                    }}
                   />
                 </FocusableNode>
               </div>

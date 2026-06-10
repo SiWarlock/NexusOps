@@ -121,6 +121,7 @@ export function TopBar({
   connection = "connected",
   waiting = 0,
   onOpenSettings,
+  onOpenBrain,
   onBack,
   onForward,
   canBack,
@@ -132,6 +133,8 @@ export function TopBar({
   /** Global waiting-on-you count (HIQ badge). */
   waiting?: number;
   onOpenSettings: () => void;
+  /** Opens the Brain page (the drawer arrives with the overlay slice). */
+  onOpenBrain?: () => void;
   onBack: () => void;
   onForward: () => void;
   canBack: boolean;
@@ -246,7 +249,13 @@ export function TopBar({
         <IconButton label="Action Gateway" disabled>
           <ShieldCheck size={16} />
         </IconButton>
-        <Button variant="brain" size="sm" icon={<Brain size={16} />} disabled>
+        <Button
+          variant="brain"
+          size="sm"
+          icon={<Brain size={16} />}
+          disabled={!onOpenBrain}
+          onClick={onOpenBrain}
+        >
           Brain
         </Button>
         <IconButton label="Settings" onClick={onOpenSettings}>

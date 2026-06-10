@@ -37,14 +37,31 @@ describe("a11y reachability + wiring", () => {
 
     fireEvent.click(within(sidebar).getByRole("button", { name: /project graph/i }));
     expect(screen.getByTestId("graph-canvas")).toBeTruthy();
-    auditFocusable(container); // Project Graph (incl. the Graph|List toggle)
+    auditFocusable(container); // Project Graph (incl. the Graph|List toggle + nodes)
 
     fireEvent.click(within(sidebar).getByRole("button", { name: /session terminal/i }));
     expect(screen.getByTestId("sessions-table")).toBeTruthy();
-    auditFocusable(container); // Session Terminal (incl. the sort-header buttons)
+    auditFocusable(container); // Session Terminal picker (incl. the sort headers)
 
-    fireEvent.click(within(sidebar).getByRole("button", { name: /workflow packs/i }));
-    auditFocusable(container); // a placeholder view (nav stays reachable)
+    // every remaining sidebar view sweeps clean (Plan / Editor / Code / Packs / Audit)
+    for (const name of [/^plan$/i, /^editor$/i, /code \/ diff review/i, /workflow packs/i, /audit trail/i]) {
+      fireEvent.click(within(sidebar).getByRole("button", { name }));
+      auditFocusable(container);
+    }
+
+    // Projects overview (sidebar tree header label; name computes "Projects<count>")
+    fireEvent.click(within(sidebar).getByRole("button", { name: /^projects\s*\d+$/i }));
+    auditFocusable(container);
+
+    // Brain page via the TopBar Brain trigger
+    fireEvent.click(screen.getByRole("button", { name: /^brain$/i }));
+    auditFocusable(container);
+
+    // Agent Team via the team session in the workspace tree
+    fireEvent.click(
+      container.querySelector('[data-item-id="Session:session_fixture_1"]')!,
+    );
+    auditFocusable(container);
 
     // Settings is reached via the TopBar trigger (the only "Settings" button).
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));

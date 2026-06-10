@@ -1,13 +1,4 @@
 import { useEffect, useState } from "react";
-import {
-  Brain,
-  CodeXml,
-  FileDiff,
-  LayoutGrid,
-  ListChecks,
-  Package,
-  ScrollText,
-} from "lucide-react";
 import type { GatewayPort } from "../gateway-client/types";
 import { MockGatewayPort } from "../gateway-client/mock";
 import type {
@@ -29,9 +20,16 @@ import {
 } from "./derive";
 import { CommandCenter } from "../views/command/CommandCenter";
 import { ProjectGraph } from "../views/graph/ProjectGraph";
-import { SessionsTable } from "../views/sessions/SessionsTable";
 import { Settings } from "../views/settings/Settings";
-import { PlaceholderView } from "../views/Placeholder";
+import { ProjectsOverview } from "../views/projects/ProjectsOverview";
+import { AuditTrail } from "../views/audit/AuditTrail";
+import { SessionTerminal } from "../views/terminal/SessionTerminal";
+import { DiffReview } from "../views/code/DiffReview";
+import { PlanView } from "../views/plan/PlanView";
+import { EditorView } from "../views/editor/EditorView";
+import { AgentTeamView } from "../views/team/AgentTeamView";
+import { WorkflowPacksView } from "../views/packs/WorkflowPacksView";
+import { BrainPage } from "../views/brain/BrainPage";
 import { ReadOnlyProvider, type ConnectionStatus } from "../connection/read-only";
 import {
   checkVersionCompat,
@@ -51,6 +49,7 @@ import {
   filterByActiveProject,
   ActiveProjectProvider,
 } from "./active-project";
+import { sessionDisplayFixture } from "./display-meta";
 import { useViewHistory } from "./view-history";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
@@ -213,9 +212,12 @@ export function Shell({
   const handleRetry = () => client.reconnect();
   const handleRepair = () => client.reconnect(); // TODO(daemon-1.5/Phase 10): real repair/update-relaunch flow.
 
+  // A team-lead session opens the Agent Team view (prototype behavior); others
+  // open the Session Terminal. Team flag rides the display side-map (fixture
+  // until the AgentTeam projection lands — flagged).
   const openSession = (s: SessionRow) => {
     setSelectedSessionId(s.session_id);
-    navigate("terminal");
+    navigate(sessionDisplayFixture[s.session_id]?.team ? "team" : "terminal");
   };
 
   return (
@@ -230,6 +232,7 @@ export function Shell({
           connection={connection}
           waiting={waiting}
           onOpenSettings={() => navigate("settings")}
+          onOpenBrain={() => navigate("brain")}
           onBack={back}
           onForward={forward}
           canBack={canBack}
@@ -291,66 +294,47 @@ export function Shell({
               usage={data.usage}
             />
           ) : contentView === "terminal" ? (
-            // Session Terminal: the live PTY surface is daemon-gated (6.3d/e —
-            // terminal channel). Until it lands, the view hosts the Sessions
-            // table (real projection data + filters) as the session list.
-            <section aria-label="Session Terminal" className="terminal-view">
-              <SessionsTable
-                sessions={filterByActiveProject(data.sessions, activeProjectId)}
-                projects={data.projects}
-              />
-            </section>
+            // Session Terminal: header/status are real; the PTY well is daemon-
+            // gated (6.3d/e); no selection → the Sessions table as the picker.
+            <SessionTerminal
+              session={
+                data.sessions.find((s) => s.session_id === selectedSessionId) ?? null
+              }
+              sessions={filterByActiveProject(data.sessions, activeProjectId)}
+              projects={data.projects}
+              usage={data.usage}
+            />
           ) : contentView === "settings" ? (
             // Settings folds the Usage dashboard into its Usage tab (§11.2).
             // Reached via the TopBar gear (§11.2 nav model).
             <Settings usage={data.usage} creditPool={data.creditPool} />
           ) : contentView === "projects" ? (
-            <PlaceholderView
-              title="Projects Overview"
-              icon={<LayoutGrid size={18} />}
-              blockedOn="the Projects Overview slice (this rebuild, next chunk)"
+            <ProjectsOverview
+              projects={data.projects}
+              counts={data.counts}
+              activeProjectId={activeProjectId}
+              onSelectProject={(id) => {
+                setActiveProject(id);
+                navigate("command");
+              }}
             />
           ) : contentView === "plan" ? (
-            <PlaceholderView
-              title="Plan"
-              icon={<ListChecks size={18} />}
-              blockedOn="the Plan projection (workflow-pack parser integration)"
-            />
+            <PlanView />
           ) : contentView === "editor" ? (
-            <PlaceholderView
-              title="Editor"
-              icon={<CodeXml size={18} />}
-              blockedOn="the worktree file-access daemon contract"
-            />
+            <EditorView />
           ) : contentView === "code" ? (
-            <PlaceholderView
-              title="Code / Diff Review"
-              icon={<FileDiff size={18} />}
-              blockedOn="the diff/worktree daemon contract (Phase 7 PR review)"
-            />
+            <DiffReview prs={filterByActiveProject(data.pullRequests, activeProjectId)} />
           ) : contentView === "team" ? (
-            <PlaceholderView
-              title="Agent Team"
-              icon={<Brain size={18} />}
-              blockedOn="the AgentTeam projection (daemon team contracts)"
-            />
+            <AgentTeamView />
           ) : contentView === "packs" ? (
-            <PlaceholderView
-              title="Workflow Packs"
-              icon={<Package size={18} />}
-              blockedOn="the WorkflowInstance projection (pack registry contract)"
-            />
+            <WorkflowPacksView />
           ) : contentView === "brain" ? (
-            <PlaceholderView
-              title="Project Brain"
-              icon={<Brain size={18} />}
-              blockedOn="the Brain sidecar contract (Phase 8)"
-            />
+            <BrainPage />
           ) : (
-            <PlaceholderView
-              title="Audit Trail"
-              icon={<ScrollText size={18} />}
-              blockedOn="the Audit Trail view slice (this rebuild, next chunk)"
+            <AuditTrail
+              events={data.events}
+              projectId={activeProjectId}
+              projectName={activeProject?.name ?? "No project"}
             />
           )}
         </main>

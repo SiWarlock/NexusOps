@@ -81,8 +81,8 @@ describe("Shell", () => {
     await awaitLoaded();
     fireEvent.click(screen.getByRole("button", { name: /activity/i }));
     fireEvent.click(screen.getByRole("button", { name: /full audit/i }));
-    // the audit view mounts (placeholder surface until the audit slice lands)
-    expect(screen.getByTestId("placeholder-audit-trail")).toBeTruthy();
+    // the Audit Trail view mounts, bound to the real AuditTrail projection
+    expect(screen.getByTestId("audit-timeline-view")).toBeTruthy();
   });
 
   it("shell_kit_token_layer_applied", async () => {
@@ -269,12 +269,49 @@ describe("Shell", () => {
   it("shell_sidebar_session_click_opens_terminal", async () => {
     const { container } = render(<Shell gateway={new MockGatewayPort()} />);
     await awaitLoaded();
-    // clicking a session row in the workspace tree opens the Session Terminal
-    // view targeting it (selection is pure UI state — Lesson §13)
+    // clicking a non-team session row in the workspace tree opens the Session
+    // Terminal targeting it (selection is pure UI state — Lesson §13)
+    fireEvent.click(
+      container.querySelector('[data-item-id="Session:session_fixture_2"]')!,
+    );
+    expect(container.querySelector('[aria-label="Session Terminal"]')).not.toBeNull();
+    // its REAL status renders in the header (waiting_on_permission → the
+    // disabled permission prompt is present, not faked-live)
+    expect(screen.getByTestId("terminal-permission-prompt")).toBeTruthy();
+  });
+
+  it("shell_sidebar_team_session_click_opens_team_view", async () => {
+    const { container } = render(<Shell gateway={new MockGatewayPort()} />);
+    await awaitLoaded();
+    // session_fixture_1 is a team lead (display side-map) → the Agent Team view
+    // (prototype behavior: team sessions open the team surface)
     fireEvent.click(
       container.querySelector('[data-item-id="Session:session_fixture_1"]')!,
     );
-    expect(container.querySelector('[aria-label="Session Terminal"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Agent Team"]')).not.toBeNull();
+  });
+
+  it("topbar_brain_opens_brain_page", async () => {
+    const { container } = render(<Shell gateway={new MockGatewayPort()} />);
+    await awaitLoaded();
+    // scope to the TopBar (header/banner) — "Brain" appears in view content too
+    const topbar = screen.getByRole("banner");
+    fireEvent.click(within(topbar).getByRole("button", { name: /brain/i }));
+    expect(container.querySelector('[aria-label="Project Brain"]')).not.toBeNull();
+  });
+
+  it("command_center_projects_chip_opens_overview_and_card_selects", async () => {
+    const { container } = render(<Shell gateway={new MockGatewayPort()} />);
+    await awaitLoaded();
+    // CC header → Projects overview (real projections drive the cards)
+    fireEvent.click(screen.getByRole("button", { name: /^projects$/i }));
+    expect(container.querySelector('[aria-label="Projects Overview"]')).not.toBeNull();
+    // card click selects the project + returns to its Command Center
+    fireEvent.click(
+      container.querySelector('[data-item-id="project:project_fixture_2"]')!,
+    );
+    expect(container.querySelector('[aria-label="Command Center"]')).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "billing" })).toBeTruthy();
   });
 
   it("shell_sidebar_shows_resume_indicator_from_session_data", async () => {

@@ -52,6 +52,9 @@ export const sessionDisplayFixture: Record<string, SessionDisplayMeta> = {
     worktree: "~/wt/auth-refactor",
     current: "editing src/auth/session.ts",
     activity: "40s ago",
+    // Team lead (prototype: a team session opens the Agent Team view) — display
+    // fixture until the AgentTeam projection lands.
+    team: true,
   },
   session_fixture_2: {
     harness: "claude-code",

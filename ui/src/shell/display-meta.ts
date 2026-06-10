@@ -101,6 +101,22 @@ export const projectDisplayFixture: Record<string, ProjectDisplayMeta> = {
   project_fixture_3: { repo: "org/docs-site", workflow: "none" },
 };
 
+/** Kit RiskBadge levels (Action Gateway risk taxonomy, §5.1). */
+export type RiskLevel = "readonly" | "low" | "medium" | "high" | "critical";
+
+export interface ApprovalDisplayMeta {
+  /** Gateway risk classification — NOT in the ApprovalQueue projection yet. */
+  risk?: RiskLevel;
+  /** Requesting actor line (e.g. "Claude · ENG-310 · Claude Max Main"). */
+  who?: string;
+}
+
+/** Display meta for the §14 fixture approvals (keyed by approval_id). */
+export const approvalDisplayFixture: Record<string, ApprovalDisplayMeta> = {
+  approval_fixture_1: { risk: "medium", who: "Claude · ENG-310 · Claude Max Main" },
+  approval_fixture_2: { risk: "low", who: "Claude · docs · Claude Team Work" },
+};
+
 /**
  * Context-ring input for a session, from the REAL Usage projection (subject_id ↔
  * session_id). Codex / unavailable rows report no context (§9.1) → null — the

@@ -11,11 +11,14 @@ export function needsMyAttention(rank: AttentionRank): boolean {
   return rank >= NEEDS_ATTENTION_THRESHOLD;
 }
 
-/** Partition every rank into one of three triage buckets (§5.2). */
+/** Partition every rank into one of three triage buckets (§5.2). Rank 1
+ * (active/pr-open) is WORKING — an active session is in-flight, not settled
+ * (prototype Command Center semantics: working = running + active; settled =
+ * completed/idle/archived, all rank 0). */
 export function triageBucket(rank: AttentionRank): TriageBucket {
   if (rank >= 4) return "needs-attention"; // {4,5}
-  if (rank >= 2) return "working"; // {2,3}
-  return "settled"; // {0,1}
+  if (rank >= 1) return "working"; // {1,2,3}
+  return "settled"; // {0}
 }
 
 /**

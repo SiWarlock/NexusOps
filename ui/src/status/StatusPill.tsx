@@ -20,6 +20,16 @@ function toKitKind(visualKind: string): StatusKind {
   return (KIT_KINDS.has(visualKind) ? visualKind : "degraded") as StatusKind;
 }
 
+/**
+ * The guarded (machine, status) → kit StatusKind mapping for callers that feed
+ * kit components taking a raw kit `status` prop (e.g. SessionRow-shaped rows).
+ * SAME single source as the pill: descriptor visualKind + the unknown→visible
+ * guard (Lesson §6 — never the kit's silent ||idle fallback).
+ */
+export function kitKindFor(machine: string, status: string): StatusKind {
+  return toKitKind(describeStatus(machine, status).visualKind);
+}
+
 // R-5 two-surface: Approval (decision axis) and ActionRequest (execution axis)
 // render as two distinct surfaces — a visible surface-type chip disambiguates
 // the same lifecycle word (e.g. awaiting_approval) across the two machines.

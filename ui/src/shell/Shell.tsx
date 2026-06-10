@@ -21,18 +21,17 @@ import type {
   SessionRow,
   UsageRow,
 } from "../contracts/index";
-import { deriveProjectSwitcherCounts, type ProjectSwitcherCounts } from "./derive";
+import {
+  deriveProjectSwitcherCounts,
+  pendingApprovals,
+  waitingSessions,
+  type ProjectSwitcherCounts,
+} from "./derive";
 import { CommandCenter } from "../views/command/CommandCenter";
-import type { CommandItem } from "../views/command/group";
 import { ProjectGraph } from "../views/graph/ProjectGraph";
 import { SessionsTable } from "../views/sessions/SessionsTable";
 import { Settings } from "../views/settings/Settings";
 import { PlaceholderView } from "../views/Placeholder";
-import {
-  toSessionItems,
-  toPrItems,
-  toApprovalItems,
-} from "../projections/items";
 import { ReadOnlyProvider, type ConnectionStatus } from "../connection/read-only";
 import {
   checkVersionCompat,
@@ -207,15 +206,6 @@ export function Shell({
   // on the sidebar's session rows WITHOUT widening the row).
   const resumeModes = resumeModesBySessionId(data.sessions);
 
-  // Command Center items: sessions + PRs + approvals (the wired projections;
-  // tasks join when a Task/PlanProgress projection lands — Phase 7). Routed
-  // through the shared mappers (no inline re-map — P6.3b).
-  const commandItems: CommandItem[] = [
-    ...toSessionItems(data.sessions),
-    ...toPrItems(data.pullRequests),
-    ...toApprovalItems(data.approvals),
-  ];
-
   // Retry = re-attempt the transport (real). Repair is a DISTINCT affordance
   // (§16: deeper repair / update-relaunch) whose dedicated backing lands with
   // daemon-1.5 + Phase-10 packaging; until then it aliases reconnect. Named
@@ -278,7 +268,20 @@ export function Shell({
         />
         <main className="main" aria-label="Main surface">
           {contentView === "command" ? (
-            <CommandCenter items={commandItems} />
+            // The project cockpit: the center column scopes to the active project
+            // (prototype anatomy); the rail's HIQ stays GLOBAL (Lesson §13 —
+            // triage is cross-cutting).
+            <CommandCenter
+              sessions={filterByActiveProject(data.sessions, activeProjectId)}
+              approvals={pendingApprovals(data.approvals)}
+              waiting={waitingSessions(data.sessions)}
+              usage={data.usage}
+              creditPool={data.creditPool}
+              events={data.events}
+              projectName={activeProject?.name ?? "No project"}
+              onOpenSession={openSession}
+              onOpenProjects={() => navigate("projects")}
+            />
           ) : contentView === "graph" ? (
             <ProjectGraph
               projectId={activeProjectId ?? ""}

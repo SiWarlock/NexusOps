@@ -33,6 +33,16 @@ const WAITING_SESSION = new Set([
 
 export const ACTIVITY_FEED_DEFAULT_LIMIT = 50;
 
+/** Approvals still awaiting a human decision (the HIQ queue membership). */
+export function pendingApprovals(approvals: ApprovalQueueRow[]): ApprovalQueueRow[] {
+  return approvals.filter((a) => PENDING_APPROVAL.has(a.status));
+}
+
+/** Sessions waiting on the HUMAN (permission / input — §5.1 waiting set). */
+export function waitingSessions(sessions: SessionRow[]): SessionRow[] {
+  return sessions.filter((s) => WAITING_SESSION.has(s.status));
+}
+
 export interface ProjectSwitcherCounts {
   activeSessions: number;
   openPRs: number;

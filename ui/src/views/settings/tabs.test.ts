@@ -21,16 +21,15 @@ describe("settings tabs model", () => {
     expect(tabs.find((t) => t.key === DEFAULT_SETTINGS_TAB)?.selected).toBe(false);
   });
 
-  it("execution_profiles_tab_is_gated", () => {
-    // the Execution Profiles tab is gated (0.5b) — no frozen-enum binding
-    expect(SETTINGS_TABS.find((t) => t.key === "profiles")?.kind).toBe("gated");
-    // the five §11.4 tabs are present, in order
+  it("prototype_tab_set_in_order", () => {
+    // the prototype's four sections, in its order (kit-views4 SettingsProfiles);
+    // the interim Notifications stub was removed at the rebuild (no prototype
+    // equivalent — flagged deviation cleanup)
     expect(SETTINGS_TABS.map((t) => t.key)).toEqual([
       "integrations",
-      "security",
-      "notifications",
-      "usage",
       "profiles",
+      "usage",
+      "security",
     ]);
   });
 });

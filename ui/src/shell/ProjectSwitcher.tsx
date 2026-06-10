@@ -5,8 +5,10 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
+import { Check, ChevronsUpDown, FolderGit2 } from "lucide-react";
 import type { ProjectActivityRow } from "../contracts/index";
 import type { ProjectSwitcherCounts } from "./derive";
+import { projectDisplayFixture, type WorkflowTone } from "./display-meta";
 import { useActiveProject } from "./active-project";
 import { isRovingKey, nextTabIndex } from "../a11y/roving";
 
@@ -14,6 +16,15 @@ const ZERO: ProjectSwitcherCounts = {
   activeSessions: 0,
   openPRs: 0,
   waitingOnYou: 0,
+};
+
+// Workflow-instance tone → dot color (kit semantic tokens; the prototype's
+// wfTone map). The dot is title-labelled — color is additive, not the channel.
+const WF_TONE: Record<WorkflowTone, string> = {
+  active: "var(--teal-ink)",
+  drift: "var(--warning-ink)",
+  "needs-personalization": "var(--caution-ink)",
+  none: "var(--text-faint)",
 };
 
 /**
@@ -31,6 +42,10 @@ const ZERO: ProjectSwitcherCounts = {
  * active option (first if none); Arrow/Home/End move focus; Enter/Space select +
  * close; Escape closes without selecting; both return focus to the trigger; an
  * outside click closes without selecting.
+ *
+ * Visual anatomy ported from kit-shell.jsx ProjectSwitcher. (The prototype's
+ * "All projects" scope is a deliberate deviation-out: the active-project model is
+ * single-project — an "all" scope is a model change, not styling. Flagged.)
  */
 export function ProjectSwitcher({
   projects,
@@ -117,7 +132,7 @@ export function ProjectSwitcher({
   };
 
   return (
-    <div className="project-switcher" ref={rootRef}>
+    <div className="project-switcher" ref={rootRef} style={{ position: "relative" }}>
       <button
         ref={triggerRef}
         type="button"
@@ -125,11 +140,36 @@ export function ProjectSwitcher({
         aria-haspopup="listbox"
         aria-expanded={open}
         disabled={!hasProjects}
+        title="Switch project"
         onClick={() => (open ? closeMenu(true) : openMenu())}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 7,
+          height: 28,
+          padding: "0 9px",
+          borderRadius: "var(--r-2)",
+          border: `1px solid ${open ? "var(--border-strong)" : "var(--border-default)"}`,
+          background: "var(--surface-input)",
+          cursor: hasProjects ? "pointer" : "default",
+        }}
       >
-        <span className="project-switcher__trigger-name">{triggerLabel}</span>
-        <span aria-hidden="true" className="project-switcher__caret">
-          ▾
+        <FolderGit2 size={14} aria-hidden="true" style={{ color: "var(--text-muted)", flex: "none" }} />
+        <span
+          className="project-switcher__trigger-name"
+          style={{
+            font: "var(--fw-medium) var(--fs-label)/1 var(--font-sans)",
+            color: "var(--text-primary)",
+            maxWidth: 220,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {triggerLabel}
+        </span>
+        <span aria-hidden="true" className="project-switcher__caret" style={{ display: "inline-flex" }}>
+          <ChevronsUpDown size={13} style={{ color: "var(--text-faint)" }} />
         </span>
       </button>
       {open && hasProjects ? (
@@ -138,9 +178,38 @@ export function ProjectSwitcher({
           aria-label="Projects"
           className="project-switcher__listbox"
           onKeyDown={onListboxKeyDown}
+          style={{
+            position: "absolute",
+            top: 32,
+            left: 0,
+            zIndex: "var(--z-popover)" as unknown as number,
+            width: 320,
+            margin: 0,
+            listStyle: "none",
+            background: "var(--surface-card)",
+            border: "1px solid var(--border-strong)",
+            borderRadius: "var(--r-3)",
+            boxShadow: "var(--elev-3)",
+            overflow: "hidden",
+            padding: 5,
+            animation: "cp-pop-in 0.14s var(--ease-out)",
+          }}
         >
+          <li
+            aria-hidden="true"
+            style={{
+              font: "var(--fw-semibold) var(--fs-micro) var(--font-sans)",
+              letterSpacing: "var(--tracking-caps)",
+              textTransform: "uppercase",
+              color: "var(--text-faint)",
+              padding: "6px 8px 4px",
+            }}
+          >
+            Switch project
+          </li>
           {projects.map((project, i) => {
             const c = counts[project.project_id] ?? ZERO;
+            const meta = projectDisplayFixture[project.project_id];
             const isActive = project.project_id === activeProjectId;
             return (
               <li
@@ -159,16 +228,76 @@ export function ProjectSwitcher({
                 // Worded to avoid "sessions"/"pull requests" so the name doesn't
                 // collide with the view-switch buttons.
                 aria-label={`${project.name}${isActive ? " (active project)" : ""} — ${c.activeSessions} active, ${c.openPRs} open PRs, ${c.waitingOnYou} waiting`}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 9,
+                  width: "100%",
+                  padding: "7px 8px",
+                  borderRadius: "var(--r-2)",
+                  border: "none",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  background: isActive ? "var(--accent-surface)" : "transparent",
+                }}
               >
-                <span className="project-switcher__name">{project.name}</span>
-                {isActive ? (
-                  <span className="project-switcher__active">✓ Active</span>
-                ) : null}
-                <span className="project-switcher__counts" aria-hidden="true">
-                  <span title="active sessions">▶ {c.activeSessions}</span>{" "}
-                  <span title="open PRs">⇡ {c.openPRs}</span>{" "}
-                  <span title="waiting on you">● {c.waitingOnYou}</span>
+                <FolderGit2
+                  size={15}
+                  aria-hidden="true"
+                  style={{ color: isActive ? "var(--accent-ink)" : "var(--text-muted)", flex: "none" }}
+                />
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span
+                    className="project-switcher__name"
+                    style={{
+                      display: "block",
+                      font: "var(--fw-medium) var(--fs-label) var(--font-sans)",
+                      color: isActive ? "var(--accent-ink)" : "var(--text-primary)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {project.name}
+                  </span>
+                  <span
+                    style={{
+                      display: "block",
+                      font: "var(--fs-micro) var(--font-mono)",
+                      color: "var(--text-faint)",
+                    }}
+                  >
+                    {meta?.repo ?? project.project_id}
+                  </span>
                 </span>
+                <span className="project-switcher__counts" aria-hidden="true" style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+                  {c.waitingOnYou > 0 ? (
+                    <span
+                      title="waiting"
+                      style={{ width: 7, height: 7, borderRadius: 999, background: "var(--attention-solid)" }}
+                    />
+                  ) : null}
+                  {c.activeSessions > 0 ? (
+                    <span style={{ font: "10px var(--font-mono)", color: "var(--text-muted)" }}>
+                      {c.activeSessions}
+                    </span>
+                  ) : null}
+                  <span
+                    title={`workflow: ${meta?.workflow ?? "none"}`}
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: 2,
+                      background: WF_TONE[meta?.workflow ?? "none"],
+                    }}
+                  />
+                </span>
+                {isActive ? (
+                  <span className="project-switcher__active" style={{ display: "inline-flex", color: "var(--accent-ink)" }}>
+                    <Check size={14} aria-hidden="true" />
+                    <span className="sr-only">Active</span>
+                  </span>
+                ) : null}
               </li>
             );
           })}

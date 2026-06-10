@@ -57,10 +57,10 @@ describe("viewHistoryReducer", () => {
     // truncates the forward entry.
     const g = nav(initialViewHistory, "graph");
     const b = back(g); // at "command", "graph" stranded ahead
-    const s = nav(b, "sessions");
-    expect(currentView(s)).toBe("sessions");
+    const s = nav(b, "terminal");
+    expect(currentView(s)).toBe("terminal");
     expect(canGoForward(s)).toBe(false);
-    expect(s.stack).toEqual(["command", "sessions"]); // graph discarded
+    expect(s.stack).toEqual(["command", "terminal"]); // graph discarded
     expect(forward(s)).toEqual(s); // forward is a no-op now
   });
 

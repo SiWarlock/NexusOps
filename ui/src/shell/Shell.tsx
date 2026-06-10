@@ -12,18 +12,24 @@ import type {
   SessionRow,
   UsageRow,
 } from "../contracts/index";
-import { deriveProjectSwitcherCounts, type ProjectSwitcherCounts } from "./derive";
-import type { SidebarItem } from "./Sidebar";
-import { CommandCenter } from "../views/command/CommandCenter";
-import type { CommandItem } from "../views/command/group";
-import { ProjectGraph } from "../views/graph/ProjectGraph";
-import { SessionsTable } from "../views/sessions/SessionsTable";
-import { Settings } from "../views/settings/Settings";
 import {
-  toSessionItems,
-  toPrItems,
-  toApprovalItems,
-} from "../projections/items";
+  deriveProjectSwitcherCounts,
+  pendingApprovals,
+  waitingSessions,
+  type ProjectSwitcherCounts,
+} from "./derive";
+import { CommandCenter } from "../views/command/CommandCenter";
+import { ProjectGraph } from "../views/graph/ProjectGraph";
+import { Settings } from "../views/settings/Settings";
+import { ProjectsOverview } from "../views/projects/ProjectsOverview";
+import { AuditTrail } from "../views/audit/AuditTrail";
+import { SessionTerminal } from "../views/terminal/SessionTerminal";
+import { DiffReview } from "../views/code/DiffReview";
+import { PlanView } from "../views/plan/PlanView";
+import { EditorView } from "../views/editor/EditorView";
+import { AgentTeamView } from "../views/team/AgentTeamView";
+import { WorkflowPacksView } from "../views/packs/WorkflowPacksView";
+import { BrainPage } from "../views/brain/BrainPage";
 import { ReadOnlyProvider, type ConnectionStatus } from "../connection/read-only";
 import {
   checkVersionCompat,
@@ -43,12 +49,28 @@ import {
   filterByActiveProject,
   ActiveProjectProvider,
 } from "./active-project";
+import { sessionDisplayFixture } from "./display-meta";
 import { useViewHistory } from "./view-history";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
-import { DrawerStack } from "./DrawerStack";
-import { ActivityDock } from "./ActivityDock";
-import { StatusBar } from "./StatusBar";
+import { EventDock } from "./EventDock";
+import { CommandPalette, type PaletteAction } from "../overlays/CommandPalette";
+import { HumanInputQueue } from "../overlays/HumanInputQueue";
+import { TaskInbox } from "../overlays/TaskInbox";
+import { GatewayModal } from "../overlays/GatewayModal";
+import { BrainDrawer } from "../overlays/BrainDrawer";
+import { InspectorDrawer } from "../overlays/InspectorDrawer";
+import type { GraphNode } from "../views/graph/model";
+
+/** Which overlay surface is open (one at a time — prototype behavior). */
+type OverlayState =
+  | { kind: "palette" }
+  | { kind: "hiq" }
+  | { kind: "tasks" }
+  | { kind: "brain" }
+  | { kind: "gateway"; approval: ApprovalQueueRow }
+  | { kind: "inspect"; node: GraphNode }
+  | null;
 
 interface ShellData {
   projects: ProjectActivityRow[];
@@ -67,9 +89,13 @@ interface ShellData {
  * renders the chrome from them. It also surfaces the transport degraded state:
  * a ReadOnlyProvider exposes connected+version-compatible to every control's
  * canSubmitIntent gate (fail-safe FALSE until confirmed), a ConnectionIndicator
- * sits in the StatusBar, and a DegradedBanner appears when disconnected /
+ * sits in the EventDock strip, and a DegradedBanner appears when disconnected /
  * reconnecting / version-skewed. The daemon Gateway remains the real INV-SEC-1
  * guard; this read-only gate is defense-in-depth.
+ *
+ * Chrome anatomy is the prototype's (kit-shell.jsx): TopBar, the workspace
+ * Sidebar (project tree + view nav), the main surface routed by the sidebar
+ * nav (view-history back/forward), and the bottom EventDock.
  */
 export function Shell({
   gateway,
@@ -93,9 +119,9 @@ export function Shell({
   );
   // Fail-safe: version stays "unknown" (→ read-only) until a handshake confirms it.
   const [version, setVersion] = useState<VersionCompat>("unknown");
-  // Which content view the main surface shows (6.3b/6.3c). Command Center is the
-  // default; back/forward navigate the view history (§11.2 — pure UI state, no
-  // daemon dep, Lesson §13 family). `navigate` is the single nav entry point.
+  // Which content view the main surface shows. Command Center is the default;
+  // back/forward navigate the view history (§11.2 — pure UI state, no daemon dep,
+  // Lesson §13 family). `navigate` is the single nav entry point.
   const {
     current: contentView,
     canBack,
@@ -107,8 +133,33 @@ export function Shell({
   // Active-project selection (P7.3): UI scope state over the frozen projects
   // projection. null until the user picks; defaults to the first project (below).
   const [rawActiveProjectId, setActiveProject] = useState<string | null>(null);
+  // The session the Session Terminal view targets (sidebar tree click — pure UI
+  // selection state, Lesson §13 family).
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  // The open overlay surface (palette / HIQ / tasks / brain / gateway / inspector).
+  const [overlay, setOverlay] = useState<OverlayState>(null);
 
   useEffect(() => client.onConnectionChange(setConnection), [client]);
+
+  // Global shortcuts (prototype bindings): ⌘K palette · ⌘⇧P tasks · ⌘⇧H queue.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const key = e.key.toLowerCase();
+      if (key === "k" && !e.shiftKey) {
+        e.preventDefault();
+        setOverlay((o) => (o?.kind === "palette" ? null : { kind: "palette" }));
+      } else if (e.shiftKey && key === "p") {
+        e.preventDefault();
+        setOverlay((o) => (o?.kind === "tasks" ? null : { kind: "tasks" }));
+      } else if (e.shiftKey && key === "h") {
+        e.preventDefault();
+        setOverlay((o) => (o?.kind === "hiq" ? null : { kind: "hiq" }));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,7 +172,7 @@ export function Shell({
             client.get_projection("PullRequest"),
             client.get_projection("ApprovalQueue"),
             client.get_projection("AuditTrail"),
-            client.get_projection("Usage"),
+            client.get_projection("UsageLedger"),
             client.get_capabilities(),
           ]);
         if (cancelled) return;
@@ -173,6 +224,7 @@ export function Shell({
   // first project (default scope), else null at zero-projects (the graph's
   // no-projects guard). resolveActiveProject guards the stale-ID case.
   const activeProjectId = resolveActiveProject(data.projects, rawActiveProjectId);
+  const activeProject = data.projects.find((p) => p.project_id === activeProjectId);
   // The "checking" (connected + version-unknown) window surfaces at the real
   // daemon-1.5 reconnect re-handshake; the MockGatewayPort resolves version
   // together with data (one Promise.all behind the !data load gate), so the
@@ -180,22 +232,16 @@ export function Shell({
   // Carry-forward spread.
   const degraded = deriveDegradedState(connection, version);
 
-  // Sessions drive the sidebar's attention-ordered items (§11.3 sidebar weight);
-  // the same session items open the Command Center list — mapped once, reused.
-  const sessionItems = toSessionItems(data.sessions);
-  const sidebarItems: SidebarItem[] = sessionItems;
-  // O-2 resume indicators: an id-keyed side map (Lesson §8 — surfaces resume mode
-  // on the sidebar's shared ProjectionItem WITHOUT widening the item).
-  const resumeModes = resumeModesBySessionId(data.sessions);
+  // Global waiting-on-you count (the HIQ badge in TopBar + Sidebar): summed
+  // across projects — triage is cross-cutting (Lesson §13: Command Center GLOBAL).
+  const waiting = Object.values(data.counts).reduce(
+    (sum, c) => sum + c.waitingOnYou,
+    0,
+  );
 
-  // Command Center items: sessions + PRs + approvals (the wired projections;
-  // tasks join when a Task/PlanProgress projection lands — Phase 7). Routed
-  // through the shared mappers (no inline re-map — P6.3b).
-  const commandItems: CommandItem[] = [
-    ...sessionItems,
-    ...toPrItems(data.pullRequests),
-    ...toApprovalItems(data.approvals),
-  ];
+  // O-2 resume indicators: an id-keyed side map (Lesson §8 — surfaces resume mode
+  // on the sidebar's session rows WITHOUT widening the row).
+  const resumeModes = resumeModesBySessionId(data.sessions);
 
   // Retry = re-attempt the transport (real). Repair is a DISTINCT affordance
   // (§16: deeper repair / update-relaunch) whose dedicated backing lands with
@@ -203,6 +249,43 @@ export function Shell({
   // separately so the divergence is explicit, not a silent duplicate lambda.
   const handleRetry = () => client.reconnect();
   const handleRepair = () => client.reconnect(); // TODO(daemon-1.5/Phase 10): real repair/update-relaunch flow.
+
+  // A team-lead session opens the Agent Team view (prototype behavior); others
+  // open the Session Terminal. Team flag rides the display side-map (fixture
+  // until the AgentTeam projection lands — flagged).
+  const openSession = (s: SessionRow) => {
+    setSelectedSessionId(s.session_id);
+    navigate(sessionDisplayFixture[s.session_id]?.team ? "team" : "terminal");
+  };
+
+  const pending = pendingApprovals(data.approvals);
+  const waitingRows = waitingSessions(data.sessions);
+
+  // Palette actions route to views (navigate) or overlay surfaces.
+  const onPaletteAction = (a: PaletteAction) => {
+    if (a.kind === "view") {
+      navigate(a.view);
+      return;
+    }
+    if (a.overlay === "brain") setOverlay({ kind: "brain" });
+    else if (a.overlay === "tasks") setOverlay({ kind: "tasks" });
+    else if (a.overlay === "hiq") setOverlay({ kind: "hiq" });
+    else if (pending[0]) setOverlay({ kind: "gateway", approval: pending[0] });
+  };
+
+  // Inspector "Open" jumps to the node's surface (live navigation).
+  const onInspectorOpen = (node: GraphNode) => {
+    setOverlay(null);
+    const rawId = node.id.split(":")[1] ?? "";
+    if (node.type === "session") {
+      const row = data.sessions.find((s) => s.session_id === rawId);
+      if (row) openSession(row);
+    } else if (node.type === "pull_request") {
+      navigate("code");
+    } else {
+      navigate("command");
+    }
+  };
 
   return (
     <ReadOnlyProvider value={status}>
@@ -213,7 +296,18 @@ export function Shell({
         <TopBar
           projects={data.projects}
           counts={data.counts}
+          connection={connection}
+          waiting={waiting}
           onOpenSettings={() => navigate("settings")}
+          onOpenBrain={() => setOverlay({ kind: "brain" })}
+          onOpenPalette={() => setOverlay({ kind: "palette" })}
+          onOpenTasks={() => setOverlay({ kind: "tasks" })}
+          onOpenHiq={() => setOverlay({ kind: "hiq" })}
+          onOpenGateway={
+            pending[0]
+              ? () => setOverlay({ kind: "gateway", approval: pending[0]! })
+              : undefined
+          }
           onBack={back}
           onForward={forward}
           canBack={canBack}
@@ -239,64 +333,131 @@ export function Shell({
             <HardConflictCard conflict={safety.conflict} />
           </div>
         </div>
-        <Sidebar items={sidebarItems} resumeModes={resumeModes} />
+        <Sidebar
+          projects={data.projects}
+          sessions={data.sessions}
+          counts={data.counts}
+          view={contentView}
+          onNavigate={navigate}
+          selectedSessionId={selectedSessionId}
+          onOpenSession={openSession}
+          waiting={waiting}
+          resumeModes={resumeModes}
+          onHumanInput={() => setOverlay({ kind: "hiq" })}
+          onTasks={() => setOverlay({ kind: "tasks" })}
+        />
         <main className="main" aria-label="Main surface">
-          {/* Content-view switch (6.3b): Command Center (default) | Project
-              Graph. Sessions / Terminal / Diff are the later 6.3 sub-slices. */}
-          <div
-            className="content-switch"
-            role="group"
-            aria-label="Content view"
-          >
-              <button
-                type="button"
-                aria-pressed={contentView === "command"}
-                onClick={() => navigate("command")}
-              >
-                Command Center
-              </button>
-              <button
-                type="button"
-                aria-pressed={contentView === "graph"}
-                onClick={() => navigate("graph")}
-              >
-                Project Graph
-              </button>
-              <button
-                type="button"
-                aria-pressed={contentView === "sessions"}
-                onClick={() => navigate("sessions")}
-              >
-                Sessions
-              </button>
-              {/* Settings is reached via the TopBar (§11.2 nav model), not here —
-                  the view-switch carries content surfaces only. */}
-            </div>
-            {contentView === "command" ? (
-              <CommandCenter items={commandItems} />
-            ) : contentView === "graph" ? (
-              <ProjectGraph
-                projectId={activeProjectId ?? ""}
-                projects={data.projects}
-                sessions={data.sessions}
-                pullRequests={data.pullRequests}
-              />
-            ) : contentView === "sessions" ? (
-              <SessionsTable
-                sessions={filterByActiveProject(data.sessions, activeProjectId)}
-                projects={data.projects}
-              />
-            ) : (
-              // Settings folds the Usage dashboard into its Usage tab (§11.2).
-              // Reached ONLY via the TopBar's onOpenSettings — no view-switch
-              // button sets contentView="settings" (§11.2 nav model).
-              <Settings usage={data.usage} creditPool={data.creditPool} />
-            )}
-          </main>
-          <DrawerStack />
-          <ActivityDock events={data.events} />
-          <StatusBar connection={connection} />
-        </div>
+          {contentView === "command" ? (
+            // The project cockpit: the center column scopes to the active project
+            // (prototype anatomy); the rail's HIQ stays GLOBAL (Lesson §13 —
+            // triage is cross-cutting).
+            <CommandCenter
+              sessions={filterByActiveProject(data.sessions, activeProjectId)}
+              approvals={pending}
+              waiting={waitingRows}
+              usage={data.usage}
+              creditPool={data.creditPool}
+              events={data.events}
+              projectName={activeProject?.name ?? "No project"}
+              onOpenSession={openSession}
+              onOpenProjects={() => navigate("projects")}
+            />
+          ) : contentView === "graph" ? (
+            <ProjectGraph
+              projectId={activeProjectId ?? ""}
+              projects={data.projects}
+              sessions={data.sessions}
+              pullRequests={data.pullRequests}
+              usage={data.usage}
+              onInspect={(node) => setOverlay({ kind: "inspect", node })}
+            />
+          ) : contentView === "terminal" ? (
+            // Session Terminal: header/status are real; the PTY well is daemon-
+            // gated (6.3d/e); no selection → the Sessions table as the picker.
+            <SessionTerminal
+              session={
+                data.sessions.find((s) => s.session_id === selectedSessionId) ?? null
+              }
+              sessions={filterByActiveProject(data.sessions, activeProjectId)}
+              projects={data.projects}
+              usage={data.usage}
+            />
+          ) : contentView === "settings" ? (
+            // Settings folds the Usage dashboard into its Usage tab (§11.2).
+            // Reached via the TopBar gear (§11.2 nav model).
+            <Settings usage={data.usage} creditPool={data.creditPool} />
+          ) : contentView === "projects" ? (
+            <ProjectsOverview
+              projects={data.projects}
+              counts={data.counts}
+              activeProjectId={activeProjectId}
+              onSelectProject={(id) => {
+                setActiveProject(id);
+                navigate("command");
+              }}
+            />
+          ) : contentView === "plan" ? (
+            <PlanView />
+          ) : contentView === "editor" ? (
+            <EditorView />
+          ) : contentView === "code" ? (
+            <DiffReview prs={filterByActiveProject(data.pullRequests, activeProjectId)} />
+          ) : contentView === "team" ? (
+            <AgentTeamView />
+          ) : contentView === "packs" ? (
+            <WorkflowPacksView />
+          ) : contentView === "brain" ? (
+            <BrainPage />
+          ) : (
+            <AuditTrail
+              events={data.events}
+              projectId={activeProjectId}
+              projectName={activeProject?.name ?? "No project"}
+            />
+          )}
+        </main>
+        <EventDock
+          events={data.events}
+          connection={connection}
+          projectId={activeProjectId}
+          projectName={activeProject?.name}
+          onOpenAudit={() => navigate("audit")}
+        />
+        {/* Overlay surfaces (one at a time — prototype behavior). */}
+        {overlay?.kind === "palette" ? (
+          <CommandPalette onClose={() => setOverlay(null)} onAction={onPaletteAction} />
+        ) : overlay?.kind === "hiq" ? (
+          <HumanInputQueue
+            approvals={pending}
+            waiting={waitingRows}
+            onClose={() => setOverlay(null)}
+            onOpenApproval={(a) => setOverlay({ kind: "gateway", approval: a })}
+            onOpenSession={(s) => {
+              setOverlay(null);
+              openSession(s);
+            }}
+          />
+        ) : overlay?.kind === "tasks" ? (
+          <TaskInbox onClose={() => setOverlay(null)} />
+        ) : overlay?.kind === "gateway" ? (
+          <GatewayModal approval={overlay.approval} onClose={() => setOverlay(null)} />
+        ) : overlay?.kind === "brain" ? (
+          <BrainDrawer
+            onClose={() => setOverlay(null)}
+            onExpand={() => {
+              setOverlay(null);
+              navigate("brain");
+            }}
+          />
+        ) : overlay?.kind === "inspect" ? (
+          <InspectorDrawer
+            node={overlay.node}
+            usage={data.usage}
+            onClose={() => setOverlay(null)}
+            onOpen={onInspectorOpen}
+          />
+        ) : null}
+      </div>
       </ActiveProjectProvider>
     </ReadOnlyProvider>
   );

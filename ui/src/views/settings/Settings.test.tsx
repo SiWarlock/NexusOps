@@ -19,7 +19,13 @@ describe("Settings tabbed surface", () => {
     renderSettings();
     const tablist = screen.getByRole("tablist");
     const tabs = within(tablist).getAllByRole("tab");
-    expect(tabs).toHaveLength(5);
+    // the prototype's four sections (Notifications stub removed at the rebuild)
+    expect(tabs.map((t) => t.textContent)).toEqual([
+      "Integrations",
+      "Execution profiles",
+      "Usage",
+      "Security & policy",
+    ]);
     // exactly one tab is aria-selected
     const selected = tabs.filter((t) => t.getAttribute("aria-selected") === "true");
     expect(selected).toHaveLength(1);
@@ -37,31 +43,53 @@ describe("Settings tabbed surface", () => {
   it("usage_tab_mounts_usage_dashboard", () => {
     renderSettings();
     fireEvent.click(screen.getByRole("tab", { name: /usage/i }));
-    // the Usage tab mounts the existing dashboard (the 6.4b relocation)
+    // the Usage tab mounts the live dashboard (real projection aggregates)
     expect(screen.getByTestId("usage-table")).toBeTruthy();
+    expect(screen.getByTestId("credit-pool-state")).toBeTruthy();
+    // the prototype's 14-day spend history has no backing projection — its card
+    // is an HONEST pending note, never invented bars (forbidden #2)
+    expect(screen.getByTestId("spend-history-pending")).toBeTruthy();
   });
 
-  it("pending_tabs_show_honest_empty_state", () => {
+  it("integrations_tab_renders_display_cards_with_disabled_mutations", () => {
     renderSettings();
-    for (const name of [/integrations/i, /security/i, /notifications/i]) {
-      fireEvent.click(screen.getByRole("tab", { name }));
-      const panel = screen.getByRole("tabpanel");
-      expect(panel.textContent?.toLowerCase()).toContain("pending");
-      // no fabricated data/toggles (forbidden #2) and NOT the usage dashboard
-      expect(
-        panel.querySelector("input, [role='switch'], [role='checkbox']"),
-      ).toBeNull();
-      expect(panel.querySelector('[data-testid="usage-table"]')).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: /integrations/i }));
+    const panel = screen.getByRole("tabpanel");
+    // the prototype card list renders (display fixture — flagged provisional)
+    expect(panel.querySelector('[data-integration-id="github"]')).not.toBeNull();
+    // Manage/Connect are connector mutations — disabled, not faked (§11.6)
+    for (const btn of within(panel as HTMLElement).getAllByRole("button")) {
+      expect(btn).toHaveProperty("disabled", true);
     }
+    // no fake form controls (forbidden #2)
+    expect(panel.querySelector("input, [role='switch'], [role='checkbox']")).toBeNull();
   });
 
-  it("execution_profiles_tab_pending_not_bound", () => {
+  it("profiles_tab_renders_display_cards_with_disabled_mutations", () => {
     renderSettings();
     fireEvent.click(screen.getByRole("tab", { name: /execution profiles/i }));
     const panel = screen.getByRole("tabpanel");
-    // gated on 0.5b — an honest pending state, no enum binding
-    expect(panel.textContent?.toLowerCase()).toContain("pending");
-    expect(panel.textContent).toContain("0.5b");
+    expect(panel.querySelector('[data-profile-name="Claude Max Main"]')).not.toBeNull();
+    // Add/Configure are 0.5b-gated mutations — disabled, not faked
+    for (const btn of within(panel as HTMLElement).getAllByRole("button")) {
+      expect(btn).toHaveProperty("disabled", true);
+    }
+  });
+
+  it("security_tab_renders_policy_ladder_read_only", () => {
+    renderSettings();
+    fireEvent.click(screen.getByRole("tab", { name: /security/i }));
+    const panel = screen.getByRole("tabpanel");
+    // the four §5.1 risk rungs render with their risk badges ("Critical" appears
+    // as both row name and badge label — getAllByText)
+    for (const label of [/read-only & low risk/i, /medium risk/i, /high risk/i, /critical/i]) {
+      expect(
+        within(panel as HTMLElement).getAllByText(label).length,
+      ).toBeGreaterThanOrEqual(1);
+    }
+    // standing permissions are an honest pending note — no fake toggles
+    expect(screen.getByTestId("standing-permissions-pending")).toBeTruthy();
+    expect(panel.querySelector("input, [role='switch'], [role='checkbox']")).toBeNull();
   });
 
   it("tablist_has_exactly_one_tabstop", () => {
@@ -79,24 +107,26 @@ describe("Settings tabbed surface", () => {
 
   it("arrow_moves_focus_and_activates", () => {
     renderSettings();
-    // default selected = Usage (index 3); focus it, ArrowRight → Execution Profiles
-    const usage = screen.getByRole("tab", { name: /usage/i });
-    usage.focus();
-    fireEvent.keyDown(usage, { key: "ArrowRight" });
+    // default selected = Integrations (first); focus it, ArrowRight → Profiles
+    const integrations = screen.getByRole("tab", { name: /integrations/i });
+    integrations.focus();
+    fireEvent.keyDown(integrations, { key: "ArrowRight" });
     const profiles = screen.getByRole("tab", { name: /execution profiles/i });
     // automatic activation: focus AND selection move to the next tab + its panel
     expect(document.activeElement).toBe(profiles);
     expect(profiles.getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("tabpanel").textContent).toContain("0.5b");
+    expect(
+      screen.getByRole("tabpanel").querySelector("[data-profile-name]"),
+    ).not.toBeNull();
   });
 
   it("home_end_jump", () => {
     renderSettings();
-    const usage = screen.getByRole("tab", { name: /usage/i });
-    usage.focus();
-    // End → last tab (Execution Profiles); focus + select it
-    fireEvent.keyDown(usage, { key: "End" });
-    const last = screen.getByRole("tab", { name: /execution profiles/i });
+    const integrations = screen.getByRole("tab", { name: /integrations/i });
+    integrations.focus();
+    // End → last tab (Security & policy); focus + select it
+    fireEvent.keyDown(integrations, { key: "End" });
+    const last = screen.getByRole("tab", { name: /security/i });
     expect(document.activeElement).toBe(last);
     expect(last.getAttribute("aria-selected")).toBe("true");
     // Home → first tab (Integrations); focus + select it

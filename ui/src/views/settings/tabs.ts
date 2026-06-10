@@ -1,60 +1,32 @@
-// The Settings tab model (§11.2/§11.4): the five Settings sections + their render
-// kind. Daemon-coupled panels render honest "pending" stubs (no fabricated data —
-// forbidden #2); the Usage panel mounts the live dashboard (6.4b relocation); the
-// Execution Profiles panel is 0.5b-gated (rendered pending, enum NOT bound).
+// The Settings tab model (§11.2/§11.4): the prototype's four Settings sections
+// (kit-views4.jsx SettingsProfiles tab strip — Integrations · Execution profiles
+// · Usage · Security & policy). The interim Notifications stub tab was removed
+// at the prototype-faithful rebuild (no prototype equivalent; the notifier is
+// unbuilt — flagged deviation cleanup, not a feature loss).
+//
+// Panels carrying daemon-gated data render the prototype's visual treatment
+// over PROVISIONAL DISPLAY FIXTURES (display-meta.ts; flagged, never presented
+// as live) — Integrations (no connector projection, Phase 7) and Execution
+// profiles (ExecutionProfile enum 0.5b-gated). Usage renders REAL projection
+// aggregates; Security renders the static policy ladder (read-only — the policy
+// engine is daemon Phase 2).
 
-export type SettingsTabKey =
-  | "integrations"
-  | "security"
-  | "notifications"
-  | "usage"
-  | "profiles";
+export type SettingsTabKey = "integrations" | "profiles" | "usage" | "security";
 
 export interface SettingsTab {
   key: SettingsTabKey;
   label: string;
-  /**
-   * How the panel renders:
-   *  - `usage`   → the live `<UsageDashboard/>`,
-   *  - `pending` → an honest empty-state (daemon-coupled surface built ahead of data),
-   *  - `gated`   → an honest empty-state, explicitly gated (Execution Profiles / 0.5b).
-   */
-  kind: "usage" | "pending" | "gated";
-  /** The honest note shown for pending/gated panels (never fabricated data). */
-  pendingNote?: string;
 }
 
 export const SETTINGS_TABS: SettingsTab[] = [
-  {
-    key: "integrations",
-    label: "Integrations",
-    kind: "pending",
-    pendingNote: "Integrations health — pending integrations (Phase 7).",
-  },
-  {
-    key: "security",
-    label: "Security & policy",
-    kind: "pending",
-    pendingNote: "Security & policy — pending the Action Gateway policy engine (Phase 2).",
-  },
-  {
-    key: "notifications",
-    label: "Notifications",
-    kind: "pending",
-    pendingNote: "Notifications — pending the notifier.",
-  },
-  { key: "usage", label: "Usage", kind: "usage" },
-  {
-    key: "profiles",
-    label: "Execution Profiles",
-    kind: "gated",
-    pendingNote: "Execution Profiles — pending the ExecutionProfile enum (0.5b).",
-  },
+  { key: "integrations", label: "Integrations" },
+  { key: "profiles", label: "Execution profiles" },
+  { key: "usage", label: "Usage" },
+  { key: "security", label: "Security & policy" },
 ];
 
-// Default to Usage — the content-bearing tab (the relocated dashboard); the other
-// tabs are pending stubs, so opening Settings lands on real content.
-export const DEFAULT_SETTINGS_TAB: SettingsTabKey = "usage";
+// Default to Integrations — the prototype's first tab.
+export const DEFAULT_SETTINGS_TAB: SettingsTabKey = "integrations";
 
 /** Pure derivation: the tabs with a `selected` flag, exactly one true. */
 export function settingsTabsWithSelection(

@@ -9,12 +9,13 @@ describe("attention derivations", () => {
     expect(needsMyAttention(2)).toBe(false);
     expect(needsMyAttention(0)).toBe(false);
 
-    // triage buckets partition all six ranks: {4,5} attention / {2,3} working / {0,1} settled
+    // triage buckets partition all six ranks: {4,5} attention / {1,2,3} working
+    // / {0} settled (rank-1 active is in-flight — prototype CC semantics)
     expect(triageBucket(5)).toBe("needs-attention");
     expect(triageBucket(4)).toBe("needs-attention");
     expect(triageBucket(3)).toBe("working");
     expect(triageBucket(2)).toBe("working");
-    expect(triageBucket(1)).toBe("settled");
+    expect(triageBucket(1)).toBe("working");
     expect(triageBucket(0)).toBe("settled");
   });
 

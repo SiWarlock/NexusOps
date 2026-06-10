@@ -237,7 +237,9 @@ export const CreditPool = z.object({
 export type CreditPool = z.infer<typeof CreditPool>;
 
 export const UsageProjectionPage = z.object({
-  projection: z.literal("Usage"),
+  // 0.12.0: the frozen ProjectionName enum fixes the canonical name as
+  // "UsageLedger" (was provisional "Usage").
+  projection: z.literal("UsageLedger"),
   rows: z.array(UsageRow),
   creditPool: CreditPool.nullable().optional(),
   cursor: z.string().nullable().optional(),
@@ -254,17 +256,18 @@ export type ProjectionPageByName = {
   PullRequest: PullRequestProjectionPage;
   ApprovalQueue: ApprovalQueuePage;
   AuditTrail: AuditTrailPage;
-  Usage: UsageProjectionPage;
+  UsageLedger: UsageProjectionPage;
 };
 export type ProjectionName = keyof ProjectionPageByName;
 
 /** Any projection page (the union over the registry). */
 export type ProjectionPage = ProjectionPageByName[ProjectionName];
 
-/** A streamed projection delta from subscribe (provisional). */
+/** A streamed projection delta from subscribe (provisional; kind delegates to
+ *  the frozen 0.12.0 DeltaKind enum — never re-declared, Lesson §1/§2). */
 export const ProjectionDelta = z.object({
   projection: z.string(),
-  kind: z.enum(["upsert", "remove"]),
+  kind: bundle.shape.DeltaKind,
   row: SessionRow.optional(),
   id: z.string().optional(),
 });

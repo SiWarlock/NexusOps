@@ -42,7 +42,7 @@ const FIXTURES: Record<ProjectionName, unknown> = {
   PullRequest: pullRequestFixture,
   ApprovalQueue: approvalQueueFixture,
   AuditTrail: auditTrailFixture,
-  Usage: usageFixture,
+  UsageLedger: usageFixture,
 };
 
 export interface MockGatewayOptions {

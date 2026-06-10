@@ -1,45 +1,38 @@
-/* 6.5b — Graphite Arc shell chrome + cockpit layout grid. The .shell region grid
-   plus region chrome (top bar / banner stack / sidebar / main / activity dock /
-   status bar), painting the kit SEMANTIC surfaces and borders. Layout metrics come
-   from the kit --shell-* tokens (tokens/space.css). Semantic layer only (the re-hue
-   promise, section 11.1) — never a primitive. */
+/* Shell chrome + cockpit layout grid — ported from the prototype
+   (ui_kits/control-plane/index.html .shell + kit-shell.jsx region chrome).
+   The region grid: top bar / (collapsing) banner row / side+main / event dock.
+   Layout metrics come from the kit --shell-* tokens (tokens/space.css).
+   Semantic token layer only (the re-hue promise, §11.1) — never a primitive.
+   Most component-level chrome is ported as inline styles in the shell TSX
+   (faithful to the prototype JSX); this file owns the grid + scroll regions. */
 
 .shell {
   display: grid;
   grid-template-columns: var(--shell-sidebar-w) 1fr;
-  grid-template-rows: var(--shell-topbar-h) auto 1fr auto auto;
+  grid-template-rows: var(--shell-topbar-h) auto 1fr auto;
   grid-template-areas:
     "top    top"
     "banner banner"
     "side   main"
-    "dock   dock"
-    "status status";
+    "dock   dock";
   height: 100vh;
   min-height: 0;
   position: relative; /* anchors the drawer-stack overlay */
 }
 
-/* Top bar — a thin chrome strip above the cockpit. */
+/* Top bar — the window chrome strip (traffic lights / nav / switcher / ⌘K /
+   right cluster). Composition is inline-styled in TopBar.tsx (prototype port);
+   this class owns the grid slot + surface. */
 .topbar {
   grid-area: top;
   display: flex;
   align-items: center;
-  gap: var(--sp-4);
+  gap: 10px;
   height: var(--shell-topbar-h);
-  padding: 0 var(--sp-4);
+  padding: 0 12px;
   background: var(--surface-panel);
   border-bottom: 1px solid var(--border-default);
-}
-
-.topbar nav {
-  display: flex;
-  gap: var(--sp-2);
-}
-
-.topbar__right {
-  margin-left: auto;
-  display: flex;
-  gap: var(--sp-2);
+  min-width: 0;
 }
 
 /* Banner stack — full-width row above side+main; auto-height, collapsing to 0
@@ -48,105 +41,89 @@
   grid-area: banner;
 }
 
-/* Sidebar — the attention-ordered nav rail. */
+/* Sidebar — the workspace tree + view nav rail. */
 .sidebar {
   grid-area: side;
-  width: var(--shell-sidebar-w);
+  display: flex;
+  flex-direction: column;
   min-width: 0;
-  overflow: auto;
+  min-height: 0;
   background: var(--surface-panel);
   border-right: 1px solid var(--border-default);
+  overflow: hidden;
 }
 
-.sidebar ul {
-  list-style: none;
-  margin: 0;
-  padding: var(--sp-2) 0;
-}
-
-.sidebar__item {
-  display: flex;
-  align-items: stretch;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-4);
-}
-
-.sidebar__item-label {
+.sidebar__scroll {
   flex: 1;
-  min-width: 0;
+  overflow-y: auto;
+  padding: 10px;
 }
 
-/* Main content region. overflow:hidden — each view owns its scroll region beneath
-   the sticky content-switch toolbar (6.5c, refinement B). */
+/* Main content region. overflow:hidden — each view owns its scroll region. */
 .main {
   grid-area: main;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  background: var(--surface-canvas);
 }
 
-/* Content-view switch toolbar — sticky atop the scrolling main. */
-.content-switch {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: flex;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4);
-  background: var(--surface-window);
-  border-bottom: 1px solid var(--border-subtle);
+.main > * {
+  flex: 1;
+  min-height: 0;
 }
 
-.content-switch button {
-  font: inherit;
-  color: var(--text-secondary);
-  background: var(--surface-input);
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-2);
-  padding: var(--sp-2) var(--sp-6);
-  cursor: pointer;
+/* Session Terminal host (interim: hosts the Sessions table until the PTY
+   surface lands — daemon-gated). */
+.terminal-view {
+  overflow-y: auto;
 }
 
-.content-switch button[aria-pressed="true"] {
-  color: var(--text-primary);
-  background: var(--surface-active);
-  border-color: var(--border-strong);
-}
-
-/* Activity dock — the collapsible event timeline at the cockpit foot. */
-.activity-dock {
+/* Bottom event/activity dock: a status strip that expands into the timeline.
+   Heights from the kit shell tokens; the transition respects reduced-motion via
+   the kit motion guard. */
+.event-dock {
   grid-area: dock;
   background: var(--surface-panel);
   border-top: 1px solid var(--border-default);
-  padding: var(--sp-2) var(--sp-4);
-}
-
-/* Status bar — the thin connection/health strip. */
-.status-bar {
-  grid-area: status;
   display: flex;
-  align-items: center;
-  gap: var(--sp-4);
+  flex-direction: column;
   height: var(--shell-statusbar-h);
-  padding: 0 var(--sp-4);
-  background: var(--surface-panel);
-  border-top: 1px solid var(--border-default);
-  color: var(--text-secondary);
+  transition: height var(--dur-3) var(--ease-standard);
+  overflow: hidden;
 }
 
-/* Right drawer stack — Brain/inspector drawers (Phase 8). An OVERLAY, not a
-   reserved grid column; collapses out of flow until a drawer is pushed. */
-.drawer-stack {
-  position: absolute;
-  top: var(--shell-topbar-h);
-  right: 0;
-  bottom: var(--shell-statusbar-h);
-  width: var(--shell-inspector-w);
-  background: var(--surface-panel);
-  border-left: 1px solid var(--border-default);
+.event-dock[data-open="true"] {
+  height: var(--shell-timeline-h);
 }
 
-.drawer-stack:empty {
-  display: none; /* no drawer pushed → invisible, no reserved space */
+.event-dock__toggle {
+  color: var(--text-secondary); /* buttons otherwise inherit the UA color */
 }
+
+/* Daemon-connection indicator (the dock strip's live health signal — the
+   prototype's "runtime healthy" slot). State color is ADDITIVE to glyph+label. */
+.conn-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 10px var(--font-mono);
+}
+
+.conn-indicator--connected {
+  color: var(--success-ink);
+}
+
+.conn-indicator--connecting,
+.conn-indicator--reconnecting {
+  color: var(--caution-ink);
+}
+
+.conn-indicator--disconnected {
+  color: var(--danger-ink);
+}
+
+/* (The old reserved drawer-stack region is gone — Brain/inspector/queue/task
+   drawers are prototype Overlay surfaces: ui/src/overlays/Overlay.tsx.) */

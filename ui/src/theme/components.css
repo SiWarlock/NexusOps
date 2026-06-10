@@ -111,30 +111,21 @@
   background: var(--surface-canvas);
 }
 
-.project-graph__toolbar {
-  display: flex;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.project-graph__canvas {
-  background: var(--graph-canvas);
-  padding: var(--sp-8);
-  display: flex;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  gap: var(--sp-4);
-}
-
-.project-graph__node {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  background: var(--surface-card);
+/* Graph | List toggle — compact segmented pair (kit secondary-button language). */
+.graph-toggle {
+  font: var(--fw-medium) var(--fs-label) var(--font-sans);
+  color: var(--text-secondary);
+  background: var(--surface-input);
   border: 1px solid var(--border-default);
   border-radius: var(--r-2);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.graph-toggle[aria-pressed="true"] {
+  color: var(--text-primary);
+  background: var(--surface-active);
+  border-color: var(--border-strong);
 }
 
 /* ── Settings (tablist + panels) ─────────────────────────────────────────── */
@@ -169,40 +160,9 @@
   color: var(--text-muted);
 }
 
-/* ── ProjectSwitcher — compact horizontal row (refinement A) ──────────────── */
-/* The prototype's single-select dropdown needs an active-project model (deferred
-   to Phase-7 project selection). Here the switcher compacts to a horizontal
-   scrollable row that fits the 44px top bar, keeping every name + count visible. */
-.project-switcher {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  min-width: 0;
-  overflow-x: auto;
-}
-
-.project-switcher__item {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex: none;
-  padding: var(--sp-2) var(--sp-3);
-  background: var(--surface-input);
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-2);
-  font-size: var(--fs-label);
-}
-
-.project-switcher__name {
-  white-space: nowrap;
-}
-
-.project-switcher__counts {
-  display: inline-flex;
-  gap: var(--sp-2);
-  color: var(--text-secondary);
-  font-size: var(--fs-meta);
-}
+/* (The old compact-row ProjectSwitcher styles are gone — the switcher is the
+   prototype's dropdown-popover, styled inline in ProjectSwitcher.tsx; its root
+   must NOT be an overflow container or the popover clips.) */
 
 /* ── Banner / safety severity surfaces ───────────────────────────────────── */
 /* Color is ADDITIVE — every surface keeps its glyph + label + severity channels

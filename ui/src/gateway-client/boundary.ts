@@ -42,7 +42,7 @@ const PAGE_SCHEMAS = {
   PullRequest: PullRequestProjectionPage,
   ApprovalQueue: ApprovalQueuePage,
   AuditTrail: AuditTrailPage,
-  Usage: UsageProjectionPage,
+  UsageLedger: UsageProjectionPage,
 } as const;
 
 /**

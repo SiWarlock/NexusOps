@@ -22,41 +22,66 @@ const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8"
 describe("a11y reachability + wiring", () => {
   it("every_interactive_control_is_keyboard_focusable", async () => {
     const { container } = render(<Shell gateway={new MockGatewayPort()} />);
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    await screen.findAllByText(projectActivityFixture.rows[0]!.name); // loaded
 
-    // Sweep ALL three content views — the audit is the single §11.6 gate for any
-    // per-view control (view-switch, Graph|List toggle, Sessions sort headers),
+    // Sweep the content views — the audit is the single §11.6 gate for any
+    // per-view control (sidebar nav, Graph|List toggle, Sessions sort headers),
     // so a non-focusable control added to ANY view later is caught here.
-    auditFocusable(container); // Command Center (default) — incl. the TopBar controls
-    // the content-view switch carries only the content surfaces (CC/Graph/Sessions);
-    // Settings is reached via the TopBar (§11.2 nav reconcile).
-    const viewSwitch = screen.getByRole("group", { name: "Content view" });
-    for (const name of [/command center/i, /project graph/i, /sessions/i]) {
-      expect(within(viewSwitch).getByRole("button", { name })).toBeTruthy();
+    auditFocusable(container); // Command Center (default) — incl. TopBar + sidebar tree
+    // the sidebar nav carries the prototype view set; Settings is reached via the
+    // TopBar (§11.2 nav reconcile).
+    const sidebar = screen.getByRole("navigation", { name: "Sidebar" });
+    for (const name of [/command center/i, /project graph/i, /session terminal/i]) {
+      expect(within(sidebar).getByRole("button", { name })).toBeTruthy();
     }
 
-    fireEvent.click(within(viewSwitch).getByRole("button", { name: /project graph/i }));
+    fireEvent.click(within(sidebar).getByRole("button", { name: /project graph/i }));
     expect(screen.getByTestId("graph-canvas")).toBeTruthy();
-    auditFocusable(container); // Project Graph (incl. the Graph|List toggle)
+    auditFocusable(container); // Project Graph (incl. the Graph|List toggle + nodes)
 
-    fireEvent.click(within(viewSwitch).getByRole("button", { name: /sessions/i }));
+    fireEvent.click(within(sidebar).getByRole("button", { name: /session terminal/i }));
     expect(screen.getByTestId("sessions-table")).toBeTruthy();
-    auditFocusable(container); // Sessions (incl. the sort-header buttons)
+    auditFocusable(container); // Session Terminal picker (incl. the sort headers)
 
-    // Settings is reached via the TopBar trigger (now the only "Settings" button).
+    // every remaining sidebar view sweeps clean (Plan / Editor / Code / Packs / Audit)
+    for (const name of [/^plan$/i, /^editor$/i, /code \/ diff review/i, /workflow packs/i, /audit trail/i]) {
+      fireEvent.click(within(sidebar).getByRole("button", { name }));
+      auditFocusable(container);
+    }
+
+    // Projects overview (sidebar tree header label; name computes "Projects<count>")
+    fireEvent.click(within(sidebar).getByRole("button", { name: /^projects\s*\d+$/i }));
+    auditFocusable(container);
+
+    // Brain page via the TopBar Brain trigger
+    fireEvent.click(screen.getByRole("button", { name: /^brain$/i }));
+    auditFocusable(container);
+
+    // Agent Team via the team session in the workspace tree
+    fireEvent.click(
+      container.querySelector('[data-item-id="Session:session_fixture_1"]')!,
+    );
+    auditFocusable(container);
+
+    // Settings is reached via the TopBar trigger (the only "Settings" button).
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     expect(screen.getByRole("tablist")).toBeTruthy();
     auditFocusable(container); // Settings (tab buttons; §9 net)
+
+    // the expanded event dock's timeline + Full audit control sweep clean too
+    fireEvent.click(screen.getByRole("button", { name: /activity/i }));
+    expect(screen.getByTestId("activity-timeline")).toBeTruthy();
+    auditFocusable(container);
   });
 
   it("shell_sweep_green_with_dropdown_open", async () => {
     const { container } = render(<Shell gateway={new MockGatewayPort()} />);
-    await screen.findByText(projectActivityFixture.rows[0]!.name); // loaded
+    await screen.findAllByText(projectActivityFixture.rows[0]!.name); // loaded
     auditFocusable(container); // dropdown closed — trigger only
     // open the ProjectSwitcher dropdown → its roving listbox must sweep clean: the
     // active option is the one tabstop, the rest are -1 roving members (§9 audit
     // now covers role="option" in a one-tabstop listbox).
-    fireEvent.click(screen.getByRole("button", { name: /auth-service/i }));
+    fireEvent.click(screen.getByTitle("Switch project"));
     expect(screen.getByRole("listbox")).toBeTruthy();
     auditFocusable(container); // dropdown open — options now in the swept set
   });

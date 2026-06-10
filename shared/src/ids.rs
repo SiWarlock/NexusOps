@@ -202,6 +202,22 @@ minted_id!(EventId, IdKind::EventId, "evt_");
 minted_id!(ArtifactId, IdKind::ArtifactId, "artf_");
 minted_id!(EvidenceItemId, IdKind::EvidenceItemId, "evid_");
 
+/// The reserved system-workspace sentinel (§16 / Option B) — a well-known `ws_` id for
+/// workspace-less **System-actor** lifecycle events (e.g. bootstrap Device/LocalRunner
+/// registration, which run before any project Workspace exists). The all-zero ULID body
+/// keeps it a VALID `ws_` id, so the §15 fail-closed envelope parse still holds — this is a
+/// reserved value, NOT a nullable-column schema change to the frozen envelope.
+pub const SYSTEM_WORKSPACE_ID: &str = "ws_00000000000000000000000000";
+
+impl WorkspaceId {
+    /// The reserved [`SYSTEM_WORKSPACE_ID`] sentinel as a typed [`WorkspaceId`].
+    pub fn system() -> Self {
+        // infallible: SYSTEM_WORKSPACE_ID is a compile-time-fixed valid `ws_<ULID>` (pinned by
+        // `test_system_workspace_sentinel`); a parse failure here would be a contract bug.
+        Self::parse(SYSTEM_WORKSPACE_ID).expect("SYSTEM_WORKSPACE_ID is a valid ws_ ULID")
+    }
+}
+
 // --- the 6 external (native-valued) newtypes (§5.2) --------------------------
 external_id!(BranchName, String, IdKind::BranchName);
 external_id!(CommitSha, String, IdKind::CommitSha);

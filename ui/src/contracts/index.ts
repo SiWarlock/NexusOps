@@ -15,8 +15,15 @@ export const ActionRequest = shape.ActionRequest;
 export const ActorType = shape.ActorType;
 export const AgentTeam = shape.AgentTeam;
 export const Approval = shape.Approval;
+// 0.12.0 additions (daemon 1.5/1.6 IPC + projection-name freeze).
+export const DeltaKind = shape.DeltaKind;
 export const DesktopObjectKind = shape.DesktopObjectKind;
 export const IdKind = shape.IdKind;
+export const IpcErrorCode = shape.IpcErrorCode;
+// Exported as ...Enum: the provisional registry KEY TYPE `ProjectionName`
+// (keyof ProjectionPageByName, re-exported below) keeps the bare name until the
+// page-shape reconcile retires it; the validators record key stays schema-exact.
+export const ProjectionNameEnum = shape.ProjectionName;
 export const ProjectBrain = shape.ProjectBrain;
 export const PullRequest = shape.PullRequest;
 // 0.8.0 additions (daemon Phase 1 event-store/redaction contract surface).
@@ -38,8 +45,11 @@ export const validators: Record<string, EnumValidator> = {
   ActorType,
   AgentTeam,
   Approval,
+  DeltaKind,
   DesktopObjectKind,
   IdKind,
+  IpcErrorCode,
+  ProjectionName: ProjectionNameEnum,
   ProjectBrain,
   PullRequest,
   RedactionStatus,

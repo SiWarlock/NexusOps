@@ -1,0 +1,21 @@
+//! The daemon runtime (§12 / §16) — the async task topology around the single write-actor.
+//!
+//! `main.rs` calls `cold_start()` (1.6a) then stands up:
+//! - the **write-actor** ([`writer`]): a dedicated thread owning the writable `EventStore`; every
+//!   mutation routes through its [`WriteHandle`] (forbidden #3 / LESSON §3),
+//! - the **drainer + reaper interval loops** (L2),
+//! - the **UDS bind + accept-loop** (L3),
+//! - the **live subscribe broadcast fanout** (L4),
+//!
+//! then blocks on a shutdown signal (SIGTERM/SIGINT) → graceful drain + exit.
+//!
+//! L1 ships the write-actor + the `main.rs` entry + graceful shutdown; L2–L4 add the loops,
+//! the accept-loop, and the subscribe source.
+
+mod drainer;
+mod listener;
+mod writer;
+
+pub use drainer::{spawn_drainer, spawn_reaper};
+pub use listener::{bind, spawn_accept_loop};
+pub use writer::{RuntimeError, WriteActor, WriteHandle, BROADCAST_CAPACITY};

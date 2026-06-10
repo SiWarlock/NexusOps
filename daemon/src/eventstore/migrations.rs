@@ -73,13 +73,41 @@ pub fn run(path: &Path, conn: &mut Connection) -> Result<(), EventStoreError> {
     match migrations().to_latest(conn) {
         Ok(()) => Ok(()),
         Err(e) => {
-            // best-effort in-place restore; the caller drops the conn on the Err
-            // return so the next open() reads the restored file.
+            let mig_err = e.to_string();
             if backed_up {
-                let _ = restore_db(path, from);
+                // attempt the in-place restore; the caller drops the conn on the Err
+                // return so the next open() reads the restored file. The result is
+                // CLASSIFIED (never swallowed): a clean rollback renders "rolled back to
+                // vN"; a failed restore surfaces a distinct RestoreFailed (1.1 L3 / §16).
+                Err(on_migration_failure(restore_db(path, from), from, &mig_err))
+            } else {
+                // a fresh db (from == 0) had nothing to back up — nothing to restore.
+                Err(EventStoreError::Migration(mig_err))
             }
-            Err(EventStoreError::Migration(e.to_string()))
         }
+    }
+}
+
+/// Classify the outcome AFTER a migration failed on a backed-up db (§16). A clean rollback
+/// keeps the failure as a `Migration` error but renders the "rolled back to vN" UX; a
+/// rollback that ITSELF failed surfaces a DISTINCT `RestoreFailed` carrying `from` — the
+/// restore failure is never the swallowed `let _ = restore_db(..)` of before (1.1 L3).
+fn on_migration_failure(
+    restore: Result<(), EventStoreError>,
+    from: i64,
+    mig_err: &str,
+) -> EventStoreError {
+    match restore {
+        Ok(()) => EventStoreError::Migration(format!(
+            "migration failed; rolled back to v{from}: {mig_err}"
+        )),
+        Err(source) => EventStoreError::RestoreFailed {
+            from,
+            // preserve WHY the migration failed — a RestoreFailed must not lose the
+            // original cause that triggered the (then-failed) rollback.
+            migration_error: mig_err.to_string(),
+            source: Box::new(source),
+        },
     }
 }
 
@@ -93,5 +121,48 @@ pub fn refuses_db_newer_than_supported(conn: &Connection) -> Result<(), EventSto
         })
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // a genuinely-internal helper the public API can't reach: the post-migration-failure
+    // classifier that decides whether the rollback was clean (renderable "rolled back to
+    // vN") or itself failed (a DISTINCT, never-swallowed RestoreFailed). 1.1 L3 / §16.
+    use super::on_migration_failure;
+    use crate::eventstore::EventStoreError;
+
+    #[test]
+    fn restore_success_maps_to_renderable_rolled_back() {
+        // migration failed, .bak rollback SUCCEEDED → the migration is still what failed
+        // (Migration family) but the message renders the §16 "rolled back to vN" UX.
+        let err = on_migration_failure(Ok(()), 3, "M4 boom");
+        match err {
+            EventStoreError::Migration(msg) => assert!(
+                msg.contains("rolled back to v3"),
+                "successful rollback renders the §16 'rolled back to vN' UX: {msg}"
+            ),
+            other => panic!("expected Migration (clean rollback), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn restore_failure_is_typed_not_swallowed() {
+        // migration failed AND the rollback could NOT run → a DISTINCT typed RestoreFailed
+        // carrying `from` (1.1 L3), never the swallowed `let _ = restore_db(..)` of before.
+        let src = EventStoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no .bak to restore",
+        ));
+        let err = on_migration_failure(Err(src), 2, "M3 boom");
+        assert!(
+            matches!(
+                &err,
+                EventStoreError::RestoreFailed { from: 2, migration_error, .. }
+                    if migration_error.contains("M3 boom")
+            ),
+            "a failed restore is typed RestoreFailed, carrying `from` AND the original \
+             migration error (never losing why it failed): {err:?}"
+        );
     }
 }

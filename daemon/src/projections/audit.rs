@@ -63,6 +63,8 @@ impl Projector for AuditProjector {
 fn headline_for(event_type: &str) -> String {
     match event_type {
         "SessionStarted" => "Session started".to_string(),
+        "DeviceRegistered" => "Device registered".to_string(),
+        "LocalRunnerRegistered" => "Local runner registered".to_string(),
         other => other.to_string(),
     }
 }

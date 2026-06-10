@@ -9,15 +9,23 @@ pub mod actor;
 pub mod event_envelope;
 pub mod events;
 pub mod ids;
+pub mod ipc;
 pub mod objects;
 pub mod schema;
 pub mod status;
 
 /// The frozen-contract version, stamped into the emitted JSON Schema and asserted
 /// to agree across Rust / schema / Zod / Pydantic (the §5.0 propagation contract).
-/// 0.8.0 adds the first concrete event-type payload (`SessionStarted`, 1.2) to the
-/// registry — additive over the 0.7.0 envelope+redaction surface.
-pub const CONTRACT_VERSION: &str = "0.8.0";
+/// 0.9.0 added the IPC `GatewayPort` wire contract (§6.4: HelloFrame/HelloAck/
+/// VersionSkewError/Capabilities/WireError + the IpcErrorCode + ProjectionName enums,
+/// 1.5 L2). 0.10.0 (1.5 L3) adds the §6.1 RPC method envelopes (RpcRequest/RpcResponse/
+/// GetProjectionParams/ProjectionScope) + the `protocol_error` code (the lead-ratified §6.4
+/// gap resolution). 0.11.0 (1.5 L4) adds the frame-type multiplexing envelope (ServerFrame) +
+/// subscribe streaming (ProjectionDelta/DeltaKind/SubscribeParams) — additive.
+/// 0.12.0 (1.6a L3) adds the Device/LocalRunner registration event payloads
+/// (DeviceRegistered/LocalRunnerRegistered + the DeviceId/LocalRunnerId newtypes,
+/// §5.3/§16 bootstrap self-registration) — additive EventTypeRegistry rows.
+pub const CONTRACT_VERSION: &str = "0.12.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

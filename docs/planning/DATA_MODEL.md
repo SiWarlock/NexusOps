@@ -299,17 +299,20 @@ CREATE INDEX ix_outbox_due ON outbox(status, next_attempt_at);
 
 ```sql
 CREATE TABLE leases (
-  resource_id    TEXT PRIMARY KEY,   -- e.g. 'worktree:wt_..' | 'branch:proj_..:agent/x' | 'action:idemkey'
-  owner_id       TEXT NOT NULL,      -- session_id / team_id / executor_id holding the lease
-  fencing_token  INTEGER NOT NULL,   -- monotonic, MANDATORY — stale holders rejected on token mismatch
-  acquired_at    TEXT NOT NULL,
-  heartbeat_at   TEXT NOT NULL,
-  expires_at     TEXT NOT NULL,
-  lease_kind     TEXT NOT NULL       -- 'exclusive' | future:'shared' (branch co-ownership, §8)
+  resource_id    TEXT NOT NULL,      -- e.g. 'worktree:wt_..' | 'branch:proj_..:agent/x' | 'action:idemkey' (opaque key)
+  lease_kind     TEXT NOT NULL,      -- MVP seeds 'resource_mutation'; closed kind-enum deferred to the Phase-2 gateway; future:'shared' (branch co-ownership, §8)
+  owner_id       TEXT,               -- NULL when free/released; session_id / team_id / executor_id holding the lease
+  fencing_token  INTEGER NOT NULL,   -- monotonic per-(resource_id,lease_kind) HIGH-WATER mark, MANDATORY — persisted; survives restart
+  acquired_at    TEXT,               -- NULL when free
+  heartbeat_at   TEXT,               -- NULL when free
+  expires_at     TEXT,               -- NULL when free
+  PRIMARY KEY (resource_id, lease_kind)
 );
 CREATE INDEX ix_leases_expiry ON leases(expires_at);
 ```
-`[LOCKED — ADR-008]` SQLite LEASE table + mandatory monotonic fencing tokens + pidlock single-instance. OS advisory/flock locks rejected (don't survive restart). `[PROPOSED]` fencing tokens are minted from a single monotonic counter; an executor must present its lease's `fencing_token` to the gateway, which rejects any write whose token is older than the current lease holder — this is the protection against a paused-then-resumed stale session clobbering a worktree another session now owns. Expired leases are reclaimable; reclamation mints a *new* token, invalidating the old holder.
+`[LOCKED — ADR-008]` SQLite LEASE table + mandatory monotonic fencing tokens + pidlock single-instance. An OS flock for the *lease itself* is rejected (a lease must survive restart; flock doesn't) — but the *pidlock* (single-instance) correctly IS a std advisory file lock (it SHOULD release on process death). An executor presents its lease's `fencing_token` to the gateway, which rejects any write not from a live lease holder — protection against a paused-then-resumed stale session clobbering a resource another session now owns. Expired leases are reclaimable; reclamation mints a *new* token, invalidating the old holder.
+
+**[IMPLEMENTED 1.4]** `leases` created (migration 5; `SUPPORTED_USER_VERSION` 4→5). **PK = `(resource_id, lease_kind)`** (composite — a resource can hold distinct lease kinds; resolves the latent exclusive-vs-shared single-PK conflict the original sketch implied). `fencing_token` = a **persisted monotonic high-water mark per `(resource_id, lease_kind)`** (new→1, reclaim→+1, minted under `BEGIN IMMEDIATE`); `release`/`reap_once` NULL the holder fields (`owner_id`/`acquired_at`/`heartbeat_at`/`expires_at`) but **keep** the token → monotonicity survives restart. **Authority = a LIVE lease (Option B, human-ratified):** `validate_held` = owner-match ∧ `token == fencing_token` ∧ `expires_at > now`; "stale" = expired **OR** superseded → `fencing_conflict` (safety rule #6, never auto-resolved). `pidlock` = std advisory `File::try_lock` (OS-fd held → auto-released on death → immune to PID reuse). Reaper `reap_once` is the deterministic unit; the Tokio spawn is 1.6-wired. **Daemon-internal** — no `shared/` surface, no CONTRACT_VERSION bump (stays 0.8.0). `(P1.4, brief 006; LESSON §6)`
 
 ### 2.7 `artifacts` — large-content references `[LOCKED — ADR-003, EM §12.2, SOM §28]`
 

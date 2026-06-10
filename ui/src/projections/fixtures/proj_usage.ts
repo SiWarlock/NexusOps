@@ -6,7 +6,7 @@
 import type { UsageProjectionPage } from "../../contracts/index";
 
 export const usageFixture: UsageProjectionPage = {
-  projection: "Usage",
+  projection: "UsageLedger",
   rows: [
     {
       subject_id: "session_fixture_1",

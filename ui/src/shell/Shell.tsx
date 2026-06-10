@@ -172,7 +172,7 @@ export function Shell({
             client.get_projection("PullRequest"),
             client.get_projection("ApprovalQueue"),
             client.get_projection("AuditTrail"),
-            client.get_projection("Usage"),
+            client.get_projection("UsageLedger"),
             client.get_capabilities(),
           ]);
         if (cancelled) return;

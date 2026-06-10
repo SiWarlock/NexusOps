@@ -146,6 +146,11 @@ impl Destination for JsonlMirror {
 /// 6 total deliver attempts (1 initial + 5 retries).
 const MAX_RETRIES: i64 = 5;
 
+/// Max rows one [`drain_once`] pass delivers (§12 — the 1.3 backlog-starvation deferral, wired
+/// by the 1.6b drainer loop). Caps a single pass so a large backlog can't monopolize the single
+/// writer; the remainder drains on the next interval tick. A compile-time const (no injection).
+pub const DRAIN_BATCH_LIMIT: usize = 128;
+
 /// exponential backoff (seconds), capped — the delay before the `attempt`-th retry
 /// (called with `retry_count + 1`, so the first retry waits `backoff_secs(1)` = 60s).
 fn backoff_secs(attempt: i64) -> i64 {
@@ -189,10 +194,15 @@ pub(crate) fn drain_once(
     let due: Vec<(String, String, i64)> = {
         let mut stmt = conn
             .prepare(
-                "SELECT outbox_id, payload_json, retry_count FROM outbox \
-                 WHERE destination = ?1 AND status IN ('pending','failed') \
-                   AND (next_attempt_at IS NULL OR next_attempt_at <= ?2) \
-                 ORDER BY next_attempt_at",
+                // LIMIT bounds one pass (DRAIN_BATCH_LIMIT, a compile-time const — no injection)
+                // so a large backlog can't starve the single writer; the rest drains next tick.
+                &format!(
+                    "SELECT outbox_id, payload_json, retry_count FROM outbox \
+                     WHERE destination = ?1 AND status IN ('pending','failed') \
+                       AND (next_attempt_at IS NULL OR next_attempt_at <= ?2) \
+                     ORDER BY next_attempt_at \
+                     LIMIT {DRAIN_BATCH_LIMIT}"
+                ),
             )
             .map_err(EventStoreError::Write)?;
         let rows = stmt

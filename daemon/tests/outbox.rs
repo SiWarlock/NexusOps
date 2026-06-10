@@ -99,7 +99,7 @@ fn test_migration_4_creates_outbox() {
     // outbox was introduced at migration 4; later migrations raise the version further
     // (the exact-version pin lives in each migration's own test, e.g. M5 in tests/locks.rs).
     assert!(
-        store.user_version() >= 4,
+        store.user_version().unwrap() >= 4,
         "open migrates at/above the outbox migration (4)"
     );
     let t = tables(&path);

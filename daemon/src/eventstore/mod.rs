@@ -31,7 +31,7 @@ pub use redaction::{PrefixRedactor, RedactionOutcome, Redactor};
 // migrations registry reference one canonical source).
 pub use schema::{MIGRATION_1_EVENTS, MIGRATION_2_REDACTION, MIGRATION_3_PROJECTIONS};
 // outbox delivery surface (the drainer + its destinations, §12/§17).
-pub use outbox::{DeliveryOutcome, Destination, DrainSummary, JsonlMirror};
+pub use outbox::{DeliveryOutcome, Destination, DrainSummary, JsonlMirror, DRAIN_BATCH_LIMIT};
 
 use crate::clock::Clock;
 use crate::idgen::IdGen;
@@ -59,6 +59,20 @@ pub enum EventStoreError {
     Io(std::io::Error),
     #[error("migration failed: {0}")]
     Migration(String),
+    /// A migration failed AND the pre-migration `.bak` could not be restored (§16). Distinct
+    /// from `Migration` (a clean rollback) so the caller never confuses "rolled back safely"
+    /// with "rollback ALSO failed" — and so the restore failure is never silently swallowed
+    /// (1.1 L3). Carries `from` to render the §16 "update failed, rolled back to vN" UX.
+    #[error(
+        "migration failed ({migration_error}) and the rollback to v{from} could not be restored: {source}"
+    )]
+    RestoreFailed {
+        from: i64,
+        /// the original migration failure — preserved so a `RestoreFailed` still tells the
+        /// operator WHAT failed, not only that the rollback also failed.
+        migration_error: String,
+        source: Box<EventStoreError>,
+    },
     #[error("db user_version {db} is newer than supported {supported}")]
     DbNewerThanSupported { db: i64, supported: i64 },
     #[error("event reconstruction failed: {0}")]
@@ -292,8 +306,19 @@ impl EventStore {
         let rows = stmt
             .query_map([], |row| {
                 // a bad/unreadable leading column quarantines THAT row — it must
-                // not abort the whole replay (§17 resilience).
-                let seq: i64 = row.get(0).unwrap_or(-1);
+                // not abort the whole replay (§17 resilience). An unreadable `seq` is
+                // handled like its sibling columns below (quarantine-on-unreadable, not a
+                // silent `.unwrap_or(-1)`): -1 is then an EXPLICIT "unknown seq" marker on
+                // a quarantined row, never a sentinel that flows into version/event logic.
+                let seq: i64 = match row.get(0) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return Ok(DegradableEvent::Quarantined {
+                            seq: -1,
+                            reason: "unreadable seq".to_string(),
+                        })
+                    }
+                };
                 let event_version: i64 = match row.get(1) {
                     Ok(v) => v,
                     Err(_) => {
@@ -340,6 +365,28 @@ impl EventStore {
             out.push(r.map_err(EventStoreError::Write)?);
         }
         Ok(out)
+    }
+
+    /// The earliest event of `event_type` in canonical `seq` order, if any. The
+    /// register-if-absent read (§5.3 — e.g. bootstrap reuses an existing `DeviceRegistered`'s
+    /// id rather than minting a second host). Strict — a malformed row is an error.
+    pub fn first_event_of_type(
+        &self,
+        event_type: &str,
+    ) -> Result<Option<EventEnvelope>, EventStoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {COLS} FROM events WHERE event_type = ?1 ORDER BY seq LIMIT 1"
+            ))
+            .map_err(EventStoreError::Write)?;
+        let mut rows = stmt
+            .query_map([event_type], |row| Ok(row_to_envelope(row)))
+            .map_err(EventStoreError::Write)?;
+        match rows.next() {
+            None => Ok(None),
+            Some(r) => Ok(Some(r.map_err(EventStoreError::Write)??)),
+        }
     }
 
     // ---- lease locks + fencing (§7.2/§17, safety rule #6) -------------------
@@ -416,9 +463,15 @@ impl EventStore {
         locks::reap_once(&mut self.conn, clock)
     }
 
-    /// the applied schema version (§16)
-    pub fn user_version(&self) -> i64 {
-        migrations::current_user_version(&self.conn).unwrap_or(-1)
+    /// The applied schema version (§16). Typed `Result<u32, _>` — a real read error is
+    /// `Err`, never a silent `-1` sentinel the version-compat code might branch on (1.1 L2).
+    pub fn user_version(&self) -> Result<u32, EventStoreError> {
+        let v = migrations::current_user_version(&self.conn)?;
+        // a user_version outside u32 is a corrupt/hostile schema-version pragma — a
+        // migration-domain integrity error, NOT an event-reconstruction failure.
+        u32::try_from(v).map_err(|e| {
+            EventStoreError::Migration(format!("user_version {v} is not a valid u32: {e}"))
+        })
     }
 
     /// Read an integer PRAGMA from the WRITER's connection (the per-connection

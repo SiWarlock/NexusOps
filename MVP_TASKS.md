@@ -18,6 +18,8 @@
 
 ## Currently in progress
 
+- **Team `nexusops-ui` (ui track) PAUSED 2026-06-09** — handoff: `docs/team-handoffs/001-2026-06-09-ui-phase6-done-styling-redo.md` · last round-seal `1dcfe0f` (branch tip `27a21b0`, with `main`/daemon Phase 1.1–1.4 merged in) · **next: SOLO prototype-driven styling+layout rebuild** (6.5 Graphite Arc theme was user-REJECTED as not matching `ui_kits/control-plane/index.html`); daemon-gated Phase 7/8 + 6.3d/e resume on a later `/team-start ui`. `track/ui` ready for the main-track merge (one `MVP_TASKS.md` union conflict at merge time).
+
 **PHASE 0 — DETERMINISTIC WORK COMPLETE (2026-06-07).** All 4 spikes landed (`docs/spikes/*.md`) + the **0.5 contract freeze landed (06f9576)** — the serial neck. Single-writer holds (0.4 → §18 written MEASURED); git2 reads relative-worktrees (0.3 → §9 corrected); #27203 confirmed, bg subagents forbidden (0.1); shared/ contracts frozen Option-A (0.5, §5.0). Toolchain RESOLVED (Lesson §1).
 
 **Phase-0-exit `/arch-finalize` re-validation COMPLETE + committed (2026-06-07, 1efff4b).** No frozen `shared/` contract moved (0 release-blockers; no 0.5b forced; ui track ungated). Drift swept forward to `ARCHITECTURE.md` (§5.1→Ten, §5.0 ratified, ADR-004 getpeereid/length-prefix, ADR-007 libgit2, EM §7 remote_client, DATA_MODEL/SOM/OQ/UI sweep). Audit: `docs/gap-audits/R2-phase0-exit-revalidation.json`. Hold released.

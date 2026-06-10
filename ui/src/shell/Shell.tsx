@@ -288,6 +288,7 @@ export function Shell({
               projects={data.projects}
               sessions={data.sessions}
               pullRequests={data.pullRequests}
+              usage={data.usage}
             />
           ) : contentView === "terminal" ? (
             // Session Terminal: the live PTY surface is daemon-gated (6.3d/e —

@@ -69,16 +69,16 @@ export function deriveProjectSwitcherCounts(input: {
     const openPRs = input.pullRequests.filter(
       (pr) => pr.project_id === pid && !CLOSED_PR.has(pr.status),
     ).length;
-    const pendingApprovals = input.approvals.filter(
+    const pendingApprovalCount = input.approvals.filter(
       (a) => a.project_id === pid && PENDING_APPROVAL.has(a.status),
     ).length;
-    const waitingSessions = projectSessions.filter((s) =>
+    const waitingSessionCount = projectSessions.filter((s) =>
       WAITING_SESSION.has(s.status),
     ).length;
     out[pid] = {
       activeSessions,
       openPRs,
-      waitingOnYou: pendingApprovals + waitingSessions,
+      waitingOnYou: pendingApprovalCount + waitingSessionCount,
     };
   }
   return out;

@@ -121,29 +121,31 @@ function AttentionCard({
       <div style={{ display: "flex", gap: 6 }}>
         {waiting ? (
           <>
-            <Button
+            <span title="Approve flows arrive with the Gateway overlay (intent seam — daemon-gated)">
+              <Button
               variant="secondary"
               size="sm"
               disabled
-              title="Approve flows arrive with the Gateway overlay (intent seam — daemon-gated)"
             >
               Review &amp; approve
             </Button>
+            </span>
             <Button variant="ghost" size="sm" onClick={() => onOpen(session)}>
               Open
             </Button>
           </>
         ) : (
           <>
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={<RefreshCw size={14} />}
-              disabled
-              title="Retry is a Gateway mutation (intent seam — daemon-gated)"
-            >
-              Retry checks
-            </Button>
+            <span title="Retry is a Gateway mutation (intent seam — daemon-gated)">
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<RefreshCw size={14} />}
+                disabled
+              >
+                Retry checks
+              </Button>
+            </span>
             <Button variant="ghost" size="sm" onClick={() => onOpen(session)}>
               Open log
             </Button>
@@ -492,24 +494,16 @@ export function CommandCenter({
             {sessions.length} sessions
           </Badge>
           <div style={{ marginLeft: "auto", display: "flex", gap: 7 }}>
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<ArrowUpDown size={14} />}
-              disabled
-              title="Attention is the only sort order in this build"
-            >
-              Sort: attention
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              icon={<Plus size={14} />}
-              disabled
-              title="Session dispatch arrives with the intent seam (daemon-gated)"
-            >
-              New session
-            </Button>
+            <span title="Attention is the only sort order in this build">
+              <Button variant="ghost" size="sm" icon={<ArrowUpDown size={14} />} disabled>
+                Sort: attention
+              </Button>
+            </span>
+            <span title="Session dispatch arrives with the intent seam (daemon-gated)">
+              <Button variant="primary" size="sm" icon={<Plus size={14} />} disabled>
+                New session
+              </Button>
+            </span>
           </div>
         </div>
 

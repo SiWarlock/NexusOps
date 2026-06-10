@@ -111,30 +111,21 @@
   background: var(--surface-canvas);
 }
 
-.project-graph__toolbar {
-  display: flex;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.project-graph__canvas {
-  background: var(--graph-canvas);
-  padding: var(--sp-8);
-  display: flex;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  gap: var(--sp-4);
-}
-
-.project-graph__node {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  background: var(--surface-card);
+/* Graph | List toggle — compact segmented pair (kit secondary-button language). */
+.graph-toggle {
+  font: var(--fw-medium) var(--fs-label) var(--font-sans);
+  color: var(--text-secondary);
+  background: var(--surface-input);
   border: 1px solid var(--border-default);
   border-radius: var(--r-2);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.graph-toggle[aria-pressed="true"] {
+  color: var(--text-primary);
+  background: var(--surface-active);
+  border-color: var(--border-strong);
 }
 
 /* ── Settings (tablist + panels) ─────────────────────────────────────────── */

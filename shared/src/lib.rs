@@ -25,7 +25,9 @@ pub mod status;
 /// 0.12.0 (1.6a L3) adds the Device/LocalRunner registration event payloads
 /// (DeviceRegistered/LocalRunnerRegistered + the DeviceId/LocalRunnerId newtypes,
 /// §5.3/§16 bootstrap self-registration) — additive EventTypeRegistry rows.
-pub const CONTRACT_VERSION: &str = "0.12.0";
+/// 0.13.0 (1.6c L2) adds the §17 AuditIntegrityViolation event payload (Option C —
+/// the loud, consumer-visible record emitted when startup replay quarantines a row).
+pub const CONTRACT_VERSION: &str = "0.13.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

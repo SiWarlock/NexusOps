@@ -635,3 +635,39 @@ fn test_registration_payloads_wire_contract() {
         "unknown field rejected (deny_unknown_fields)"
     );
 }
+
+// ---- 1.6c L2 — the §17 audit-integrity event (Option C "loud record") ---------
+
+#[test]
+fn test_audit_integrity_violation_wire_contract() {
+    use nexusops_shared::events::AuditIntegrityViolation;
+
+    // {seq, reason} round-trips snake_case; the event-type name is a single source of truth.
+    let v = AuditIntegrityViolation {
+        seq: 42,
+        reason: "event reconstruction failed".to_string(),
+    };
+    let j = serde_json::to_value(&v).unwrap();
+    assert_eq!(
+        j.get("seq").and_then(|x| x.as_i64()),
+        Some(42),
+        "seq wire field"
+    );
+    assert!(j.get("reason").is_some(), "reason wire field");
+    assert_eq!(
+        serde_json::from_value::<AuditIntegrityViolation>(j).unwrap(),
+        v,
+        "AuditIntegrityViolation round-trips"
+    );
+    // deny_unknown_fields (reject-unknown, §5.0/§15)
+    let rogue = serde_json::json!({ "seq": 1, "reason": "x", "extra": true });
+    assert!(
+        serde_json::from_value::<AuditIntegrityViolation>(rogue).is_err(),
+        "unknown field rejected"
+    );
+    // the event-type name has ONE home (used by the emit path + the audit projector)
+    assert_eq!(
+        AuditIntegrityViolation::EVENT_TYPE,
+        "AuditIntegrityViolation"
+    );
+}

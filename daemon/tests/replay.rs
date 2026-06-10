@@ -9,11 +9,14 @@
 
 use nexusops_shared::actor::ActorType;
 use nexusops_shared::event_envelope::{Sensitivity, SourceType, Visibility};
-use nexusops_shared::events::SessionStarted;
+use nexusops_shared::events::{AuditIntegrityViolation, SessionStarted};
 use nexusops_shared::ids::{EventId, ProjectId, SessionId, WorkspaceId};
 use nexusops_shared::status::Session;
+use nexusopsd::bootstrap::{cold_start, BootstrapConfig, DaemonContext, DB_FILENAME};
 use nexusopsd::clock::FixedClock;
-use nexusopsd::eventstore::{AppendIntent, EventStore, EventStoreError, PrefixRedactor};
+use nexusopsd::eventstore::{
+    AppendIntent, DegradableEvent, EventStore, EventStoreError, PrefixRedactor,
+};
 use nexusopsd::idgen::UlidGen;
 use rusqlite::params;
 use std::path::{Path, PathBuf};
@@ -31,6 +34,37 @@ fn open(p: &Path) -> Result<EventStore, EventStoreError> {
         Box::new(FixedClock::new("2026-06-10T00:00:00Z")),
         Box::new(PrefixRedactor),
     )
+}
+
+/// A fresh app-support base dir under a tempdir (cold_start creates `<base>/nexusops.db`).
+fn bootstrap_base() -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().join("Application Support").join("NexusOps");
+    (tmp, base)
+}
+
+/// Cold-start the daemon over `base` (§14 injected seams; the L2 audit-integrity emission runs
+/// from this caller after open, per Q2).
+fn cold(base: &Path) -> Result<DaemonContext, nexusopsd::bootstrap::BootstrapError> {
+    cold_start(BootstrapConfig {
+        base_dir: base.to_path_buf(),
+        idgen: Box::new(UlidGen),
+        clock: Box::new(FixedClock::new("2026-06-10T00:00:00Z")),
+        redactor: Box::new(PrefixRedactor),
+    })
+}
+
+/// Count `AuditIntegrityViolation` events in the log (read degradably — a corrupt row in the
+/// log would abort the strict `read_all`).
+fn audit_integrity_event_count(store: &EventStore) -> usize {
+    store
+        .read_all_degradable()
+        .unwrap()
+        .into_iter()
+        .filter(|d| {
+            matches!(d, DegradableEvent::Ok(e) if e.event_type == AuditIntegrityViolation::EVENT_TYPE)
+        })
+        .count()
 }
 
 /// Raw-insert a row at `seq` (simulating an event row past the projection offset that replay
@@ -304,5 +338,83 @@ fn test_quarantine_record_idempotent_on_reread() {
         quarantine_audit_emitted(&p, 1),
         1,
         "re-detection PRESERVES audit_emitted (ON CONFLICT DO NOTHING, never REPLACE → no re-emit)"
+    );
+}
+
+// ===================== L2 — the audit-integrity event (loud record) ==========
+
+#[test]
+fn test_quarantine_is_not_silent() {
+    // L2 — Option C vs the rejected silent-skip: a quarantined row produces BOTH a quarantine
+    // record AND a loud, consumer-visible AuditIntegrityViolation event in proj_audit_trail.
+    // Emission is from the caller (cold_start) after open (Q2), via the write-actor append path.
+    let (_tmp, base) = bootstrap_base();
+    let db = base.join(DB_FILENAME);
+    drop(cold(&base).expect("cold_start #1 creates the DB + registers identity (offset advances)"));
+
+    // a corrupt row past the offset → catch_up re-reads it on the next start
+    raw_insert(&db, 3, "definitely_not_an_actor", 1, "redacted");
+    let ctx = cold(&base).expect("cold_start #2 quarantines the corrupt row + emits the AIV event");
+
+    // recorded (the gap is not silent)
+    assert_eq!(
+        quarantine_seqs(&db),
+        vec![3],
+        "the corrupt row is quarantine-recorded"
+    );
+    assert_eq!(
+        quarantine_audit_emitted(&db, 3),
+        1,
+        "the audit-integrity event was emitted (audit_emitted set → deduped next start)"
+    );
+    // loud: exactly one AuditIntegrityViolation event, consumer-visible in the audit trail
+    assert_eq!(
+        audit_integrity_event_count(&ctx.store),
+        1,
+        "exactly one audit-integrity event for the quarantined row"
+    );
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let audit: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM proj_audit_trail WHERE headline = 'Audit-integrity violation'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        audit, 1,
+        "the audit-integrity event is consumer-visible in proj_audit_trail (loud, not silent)"
+    );
+}
+
+#[test]
+fn test_quarantine_idempotent_across_restart() {
+    // ADD 2 — exactly ONE AIV per seq under genuine re-detection: a full rebuild re-reads ALL
+    // rows (offsets reset) and re-detects the corrupt seq, but ON CONFLICT(seq) DO NOTHING
+    // preserves audit_emitted, so a subsequent emit is a no-op (no duplicate audit-integrity event).
+    let (_tmp, base) = bootstrap_base();
+    let db = base.join(DB_FILENAME);
+    drop(cold(&base).expect("cold_start #1"));
+    raw_insert(&db, 3, "definitely_not_an_actor", 1, "redacted");
+    let mut ctx = cold(&base).expect("cold_start #2: quarantine + emit AIV");
+    assert_eq!(
+        audit_integrity_event_count(&ctx.store),
+        1,
+        "one AIV after first emit"
+    );
+
+    // genuine re-detection: rebuild re-reads seq 3 → record_quarantine ON CONFLICT DO NOTHING.
+    ctx.store
+        .rebuild_projections()
+        .expect("rebuild re-detects the corrupt row (offsets reset → re-read all)");
+    // emit again — audit_emitted preserved → no second event.
+    ctx.store
+        .emit_quarantine_audit_events()
+        .expect("emit is a no-op for already-emitted seqs");
+
+    assert_eq!(
+        audit_integrity_event_count(&ctx.store),
+        1,
+        "exactly ONE audit-integrity event across re-detection (rebuild + re-emit) — idempotent"
     );
 }

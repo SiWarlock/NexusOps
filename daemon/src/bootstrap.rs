@@ -165,6 +165,11 @@ pub fn cold_start(cfg: BootstrapConfig) -> Result<DaemonContext, BootstrapError>
     let device_id = register_device(&mut store, &occurred_at)?;
     let local_runner_id = register_local_runner(&mut store, &occurred_at)?;
 
+    // (6) emit a loud audit-integrity event for any row startup replay quarantined (§17 Option C,
+    // 1.6c L2). Emitted HERE (the caller, after open) — replay itself stays append-free; idempotent
+    // via the quarantine record (`audit_emitted`) + the `audit-integrity-{seq}` idempotency_key.
+    store.emit_quarantine_audit_events()?;
+
     Ok(DaemonContext {
         _pidlock: pidlock,
         store,

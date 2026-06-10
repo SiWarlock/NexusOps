@@ -149,6 +149,7 @@ fn test_contract_version_bumped_past_0_5() {
     // 1.5 L2 → 0.9.0 (the IPC GatewayPort wire contract, §6.4); 1.5 L3 → 0.10.0 (the §6.1 RPC
     // method envelopes + the `protocol_error` code); 1.5 L4 → 0.11.0 (ServerFrame frame-type
     // multiplexing + subscribe streaming: ProjectionDelta/DeltaKind/SubscribeParams);
-    // 1.6a L3 → 0.12.0 (Device/LocalRunner registration event payloads, §5.3/§16).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.12.0");
+    // 1.6a L3 → 0.12.0 (Device/LocalRunner registration event payloads, §5.3/§16);
+    // 1.6c L2 → 0.13.0 (the §17 AuditIntegrityViolation event payload, Option C).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.13.0");
 }

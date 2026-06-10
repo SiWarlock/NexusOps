@@ -22,6 +22,7 @@ use nexusops_shared::actor::ActorType;
 use nexusops_shared::event_envelope::{
     EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility,
 };
+use nexusops_shared::events::AuditIntegrityViolation;
 
 use nexusops_shared::ids::{
     ActionRequestId, AgentTeamId, EventId, ProjectId, SessionId, WorkspaceId,
@@ -340,6 +341,79 @@ impl EventStore {
             None => Ok(None),
             Some(r) => Ok(Some(r.map_err(EventStoreError::Write)??)),
         }
+    }
+
+    /// Emit a loud [`AuditIntegrityViolation`] event for each quarantined row not yet recorded in
+    /// the event stream (§17 Option C — the consumer-visible gap record). Called by the CALLER
+    /// after [`EventStore::open`] (Q2 — replay itself stays append-free); the production caller is
+    /// `bootstrap::cold_start`. **Idempotent across restarts AND re-detection:** only
+    /// `audit_emitted=0` quarantine rows are emitted, each append carries an `audit-integrity-{seq}`
+    /// idempotency_key (so a crash between append + mark, or a re-detected seq, can never
+    /// double-emit), and `audit_emitted` is set after. The event flows through the normal `append`
+    /// path (the §15 redaction gate + projector fold both run). Returns the count processed.
+    pub fn emit_quarantine_audit_events(&mut self) -> Result<usize, EventStoreError> {
+        let pending: Vec<(i64, String)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT seq, reason FROM quarantine WHERE audit_emitted = 0 ORDER BY seq")
+                .map_err(EventStoreError::Write)?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .map_err(EventStoreError::Write)?;
+            let mut v = Vec::new();
+            for r in rows {
+                v.push(r.map_err(EventStoreError::Write)?);
+            }
+            v
+        };
+
+        // counts rows PROCESSED — a freshly-appended event AND an already-emitted no-op (a
+        // re-detected seq whose idempotency_key already exists) both count; the caller treats
+        // "processed" as "the integrity record is now in the stream," not "newly written."
+        let mut processed = 0usize;
+        for (seq, reason) in pending {
+            // the reason is the structural quarantine descriptor (content-free, §15); the seq is
+            // the affected canonical order key. NOT the corrupt payload.
+            let payload = serde_json::to_string(&AuditIntegrityViolation { seq, reason })
+                .map_err(|e| EventStoreError::Reconstruct(e.to_string()))?;
+            let intent = AppendIntent {
+                event_type: AuditIntegrityViolation::EVENT_TYPE.to_string(),
+                event_version: 1,
+                occurred_at: self.clock.now_rfc3339(),
+                workspace_id: WorkspaceId::system(),
+                actor_type: ActorType::System,
+                actor_id: "system".to_string(),
+                source_type: SourceType::LocalDaemon,
+                source_id: "system".to_string(),
+                // correlates to the quarantined row (its own integrity record); a distinct value
+                // from the dedup key below — correlation groups events, it is not a dedup token.
+                correlation_id: format!("quarantine-{seq}"),
+                sensitivity: Sensitivity::Internal,
+                payload_json: payload,
+                schema_version: "event-envelope-v1".to_string(),
+                // exactly-once dedup token (the events UNIQUE index enforces it across restarts).
+                idempotency_key: Some(format!("audit-integrity-{seq}")),
+                project_id: None,
+                session_id: None,
+                agent_team_id: None,
+                visibility: Some(Visibility::System),
+            };
+            // crash-safe dedup: a duplicate (re-detected) emission hits the UNIQUE idempotency_key
+            // → DuplicateIdempotencyKey, which we treat as already-emitted (still mark the flag).
+            match self.append(intent) {
+                Ok(_) | Err(EventStoreError::DuplicateIdempotencyKey) => {
+                    self.conn
+                        .execute(
+                            "UPDATE quarantine SET audit_emitted = 1 WHERE seq = ?1",
+                            rusqlite::params![seq],
+                        )
+                        .map_err(EventStoreError::Write)?;
+                    processed += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(processed)
     }
 
     // ---- lease locks + fencing (§7.2/§17, safety rule #6) -------------------

@@ -68,6 +68,24 @@
       ],
       "type": "string"
     },
+    "AuditIntegrityViolation": {
+      "additionalProperties": false,
+      "description": "`AuditIntegrityViolation` payload (§17 Option C). Emitted when startup replay QUARANTINES a\ncorrupt / unredacted event row — the LOUD, consumer-visible record that the audit history has\na gap (the core of why Option C beats a silent skip). Carries the affected `seq` + a\nredaction-safe **structural** `reason` — NEVER the corrupt payload or any row content (§15).",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "seq": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seq",
+        "reason"
+      ],
+      "type": "object"
+    },
     "Capabilities": {
       "additionalProperties": false,
       "description": "`get_capabilities` / `HelloAck` capabilities (§6.4). Matches the ui's pinned `Capabilities`\n(`protocol_version` + `contract_version`).",
@@ -869,6 +887,9 @@
     "approval": {
       "$ref": "#/$defs/Approval"
     },
+    "audit_integrity_violation": {
+      "$ref": "#/$defs/AuditIntegrityViolation"
+    },
     "capabilities": {
       "$ref": "#/$defs/Capabilities"
     },
@@ -996,6 +1017,7 @@
     "local_runner_registered",
     "device_id",
     "local_runner_id",
+    "audit_integrity_violation",
     "hello_frame",
     "hello_ack",
     "version_skew_error",
@@ -1014,5 +1036,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.12.0"
+  "x-contract-version": "0.13.0"
 }

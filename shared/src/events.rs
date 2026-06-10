@@ -49,3 +49,21 @@ pub struct DeviceRegistered {
 pub struct LocalRunnerRegistered {
     pub local_runner_id: LocalRunnerId,
 }
+
+/// `AuditIntegrityViolation` payload (§17 Option C). Emitted when startup replay QUARANTINES a
+/// corrupt / unredacted event row — the LOUD, consumer-visible record that the audit history has
+/// a gap (the core of why Option C beats a silent skip). Carries the affected `seq` + a
+/// redaction-safe **structural** `reason` — NEVER the corrupt payload or any row content (§15).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct AuditIntegrityViolation {
+    pub seq: i64,
+    pub reason: String,
+}
+
+impl AuditIntegrityViolation {
+    /// The EventTypeRegistry name — ONE home, referenced by the daemon emit path + the audit
+    /// projector (so the NEW type adds no bare string-literal to the dup set; the existing
+    /// SessionStarted/Device/LocalRunner literals consolidate in a later non-safety slice).
+    pub const EVENT_TYPE: &'static str = "AuditIntegrityViolation";
+}

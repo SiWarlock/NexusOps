@@ -410,11 +410,14 @@ fn test_actor_enum_matches_r2() {
 fn test_desktop_objects_defined_and_deferred_marked() {
     use nexusops_shared::objects::DesktopObjectKind as D;
     assert_eq!(D::ALL.len(), 4);
-    // MVP-live
+    // MVP-live (LocalRunner + EventProjection + the local desktop-host Device, §16/Option A)
     assert!(!D::LocalRunner.is_deferred());
     assert!(!D::EventProjection.is_deferred());
-    // dormant iOS scaffolding
-    assert!(D::Device.is_deferred());
+    assert!(
+        !D::Device.is_deferred(),
+        "the local desktop-host Device is MVP-live (registered at cold-start, user-ruled Option A)"
+    );
+    // deferred — RemoteClient (+ the iOS multi-device/pairing dimension of Device)
     assert!(D::RemoteClient.is_deferred());
     // identity prefixes (DATA_MODEL §6)
     assert_eq!(D::LocalRunner.id_prefix(), "lr_");
@@ -506,5 +509,129 @@ fn test_ipc_contract_wire_values() {
             "AuditTrail",
             "UsageLedger",
         ],
+    );
+}
+
+// ---- 1.6a-L3 — Device/LocalRunner registration (§5.3/§16, Option B) -----------
+
+#[test]
+fn test_desktop_minted_id_newtypes() {
+    use nexusops_shared::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
+
+    // DeviceId mints `dev_<ULID>`, round-trips, and carries its DesktopObjectKind +
+    // prefix as one truth (the `desktop_minted_id!` sibling of `minted_id!`).
+    let dev = DeviceId::new();
+    assert!(dev.as_str().starts_with("dev_"), "DeviceId carries dev_");
+    assert_eq!(
+        DeviceId::parse(dev.as_str()).unwrap(),
+        dev,
+        "DeviceId round-trips"
+    );
+    assert_eq!(DeviceId::KIND, DesktopObjectKind::Device);
+    assert_eq!(DeviceId::PREFIX, "dev_");
+    assert_eq!(
+        DeviceId::KIND.id_prefix(),
+        DeviceId::PREFIX,
+        "KIND.id_prefix() == PREFIX (single source of truth)"
+    );
+
+    // LocalRunnerId mints `lr_<ULID>`, same contract.
+    let lr = LocalRunnerId::new();
+    assert!(lr.as_str().starts_with("lr_"), "LocalRunnerId carries lr_");
+    assert_eq!(
+        LocalRunnerId::parse(lr.as_str()).unwrap(),
+        lr,
+        "LocalRunnerId round-trips"
+    );
+    assert_eq!(LocalRunnerId::KIND, DesktopObjectKind::LocalRunner);
+    assert_eq!(LocalRunnerId::PREFIX, "lr_");
+
+    // fail-closed on a wrong prefix / malformed ULID body (§15)
+    assert!(
+        DeviceId::parse("lr_01ARZ3NDEKTSV4RRFFQ69G5FAV").is_err(),
+        "wrong-prefix rejected"
+    );
+    assert!(
+        DeviceId::parse("dev_not-a-ulid").is_err(),
+        "bad-ULID body rejected"
+    );
+}
+
+#[test]
+fn test_frozen_22_excludes_desktop_ids() {
+    use nexusops_shared::ids::IdKind;
+    // the desktop ids key off DesktopObjectKind, NOT a new IdKind variant — so the frozen
+    // 22-ID set stays exactly 22 and does NOT own dev_/lr_ (the contract guard, brief 027).
+    assert_eq!(IdKind::ALL.len(), 22, "the 22-ID set is NOT expanded by L3");
+    assert_eq!(
+        IdKind::from_prefix("dev_"),
+        None,
+        "dev_ is not a frozen-22 prefix"
+    );
+    assert_eq!(
+        IdKind::from_prefix("lr_"),
+        None,
+        "lr_ is not a frozen-22 prefix"
+    );
+}
+
+#[test]
+fn test_system_workspace_sentinel() {
+    use nexusops_shared::ids::{WorkspaceId, SYSTEM_WORKSPACE_ID};
+    // the reserved system-workspace sentinel for workspace-less System-actor lifecycle
+    // events (bootstrap registration). It MUST parse as a valid ws_ id so the §15
+    // fail-closed envelope parse still holds (NOT a nullable-column schema change).
+    let sys = WorkspaceId::system();
+    assert_eq!(
+        sys.as_str(),
+        SYSTEM_WORKSPACE_ID,
+        "system() == the sentinel const"
+    );
+    assert!(
+        WorkspaceId::parse(SYSTEM_WORKSPACE_ID).is_ok(),
+        "the sentinel is a valid ws_ ULID (§15 parse still holds)"
+    );
+    assert_eq!(WorkspaceId::parse(SYSTEM_WORKSPACE_ID).unwrap(), sys);
+}
+
+#[test]
+fn test_registration_payloads_wire_contract() {
+    use nexusops_shared::events::{DeviceRegistered, LocalRunnerRegistered};
+    use nexusops_shared::objects::{DeviceId, LocalRunnerId};
+
+    // snake_case field name + round-trip (the SessionStarted payload precedent, §5.0).
+    let dev = DeviceRegistered {
+        device_id: DeviceId::new(),
+    };
+    let j = serde_json::to_value(&dev).unwrap();
+    assert!(
+        j.get("device_id").is_some(),
+        "device_id is the snake_case wire field"
+    );
+    assert_eq!(
+        serde_json::from_value::<DeviceRegistered>(j).unwrap(),
+        dev,
+        "DeviceRegistered round-trips"
+    );
+
+    let lr = LocalRunnerRegistered {
+        local_runner_id: LocalRunnerId::new(),
+    };
+    let j = serde_json::to_value(&lr).unwrap();
+    assert!(
+        j.get("local_runner_id").is_some(),
+        "local_runner_id is the snake_case wire field"
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalRunnerRegistered>(j).unwrap(),
+        lr,
+        "LocalRunnerRegistered round-trips"
+    );
+
+    // deny_unknown_fields — an extra key is rejected (reject-unknown end-to-end, §5.0/§15)
+    let rogue = serde_json::json!({ "device_id": DeviceId::new().as_str(), "rogue": 1 });
+    assert!(
+        serde_json::from_value::<DeviceRegistered>(rogue).is_err(),
+        "unknown field rejected (deny_unknown_fields)"
     );
 }

@@ -125,9 +125,10 @@ fn test_db_newer_than_binary_refuses() {
 
 #[test]
 fn test_restart_resumes_existing_db() {
-    // §16 restart-resume: cold_start, write an event through the bootstrapped store, release
-    // (drop), cold_start again → Ok against the SAME DB; the prior event survives (the log is
-    // the durable spine). Proven via a manual append — independent of L3 registration.
+    // §16 restart-resume + L3: cold_start now registers identity each start (a fresh
+    // LocalRunnerRegistered every start; the Device is register-if-absent), so a restart
+    // RESUMES the SAME DB (every prior event survives — the durable spine) AND appends
+    // exactly one new runner registration (the Device is NOT re-registered).
     let (_tmp, dir) = fresh_base();
 
     let mut ctx1 = cold_start(config(dir.clone())).expect("first start");
@@ -135,19 +136,175 @@ fn test_restart_resumes_existing_db() {
         .store
         .append(test_intent())
         .expect("append through the bootstrapped store");
+    // first start: DeviceRegistered + LocalRunnerRegistered + the manual SessionStarted.
     let count_after_first = ctx1.store.read_all().unwrap().len();
     drop(ctx1); // releases the pidlock + closes the writer
 
     let ctx2 = cold_start(config(dir.clone())).expect("restart resumes");
     let events = ctx2.store.read_all().unwrap();
-    assert_eq!(
-        events.len(),
-        count_after_first,
-        "restart re-opens the SAME DB — no events lost or duplicated"
-    );
     assert!(
         events.iter().any(|e| e.event_id == id),
         "the pre-restart event survived the restart (durable spine)"
+    );
+    assert_eq!(
+        events.len(),
+        count_after_first + 1,
+        "restart re-opens the SAME DB and adds exactly one new LocalRunnerRegistered"
+    );
+    let device_events = events
+        .iter()
+        .filter(|e| e.event_type == "DeviceRegistered")
+        .count();
+    assert_eq!(
+        device_events, 1,
+        "the desktop host Device is register-if-absent — not re-registered on restart"
+    );
+}
+
+#[test]
+fn test_localrunner_minted_per_start() {
+    // §5.3 "LocalRunner minted per daemon start": each cold_start appends exactly one
+    // LocalRunnerRegistered with a FRESH lr_ id → two starts yield two distinct runners.
+    let (_tmp, dir) = fresh_base();
+
+    let ctx1 = cold_start(config(dir.clone())).expect("first start");
+    let lr1 = ctx1.local_runner_id.clone();
+    assert!(lr1.as_str().starts_with("lr_"), "runner id carries lr_");
+    drop(ctx1);
+
+    let ctx2 = cold_start(config(dir.clone())).expect("restart");
+    let lr2 = ctx2.local_runner_id.clone();
+    assert_ne!(lr1, lr2, "a fresh LocalRunner is minted each start");
+
+    let runner_events = ctx2
+        .store
+        .read_all()
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.event_type == "LocalRunnerRegistered")
+        .count();
+    assert_eq!(runner_events, 2, "one LocalRunnerRegistered per start");
+}
+
+#[test]
+fn test_device_stable_across_restarts() {
+    // §5.3 Device = the stable desktop host: register-if-absent → two starts against the
+    // same base dir REUSE one dev_ id and append exactly one DeviceRegistered total.
+    let (_tmp, dir) = fresh_base();
+
+    let ctx1 = cold_start(config(dir.clone())).expect("first start");
+    let dev1 = ctx1.device_id.clone();
+    assert!(dev1.as_str().starts_with("dev_"), "device id carries dev_");
+    drop(ctx1);
+
+    let ctx2 = cold_start(config(dir.clone())).expect("restart");
+    assert_eq!(
+        ctx2.device_id, dev1,
+        "the desktop host Device is stable across restarts (register-if-absent)"
+    );
+
+    let device_events = ctx2
+        .store
+        .read_all()
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.event_type == "DeviceRegistered")
+        .count();
+    assert_eq!(
+        device_events, 1,
+        "register-if-absent: one DeviceRegistered across restarts"
+    );
+}
+
+#[test]
+fn test_registration_event_redacted_and_projected() {
+    // §15 + Option B: the registration events are System-actor, pass the redaction-before-
+    // persist gate (persist `redacted`), carry the reserved system-workspace sentinel, and
+    // land in object_refs (the id sourced from the payload — dev_/lr_ aren't envelope columns).
+    use nexusops_shared::actor::ActorType;
+    use nexusops_shared::event_envelope::RedactionStatus;
+
+    let (_tmp, dir) = fresh_base();
+    let ctx = cold_start(config(dir.clone())).expect("first start");
+    let dev_id = ctx.device_id.as_str().to_string();
+    let lr_id = ctx.local_runner_id.as_str().to_string();
+
+    let regs: Vec<_> = ctx
+        .store
+        .read_all()
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.event_type == "DeviceRegistered" || e.event_type == "LocalRunnerRegistered")
+        .collect();
+    assert_eq!(regs.len(), 2, "both registration events persisted");
+    for e in &regs {
+        assert_eq!(
+            e.redaction_status,
+            RedactionStatus::Redacted,
+            "§15 redaction-before-persist gate ran for {}",
+            e.event_type
+        );
+        assert_eq!(
+            e.actor_type,
+            ActorType::System,
+            "Option B: daemon self-registration is a System-actor event, not a Gateway Action"
+        );
+        assert_eq!(
+            e.workspace_id,
+            WorkspaceId::system(),
+            "a workspace-less System event carries the reserved sentinel"
+        );
+    }
+
+    // object_refs: a ('device', dev_id) + a ('local_runner', lr_id) edge, payload-sourced.
+    let conn = nexusopsd::eventstore::open_read_only(&dir.join(DB_FILENAME)).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT object_type, object_id FROM object_refs")
+        .unwrap();
+    let refs: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(
+        refs.contains(&("device".to_string(), dev_id)),
+        "device object_ref written from the payload"
+    );
+    assert!(
+        refs.contains(&("local_runner".to_string(), lr_id)),
+        "local_runner object_ref written from the payload"
+    );
+}
+
+#[test]
+fn test_corrupt_device_registration_refuses() {
+    // §16 fail-closed: a corrupt stored DeviceRegistered payload (the register-if-absent read)
+    // makes cold_start refuse → the daemon does NOT start half-identified. (Surfaced by the
+    // 1.6a-L3 code-quality review — the `BootstrapError::Registration` path now has a pin.)
+    let (_tmp, dir) = fresh_base();
+    // a first start records a VALID DeviceRegistered.
+    drop(cold_start(config(dir.clone())).expect("first start registers a valid Device"));
+
+    // simulate corruption of the stored DeviceRegistered payload via a test-only direct write
+    // (the production append path can't produce this; this is the §17-adjacent corrupt-row case).
+    {
+        let conn = rusqlite::Connection::open(dir.join(DB_FILENAME)).unwrap();
+        let n = conn
+            .execute(
+                "UPDATE events SET payload_json = '{}' WHERE event_type = 'DeviceRegistered'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(n, 1, "exactly one DeviceRegistered row corrupted");
+    }
+
+    let err = match cold_start(config(dir.clone())) {
+        Ok(_) => panic!("a corrupt stored DeviceRegistered must refuse start"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, BootstrapError::Registration(_)),
+        "corrupt registration → fail-closed BootstrapError::Registration, got {err:?}"
     );
 }
 

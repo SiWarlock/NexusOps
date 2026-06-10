@@ -10,14 +10,14 @@ use schemars::JsonSchema;
 
 use crate::actor::ActorType;
 use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility};
-use crate::events::SessionStarted;
+use crate::events::{DeviceRegistered, LocalRunnerRegistered, SessionStarted};
 use crate::ids::IdKind;
 use crate::ipc::{
     Capabilities, DeltaKind, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode,
     ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, RpcResponse, ServerFrame,
     SubscribeParams, VersionSkewError, WireError,
 };
-use crate::objects::DesktopObjectKind;
+use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
 use crate::status::{
     ActionRequest, AgentTeam, Approval, ProjectBrain, PullRequest, Session, Task, WorkflowInstance,
     WorktreeGit, WorktreeOverlay,
@@ -50,6 +50,11 @@ struct ContractBundle {
     redaction_status: RedactionStatus,
     // 1.2 — first concrete event-type payload (§7.1 EventTypeRegistry)
     session_started: SessionStarted,
+    // 1.6a L3 — Device/LocalRunner registration event payloads + their id newtypes (§5.3/§16)
+    device_registered: DeviceRegistered,
+    local_runner_registered: LocalRunnerRegistered,
+    device_id: DeviceId,
+    local_runner_id: LocalRunnerId,
     // 1.5 L2 — the IPC GatewayPort wire contract (§6.4) + the §6.1 projection-name enum
     hello_frame: HelloFrame,
     hello_ack: HelloAck,

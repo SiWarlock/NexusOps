@@ -367,6 +367,28 @@ impl EventStore {
         Ok(out)
     }
 
+    /// The earliest event of `event_type` in canonical `seq` order, if any. The
+    /// register-if-absent read (§5.3 — e.g. bootstrap reuses an existing `DeviceRegistered`'s
+    /// id rather than minting a second host). Strict — a malformed row is an error.
+    pub fn first_event_of_type(
+        &self,
+        event_type: &str,
+    ) -> Result<Option<EventEnvelope>, EventStoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {COLS} FROM events WHERE event_type = ?1 ORDER BY seq LIMIT 1"
+            ))
+            .map_err(EventStoreError::Write)?;
+        let mut rows = stmt
+            .query_map([event_type], |row| Ok(row_to_envelope(row)))
+            .map_err(EventStoreError::Write)?;
+        match rows.next() {
+            None => Ok(None),
+            Some(r) => Ok(Some(r.map_err(EventStoreError::Write)??)),
+        }
+    }
+
     // ---- lease locks + fencing (§7.2/§17, safety rule #6) -------------------
     //
     // `locks/` is a persistence-core sibling; `EventStore` (the single connection

@@ -105,6 +105,23 @@
       ],
       "type": "string"
     },
+    "DeviceId": {
+      "description": "`dev_<ULID>` — the registered desktop host (§5.3 Device; trust-boundary anchor).\nRegister-if-absent: minted once, reused across restarts.",
+      "type": "string"
+    },
+    "DeviceRegistered": {
+      "additionalProperties": false,
+      "description": "`DeviceRegistered` payload (§5.3 Device / §16 bootstrap). The device's `dev_` identity is\nNOT an envelope typed column, so it lives in the payload — the `object_refs` projector\nsources the edge from here (the payload is the identity home; rebuild-safe). Register-if-\nabsent: the stable desktop host registers once and is reused across daemon restarts.",
+      "properties": {
+        "device_id": {
+          "$ref": "#/$defs/DeviceId"
+        }
+      },
+      "required": [
+        "device_id"
+      ],
+      "type": "object"
+    },
     "EventEnvelope": {
       "additionalProperties": false,
       "description": "The §7.1 Event envelope. `seq` is the canonical total order (not `occurred_at`;\nclocks skew — both kept). Required fields are non-`Option`; the rest are optional\nper §7.1. `payload_hash`/`previous_event_hash` are reserved (R-10).\n`redaction_status` carries the §15 redaction state (the writer GATE enforces\n`redacted` before persist — `daemon::eventstore`).",
@@ -377,6 +394,23 @@
         "protocol_error"
       ],
       "type": "string"
+    },
+    "LocalRunnerId": {
+      "description": "`lr_<ULID>` — a daemon execution surface (§5.3 LocalRunner), minted per daemon start.",
+      "type": "string"
+    },
+    "LocalRunnerRegistered": {
+      "additionalProperties": false,
+      "description": "`LocalRunnerRegistered` payload (§5.3 LocalRunner / §16 bootstrap). Minted fresh per\ndaemon start; the `lr_` identity lives in the payload (not an envelope column) so the\n`object_refs` projector sources the edge from it (rebuild-safe).",
+      "properties": {
+        "local_runner_id": {
+          "$ref": "#/$defs/LocalRunnerId"
+        }
+      },
+      "required": [
+        "local_runner_id"
+      ],
+      "type": "object"
     },
     "ObjectRef": {
       "additionalProperties": false,
@@ -844,6 +878,12 @@
     "desktop_object_kind": {
       "$ref": "#/$defs/DesktopObjectKind"
     },
+    "device_id": {
+      "$ref": "#/$defs/DeviceId"
+    },
+    "device_registered": {
+      "$ref": "#/$defs/DeviceRegistered"
+    },
     "event_envelope": {
       "$ref": "#/$defs/EventEnvelope"
     },
@@ -861,6 +901,12 @@
     },
     "ipc_error_code": {
       "$ref": "#/$defs/IpcErrorCode"
+    },
+    "local_runner_id": {
+      "$ref": "#/$defs/LocalRunnerId"
+    },
+    "local_runner_registered": {
+      "$ref": "#/$defs/LocalRunnerRegistered"
     },
     "project_brain": {
       "$ref": "#/$defs/ProjectBrain"
@@ -946,6 +992,10 @@
     "visibility",
     "redaction_status",
     "session_started",
+    "device_registered",
+    "local_runner_registered",
+    "device_id",
+    "local_runner_id",
     "hello_frame",
     "hello_ack",
     "version_skew_error",
@@ -964,5 +1014,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.11.0"
+  "x-contract-version": "0.12.0"
 }

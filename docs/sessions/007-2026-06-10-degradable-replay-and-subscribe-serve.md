@@ -6,7 +6,7 @@
 | **Phase** | Phase 1 (daemon foundation) — tasks 1.6c + 1.6d → **Phase 1.6 CLOSED** |
 | **Track / role** | `daemon` / daemon-implementer |
 | **Predecessor** | [006](006-2026-06-08-cold-start-bootstrap-and-runtime.md) |
-| **Successor** | _(TBD — next: 1.7 redactor entropy fallback, the last Phase-1-acceptance blocker)_ |
+| **Successor** | [008](008-2026-06-10-redactor-entropy-fallback-and-quarantine-divert.md) |
 | **Commits** | **1.6c:** `aeedc3f` (L1 degradable replay + quarantine table + unredacted-skip + UNKNOWN_SEQ) · `4df4078` (L2 AuditIntegrityViolation event + emission; CONTRACT 0.12.0→0.13.0). **1.6d:** `93f70a5` (subscribe-SERVE push; no contract bump). _(Also this session, pre-merge: 1.6a-L3 registration `980e1a0` — doc'd via the round Log, not here.)_ |
 | **Base** | `46ed874` (cross-track ui↔main merge; daemon/shared empty-delta across it) |
 | **Contract** | `CONTRACT_VERSION` **0.12.0→0.13.0** (1.6c L2 adds the `AuditIntegrityViolation` event payload); 1.6d is daemon-internal (no bump) |

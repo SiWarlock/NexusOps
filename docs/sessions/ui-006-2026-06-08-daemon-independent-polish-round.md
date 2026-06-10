@@ -4,7 +4,7 @@
 - **Phase:** Phase 6 COMPLETE — this is the FINAL daemon-independent polish round (post-Phase-6, ui track)
 - **Track:** `track/ui`
 - **Predecessor:** [ui-005 — active-project selection](ui-005-2026-06-08-active-project-selection.md)
-- **Successor:** _(none yet — ui track PAUSES here at its parallel-track limit)_
+- **Successor:** [ui-007 — prototype-faithful styling/layout rebuild (solo)](ui-007-2026-06-09-prototype-faithful-styling-rebuild.md)
 - **Round commits:** `25ef3ed` · `128714e` · `9a7945f` · `64ffa42` · `0af44a5` + `9f2c91f` (slice 5 = 2 commits)
 - **Tests:** 142 → **193 green** (+51 across the round); tsc + oxlint clean throughout.
 

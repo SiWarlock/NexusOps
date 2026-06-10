@@ -117,6 +117,104 @@ export const approvalDisplayFixture: Record<string, ApprovalDisplayMeta> = {
   approval_fixture_2: { risk: "low", who: "Claude · docs · Claude Team Work" },
 };
 
+// ─── Settings display fixtures (Integrations / Execution profiles) ──────────
+// No Integration or ExecutionProfile projection exists yet (Phase 7 connectors;
+// ExecutionProfile enum is 0.5b-gated). These card sets are PROVISIONAL DISPLAY
+// FIXTURES (visual treatment per the prototype; flagged, not faked as live).
+
+export interface IntegrationDisplay {
+  id: string;
+  name: string;
+  /** lucide icon key: cpu | github | square-kanban | brain. */
+  icon: "cpu" | "github" | "square-kanban" | "brain";
+  connected: boolean;
+  detail: string;
+  scope?: string;
+  action: "Manage" | "Connect";
+}
+
+export const integrationsDisplayFixture: IntegrationDisplay[] = [
+  {
+    id: "runtime",
+    name: "Local runtime",
+    icon: "cpu",
+    connected: true,
+    detail: "Healthy · sessions via the daemon · worktree root ~/wt",
+    action: "Manage",
+  },
+  {
+    id: "github",
+    name: "GitHub",
+    icon: "github",
+    connected: true,
+    detail: "org · mapped org/auth-service",
+    scope: "Issues · PRs · checks",
+    action: "Manage",
+  },
+  {
+    id: "linear",
+    name: "Linear",
+    icon: "square-kanban",
+    connected: false,
+    detail: "Not connected — link a team to pull tickets into the Task Inbox",
+    action: "Connect",
+  },
+  {
+    id: "brain",
+    name: "Project Brain store",
+    icon: "brain",
+    connected: true,
+    detail: "Ready · indexed · grounded at the last commit",
+    action: "Manage",
+  },
+];
+
+export type ProfileHealth = "active" | "available" | "rate-limited" | "auth-expired";
+
+export interface ProfileDisplay {
+  name: string;
+  provider: "claude" | "codex";
+  health: ProfileHealth;
+  sessions: number;
+  usage: number;
+  limit: number;
+  resets: string;
+  note: string;
+}
+
+export const profilesDisplayFixture: ProfileDisplay[] = [
+  {
+    name: "Claude Max Main",
+    provider: "claude",
+    health: "active",
+    sessions: 2,
+    usage: 62,
+    limit: 100,
+    resets: "—",
+    note: "Primary interactive profile",
+  },
+  {
+    name: "Claude Team Work",
+    provider: "claude",
+    health: "rate-limited",
+    sessions: 1,
+    usage: 98,
+    limit: 100,
+    resets: "in 24m",
+    note: "Shared team seat",
+  },
+  {
+    name: "Codex CLI Main",
+    provider: "codex",
+    health: "active",
+    sessions: 1,
+    usage: 34,
+    limit: 80,
+    resets: "—",
+    note: "Local CLI harness",
+  },
+];
+
 /**
  * Context-ring input for a session, from the REAL Usage projection (subject_id ↔
  * session_id). Codex / unavailable rows report no context (§9.1) → null — the

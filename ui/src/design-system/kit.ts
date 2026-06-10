@@ -46,3 +46,10 @@ export { DiffHunk } from "@ui-kit/objects/DiffHunk";
 // NOTE: the kit StatusPill/AttentionMarker are NOT exported here on purpose —
 // status rendering goes through the descriptor-bound wrappers in ui/src/status/
 // (Lesson §6: single source = the descriptor table; kit fallback guarded).
+//
+// DisplayStatusPill is the ONE sanctioned exception: a kit pill for DISPLAY-ONLY
+// states that have no frozen (machine,status) contract (e.g. integration
+// connected / profile health — provisional display fixtures). Callers MUST pass
+// an explicit kit kind + label; frozen-enum statuses still go through the
+// descriptor wrapper, never this.
+export { StatusPill as DisplayStatusPill } from "@ui-kit/status/StatusPill";

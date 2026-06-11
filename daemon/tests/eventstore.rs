@@ -386,7 +386,7 @@ fn test_secret_token_redacted_before_persist() {
     assert!(p.contains("[REDACTED]"), "redaction marker present");
     assert_eq!(
         events[0].redaction_engine_version.as_deref(),
-        Some("prefix-entropy-v2") // 1.7 — entropy fallback bumped the engine (OQ-SEC-2)
+        Some("prefix-entropy-v3") // 2.0-SEC L3 — JSON-value detection bumped the engine (was v2 @ 1.7)
     );
 }
 

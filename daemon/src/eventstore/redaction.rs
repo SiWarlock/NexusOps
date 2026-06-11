@@ -1,15 +1,21 @@
 //! Redaction-before-persist seam (§15). The single-writer routes every payload
 //! through a `Redactor` before INSERT; the writer GATE refuses to persist anything
-//! not `redacted`. 1.1 shipped the high-recall token-prefix Redactor; 1.7 adds the
+//! not `redacted`. 1.1 shipped the high-recall token-prefix Redactor; 1.7 added the
 //! Shannon-entropy fallback (OQ-SEC-2) so secret-detection recall doesn't drift below
-//! the §15 bar when a secret lacks a recognized token prefix.
+//! the §15 bar when a secret lacks a recognized token prefix; 2.0-SEC L3 adds JSON-value
+//! detection (Option B) to close the measured residual (a) — short non-prefixed secrets
+//! under JSON `"key":"value"` keys.
 //!
-//! **Two passes, both masking in-place** (a masked secret never persists; structure stays):
+//! **Three passes, all masking in-place** (a masked secret never persists; structure stays):
 //! 1. [`mask_kv_values`] — env-style **`KEY=value`** lines (OQ-SEC-2 "KEY=value lines"):
 //!    mask a high-entropy value (whitespace/quote-tolerant around `=`; base64-aware value
 //!    span incl. `+`/`/`/`=` so standard-base64 secrets like an AWS secret access key are
-//!    caught whole). Scoped to `=`, NOT JSON `"key":"value"`, so prefixed-ULID IDs are spared.
-//! 2. [`mask_tokens`] — known secret token **prefixes** (`ghp_`, `sk-`, …), PEM blocks (1.1),
+//!    caught whole). Scoped to `=` so the env-key prefix (`API_SECRET=`) survives.
+//! 2. [`mask_json_values`] (2.0-SEC L3) — JSON `"key":"value"` high-entropy values, masked at
+//!    the **KV-confidence bar** (the `"key":` context raises confidence like `=`), guarded by a
+//!    value-shape **ID-allowlist** ([`is_id_shape`]) so IDs/SHAs/UUIDs stay clear. Sub-run-scored
+//!    so prose / paths / URLs (short segments) are spared. Closes residual (a) for values ≥20 char.
+//! 3. [`mask_tokens`] — known secret token **prefixes** (`ghp_`, `sk-`, …), PEM blocks (1.1),
 //!    and **bare high-entropy runs** with no `KEY=` context (a stricter bar — ≥40 char /
 //!    ≥4.5 bits/char — so ≤31-char IDs and 4.0-bit hex hashes / git SHAs are NOT masked).
 //!
@@ -55,10 +61,10 @@ pub struct PrefixRedactor;
 /// secret token prefixes (§15): GitHub PATs, OpenAI keys, Slack, AWS, JWT.
 const SECRET_PREFIXES: &[&str] = &["ghp_", "github_pat_", "sk-", "xox", "AKIA", "eyJ"];
 
-/// 1.7 — the engine provenance recorded on every event this Redactor masks. Bumped from
-/// `prefix-v1` (1.1) when the entropy fallback landed (OQ-SEC-2); the version is a contract
-/// of WHICH recall bar produced a row (a future re-tune bumps it again).
-const ENGINE_VERSION: &str = "prefix-entropy-v2";
+/// The engine provenance recorded on every event this Redactor masks; a contract of WHICH recall
+/// bar produced a row. Bumped `prefix-v1` (1.1) → `-v2` (1.7 entropy fallback, OQ-SEC-2) → `-v3`
+/// (2.0-SEC L3 JSON-value detection moved the bar). A future re-tune bumps it again.
+const ENGINE_VERSION: &str = "prefix-entropy-v3";
 
 /// `KEY=value` high-entropy value bar (OQ-SEC-2). The `=` assignment context raises confidence,
 /// so the bar is lower than a bare run. **Confirmed sufficient on the 2.0-SEC measured corpus**
@@ -84,8 +90,12 @@ impl Redactor for PrefixRedactor {
     fn redact(&self, payload_json: &str) -> RedactionOutcome {
         // pass 1: env-style KEY=value high-entropy values (base64-aware, ws/quote-tolerant).
         let kv_masked = mask_kv_values(payload_json);
-        // pass 2: known prefixes + bare high-entropy runs (URL/path-safe token alphabet).
-        let mut masked = mask_tokens(&kv_masked);
+        // pass 2 (2.0-SEC L3): JSON `"key":"value"` high-entropy values, mask-in-place at the KV
+        // bar, ID-allowlist-guarded. AFTER pass 1 so a `KEY=value` inside a JSON value keeps its
+        // env-key (pass 1 already masked that value); pass 2 handles bare quoted values.
+        let json_masked = mask_json_values(&kv_masked);
+        // pass 3: known prefixes + bare high-entropy runs (URL/path-safe token alphabet).
+        let mut masked = mask_tokens(&json_masked);
         // PEM blocks (multi-line private keys) — mask the whole payload region.
         if masked.contains("BEGIN") && masked.contains("PRIVATE KEY") {
             masked = "\"[REDACTED-PEM]\"".to_string();
@@ -168,7 +178,116 @@ fn kv_value_should_mask(span: &str) -> bool {
         .any(|sub| sub.len() >= KV_MIN_LEN && shannon_bits_per_char(sub) >= KV_ENTROPY_BITS)
 }
 
-/// Pass 2: tokenize on [`is_token_char`] and mask each token that is a known secret prefix or
+/// Pass 2 (2.0-SEC L3, Option B): mask the high-entropy VALUE of a JSON `"key":"value"` pair
+/// IN-PLACE at the KV-confidence bar (the `"key":` context raises confidence like `=`), guarded by
+/// a value-shape ID-allowlist so the measured 0% FP-rate is preserved. Scans for a `:` that opens a
+/// quoted string value, captures the value (to the next unescaped `"`), and masks it when it clears
+/// the bar and is not an ID shape. Pure (golden-log-safe, §14). Closes §15 residual (a) for
+/// JSON-value secrets ≥`KV_MIN_LEN`; shorter values stay below the bar (an accepted sub-residual).
+fn mask_json_values(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        out.push(ch);
+        i += 1;
+        if ch != ':' {
+            continue;
+        }
+        // skip whitespace between `:` and the value, emitting it verbatim.
+        while i < chars.len() && chars[i].is_whitespace() {
+            out.push(chars[i]);
+            i += 1;
+        }
+        // only a quoted string value is a candidate (`"k":123` / `"k":{…}` are left alone).
+        if i >= chars.len() || chars[i] != '"' {
+            continue;
+        }
+        out.push(chars[i]); // opening quote
+        i += 1;
+        // capture the value to the next UNESCAPED quote (a `\"` inside the value is not the end).
+        let start = i;
+        while i < chars.len() && chars[i] != '"' {
+            if chars[i] == '\\' && i + 1 < chars.len() {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        let value: String = chars[start..i].iter().collect();
+        if json_value_should_mask(&value) {
+            out.push_str(REDACTED);
+        } else {
+            out.push_str(&value);
+        }
+        // the closing quote (chars[i], if present) is emitted on the next loop iteration.
+    }
+    out
+}
+
+/// Decide whether a captured JSON string value is a secret to mask. Mask iff it is NOT an
+/// allowlisted ID shape AND a maximal token sub-run within it clears the KV bar. Sub-run scoring
+/// (not whole-value entropy) spares prose / paths / URLs — their words/segments are short sub-runs
+/// — while catching a contiguous high-entropy secret token.
+fn json_value_should_mask(value: &str) -> bool {
+    if is_id_shape(value) {
+        return false;
+    }
+    value
+        .split(|c: char| !is_token_char(c))
+        .any(|sub| sub.len() >= KV_MIN_LEN && shannon_bits_per_char(sub) >= KV_ENTROPY_BITS)
+}
+
+/// The value-shape ID-allowlist (the §15 FP guard): a value matching a known non-secret ID shape —
+/// git-SHA (all-hex), ULID (26-char Crockford base32, optionally `<lowercase>_`-prefixed), UUID
+/// (8-4-4-4-12 hex) — is spared. Robust regardless of key-name. Sparing the hex shape also leaves
+/// residual (b) hex≈git-SHA accepted (entropy can't discriminate it; consistent with the 2.0-SEC
+/// ruling). The cost is a non-ID-shaped high-entropy non-secret may be over-masked (mask-in-place →
+/// loses only the blob, fail-closed; LESSON §13).
+fn is_id_shape(value: &str) -> bool {
+    is_hex_id(value) || is_uuid(value) || is_ulid(value)
+}
+
+/// All-hex (git-SHA / hex id). Length-agnostic — any all-hex value is ID-shaped (a hex secret is
+/// the accepted residual (b)).
+fn is_hex_id(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// UUID canonical form: 8-4-4-4-12 hex groups separated by `-`.
+fn is_uuid(value: &str) -> bool {
+    let groups: Vec<&str> = value.split('-').collect();
+    let widths = [8usize, 4, 4, 4, 12];
+    groups.len() == widths.len()
+        && groups
+            .iter()
+            .zip(widths)
+            .all(|(g, w)| g.len() == w && g.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// ULID: a 26-char Crockford base32 string, optionally carrying a single `<lowercase>_` platform-id
+/// prefix (e.g. `sess_<ULID>` — the frozen 22-ID format, exactly one `_`; `rsplit_once` matches the
+/// last `_`, so a multi-underscore string is not treated as a prefixed ULID). Crockford excludes I/L/O/U.
+fn is_ulid(value: &str) -> bool {
+    let core = match value.rsplit_once('_') {
+        Some((prefix, core)) => {
+            if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_lowercase()) {
+                return false;
+            }
+            core
+        }
+        None => value,
+    };
+    core.len() == 26 && core.chars().all(is_crockford_base32)
+}
+
+/// Crockford base32 alphabet: 0-9 and A-Z excluding I, L, O, U.
+fn is_crockford_base32(c: char) -> bool {
+    matches!(c, '0'..='9' | 'A'..='H' | 'J' | 'K' | 'M' | 'N' | 'P'..='T' | 'V'..='Z')
+}
+
+/// Pass 3: tokenize on [`is_token_char`] and mask each token that is a known secret prefix or
 /// a bare high-entropy run (≥`BARE_MIN_LEN` / ≥`BARE_ENTROPY_BITS`). Pure (golden-log-safe).
 fn mask_tokens(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

@@ -7,7 +7,8 @@
 //!     NO real credential is committed (rule #5; pinned by `test_corpus_contains_no_real_secrets`);
 //!   * a pure deterministic **measurement harness** computing recall / precision / FP-rate of any
 //!     `Redactor`, broken down by payload-context category;
-//!   * a **baseline** of `prefix-entropy-v2` pinned as a regression floor (recall) + ceiling (FP).
+//!   * a **baseline** of the live redactor pinned as a regression floor (recall) + ceiling (FP)
+//!     — L1 baselined `prefix-entropy-v2`; L3 ratcheted it up to `prefix-entropy-v3`.
 //!
 //! L1 is verification test-infra only — no production entry point (like the 1.7 fuzz pin). The
 //! redactor under measurement is the live `PrefixRedactor`; the harness + corpus live here.
@@ -25,7 +26,7 @@ fn approx(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-9
 }
 
-// ---- Baseline regression pins (the measured envelope of `prefix-entropy-v2`) ----------------
+// ---- Baseline regression pins (the measured envelope of `prefix-entropy-v3`) ----------------
 //
 // These are set to the MEASURED values of the live redactor against the L1 corpus. They are the
 // regression floor/ceiling: recall on the catchable set may not silently drift below the floor,
@@ -39,12 +40,12 @@ const BASELINE_RECALL_FLOOR: f64 = 1.0;
 /// Measured = 0.0: no realistic non-secret is masked (the precision half of the envelope).
 const BASELINE_FP_CEILING: f64 = 0.0;
 
-// Per-category recall of `prefix-entropy-v2` — the MEASURED residual map (line-360 residuals
+// Per-category recall of `prefix-entropy-v3` — the MEASURED residual map (line-360 residuals
 // turned into numbers). Catchable categories = 1.0; residual shapes drag their category below 1.0.
 const RECALL_PREFIXED: f64 = 1.0; // ghp_/eyJ/AKIA prefixes — all caught.
 const RECALL_KV_VALUE: f64 = 0.75; // base64/AWS/dilution caught; adversarial-split (<20 pieces) missed (residual c).
 const RECALL_BARE_RUN: f64 = 0.5; // ≥40 high-entropy blob caught; hex≈git-SHA (~4.0 bits) missed (residual b).
-const RECALL_JSON_VALUE: f64 = 0.5; // ≥40 JSON value caught (bare-run pass); short <40 non-prefixed missed (residual a).
+const RECALL_JSON_VALUE: f64 = 2.0 / 3.0; // L3: ≥20 JSON values masked-in-place (a closed for ≥20ch); a <20ch value stays a retained accepted sub-residual.
 
 // ---- Test 1 — the measurement math, pinned before it judges the real redactor ---------------
 
@@ -199,7 +200,7 @@ fn test_corpus_contains_no_real_secrets() {
 
 // ---- Test 3 — the catchable-set recall floor (regression pin) -------------------------------
 
-/// `prefix-entropy-v2` achieves ≥ the measured baseline recall on the catchable secret set —
+/// `prefix-entropy-v3` achieves ≥ the measured baseline recall on the catchable secret set —
 /// recall must not silently drift below the bar (the OQ-SEC-2 mandate, `ARCHITECTURE.md §15`
 /// line 360). The floor is a named const set to the measured value; a regression below it fails CI.
 #[test]
@@ -279,7 +280,7 @@ fn test_envelope_measured_by_category() {
     );
 }
 
-/// Emits the full measured recall/precision/FP envelope of `prefix-entropy-v2` (run with
+/// Emits the full measured recall/precision/FP envelope of `prefix-entropy-v3` (run with
 /// `--nocapture` to read it) — the regenerable artifact the §15 extend-detection human gate is
 /// ruled on, and a corpus-completeness guard (a non-trivial corpus across both labels). Re-run
 /// this after any future re-tune to regenerate the human-facing report (the harness is the
@@ -298,7 +299,7 @@ fn report_measured_envelope() {
     );
 
     let r = measure(&PrefixRedactor, &samples);
-    println!("\n=== prefix-entropy-v2 measured recall envelope (2.0-SEC L1) ===");
+    println!("\n=== prefix-entropy-v3 measured recall envelope (2.0-SEC) ===");
     println!("corpus: {secrets} secrets / {non_secrets} non-secrets");
     println!("overall recall     = {:?}", r.recall());
     println!("recall (catchable) = {:?}", r.recall_catchable());
@@ -355,14 +356,140 @@ fn test_tuned_thresholds_named_and_measured() {
     );
 }
 
-/// L2 CONFIRMED the thresholds (no retune) → the recall bar did NOT move → `ENGINE_VERSION` is NOT
-/// bumped. The engine version is the provenance contract of WHICH bar produced a persisted row
-/// (`redaction.rs:59`); a bump without a bar-move would be a false provenance signal. Pins the
-/// confirm decision (the inverse of brief test 7, which fires only if the bar moves).
+/// L3 EXTENDED detection (the JSON-value pass) → the recall bar MOVED → `ENGINE_VERSION` is bumped
+/// `prefix-entropy-v2` → `prefix-entropy-v3`. The engine version is the provenance contract of
+/// WHICH bar produced a persisted row (the `ENGINE_VERSION` const in `redaction.rs`); bump iff the bar moves (brief
+/// test 7). (L2 confirmed-no-move kept v2; L3's JSON-value detection is the bar-move that bumps.)
 #[test]
-fn test_engine_version_unchanged_when_bar_unchanged() {
+fn test_engine_version_reflects_bar() {
     let out = PrefixRedactor.redact("{\"x\":1}");
-    assert_eq!(out.engine_version, "prefix-entropy-v2");
+    assert_eq!(out.engine_version, "prefix-entropy-v3");
+}
+
+// ---- L3 — JSON-value detection + value-shape ID-allowlist (residual a closed; HUMAN Option B) -
+//
+// A new pass masks the high-entropy value of a JSON `"key":"value"` pair IN-PLACE at the
+// KV-confidence bar (the `"key":` context raises confidence like `=`), guarded by a value-shape
+// ID-allowlist (git-SHA / ULID / UUID) so the measured 0% FP-rate is preserved. The recall bar
+// moves → ENGINE_VERSION bumps v2→v3. C (quarantine-bias) is DEFERRED (no test 9).
+
+/// A JSON `"key":"<≥20char/≥4.0bit secret>"` value is masked IN-PLACE while ID-shaped values
+/// (git-SHA, ULID, UUID, prefixed-ULID) under JSON keys are spared by the value-shape ID-allowlist.
+/// Closes residual (a) without re-introducing the ID-over-mask the 1.7 `KEY=value` scoping avoided
+/// (`ARCHITECTURE.md §15` line 360; human-ruled Option B 2026-06-11).
+#[test]
+fn test_json_value_secret_caught_without_masking_ids() {
+    // a ≥20-char non-prefixed JSON-value secret → masked in place (value gone, key + structure kept).
+    let secret = "FAKEq7Lm2Zx9Kp4Rn1Vc6Bt3"; // 24 char, high entropy, no `=`/prefix
+    let out = PrefixRedactor.redact(&format!("{{\"token\":\"{secret}\"}}"));
+    assert!(
+        !out.payload_json.contains(secret),
+        "JSON-value secret must be masked: {}",
+        out.payload_json
+    );
+    assert!(out.payload_json.contains("[REDACTED]"));
+    assert!(
+        out.payload_json.contains("\"token\":"),
+        "the key + structure survive: {}",
+        out.payload_json
+    );
+
+    // ID-shaped JSON values are SPARED (the value-shape FP guard).
+    let ids = [
+        "da39a3ee5e6b4b0d3255bfef95601890afd80709", // git SHA (40 hex)
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",               // ULID (26 Crockford base32)
+        "550e8400-e29b-41d4-a716-446655440000",     // UUID
+        "sess_01ARZ3NDEKTSV4RRFFQ69G5FAV",          // prefixed-ULID id
+    ];
+    for id in ids {
+        let out = PrefixRedactor.redact(&format!("{{\"ref\":\"{id}\"}}"));
+        assert!(
+            out.payload_json.contains(id),
+            "ID-shaped value must NOT be masked: {id} in {}",
+            out.payload_json
+        );
+    }
+}
+
+/// A JSON value containing an ESCAPED quote (`\"`) still has its high-entropy secret masked — the
+/// value capture treats `\"` as an interior char (skip-2), not the closing quote, so the secret
+/// after/around it cannot leak. Without this, the capture would terminate early at the `\"` and a
+/// <40-char secret (below the bare-run floor, no prefix) would survive every pass — a §15 hole.
+#[test]
+fn test_json_value_escaped_quote_does_not_leak_secret() {
+    let secret = "FAKEq7Lm2Zx9Kp4Rn1Vc6Bt3"; // 24 char — below the bare-run floor; only the JSON pass catches it
+    for payload in [
+        format!("{{\"k\":\"{secret}\\\"x\"}}"), // escaped quote AFTER the secret
+        format!("{{\"k\":\"pre\\\"{secret}\"}}"), // escaped quote BEFORE the secret
+    ] {
+        let out = PrefixRedactor.redact(&payload);
+        assert!(
+            !out.payload_json.contains(secret),
+            "a secret around an escaped quote must not leak: {} → {}",
+            payload,
+            out.payload_json
+        );
+    }
+}
+
+/// With the L3 JSON-value pass active, the FP-rate on the full non-secret corpus stays ≤ the
+/// measured ceiling (0.0) — Option B closes residual (a) WITHOUT spending precision; the measured
+/// 0% FP is the guard rail (`ARCHITECTURE.md §15` / LESSON §13).
+#[test]
+fn test_json_value_pass_preserves_measured_fp_ceiling() {
+    let r = measure(&PrefixRedactor, &corpus::all());
+    assert!(
+        r.fp_rate().unwrap() <= BASELINE_FP_CEILING,
+        "the JSON-value pass must not newly mask any non-secret: FP-rate {:?}",
+        r.fp_rate()
+    );
+}
+
+/// The ratchet is HONEST: the catchable set grows (the ≥20-char (a) sample flips false→true) so
+/// `recall_catchable` holds 1.0 over the larger set + ENGINE_VERSION bumps (bar moved) — while
+/// JsonValue per-category recall ratchets above the L1 0.5 but stays BELOW 1.0, because the
+/// <20-char (a) sub-residual is retained in the corpus. So the measured envelope reads "(a) closed
+/// for ≥20ch, <20ch residual remains," not "JsonValue fully closed" (`ARCHITECTURE.md §15` line 360).
+#[test]
+fn test_json_value_recall_ratchets_up() {
+    // both a ≥20-char catchable (a) sample AND a <20-char retained residual exist (the honest dual).
+    let json_secrets: Vec<Sample> = corpus::all()
+        .into_iter()
+        .filter(|s| s.label == Label::Secret && s.category == Category::JsonValue)
+        .collect();
+    assert!(
+        json_secrets.iter().any(|s| s.catchable),
+        "a ≥20-char catchable (a) sample must exist (demonstrates closure)"
+    );
+    assert!(
+        json_secrets.iter().any(|s| !s.catchable),
+        "a <20-char residual (a) sample must be retained (the accepted sub-limit, measured)"
+    );
+
+    let r = measure(&PrefixRedactor, &corpus::all());
+    let json_recall = r.recall_for_category(Category::JsonValue).unwrap();
+    assert!(
+        json_recall > 0.5,
+        "JsonValue recall must ratchet above the L1 0.5: {json_recall}"
+    );
+    assert!(
+        json_recall < 1.0,
+        "JsonValue is NOT fully closed — the <20ch residual is retained"
+    );
+    assert!(
+        approx(json_recall, RECALL_JSON_VALUE),
+        "JsonValue recall = the new measured map"
+    );
+    assert!(
+        approx(r.recall_catchable().unwrap(), 1.0),
+        "the catchable set grew yet every catchable secret is still caught: {:?}",
+        r.recall_catchable()
+    );
+    assert_eq!(
+        PrefixRedactor.redact("{}").engine_version,
+        "prefix-entropy-v3",
+        "the bar moved → ENGINE_VERSION bumped"
+    );
 }
 
 // ============================================================================================
@@ -605,7 +732,7 @@ mod corpus {
                 Category::BareRun,
                 false,
             ),
-            // --- JsonValue: "key":"value" (long caught by bare-run pass; short residual a) ---
+            // --- JsonValue: "key":"value" (≥20ch caught by the L3 JSON-value pass; <20ch residual a) ---
             Sample::secret(
                 "FAKEMp8Zr2Kt6Wd0Hn3Cf7Ms1Ej5Gb9UuQw3Er5Ty", // ≥40 high-entropy JSON value
                 "{\"token\":\"FAKEMp8Zr2Kt6Wd0Hn3Cf7Ms1Ej5Gb9UuQw3Er5Ty\"}",
@@ -613,7 +740,19 @@ mod corpus {
                 true,
             ),
             Sample::secret(
-                "FAKEsk0Lm2Qp7Xy9", // short <40 non-prefixed JSON value (residual a)
+                // ≥20-char non-prefixed JSON value — was residual (a) in L1; CLOSED by the L3
+                // JSON-value pass (mask-in-place at the KV bar).
+                "FAKEq7Lm2Zx9Kp4Rn1Vc6Bt3",
+                "{\"apikey\":\"FAKEq7Lm2Zx9Kp4Rn1Vc6Bt3\"}",
+                Category::JsonValue,
+                true,
+            ),
+            Sample::secret(
+                // <20-char non-prefixed JSON value — a RETAINED accepted sub-residual: below the KV
+                // bar (20 char), it can't be distinguished from a short ID/token without FP. Kept in
+                // the corpus so the measured envelope reads "(a) closed for ≥20ch, <20ch residual"
+                // — encoded in the measurement, not only the prose (TWEAK 2026-06-11).
+                "FAKEsk0Lm2Qp7Xy9",
                 "{\"apikey\":\"FAKEsk0Lm2Qp7Xy9\"}",
                 Category::JsonValue,
                 false,

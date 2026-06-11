@@ -160,9 +160,12 @@ fn test_kv_entropy_dilution_resisted() {
     assert!(out.payload_json.contains("[REDACTED]"));
 }
 
-/// The `BARE_MIN_LEN` (40) bare-run floor is pinned at the boundary: a 39-char high-entropy
-/// run is NOT masked (below the floor → spares ≤31-char IDs and short tokens with margin); a
-/// 40-char one IS. An off-by-one edit to the load-bearing threshold would break this.
+/// The `BARE_MIN_LEN` (40) bare-run floor in `mask_tokens` is pinned at the boundary: a 39-char
+/// high-entropy run is NOT masked (below the floor → spares short tokens with margin); a 40-char
+/// one IS. Tested as a **bare string** (no JSON `"key":"value"` context) to ISOLATE the bare-run
+/// pass from the 2.0-SEC L3 JSON-value pass — which masks JSON values at the lower KV bar (≥20),
+/// so a 39-char *JSON value* is now (correctly) masked (residual (a) closure). An off-by-one edit
+/// to the load-bearing bare-run threshold would still break this.
 #[test]
 fn test_bare_run_length_boundary() {
     // both high-entropy (≈4.8 bits/char); length is the ONLY differentiator at the boundary.
@@ -171,14 +174,14 @@ fn test_bare_run_length_boundary() {
     assert_eq!(under.len(), 39);
     assert_eq!(over.len(), 40);
 
-    let out_under = PrefixRedactor.redact(&format!("{{\"d\":\"{under}\"}}"));
+    let out_under = PrefixRedactor.redact(under);
     assert!(
         out_under.payload_json.contains(under),
         "a 39-char bare run is below the floor → not masked: {}",
         out_under.payload_json
     );
 
-    let out_over = PrefixRedactor.redact(&format!("{{\"d\":\"{over}\"}}"));
+    let out_over = PrefixRedactor.redact(over);
     assert!(
         !out_over.payload_json.contains(over),
         "a 40-char bare run is at the floor → masked: {}",

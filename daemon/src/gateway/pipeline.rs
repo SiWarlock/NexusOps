@@ -15,6 +15,7 @@ use nexusops_shared::time::Timestamp;
 
 use crate::eventstore::{EventStore, GatewayTxn};
 use crate::gateway::executor::ExecutionOutcome;
+use crate::gateway::precondition::PreconditionStatus;
 use crate::gateway::{
     approval, db_err, enum_wire, idempotency, lease_err, plan, preview, request, Gateway,
     GatewayError,
@@ -699,13 +700,6 @@ impl Gateway {
         })
     }
 
-    /// Run the executor for an approved+queued action, then record the outcome. The executor is
-    /// invoked OUTSIDE any write-actor txn (2.3's git-CLI/octocrab executors move off-thread here).
-    ///
-    /// **2.4 — the completion is SPLIT into two txns** so a fail-closed audit-write leaves the action
-    /// durably `executing` (reconciled on restart by L5), never stuck pre-execution:
-    /// **txn-A** `queued → executing` + `ActionStarted` (COMMITS) → the executor runs (off the
-    /// write-actor — so `ActionStarted` precedes the side effect, §17.1) → **txn-B** `executing →
     /// Record a §17 fencing conflict as a terminal `ActionFailed(FencingConflict)` (2.4 L3) — the
     /// durable audit + the §11.5 hard-conflict surface. Its own gateway txn so it **COMMITS** before the
     /// caller propagates `Err(GatewayError::FencingConflict)` — the recorded `failed` state must survive
@@ -729,6 +723,52 @@ impl Gateway {
         })
     }
 
+    /// Record a §6.2 stale-precondition as a terminal `ActionFailed(StalePrecondition)` (2.4 L4) — and
+    /// REGENERATE the preview FIRST (before the fail transition) so the failed action's `preview_json`
+    /// reflects the CHANGED live state (the audit/UI shows what changed for the human's fresh decision).
+    /// Its own gateway txn so it **COMMITS** before the caller propagates `Err(StalePrecondition)` — the
+    /// recorded `failed` state + the regenerated preview must survive the Err. The preview regen is
+    /// STRUCTURAL-only in 2.4 (the real live-source diff-regen lands with real previews, Phase 5/7). The
+    /// action is at `executing` (txn-A) → the `Executing → Failed` edge is legal.
+    fn record_stale_precondition(
+        &self,
+        store: &mut EventStore,
+        req: &ActionRequest,
+    ) -> Result<(), GatewayError> {
+        let act_id = req.action_request_id.as_str().to_string();
+        store.gateway_txn(|gtx| -> Result<(), GatewayError> {
+            let now = gtx.now_rfc3339();
+            // regenerate the preview FIRST + persist through the §15 redaction gate (rule #3). The
+            // action was submitted+approved so it is catalogued; a (defensive) uncatalogued lookup skips
+            // the regen and still records the failure.
+            if let Some(entry) = catalog::lookup(&req.action_type) {
+                let generated_at =
+                    Timestamp::parse(&now).map_err(|e| GatewayError::Serialize(e.to_string()))?;
+                let preview = preview::generate_preview(req, &entry, generated_at);
+                let preview_json = gtx.redact_row(
+                    &serde_json::to_string(&preview)
+                        .map_err(|e| GatewayError::Serialize(e.to_string()))?,
+                )?;
+                request::update_preview(gtx.tx(), &act_id, &preview_json)?;
+            }
+            // terminal: executing → failed + ActionFailed(StalePrecondition).
+            request::update_status(gtx.tx(), &act_id, ARStatus::Executing, ARStatus::Failed)?;
+            gtx.append(&request::failed_intent(
+                req,
+                ActionError::StalePrecondition,
+                &now,
+            )?)?;
+            Ok(())
+        })
+    }
+
+    /// Run the executor for an approved+queued action, then record the outcome. The executor is
+    /// invoked OUTSIDE any write-actor txn (2.3's git-CLI/octocrab executors move off-thread here).
+    ///
+    /// **2.4 — the completion is SPLIT into two txns** so a fail-closed audit-write leaves the action
+    /// durably `executing` (reconciled on restart by L5), never stuck pre-execution:
+    /// **txn-A** `queued → executing` + `ActionStarted` (COMMITS) → the executor runs (off the
+    /// write-actor — so `ActionStarted` precedes the side effect, §17.1) → **txn-B** `executing →
     /// succeeded/failed` + the terminal event. A terminal-event write failure (§15/§17) rolls txn-B
     /// back → the action STAYS `executing` → L5; never acked succeeded. If a real side effect was
     /// applied but its event is unwritable → `ActionPartiallySucceeded` best-effort (§17 / L2).
@@ -806,6 +846,19 @@ impl Gateway {
                 self.record_fencing_conflict(store, req)?;
                 return Err(GatewayError::FencingConflict);
             }
+        }
+
+        // L4 — stale-precondition re-check (§6.2 AG-16.4 / §7.2). AFTER lock+fencing (L3), BEFORE
+        // execute: re-read the action's live source; if it CHANGED since preview/approval, the approved
+        // mutation is stale → do NOT execute a DIFFERENT mutation than was approved. Regenerate the
+        // preview (the changed state) + record ActionFailed(stale_precondition) (COMMITS) + refuse with
+        // the typed Err → a fresh approval cycle (re-submit). 2.4 fails on ANY change (conservative MVP;
+        // the finer §6.2 "only if the previewed diff/resource changed" needs real preview-diffing,
+        // Phase 5/7). The Null production oracle reports Unchanged → this is a no-op until the real
+        // per-action_type live-source re-read lands.
+        if self.precondition().recheck(req) == PreconditionStatus::Changed {
+            self.record_stale_precondition(store, req)?;
+            return Err(GatewayError::StalePrecondition);
         }
 
         // the side effect (2.4 stubs: NONE) runs BETWEEN txn-A and txn-B (off the write-actor, §16).

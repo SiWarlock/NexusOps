@@ -23,6 +23,7 @@ use nexusopsd::eventstore::{EventStore, PrefixRedactor};
 use nexusopsd::fault::{arm, arm_n, FaultPoint};
 use nexusopsd::gateway::executor::{ActionExecutor, ExecError, ExecutionOutcome, StubExecutor};
 use nexusopsd::gateway::policy::CatalogPolicy;
+use nexusopsd::gateway::precondition::{PreconditionOracle, PreconditionStatus};
 use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
 use nexusopsd::locks::{LeaseKind, OwnerId, ResourceId};
@@ -317,6 +318,16 @@ fn action_failed_error(store: &EventStore) -> Option<ActionError> {
         })
 }
 
+/// the `preview_json` of the single action_requests row (NULL until a preview is persisted).
+fn action_preview_json(path: &std::path::Path) -> Option<String> {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row("SELECT preview_json FROM action_requests", [], |r| {
+        r.get::<_, Option<String>>(0)
+    })
+    .ok()
+    .flatten()
+}
+
 // ---- L3 RED #1 — a stale fencing token (the resource held by another live owner) fails closed ------
 
 #[test]
@@ -459,4 +470,96 @@ fn long_action_renews_before_self_fence() {
             .unwrap(),
         "past the RENEWED boundary the lease expires (a heartbeat extends, never makes immortal)"
     );
+}
+
+// =================================================================================================
+// L4 — stale-precondition re-check (§6.2 AG-16.4 / §7.2; the fake PreconditionOracle). After
+// lock+fencing (L3), BEFORE execute: re-read the live source; CHANGED → don't execute the now-stale
+// mutation → ActionFailed(stale_precondition) + fresh approval required.
+// =================================================================================================
+
+/// a fake oracle reporting the live source CHANGED since preview/approval (the L4 stale lever; the real
+/// git2 worktree / octocrab PR re-reads land Phase 5/7).
+struct ChangedOracle;
+impl PreconditionOracle for ChangedOracle {
+    fn recheck(&self, _req: &ActionRequest) -> PreconditionStatus {
+        PreconditionStatus::Changed
+    }
+}
+
+// ---- L4 RED #1 — a changed precondition refuses the stale mutation + requires fresh approval --------
+
+#[test]
+fn precondition_changed_requires_fresh_approval() {
+    // spec(§6.2 AG-16.4 / §7.2) — after lock+fencing, the gateway re-reads the live source; if it
+    // CHANGED since the preview/approval, the approved mutation is stale → the gateway does NOT execute
+    // a DIFFERENT mutation than was approved: it records ActionFailed(stale_precondition) (action→
+    // failed, fresh approval required) + refuses with Err(StalePrecondition) → §6.4 precondition_stale.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = Gateway::with_precondition(
+        Box::new(CatalogPolicy),
+        Box::new(StubExecutor),
+        Box::new(ChangedOracle),
+    );
+
+    // session.attach_terminal is catalog-risk-1, no resource_ref → skips L3 fencing, isolating L4.
+    gw.submit_action(
+        &mut store,
+        sample_request("session.attach_terminal", RiskLevel::Level1),
+    )
+    .expect("submit");
+    let appr = approval_id_of(&path);
+    let err = gw
+        .approve(&mut store, &appr)
+        .expect_err("a stale precondition refuses the mutation with a typed error");
+
+    assert!(
+        matches!(err, nexusopsd::gateway::GatewayError::StalePrecondition),
+        "the caller gets a typed StalePrecondition (→ §6.4 precondition_stale), got {err:?}"
+    );
+    assert_eq!(
+        action_status(&path).as_deref(),
+        Some("failed"),
+        "the stale action is recorded failed (a fresh approval cycle is required, not this stale one)"
+    );
+    assert_eq!(
+        action_failed_error(&store),
+        Some(ActionError::StalePrecondition),
+        "the ActionFailed event carries the StalePrecondition taxonomy"
+    );
+    assert!(
+        !action_event_types(&store).contains(&"ActionSucceeded".to_string()),
+        "the stale mutation NEVER executed (no ActionSucceeded) — never a different mutation than approved"
+    );
+    // the preview was REGENERATED before the fail (so the failed action's preview reflects the changed
+    // state for the human's fresh decision) — submit persists no preview, so a non-NULL preview_json
+    // here proves the stale-path regen ran. (Structural-only in 2.4; a real diff-regen lands Phase 5/7.)
+    assert!(
+        action_preview_json(&path).is_some(),
+        "the preview was regenerated on the stale path (preview_json persisted before the fail)"
+    );
+}
+
+// ---- L4 RED #2 — an unchanged precondition executes normally (the Null production default) ----------
+
+#[test]
+fn precondition_unchanged_executes() {
+    // spec(§6.2) — the production-default NullPreconditionOracle reports UNCHANGED → execute proceeds
+    // (the L4 seam does NOT break the happy path; the real live-source re-read swaps in Phase 5/7).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = catalog_gateway(); // Gateway::new defaults to NullPreconditionOracle (Unchanged)
+                                // brain.ask is risk-0 → auto-executes via submit (Routed::Execute → execute()), so it DOES reach
+                                // the L4 check (the seam runs for every action, not just the approve path) — pinning that the Null
+                                // default lets the happy path through.
+    let ack = gw
+        .submit_action(&mut store, sample_request("brain.ask", RiskLevel::Level0))
+        .expect("risk-0 auto-executes");
+    assert_eq!(
+        ack.status,
+        ActionRequestStatus::Succeeded,
+        "an unchanged precondition executes through to succeeded"
+    );
+    assert_eq!(action_status(&path).as_deref(), Some("succeeded"));
 }

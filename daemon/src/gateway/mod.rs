@@ -17,6 +17,7 @@ pub mod idempotency;
 pub mod pipeline;
 pub mod plan;
 pub mod policy;
+pub mod precondition;
 pub mod preview;
 pub mod request;
 
@@ -57,6 +58,13 @@ pub enum GatewayError {
         "fencing conflict: the action's resource lease is not live (stale token, §17 rule #6)"
     )]
     FencingConflict,
+    /// the action's live source CHANGED between preview/approval and execute (§6.2 AG-16.4 / §7.2):
+    /// executing now would apply a DIFFERENT mutation than was approved. The action is recorded
+    /// terminal-`failed` with `ActionError::StalePrecondition` (+ a regenerated preview) and the caller
+    /// gets this typed error (→ §6.4 `precondition_stale`, the re-approvable stale card). A fresh
+    /// approval cycle is required (re-submit). The recorded ActionFailed COMMITS before this Err.
+    #[error("stale precondition: the action's live source changed since approval (§6.2 AG-16.4)")]
+    StalePrecondition,
     /// a `submit_action_plan` carried an `approval_mode` the Gateway does not accept from a proposer
     /// (2.1c: `Blocked` — a policy-ASSIGNED outcome, not a valid submitted mode; 2.2 owns it). Fail
     /// closed: never open phantom `awaiting_approval` steps with no approval object (Step-2.5 Mod 1).
@@ -147,24 +155,54 @@ pub(crate) fn gateway_event_intent(
 }
 
 /// The Action Gateway — holds the injected policy engine + executor (both stubbed in 2.1b; 2.2
-/// swaps the policy, 2.3 the executor). The pipeline methods (`submit_action`/`approve`/`deny`/
-/// `preview_action`) live in [`pipeline`].
+/// swaps the policy, 2.3 the executor) + the §6.2 stale-precondition oracle (2.4 L4; defaults to the
+/// no-op [`precondition::NullPreconditionOracle`]). The pipeline methods (`submit_action`/`approve`/
+/// `deny`/`preview_action`) live in [`pipeline`].
 pub struct Gateway {
     policy: Box<dyn policy::PolicyEngine>,
     executor: Box<dyn executor::ActionExecutor>,
+    precondition: Box<dyn precondition::PreconditionOracle>,
 }
 
 impl Gateway {
+    /// The production constructor — defaults the §6.2 precondition oracle to the no-op
+    /// [`precondition::NullPreconditionOracle`] (the real per-action_type live-source re-read lands
+    /// Phase 5/7). Every existing call site keeps this 2-arg form.
     pub fn new(
         policy: Box<dyn policy::PolicyEngine>,
         executor: Box<dyn executor::ActionExecutor>,
     ) -> Self {
-        Self { policy, executor }
+        Self {
+            policy,
+            executor,
+            precondition: Box::new(precondition::NullPreconditionOracle),
+        }
+    }
+
+    /// A full constructor that takes all three seams explicitly (2.4 L4) — use this to inject a
+    /// specific precondition oracle (a real Phase-5/7 oracle, or a test fake) instead of the
+    /// [`precondition::NullPreconditionOracle`] that [`Gateway::new`] defaults to; `policy`/`executor`
+    /// are supplied the same as in `new`.
+    pub fn with_precondition(
+        policy: Box<dyn policy::PolicyEngine>,
+        executor: Box<dyn executor::ActionExecutor>,
+        precondition: Box<dyn precondition::PreconditionOracle>,
+    ) -> Self {
+        Self {
+            policy,
+            executor,
+            precondition,
+        }
     }
 
     /// the injected policy engine (the pipeline submodule consults it).
     pub(crate) fn policy(&self) -> &dyn policy::PolicyEngine {
         self.policy.as_ref()
+    }
+
+    /// the injected stale-precondition oracle (the pipeline re-checks it after lock, before execute).
+    pub(crate) fn precondition(&self) -> &dyn precondition::PreconditionOracle {
+        self.precondition.as_ref()
     }
 
     /// the injected executor (the pipeline runs it BETWEEN the approve + completion txns).

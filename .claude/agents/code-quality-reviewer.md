@@ -5,7 +5,7 @@ description: |
   (after the full suite is green, before reachability). Surfaces correctness bugs, readability /
   naming issues, edge cases the tests didn't cover, dead code, and inconsistencies with prior LESSONS.
   Dispatched by the implementer in parallel with `security-reviewer`. Findings feed Step-9 categorization.
-tools: Read, Grep, Bash
+tools: Read, Grep, Bash, mcp__codegraph__codegraph_context, mcp__codegraph__codegraph_search, mcp__codegraph__codegraph_callers, mcp__codegraph__codegraph_callees, mcp__codegraph__codegraph_trace, mcp__codegraph__codegraph_impact, mcp__codegraph__codegraph_explore, mcp__codegraph__codegraph_node, mcp__codegraph__codegraph_files, mcp__context7__resolve-library-id, mcp__context7__query-docs
 model: sonnet
 effort: high
 ---
@@ -30,6 +30,10 @@ For one slice at a time:
 - **Delegate to other subagents.** Run your own pass; report findings directly.
 - **Read whole `ARCHITECTURE.md`.** Use `/check-arch <topic>` or load anchors via `Read offset/limit` when needed.
 - **Cite findings that aren't in this slice.** Pre-existing bugs in untouched files are not in scope; only the slice's diff.
+
+## External MCP tools (use when available)
+
+If the workspace has a **code-intelligence MCP** (e.g. CodeGraph), prefer it over `grep`+read loops: `codegraph_callers`/`codegraph_impact` to see how a touched symbol is actually used before flagging it, `codegraph_context` to orient on an unfamiliar module. If a **docs MCP** (e.g. Context7) is present, verify library/API behavior you're about to flag against current docs. Optional — both no-op when absent; fall back to `Grep`/`Read`.
 
 ## Mandatory protocol
 

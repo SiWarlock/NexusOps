@@ -4,20 +4,21 @@ This directory holds **subagents** — specialized roles delegated mid-session f
 
 ## Active inventory
 
-<!-- ▼ EXAMPLE BLOCK [id=starter-subagent-inventory]: starter subagent inventory — show what the user opted into at bootstrap. If the user opted out of all four, replace this table with "none — opt-in starter set was declined; build subagents reactively per the guidance below." ▼ -->
+<!-- ▼ EXAMPLE BLOCK [id=starter-subagent-inventory]: starter subagent inventory — show what the user opted into at bootstrap. If the user opted out of all five, replace this table with "none — opt-in starter set was declined; build subagents reactively per the guidance below." ▼ -->
 
 | Subagent | When it runs | Integration point | Status |
 |---|---|---|---|
 | `code-quality-reviewer` | At `/tdd` Step 8, **per the reviewer policy** in root `CLAUDE.md` (default: `every-slice`, lite — `sonnet`, diff-only). Reviews the slice diff in whichever area it landed (`daemon/` Rust or `ui/` TS). | Implementer-side. Findings feed Step-9 categorization. | **Active** |
 | `security-reviewer` | At `/tdd` Step 8, **per the reviewer policy** (default: `invariant` — invariant-/security-touching slices only; `opus`). Mandatory on any slice touching the Gateway, event store, keychain, IPC, harness mutation interception, or lease/fencing. | Implementer-side. Critical findings escalate as Step-9 `Finding` → orchestrator → lead → human. | **Active** |
-| `reachability-auditor` | At the phase-exit gate. Orchestrator dispatches one per touched area (`daemon/`, `ui/`). | Orchestrator-side. Output drives wiring tasks; phase-exit acceptance is gated on clean audit. | **Active** |
+| `reachability-auditor` | At the phase-exit gate (`/phase-exit`). Orchestrator dispatches one per touched area (`daemon/`, `ui/`). | Orchestrator-side. Output drives wiring tasks; phase-exit acceptance is gated on clean audit. | **Active** |
+| `arch-drift-auditor` | At the phase-exit gate (`/phase-exit`). Orchestrator dispatches with the phase's `Spec anchors:` list. | Orchestrator-side. Diffs the contract vs shipped code; green snapshots = verified-by-test; DRIFT findings block the gate (Findings escalation). | **Active** |
 | `brief-drafter` | Definition only — not integrated into standard workflow without a quality trial first. | Orchestrator-side (manual invocation for trial). | **Deferred — quality trial required** |
 
 <!-- ▲ END EXAMPLE BLOCK [id=starter-subagent-inventory] ▲ -->
 
 Each subagent file (`<name>.md`) carries its own scope, forbidden patterns, mandatory protocol, and output format. The forbidden-patterns section is its only guard — subagents aren't sandboxed.
 
-**Reviewer policy (the toggle).** The Step-8 reviewer fan-out is gated by the **reviewer policy** in root `CLAUDE.md` "Reviewer subagents — Step-8 policy" — one of `off` · `invariant` · `every-slice` · `phase-boundary` per reviewer (default: security `invariant`, code-quality `every-slice` lite). Both reviewers review the slice **diff**, not whole files. Tune it to trade review depth for per-slice tokens.
+**Reviewer policy (the toggle).** The Step-8 reviewer fan-out is gated by the **reviewer policy** in root `CLAUDE.md` "Reviewer subagents — Step-8 policy" — one of `off` · `invariant` · `every-slice` · `phase-boundary` per reviewer (default: security `invariant`, code-quality `every-slice` lite). Per-slice reviews cover the slice **diff**, not whole files; at `phase-boundary` the surface is the **phase's accumulated branch diff + crossed trust boundaries** (root `CLAUDE.md` states the same rule). Tune it to trade review depth for per-slice tokens.
 
 ## How subagents fit the slash-command workflow
 
@@ -31,9 +32,12 @@ Each subagent file (`<name>.md`) carries its own scope, forbidden patterns, mand
   Step 9: implementer aggregates reviewer findings into categorized list, sends to orchestrator
   Step 10: commit
 
-phase-exit gate (orchestrator)
-  reachability-auditor (one per touched area)
-  phase-exit acceptance gated on clean audit
+phase-exit gate (orchestrator — /phase-exit <phase> executes the tracker's checklist rows)
+  ├── reachability-auditor (one per touched area)
+  ├── arch-drift-auditor   (the phase's Spec anchors vs shipped code)
+  └── security-reviewer    (only when its policy is `phase-boundary` — phase-diff surface)
+  + scripts/spec-lint.sh tests <phase> (tagged-test coverage row)
+  reports → docs/audits/<phase>-<agent>.md; ≤10-line summaries return; CLEAR gates the phase tick
 ```
 
 The parallel fan-out pattern (Step 7→8) launches multiple `Agent` calls in a single message so reviewers run concurrently; the implementer waits for both, aggregates findings, and surfaces them in Step 9.
@@ -42,8 +46,9 @@ The parallel fan-out pattern (Step 7→8) launches multiple `Agent` calls in a s
 
 From a teammate's session, use the `Agent` tool with `subagent_type: <subagent-name>`. The dispatching message should carry the minimum context the subagent needs (per its protocol section):
 
-- `code-quality-reviewer` + `security-reviewer`: `files_touched` list, `brief_path` (optional), `area` (`daemon` or `ui`), `invariant_touching` (boolean).
+- `code-quality-reviewer` + `security-reviewer`: `files_touched` list, `brief_path` (optional), `area` (`daemon` or `ui`), `invariant_touching` (boolean). (Phase-boundary dispatch: the phase diff instead of `files_touched`.)
 - `reachability-auditor`: `area` (`daemon` or `ui`).
+- `arch-drift-auditor`: `phase`, `anchors` (the phase's `Spec anchors:` list), `area(s)`.
 - `brief-drafter`: `task_id`, `topic`, `active_context` (one-liner).
 
 ## Brief-drafter quality trial (before standard adoption)

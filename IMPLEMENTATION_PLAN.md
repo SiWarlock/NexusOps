@@ -1,6 +1,8 @@
-# MVP_TASKS.md — NexusOps
+# IMPLEMENTATION_PLAN.md — NexusOps
 
 > **Phase note.** Spec-anchored task tracker for the NexusOps MVP, decomposed from the binding `ARCHITECTURE.md` (every phase cites its `§N` anchors; cross-doc-invariant models mirror `ARCHITECTURE.md` Appendix A). Scope is the **comprehensive MVP** the owner locked at arch-finalize (`§0.1`): both Claude Code **and** Codex live (O-1), **full resume-or-replay** survival (O-2), **full multi-step Brain action plans** (O-3), Claude supervision mode pending-spike (O-4), `NexusOps-ui-kit`/"Graphite Arc" as the canonical design system (O-5), full **PR Review Workspace** (O-6). macOS-only. Built backward from the **PRD §25 demo** (`§19.1`). Build order = invariants → lifecycle correctness → tests → local demo → polish. Living-state sections below start empty and accrete through `/tdd` work.
+>
+> **Reading discipline.** Read this file **by section, not whole** — `/orchestrate-start` and `/session-start` grep the section header and read only "Currently in progress" + the active phase. The living sections below (Currently-in-progress, Carry-forward, Log, Trims, Decisions) are **bounded** — pruned/archived at `/orchestrate-end`, never left to grow — so a sectioned read stays cheap even late in the project.
 
 > **Session protocol:**
 > - **At session start** — orchestrator runs `/orchestrate-start`; implementer runs `/session-start`. Confirm what's targeted this session. **Re-read the phase's `Spec anchors:` sections of `ARCHITECTURE.md` first.**
@@ -17,6 +19,8 @@
 ---
 
 ## Currently in progress
+
+<!-- REPLACE this section at every /orchestrate-end — do NOT append. It is a snapshot of NOW (≤ ~8 lines): last commit hash, suite count, next session target, active blockers. Stale lines are deleted, not stacked. -->
 
 - **⏸️ daemon team ENDED 2026-06-11 (/team-end → handoff `docs/team-handoffs/003-2026-06-11-phase2-2.0sec-done-scaffolding-upgrade.md`; round-seal `b76cdf2` on origin/main) — for a user-run scaffolding/workflow upgrade** (3-way-merges against committed state, so the tree is sealed + pushed) **→ then a FRESH team lead + agent teams on the UPGRADED scaffolding.** Teammates terminated; next `/team-start daemon` spawns fresh (re-validate spawn prompts vs the upgraded templates per handoff 003). **✅ 2.0-SEC §15 redactor-recall hardening DONE** — L1 `950957c` (synthetic corpus + measurement harness + regression pins) · L2 `2f61a77` (thresholds confirmed-sufficient + named `pub` consts) · L3 `55f1e7f` (JSON-value detection + value-shape ID-allowlist, human-ruled Option B; engine `v2→v3`); session doc `009`; brief `031`; round seal = this `/orchestrate-end` commit, pushed origin/main. The §15 recall envelope is now **measured** (`prefix-entropy-v3`: recall_catchable 1.0 / precision 1.0 / FP-rate 0.0) **+ extended** (residual (a) short JSON-value secrets closed for ≥20ch at 0% precision cost) **+ regression-pinned** (living corpus, floor ratchets up only) — the Option-C acceptance condition is discharged. **NEXT on resume: Phase 2.1** — Gateway pipeline + `ActionRequest`/`ActionPlan` model + mutation methods (§6/§6.1-6.3/§5.1); fold the 2.1 carry-forward (`Timestamp` newtype, `seq minimum:1`, the `"SessionStarted"`/event-type string-literal dedup).
 - **Team `nexusops-ui` (ui track) PAUSED 2026-06-09** — handoff: `docs/team-handoffs/001-2026-06-09-ui-phase6-done-styling-redo.md` · last round-seal `1dcfe0f` (branch tip `27a21b0`, with `main`/daemon Phase 1.1–1.4 merged in) · **next: SOLO prototype-driven styling+layout rebuild** (6.5 Graphite Arc theme was user-REJECTED as not matching `ui_kits/control-plane/index.html`); daemon-gated Phase 7/8 + 6.3d/e resume on a later `/team-start ui`. `track/ui` ready for the main-track merge (one `MVP_TASKS.md` union conflict at merge time). _(2026-06-10: ✅ **MERGED to main** at `46ed874` — the ui Phase 6/P7.3 design-faithful rebuild + the CONTRACT 0.12.0 consumer reconcile are now on `main`; see `docs/sessions/ui-007-2026-06-09-prototype-faithful-styling-rebuild.md`. UI track stays paused — daemon-gated Phase 7/8 + 6.3d/6.3e resume on a later `/team-start ui`.)_
@@ -41,7 +45,7 @@
 
 ## Carry-forward to upcoming briefs
 
-Items the orchestrator MUST fold into upcoming slice briefs. **Triaged at every `/orchestrate-end`** — NOT append-only. New entries carry `(origin: YYYY-MM-DD <slice-id>)`.
+Items the orchestrator MUST fold into upcoming slice briefs. **Triaged at every `/orchestrate-end` (mandatory) — NOT append-only.** New entries carry `(origin: YYYY-MM-DD <slice-id>)`. **Bound: keep under ~7 items.** Anything over the cap, or older than ~3 slices with no consumer, is force-triaged — DELETE (done) / INLINE-TARGET (make it a real task in its phase) / DEFER (escalate). If an imminent brief doesn't need it, it doesn't live here.
 
 _(Re-triaged at the 2026-06-08 **`track/ui` → main merge** re-orient (daemon-1.5 resume). The merge unioned both tracks' Carry-forwards (12 items). **De-duped:** dropped the daemon "ui track generates Zod" spread (DONE in P6.1a — `ui/src/contracts/generated.ts` + `gen-contracts.mjs`) + the daemon duplicate of "§5.0 contract gates into CI" (kept the ui **EXPANDED superset** above, which adds the ui-side TS drift test + `CONTRACT_VERSION`===`x-contract-version` pin + the corepack note). **Result: 10 items**, all cross-track / future-phase **SPREADs with valid `last-consumer-slice` markers** (none KEEP-active; none >3-slices-old-without-a-consumer) — the ~7 cap is exceeded only by **parked, consumer-gated cross-track integration points**, not active working-set. **Brief 007 (1.5) folds in** the `ui ↔ daemon-1.5 integration` spread (reconcile `SUPPORTED_PROTOCOL_RANGE {min:1,max:1}` + build the real `UdsGatewayPort` the ui's `MockGatewayPort` swaps to) as the consumer contract to match; the item STAYS in Carry-forward until the ui-side swap (cross-track-timed by the user). Triage: **2 deleted / 0 inlined / 0 deferred / 10 spread / 0 kept-active.** **Doc-numbering (parallel-track reality, corrected 2026-06-08 after the merge):** the two tracks numbered briefs **independently from 003** — daemon `003–007` (P1.x) + ui `003–026` (P6.x/P7.x) — so the NNN-prefixes **003–007 overlap**, BUT every **full filename `NNN-<task-id>-<topic>` is unique** (the `P1` vs `P6/P7` task-id disambiguates). NNN is therefore **per-track** when parallel tracks run (NOT global); each track continues its own sequence (daemon next = `008-P1-6`; ui next = `027`). The overlap is **benign — no renames needed** (forcing global-unique NNN on 29 committed briefs is busywork; the filenames already disambiguate). Session docs already namespaced (daemon `NNN`, ui `ui-NNN`). *(Flagged to the lead — the earlier "ui = 022+" was incomplete; if a global-unique scheme is wanted, new briefs both-tracks go `027+`, decided lead/user-side.)* )_
 
@@ -67,6 +71,8 @@ _(LOCKED-text corrections + planning-doc reconciles are tracked in "Architecture
 
 ---
 
+<!-- ▼ EXAMPLE BLOCK [id=deliverable-map]: deliverable map — replace rows with the project's real required outputs (docs, deployed app, reports, etc.). ▼ -->
+
 ## Deliverable map
 
 | Deliverable | Status | Delivered by |
@@ -83,16 +89,28 @@ _(LOCKED-text corrections + planning-doc reconciles are tracked in "Architecture
 | Workflow Pack detection + cc-crew + Plan view | ❌ | Phase 9 |
 | Signed/notarized macOS app + first-run bootstrap + consent map | ❌ | Phase 10 |
 
+<!-- ▲ END EXAMPLE BLOCK [id=deliverable-map] ▲ -->
+
 ---
 
 ## Phase exit checklist (template — applies to every phase)
 
-Before ticking a phase complete:
+Before ticking a phase complete (**executed row-by-row by `/phase-exit <phase>`** — the orchestrator
+dispatches it at the START of a round; each row is ticked in place as it passes):
 
 - [ ] **All phase task checkboxes ticked.** Conservative — partial work stays unchecked with a Log note.
 - [ ] **Acceptance criterion met.** `/preflight` clean + manual smoke if there's runtime behavior.
 - [ ] **`/preflight` clean.** Includes architecture-invariant tests (esp. INV-SEC-1, §15).
 - [ ] **Cross-doc invariants verified.** No model field change without an `ARCHITECTURE.md` Appendix A edit in the same round.
+- [ ] **Reachability audit clean per touched area** (`reachability-auditor`).
+- [ ] **Arch-drift audit clean over the phase's Spec anchors** (`arch-drift-auditor`).
+- [ ] **Spec coverage: every phase anchor has a tagged test or waiver** (`scripts/spec-lint.sh tests <phase>`).
+
+<!-- Posture-gated rows (production-grade — recorded in the manifest at the M-0011 upgrade, 2026-06-11): -->
+- [ ] **Dependency audit: no NEW findings vs the accepted-risk baseline** — `/phase-exit` runs `cargo audit && (cd ui && pnpm audit --prod)` once; one-line new-vs-baseline summary (full output → `docs/audits/`); a new finding is accepted-risk-recorded in Decisions tabled or escalated as a **Finding**. _(production-grade)_
+- [ ] **Whole-system security review clean (qualifying phases).** Qualifies when the phase carries security-/invariant-tagged tasks or trust-boundary surfaces (per `docs/planning/THREAT_MODEL.md` + the §15 anchors). Executor resolves from the reviewer policy (`invariant`): the default tool is the built-in `/security-review` over the branch's pending changes (the track's accumulated diff), with gstack `/cso` as the heavier escalation when trust-boundary anchors are in scope. Critical findings escalate as **Findings**. _(production-grade)_
+- [ ] **Perf budgets met, or the regression is flagged as a Finding** — run the phase's benchmark task(s) against the `ARCHITECTURE.md §18` budgets; phases with no stated budgets tick with `n/a — no budgets (deliberate deferral recorded)`. _(production-grade, when budgets exist)_
+
 - [ ] **Session doc(s) for this phase exist** and list every file created/modified.
 - [ ] **Commits pushed to the git remote.**
 
@@ -109,6 +127,8 @@ The MVP is "done" when:
 - [ ] Accessibility MUSTs pass: graph list/table fallback, focus ring, drag→non-drag (`§11.6`, tested `§14`).
 
 ---
+
+<!-- ▼ EXAMPLE BLOCK [id=parallelization-plan]: Parallelization plan / Track map — TEAM MODE ONLY. /tasks-gen authors this from ARCHITECTURE.md §2.5 (the subsystem dependency DAG) refined by the per-task `Depends on:` graph. It is the authority for valid `<track>` names; `/team-start <track>` reads it to scope a track's phases + provision its worktree. ▼ -->
 
 ## Parallelization & track plan
 
@@ -134,6 +154,8 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 4. **Converge** (8/9), then the **demo/deploy gate** (10) — all hands, not parallelizable.
 
 **Ceiling:** 2 tracks is the sweet spot, 3 if you have bandwidth. You are the escalation conduit for every team — past ~3 you become the bottleneck (the product's own "human attention is the scarce resource" thesis applies to *you*). **Don't fan out before 0.5** — contract churn after fan-out thrashes every track. The per-phase `Track / deps:` lines below make the dependency graph explicit.
+
+<!-- ▲ END EXAMPLE BLOCK [id=parallelization-plan] ▲ -->
 
 ---
 
@@ -617,7 +639,7 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 ## Trims / Nice-to-Haves Catalog
 
-Deferred items with come-back guidance. (Seeded from `ARCHITECTURE.md §19.2`; expanded as scope cuts surface.)
+Deferred items with come-back guidance. (Seeded from `ARCHITECTURE.md §19.2`; expanded as scope cuts surface.) **Prune at `/orchestrate-end`:** a Trim that ships moves to its phase as `[x]`; an obsoleted Trim is deleted with a one-line Log note.
 
 - **Agent Team orchestration / `/team-start`** `[P1]` — modeling only in MVP (Phase 9.3); full orchestration deferred (§19.2). Belongs in `daemon/src/workflow/` + `ui/src/views/team/`.
 - **cc-crew personalization/upgrade UI + TDD slice tracker** `[P1]` (§19.2) — MVP Gateway still renders the multi-step personalization plan.
@@ -628,7 +650,7 @@ Deferred items with come-back guidance. (Seeded from `ARCHITECTURE.md §19.2`; e
 
 ## Decisions tabled
 
-Open scope/design questions awaiting resolution.
+Open scope/design questions awaiting resolution, with rationale. **Resolved entries move into the Log (with the resolution) and out of here** — this holds only *open* questions.
 
 - **[RESOLVED 2026-06-07 — §15 safety-design, human-decided] 1.1 redaction sequencing = Option (a+).** 1.1 ships the **`redaction_status` column + `Redactor` trait + fail-closed gate** (never persist `redaction_status='unredacted'`) + the **high-recall token-prefix Redactor**; the **entropy fallback (OQ-SEC-2) is a BLOCKING Phase-1 task (1.7)**, not a fast-follow — chosen so secret-detection recall can't drift. Pin the §15 invariant with the fail-closed test (the load-bearing assertion). `redaction_status` on the envelope = cross-doc invariant → Appendix A / §7.1 / DATA_MODEL §2.1 atomic edit at 1.1 Step 9. `(origin: 2026-06-07 P1.1)`
 - **[RESOLVED 2026-06-07 — cat-4, user-locked] Cross-language contract source-of-truth = Option A.** Rust `shared` crate = native authority (newtypes, serde-closed enums); `schemars` → **JSON Schema as a first-class, versioned, CI-diff-gated published artifact** (`shared/contracts/schema/`, `CONTRACT_VERSION`); TS Zod + Python Pydantic generated from it (drift-caught); reject-unknown end-to-end. Documented at **`ARCHITECTURE.md §5.0`** (direct anchored edit, owner-locked). This is the mechanism for ALL contract surfaces, not just 0.5. `(origin: 2026-06-07 P0.5)`
@@ -680,7 +702,7 @@ Applied this round (2026-06-07), committed atomically with the round commit:
 
 ## Log
 
-Append-only, date-stamped, the orchestrator's framing of each round.
+The orchestrator's framing of each round, date-stamped. **Bounded, not unbounded-append:** keep the most recent ~10 rounds inline; roll older entries into `docs/sessions/` (the technical narrative) or `docs/archive/TASKS-LOG.md`, leaving a one-line pointer here. (Archive — never delete — the round history is an audit trail.)
 
 ### 2026-06-11 — Phase 2.0-SEC: §15 redactor-recall hardening (measured → extended) + clean PAUSE for scaffolding upgrade
 

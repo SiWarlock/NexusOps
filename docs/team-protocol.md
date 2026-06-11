@@ -1,6 +1,6 @@
 # Team Protocol — NexusOps (Lead Playbook)
 
-> Loaded by `/team-start`. **This is the team lead's playbook** — the lead's role, what it does, what it does NOT do, how it spawns + cycles teammates, and how it stays lean across many session cycles. **Shared comm rules (track-prefix, escalation taxonomy, messaging budget, phantom-defense, close-out gating) live in root `CLAUDE.md` "Team coordination — shared rules"** — every teammate loads them there. This file is for the lead specifically.
+> Loaded by `/team-start`. **This is the team lead's playbook** — the lead's role, what it does, what it does NOT do, how it spawns + cycles teammates, and how it stays lean across many session cycles. **Shared comm rules (track-prefix, escalation taxonomy, messaging budget, phantom-defense) live in root `CLAUDE.md` "Team coordination — shared rules"**; the canonical three-way **close-out spec is `/orchestrate-end` Step 8**, and the canonical **auto-cycle tier table is this file** ("Context monitoring + auto-cycle"). This file is for the lead specifically.
 
 > **Architecture sentence:** *A desktop-first cockpit whose detached Rust daemon is the single, audited mutator of all state — every change is a typed, risk-classified, approved Action recorded as an immutable event; the UI reads projections, agents and the Project Brain only propose intents, and the local machine is the trust boundary.*
 >
@@ -29,7 +29,7 @@ Leanness runs in **two directions**:
 
 **Three things produce upward output from the lead:**
 
-1. **The close-out gate** — `/session-end` + `/orchestrate-end` + `/team-end` run on user's explicit go OR when context-monitoring auto-triggers (see "Context monitoring + auto-cycle" below + root `CLAUDE.md` "Close-out gating"). Lead does NOT surface the gate at routine work boundaries.
+1. **The close-out gate** — `/session-end` + `/orchestrate-end` + `/team-end` run on user's explicit go OR when context-monitoring auto-triggers (the tier table below; canonical three-way close-out spec: `/orchestrate-end` Step 8). Lead does NOT surface the gate at routine work boundaries.
 2. **The four escalation categories** (see root `CLAUDE.md` "Escalation taxonomy").
 3. **Context tier surfaces** — when a teammate crosses the WARN/ACTION/HARD-STOP thresholds (see "Context monitoring + auto-cycle"). One-line surface at WARN; auto-action at ACTION; immediate halt + cycle at HARD-STOP.
 
@@ -62,8 +62,8 @@ Explicit prohibitions. **Each violation costs context and risks correctness.**
 | Role | Who | Owns | Talks to |
 |---|---|---|---|
 | **Human** | The user | Direction, hard calls. Receives **only** escalations (the 4 categories in root `CLAUDE.md`). | The team lead |
-| **Team lead** | One agent (this doc) | Team setup (`/team-start`/`/team-end`), human interface, escalation conduit. Holds **no** deep code/plan context AND no per-slice planning state — stateless between events; re-reads `MVP_TASKS.md` on demand when cycling or handling escalations. Persists across orchestrator/implementer cycles. | The human ↕ teammates (escalations only) |
-| **Orchestrator** | One teammate | Plan, scope, `ARCHITECTURE.md`/`MVP_TASKS.md`, brief authoring, Step-2.5 test-design review, Step-9 hot routing, commit messages, push. | The implementer(s) **directly**; the lead for escalation |
+| **Team lead** | One agent (this doc) | Team setup (`/team-start`/`/team-end`), human interface, escalation conduit. Holds **no** deep code/plan context AND no per-slice planning state — stateless between events; re-reads `IMPLEMENTATION_PLAN.md` on demand when cycling or handling escalations. Persists across orchestrator/implementer cycles. | The human ↕ teammates (escalations only) |
+| **Orchestrator** | One teammate | Plan, scope, `ARCHITECTURE.md`/`IMPLEMENTATION_PLAN.md`, brief authoring, Step-2.5 test-design review, Step-9 hot routing, commit messages, push. | The implementer(s) **directly**; the lead for escalation |
 | **Implementer** | One per code area, spawned as needed | `/tdd` cycles in its area; `/preflight`; surfaces Step-9 flags. | The orchestrator **directly**; the lead for escalation |
 
 **One implementer per code area, spawned as needed.** The code areas are this project's workspaces:
@@ -76,9 +76,9 @@ Naming is **track-prefixed: `<track>-<area>-<role>`** (e.g. `daemon-ui-orchestra
 
 <!-- ▲ END EXAMPLE BLOCK [id=code-areas] ▲ -->
 
-The lead spawns an implementer for an area when that area's work begins. Build order is fixed by the architecture (typically serial — back-end before front-end, etc.); areas run in parallel only once dependencies clear.
+The lead spawns an implementer for an area when that area's work begins. **Build order is the explicit Phase/Track DAG in `IMPLEMENTATION_PLAN.md`'s Parallelization plan** — derived from `ARCHITECTURE.md` §2.5 subsystem boundaries, refined by the per-task `Depends on:` graph. Tracks with no unsatisfied upstream-track dependency run **in parallel, each in its own worktree with its own team** (see "Working tree → tracks + worktrees" below); a track starts once its upstream tracks have merged. The **critical path** through the DAG is the lead's scheduling priority — staff it first. (Single-track plan → one serial spine in one working tree.)
 
-Naming: **`<track>-<area>-<role>`** when parallel teams run (e.g. `frontend-team-orchestrator`), else `<area>-<role>` (e.g. `daemon-orchestrator`) — full rule in root `CLAUDE.md` "Naming + cross-bleed prevention."
+Naming: **`<track>-<area>-<role>`** when parallel teams run (e.g. `frontend-team-orchestrator`), else `<area>-<role>` (e.g. `daemon-orchestrator`) — full rule in root `CLAUDE.md` "Naming + cross-bleed prevention." The `<track>` values come from the `IMPLEMENTATION_PLAN.md` Track map, not invented ad-hoc.
 
 ---
 
@@ -108,7 +108,7 @@ The lead spawns each teammate with a **brief, focused spawn prompt** carrying th
 
 ## Context monitoring + auto-cycle
 
-The orchestrator runs `/context-check <team>` locally after each slice but **pings the lead only when a tier ≥ WARN is crossed** (per root `CLAUDE.md` Messaging budget) — OK slices produce no ping, and the lead reads "work is advancing" from the free idle-notifications + the task list. When a ping does arrive it carries each teammate's `ctx_pct` (status-line heartbeat joined to the team-registry by session_id). The lead evaluates three thresholds:
+The orchestrator runs `/context-check <team>` locally after each slice but **pings the lead only when a tier ≥ WARN is crossed** (per root `CLAUDE.md` Messaging budget) — OK slices produce no ping, and the lead reads "work is advancing" from the free idle-notifications + the task list. When a ping does arrive it carries each teammate's `ctx_pct` (status-line heartbeat joined to the team-registry by session_id). The lead evaluates three thresholds — **this table is the canonical home for the tier ladder**; the numbers are the `check-team-context.sh` env defaults (`CLAUDE_TEAM_CTX_WARN/ACTION/HARD`), so an env override changes them everywhere at once; other docs cite tier NAMES only:
 
 | Tier | Default % | What the lead does |
 |---|---|---|
@@ -125,7 +125,7 @@ A ping arrives only on a tier crossing, carrying the verbatim `/context-check <t
 
 ### The auto-cycle flow at ACTION threshold
 
-When a ping reports ANY teammate (impl OR orch) at ≥ 75% (a ping arrives at a slice boundary, after Step-10 commit, so by definition no slice is in flight):
+When a ping reports ANY teammate (impl OR orch) at ≥ ACTION (a ping arrives at a slice boundary, after Step-10 commit, so by definition no slice is in flight):
 
 **Cycle BOTH teammates together — orchestrator AND implementer.** Even if only the impl crossed the threshold, the orch also cycles. Reasons:
 - Cleanest handoff: both sessions fresh, no risk of one having stale context about the other.
@@ -145,7 +145,7 @@ When a ping reports ANY teammate (impl OR orch) at ≥ 75% (a ping arrives at a 
 
 5. **Lead spins down BOTH teammates** via `SendMessage({type: "shutdown_request"})` — first the impl, then the orch (impl first ensures the orch's /orchestrate-end has already consumed the impl's recap).
 
-6. **Lead reads state pointers** (per Cycle protocol below) — `MVP_TASKS.md` "Currently in progress" + most recent session doc + `git log -1 --oneline`.
+6. **Lead reads state pointers** (per Cycle protocol below) — `IMPLEMENTATION_PLAN.md` "Currently in progress" + most recent session doc + `git log -1 --oneline`.
 
 7. **Lead spawns BOTH fresh teammates** via the standard `/team-start` spawn templates (with the registry-write first action). Spawn order: orchestrator first (so it can run `/orchestrate-start` and be ready), then implementer (so its first brief reference makes sense).
 
@@ -159,7 +159,7 @@ If multiple teammates cross ACTION simultaneously, the cycle still pairs them �
 
 The lead also writes its own registry entry at `/team-start` Step 1, and the status line writes a heartbeat for the lead's session. `/context-check` includes the lead in the report.
 
-If the lead's own context hits ≥ 75%:
+If the lead's own context hits ≥ ACTION:
 - **Auto-trigger `/team-end`** — gates on all teammates being closed (per the standard `/team-end` flow); if any teammate is mid-slice, surface to user that lead is approaching limit + pause is imminent.
 - **Once teammates closed:** run `/team-end` to write the handoff doc. The next `/team-start` spawns a fresh lead from the handoff doc.
 - **Future hook: `ntfy` alert.** If `CLAUDE_TEAM_NTFY_TOPIC` env var is set, the lead `curl -X POST ntfy.sh/$TOPIC` with the cycle event. Defer integration to v2; design the hook point in `/team-end` now.
@@ -184,7 +184,7 @@ Teammates cycle on a context budget. Trigger sources:
 In either case, the swap procedure is the same:
 
 1. **Confirm the outgoing teammate is at `/session-end`-closed state** (implementer) or `/orchestrate-end`-closed state (orchestrator). The auto-trigger arrives post-Step-10 so the current slice is landed; ensure close-out commits land before spawning the successor.
-2. **Lead re-reads the current state pointers:** `MVP_TASKS.md` "Currently in progress" + the most recent `docs/sessions/<NNN>-*.md` + the last commit hash (`git log -1 --oneline`).
+2. **Lead re-reads the current state pointers:** `IMPLEMENTATION_PLAN.md` "Currently in progress" + the most recent `docs/sessions/<NNN>-*.md` + the last commit hash (`git log -1 --oneline`).
 3. **Spawn the successor** with the appropriate template (in `/team-start.md`), carrying:
    - Track prefix matching the lead's own
    - Team name (matches `TeamCreate` invocation)
@@ -213,20 +213,27 @@ These flow **directly between teammates**. The lead is **not** in the loop unles
 
 ## State lives in files, not in messages
 
-**Git + the project docs are the source of truth.** Teammate messages are pointers; the durable content is always in `docs/briefs/`, `docs/sessions/`, `docs/team-handoffs/`, `MVP_TASKS.md`, `<area>/LESSONS.md`, and `ARCHITECTURE.md`. A fresh orchestrator runs `/orchestrate-start` and re-derives state from files; a fresh implementer runs `/session-start`; a fresh lead runs `/team-start` and (if continuing from a paused team) reads the most recent `docs/team-handoffs/` doc.
+**Git + the project docs are the source of truth.** Teammate messages are pointers; the durable content is always in `docs/briefs/`, `docs/sessions/`, `docs/team-handoffs/`, `IMPLEMENTATION_PLAN.md`, `<area>/LESSONS.md`, and `ARCHITECTURE.md`. A fresh orchestrator runs `/orchestrate-start` and re-derives state from files; a fresh implementer runs `/session-start`; a fresh lead runs `/team-start` and (if continuing from a paused team) reads the most recent `docs/team-handoffs/` doc.
 
-**The lead is stateless between events.** It does NOT maintain a task board, mirror, or planning view between events. When a cycle, escalation, or close-out arrives, the lead re-reads `MVP_TASKS.md` "Currently in progress" + the most recent session doc on demand (≤2 file reads, ~50 lines total). This is cheaper than continuous state maintenance + survives many orchestrator/implementer cycles without context bloat.
+**The lead is stateless between events.** It does NOT maintain a task board, mirror, or planning view between events. When a cycle, escalation, or close-out arrives, the lead re-reads `IMPLEMENTATION_PLAN.md` "Currently in progress" + the most recent session doc on demand (≤2 file reads, ~50 lines total). This is cheaper than continuous state maintenance + survives many orchestrator/implementer cycles without context bloat.
 
 Between events the lead is silent. Visibility comes from the free idle-notifications + the shared task list (`TaskList`), not from pings; a ping arrives only on a tier crossing. No task board, no mirror, no internal state. Files + the task list are the source of truth; re-read on demand.
 
 ---
 
-## Working tree
+## Working tree → tracks + worktrees
 
-**Single working tree by default.** The build order usually means most slices don't overlap. Spawn a second implementer (and a git **worktree** via the `Agent` tool's `isolation: "worktree"`) **only** when two area slices are genuinely independent and in flight at once. Shared docs (`MVP_TASKS.md`, `ARCHITECTURE.md`, session docs) live at the repo root — keep their edits on the orchestrator to avoid worktree merge friction. "Explicit `git add <path>`, never `git add -A`" matters more with parallel agents.
+**The Parallelization plan's Track map drives worktrees proactively.** When the Phase/Track DAG has ≥2 parallel-eligible tracks, each track runs in its **own git worktree** (`git worktree add ../NexusOps-<track> track/<track>`, provisioned by that track's `/team-start <track>` Step 2.5) with its **own team** (lead + orch + per-area implementer). Single-working-tree is the fallback for a single-track (serial) plan, or a DAG that never branches. ("Explicit `git add <path>`, never `git add -A`" matters more than ever with parallel worktrees.)
+
+**Cross-worktree coordination (multi-track only):**
+
+1. **Shared root docs have one owning checkout.** `IMPLEMENTATION_PLAN.md` + `ARCHITECTURE.md` live in the **integration checkout** (the root tree), not in any track worktree. A track that needs to edit the plan or the contract (a Step-9 cross-doc-invariant change, a new phase) **routes the edit to the integration owner** rather than editing its own branch's copy — a per-worktree edit guarantees a merge conflict. (This is the multi-track extension of the orchestrator's normal ownership of those files.)
+2. **Merge order = DAG topological order, gated by an integration preflight.** A downstream track does **not** merge into the integration branch until its upstream tracks have merged. The lead owning the critical-path track coordinates the sequence; **one actor runs the merges** (no merge races between track leads). **After every track merge, run `/preflight` in each code area the merge touched, from the integration checkout** (collapses to one invocation for single-area projects — and `/preflight`'s cwd detection runs ONE area per invocation, so invoke it per touched area, not once from the root). A failing integration preflight **blocks downstream merges** and escalates as a **Finding**.
+3. **Shared-contract changes propagate owner → integration → consumers.** A type / interface / schema two tracks both depend on (an `ARCHITECTURE.md` Appendix-A model crossing a §2.5 edge) has a **single owning track**. A change to it is (a) made in the owning track, (b) merged to the integration branch, (c) pulled into consuming track worktrees (`git merge <integration>`) **before** they build against it. Consuming tracks treat the contract as **frozen** until the owner signals the change is merged. A shared-contract change mid-build is a **Finding** (escalation category #2) — it reaches the human via the lead.
+4. **Cross-worktree commit bleed = the filesystem analogue of channel-bleed.** A track team's commits land only on its own branch/worktree; a commit touching another track's area, or the root checkout, is cross-track contamination. The `git add <path>` discipline (never `git add -A`) is the primary guard.
+5. **Context monitoring is naturally per-track** — each track's team is a distinct `TeamCreate` team, so `/context-check <track-team>` is already scoped; the `team-register.sh` `track`/`branch` fields let tooling group + locate a track's teammates.
+6. **Numbered docs are track-prefixed.** Briefs, session docs, and team-handoffs are written from each track's worktree, so their per-directory `NNN` counters would **collide on merge** unless prefixed. Each track prefixes its numbered docs with `<track>-` and counts within that prefix — `docs/briefs/<track>-NNN-…`, `docs/sessions/<track>-NNN-…`, `docs/team-handoffs/<track>-NNN-…` (canonical rule in root `CLAUDE.md` "Naming + cross-bleed prevention").
 
 ---
 
-## Single-operator fallback
-
-You can run this **without** a team — one human driving an orchestrator session and an implementer session, acting as the bridge yourself (the original two-session model). The "direct teammate comms" become "you paste between the two sessions," and the escalation taxonomy collapses (everything is already in front of you). The file-state discipline, the `/tdd` steps, the routing matrix, and the commit cadence are identical. (If you generated this scaffolding in single-operator mode, this file shouldn't exist — the generator skips it.)
+_(Single-operator fallback: see templates/docs/team-protocol.md in the scaffolding repo — this generated copy is team-mode.)_

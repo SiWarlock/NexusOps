@@ -18,9 +18,14 @@ Argument: `$ARGUMENTS` — short topic for the handoff doc filename (e.g. `eod-Y
 - Per slice / per task / per phase / per round — the close-out gate is `/session-end` + `/orchestrate-end`, not this.
 - Mid-arc — `/team-end` is for **pausing**, not for natural work boundaries.
 
-## Step 0 — Confirm user-explicit go
+## Step 0 — Confirm the trigger (two legitimate goes)
 
-`/team-end` runs **only on user-explicit go**, just like `/session-end` and `/orchestrate-end`. If you reached this command without the user signaling it, stop and surface the question instead — don't auto-end the team at a natural boundary.
+`/team-end` runs on **either** close-out trigger (root `CLAUDE.md` "Close-out gating"):
+
+1. **User-on-demand** — the user explicitly signaled the pause. Keep the explicit-go gate: if the user didn't signal it and trigger 2 doesn't hold, stop and surface the question instead.
+2. **Auto-cycle** — the mechanical trigger **is** the go: your own (the lead's) `ctx_pct` ≥ ACTION on canonical `/context-check` output, or a full-team cycle that requires lead teardown. Verify the tier from the script output (never self-reported), proceed, and **notify the user** with one line (trigger + handoff-doc path) — a notification, not a blocking question. Waiting for a confirmation here deadlocks the close-out at exactly the moment the lead's context is scarcest.
+
+Reaching this command at a natural work boundary (end of phase / arc / round) with **neither** trigger present is NOT a go — that's the auto-pause the Forbidden section bans. Step 1's all-teammates-closed gate applies on both triggers, unchanged.
 
 ## Step 1 — Gate: all teammates at closed state
 
@@ -35,9 +40,9 @@ Do NOT proceed to Step 2 until both gates pass. **Never tear down mid-work.**
 
 Read for the handoff doc:
 1. `git log --oneline -5` — last 5 commits, includes the round-seal hash.
-2. `MVP_TASKS.md` "Currently in progress" + "Next session target" + "Carry-forward to upcoming briefs" + last Log entry.
+2. `IMPLEMENTATION_PLAN.md` "Currently in progress" + "Next session target" + "Carry-forward to upcoming briefs" + last Log entry.
 3. The most recent `docs/sessions/<NNN>-*.md` — what just landed.
-You already hold the rest of the coordination state (team composition, active arc, open decisions) from the task list, tier-crossing pings, and escalations during the team's life; re-read `MVP_TASKS.md` if unsure.
+You already hold the rest of the coordination state (team composition, active arc, open decisions) from the task list, tier-crossing pings, and escalations during the team's life; re-read `IMPLEMENTATION_PLAN.md` if unsure.
 
 ## Step 3 — Compute the handoff doc number
 
@@ -45,7 +50,7 @@ You already hold the rest of the coordination state (team composition, active ar
 ls docs/team-handoffs/ 2>/dev/null | head -20
 ```
 
-Take the highest numeric prefix + 1, zero-pad to 3 digits. If the `docs/team-handoffs/` directory doesn't exist yet, create it + start at `001`. Filename: `<NNN>-<YYYY-MM-DD>-<topic>.md` per `$ARGUMENTS`.
+Take the highest numeric prefix + 1, zero-pad to 3 digits. If the `docs/team-handoffs/` directory doesn't exist yet, create it + start at `001`. Filename: `<NNN>-<YYYY-MM-DD>-<topic>.md` per `$ARGUMENTS`. **Multi-track mode (this lead carries a `<track>`): prefix the filename with the track** — `<track>-<NNN>-<YYYY-MM-DD>-<topic>.md` — and compute `<NNN>` within the track (`ls docs/team-handoffs/<track>-*`), so parallel tracks' handoffs don't collide when the track branches merge (root `CLAUDE.md` "Naming + cross-bleed prevention"). Single-track / solo → plain `<NNN>-…`.
 
 ## Step 4 — Write the handoff doc
 
@@ -54,6 +59,7 @@ Take the highest numeric prefix + 1, zero-pad to 3 digits. If the `docs/team-han
 
 **Date:** YYYY-MM-DD
 **Track:** <track from /team-start, or "solo">
+**Worktree:** <`../NexusOps-<track>` (branch `track/<track>`), or "root checkout (single-track)">
 **Predecessor handoff:** <docs/team-handoffs/NNN-1-...md if any, else "first handoff">
 **Successor handoff:** _(filled in when the next /team-end runs)_
 **Round-seal commit at handoff:** `<commit hash from git log>`
@@ -74,9 +80,9 @@ Take the highest numeric prefix + 1, zero-pad to 3 digits. If the `docs/team-han
 <list anything started-but-not-closed, OR "None — clean close">
 
 ## Carry-forward to next team session
-- `MVP_TASKS.md` "Currently in progress": <quote>
-- `MVP_TASKS.md` "Next session target": <quote>
-- Open Carry-forward items: <bullet list, or pointer to MVP_TASKS.md section>
+- `IMPLEMENTATION_PLAN.md` "Currently in progress": <quote>
+- `IMPLEMENTATION_PLAN.md` "Next session target": <quote>
+- Open Carry-forward items: <bullet list, or pointer to IMPLEMENTATION_PLAN.md section>
 
 ## Open decisions / blockers for the human
 <bullet list — load-bearing architectural calls pending, deferment approvals pending, deploy/env questions, etc. Empty if none.>
@@ -93,10 +99,10 @@ Take the highest numeric prefix + 1, zero-pad to 3 digits. If the `docs/team-han
 ```
 
 ## How to resume
-Next team session: lead runs `/team-start <track>`, reads this handoff doc + `MVP_TASKS.md` "Currently in progress" on demand, spawns teammates using the prompts above, verifies read-backs. No re-orient overhead — this doc IS the orient.
+Next team session: lead runs `/team-start <track>`, reads this handoff doc + `IMPLEMENTATION_PLAN.md` "Currently in progress" on demand, spawns teammates using the prompts above, verifies read-backs. No re-orient overhead — this doc IS the orient.
 ```
 
-## Step 5 — Update MVP_TASKS.md
+## Step 5 — Update IMPLEMENTATION_PLAN.md
 
 Add one line under `Currently in progress` (or refresh it):
 
@@ -108,8 +114,8 @@ Add one line under `Currently in progress` (or refresh it):
 
 Stage explicitly:
 ```bash
-git add docs/team-handoffs/<NNN>-<date>-<topic>.md MVP_TASKS.md
-git status --short    # verify only handoff doc + MVP_TASKS.md staged
+git add docs/team-handoffs/<NNN>-<date>-<topic>.md IMPLEMENTATION_PLAN.md
+git status --short    # verify only handoff doc + IMPLEMENTATION_PLAN.md staged
 ```
 
 Conventional Commits + AI trailer (HEREDOC):
@@ -156,18 +162,32 @@ done
 
 If a predecessor handoff is being resumed later, the next `/team-start` re-spawns teammates → fresh registry entries land via spawn prompts.
 
+## Step 6.6 — Track worktree teardown + merge gate (multi-track only; skip if single-track)
+
+If this team ran in a track worktree (provisioned by `/team-start <track>` Step 2.5):
+
+1. **Merge gate.** If the track's phases are **complete** AND its upstream tracks have already merged, merge the track branch into the integration branch **in DAG topological order**, then run the **integration preflight** — `/preflight` per touched code area from the integration checkout — per `docs/team-protocol.md` "Working tree → tracks + worktrees" rule 2 (one actor runs the merges; never race track leads; a failing preflight blocks downstream merges and escalates as a Finding). If the track is only **pausing** (not done), do NOT merge — leave the branch for the next session. A merge that touches a **shared contract** is a **Finding** → surface to the human before merging.
+2. **Worktree teardown.** Once the branch is merged (or the team is fully done with the worktree), remove it:
+   ```bash
+   git worktree remove ../NexusOps-<track>     # add --force ONLY after confirming no uncommitted work
+   ```
+   Leave the worktree in place if the team is merely pausing and will resume in it.
+
+
 ## Step 7 — Tell the user
 
 Report:
 - Handoff doc at `docs/team-handoffs/<NNN>-<date>-<topic>.md`.
 - Team is paused; teammates are idle (already `/session-end`-closed at Step 1).
 - Next `/team-start` resumes from this handoff doc.
+- (Multi-track) the track's worktree was torn down + merged, or left in place if the team only paused.
 - Any open decisions / blockers surfaced in the doc.
 
 ## Forbidden in this command
 
-- **Running this without explicit user go.** It's a close-out command — same gate as `/session-end` + `/orchestrate-end`.
-- **Tearing down mid-work.** Step 1's gate is non-negotiable.
-- **Auto-pausing at a natural boundary** (end of phase, end of arc, end of round). User signals; you act.
+- **Running this without one of the two triggers** — user-explicit go, or the mechanical auto-cycle trigger verified from canonical `/context-check` output (root `CLAUDE.md` "Close-out gating"). A natural work boundary alone is neither.
+- **Tearing down mid-work.** Step 1's gate is non-negotiable — on both triggers.
+- **Auto-pausing at a natural boundary** (end of phase, end of arc, end of round) with neither trigger present. The user signals, or the context trigger fires; you act.
+- **Blocking an auto-cycle close-out on a user confirmation.** Trigger 2 notifies; it does not ask.
 - **Pushing without explicit approval.** Round-seal commits aren't pushed silently.
 - **Skipping the spawn-prompt section** of the handoff doc. The prompts are the load-bearing handoff content — without them, the next `/team-start` has to re-derive coordination state from scratch.

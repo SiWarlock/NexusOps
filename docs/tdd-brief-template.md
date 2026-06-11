@@ -19,8 +19,8 @@ Every `/tdd` brief is authored as a **file** in `docs/briefs/`, not just pasted 
 
 **Naming:** `docs/briefs/NNN-<task-id>-<short-topic>.md` — e.g. `024-P3-2-payment-retry-logic.md`.
 
-- **`NNN`** — a stable, zero-padded, sequential id on its own counter (parallel to `docs/sessions/`). Compute it the way session docs do: `ls docs/briefs/`, find the highest `NNN` prefix, increment. Numbers are stable IDs — never reused, never reordered.
-- **`<task-id>`** — the MVP_TASKS.md task this brief implements. Ties the brief to its phase.
+- **`NNN`** — a stable, zero-padded, sequential id on its own counter (parallel to `docs/sessions/`). Compute it the way session docs do: `ls docs/briefs/`, find the highest `NNN` prefix, increment. Numbers are stable IDs — never reused, never reordered. **Multi-track mode (the orchestrator carries a `<track>-` name prefix): prefix the filename with the track** — `docs/briefs/<track>-NNN-<task-id>-<topic>.md` — and compute `NNN` within the track (`ls docs/briefs/<track>-*`), so parallel tracks' briefs don't collide on merge (root `CLAUDE.md` "Naming + cross-bleed prevention").
+- **`<task-id>`** — the `IMPLEMENTATION_PLAN.md` task this brief implements. Ties the brief to its phase.
 - **`<short-topic>`** — kebab-case feature topic.
 
 **Who writes + commits it:** the orchestrator authors the brief file; it rides the orchestrator's `/orchestrate-end` round terminal commit (`docs/briefs/` is orchestrator territory — the implementer never edits it). When a stale brief is refreshed for a re-run, **edit the existing file in place** rather than spawning a new number — the brief tracks the slice, not the attempt.
@@ -40,6 +40,10 @@ Every `/tdd` brief is authored as a **file** in `docs/briefs/`, not just pasted 
 - **Architecture sections it implements:** <`ARCHITECTURE.md §X.Y`>
 - **Related context:** <other docs / prior slices the implementer should know>
 
+<!-- REQ IDs derive from the cited §s via the ARCHITECTURE.md Spec Anchor Index — add an explicit
+     `Implements: REQ-x` line ONLY when overriding (one § maps to many REQs and this slice covers a
+     strict subset). -->
+
 ## Acceptance criteria (what "done" means)
 - [ ] <concrete behavior pin 1>
 - [ ] <concrete behavior pin 2>
@@ -47,6 +51,11 @@ Every `/tdd` brief is authored as a **file** in `docs/briefs/`, not just pasted 
 - [ ] Integration test in `<path>` passes
 - [ ] `/preflight` clean
 - [ ] If applicable: cross-doc invariant updated atomic with the model change
+
+## Wiring / entry point (Step 7.5)
+<the production entry point this slice lands behind — route / job / CLI command / exported API — and
+what calls the new code. If wiring genuinely belongs to a later slice, say exactly:
+`none — wiring lands in <slice-id>`. `spec-lint brief` fails a brief without this section.>
 
 ## Files expected to touch
 **New:**
@@ -69,8 +78,12 @@ Tests to write in `<test_path>`:
 ## Cross-doc invariant impact (implementer flags at Step 9; orchestrator writes the docs)
 - **Model field changes:** <none / list of contract models touched>
 - **Orchestrator doc rows to write hot (Step 9 routing):** <none / which `daemon/CLAUDE.md` cross-doc rows + `ARCHITECTURE.md` Appendix A rows the orchestrator authors atomic with the round>
+- **§2.5-seam (shared-contract) model touched?** If this slice's NEW/extended invariant touches an
+  Appendix-A model whose `§` is crossed by a `§2.5` dependency edge, the RED outline MUST include the
+  **schema-snapshot test** (model field-name set == checked-in snapshot, tagged `spec(§X)`) — the
+  implementer authors it in this same `/tdd` cycle; Step 2.5 reviews it like any test.
 
-> **Implementer never edits `daemon/CLAUDE.md`, `ARCHITECTURE.md`, `MVP_TASKS.md`, or `daemon/LESSONS.md`** — these are orchestrator territory. Flag at Step 9 categorized; orchestrator writes hot during the same session; orchestrator commits at `/orchestrate-end`.
+> **Orchestrator territory** (canonical list: the `daemon/CLAUDE.md` "must NOT touch" list — hook-enforced in team mode): flag at Step 9 categorized; the orchestrator writes hot during the same session and commits at `/orchestrate-end`.
 
 ## Things to flag at Step 2.5
 Open design questions the implementer should surface before going GREEN. Pre-loaded with default votes — the implementer can take defaults or ping back with disagreement.
@@ -240,7 +253,7 @@ The implementer reuses its session across a round's slices — it's already orie
 
 The brief is for **TDD slices** (deterministic code). Skip (or use a simpler hand-off) for:
 
-- **Pure documentation work** (`MVP_TASKS.md` edits, `ARCHITECTURE.md` prose, session docs). Just edit directly.
+- **Pure documentation work** (`IMPLEMENTATION_PLAN.md` edits, `ARCHITECTURE.md` prose, session docs). Just edit directly.
 - **Infrastructure / deploy work.** Use `docs/runbooks/` instead.
 - **Exploratory spikes** to learn an API. Mark as exploratory; throw away; then TDD the real implementation.
 - **Non-deterministic behavior** (LLM-driven generation, pure visual changes). Use the project's non-deterministic-coverage brief format instead.

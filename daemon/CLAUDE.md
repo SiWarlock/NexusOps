@@ -16,7 +16,7 @@ If you find yourself fighting the wrong conventions, check your cwd.
 ## Session start/end protocol
 
 **At session start:**
-1. Read `MVP_TASKS.md` (repo root) **by section, not whole** — `grep -n "^##" MVP_TASKS.md` for offsets, then Read with offset/limit just "Currently in progress" + the active phase. (The file grows; never load it whole.)
+1. Read `IMPLEMENTATION_PLAN.md` (repo root) **by section, not whole** — `grep -n "^##" IMPLEMENTATION_PLAN.md` for offsets, then Read with offset/limit just "Currently in progress" + the active phase. (The file grows; never load it whole.)
 2. Confirm with the user what feature this session is targeting.
 3. Read the relevant section of `ARCHITECTURE.md` from the lookup table below.
 
@@ -28,8 +28,11 @@ If you find yourself fighting the wrong conventions, check your cwd.
    - dependency manifest / lockfile (deps the slice adds)
    - `docs/sessions/<NNN>-<date>-<topic>.md` (session doc, created at `/session-end` Step 5)
 
-   **Implementer must NOT touch (all orchestrator territory):**
-   - `MVP_TASKS.md`
+   **Implementer must NOT touch (all orchestrator territory).** *This list is the canonical statement
+   of the territory rule — `/session-end`, the brief template, and the generated
+   `scripts/guards/territory-guard.sh` PreToolUse hook (which mechanically enforces it in team mode)
+   all point here.*
+   - `IMPLEMENTATION_PLAN.md`
    - `daemon/LESSONS.md`
    - `daemon/CLAUDE.md` (entire file — both the Cross-doc invariants table AND the Lessons logged index)
    - `ARCHITECTURE.md`
@@ -106,6 +109,15 @@ Do not:
 4. **Scrape PTY output to infer agent status** — terminal bytes are display-only and lie about lifecycle. Read status from the SDK event stream / Codex app-server push; never regex the PTY to decide an agent's state.
 5. **Put secrets in events, payloads, logs, or rows** — persist **keychain references only**, and run the Redactor over any payload before it is persisted or emitted (INV-SEC). A secret in the immutable event log cannot be unwritten.
 6. **Use git2 for mutations** — git2 is **read-only** (repo/branch/diff introspection). All worktree, branch, commit, and merge operations go through the **git CLI as Gateway actions** so they are typed, approved, and audited. Never call a git2 mutating API.
+
+**Enforcement patterns (machine-readable — `/preflight` warn-greps the staged diff against these).**
+One `grep -E` (or `ast-grep`) expression per line, each tied to a numbered rule above. Rules that can't
+be expressed as a pattern carry a `pin:` (test ref) or `accepted:` note on the rule itself instead.
+
+```forbidden-patterns
+# <rule 2>: <pattern — e.g.>  datetime\.now\(\)
+# <rule 3>: <pattern>
+```
 
 <!-- ▲ END EXAMPLE BLOCK [id=forbidden-patterns] ▲ -->
 

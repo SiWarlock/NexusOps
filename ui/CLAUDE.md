@@ -16,7 +16,7 @@ If you find yourself fighting the wrong conventions, check your cwd.
 ## Session start/end protocol
 
 **At session start:**
-1. Read `MVP_TASKS.md` (repo root) **by section, not whole** — `grep -n "^##" MVP_TASKS.md` for offsets, then Read with offset/limit just "Currently in progress" + the active phase. (The file grows; never load it whole.)
+1. Read `IMPLEMENTATION_PLAN.md` (repo root) **by section, not whole** — `grep -n "^##" IMPLEMENTATION_PLAN.md` for offsets, then Read with offset/limit just "Currently in progress" + the active phase. (The file grows; never load it whole.)
 2. Confirm with the user what feature this session is targeting.
 3. Read the relevant section of `ARCHITECTURE.md` from the lookup table below.
 
@@ -28,8 +28,11 @@ If you find yourself fighting the wrong conventions, check your cwd.
    - dependency manifest / lockfile (deps the slice adds)
    - `docs/sessions/<NNN>-<date>-<topic>.md` (session doc, created at `/session-end` Step 5)
 
-   **Implementer must NOT touch (all orchestrator territory):**
-   - `MVP_TASKS.md`
+   **Implementer must NOT touch (all orchestrator territory).** *This list is the canonical statement
+   of the territory rule — `/session-end`, the brief template, and the generated
+   `scripts/guards/territory-guard.sh` PreToolUse hook (which mechanically enforces it in team mode)
+   all point here.*
+   - `IMPLEMENTATION_PLAN.md`
    - `ui/LESSONS.md`
    - `ui/CLAUDE.md` (entire file — both the Cross-doc invariants table AND the Lessons logged index)
    - `ARCHITECTURE.md`
@@ -107,6 +110,15 @@ Do not:
 4. **Render Codex context-% as a number when it isn't reported** — show `"unknown"` when `supportsContextMetadata === false` (§9.1). Fabricating a percentage for an engine that doesn't expose one is a silent lie in the cockpit.
 5. **Communicate status by color alone** — use glyph + label + intensity (§11 never-color-alone). And never ship a graph without its list/table fallback, a control without a focus ring, or a drag without a non-drag equivalent (§11.6 a11y MUSTs).
 6. **Offer an intent-submitting control without consulting `canSubmitIntent`** — every mutation affordance (Gateway approve/deny, Dispatch, Brain Run-via-Gateway, commit/push) must be disabled in global READ-ONLY/degraded mode (§11.4); offering a mutation while the daemon is unreachable or version-skewed is a defense-in-depth breach. The gate is **fail-safe** (FALSE on unknown/initial; true only when confirmed connected + version-compatible — `ui/src/connection/read-only.ts`). It is defense-in-depth — the load-bearing INV-SEC-1 enforcement is daemon-side (§15), never the UI gate alone. See [[4]].
+
+**Enforcement patterns (machine-readable — `/preflight` warn-greps the staged diff against these).**
+One `grep -E` (or `ast-grep`) expression per line, each tied to a numbered rule above. Rules that can't
+be expressed as a pattern carry a `pin:` (test ref) or `accepted:` note on the rule itself instead.
+
+```forbidden-patterns
+# <rule 2>: <pattern — e.g.>  datetime\.now\(\)
+# <rule 3>: <pattern>
+```
 
 <!-- ▲ END EXAMPLE BLOCK [id=forbidden-patterns] ▲ -->
 

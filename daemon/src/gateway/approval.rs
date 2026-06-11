@@ -21,9 +21,12 @@ use nexusops_shared::status::Approval;
 use crate::eventstore::AppendIntent;
 use crate::gateway::{db_err, enum_wire, gateway_event_intent, GatewayError};
 
-/// the loaded `approvals` row the gateway acts on (approve/deny/expire).
+/// the loaded `approvals` row the gateway acts on (approve/deny/expire). `action_request_id` is
+/// `None` for a **plan-level** approve-all approval (it targets the plan's non-critical steps, not a
+/// single action); `plan_id` is `Some` for any plan-scoped approval (2.1c).
 pub(crate) struct ApprovalRow {
-    pub action_request_id: String,
+    pub action_request_id: Option<String>,
+    pub plan_id: Option<String>,
     pub status: Approval,
     pub expires_at: Option<String>,
 }
@@ -31,11 +34,17 @@ pub(crate) struct ApprovalRow {
 /// Load an `approvals` row by id (the approve/deny/expire entry point). `NotFound` if absent;
 /// fail-closed on a status that no longer parses.
 pub(crate) fn load(conn: &Connection, approval_id: &str) -> Result<ApprovalRow, GatewayError> {
-    let (action_request_id, status_wire, expires_at): (String, String, Option<String>) = conn
+    let (action_request_id, plan_id, status_wire, expires_at): (
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+    ) = conn
         .query_row(
-            "SELECT action_request_id, status, expires_at FROM approvals WHERE approval_id = ?1",
+            "SELECT action_request_id, plan_id, status, expires_at FROM approvals \
+             WHERE approval_id = ?1",
             [approval_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
         .map_err(db_err)?
@@ -44,6 +53,7 @@ pub(crate) fn load(conn: &Connection, approval_id: &str) -> Result<ApprovalRow, 
         .map_err(|e| GatewayError::Serialize(e.to_string()))?;
     Ok(ApprovalRow {
         action_request_id,
+        plan_id,
         status,
         expires_at,
     })

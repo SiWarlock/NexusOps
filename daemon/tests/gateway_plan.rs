@@ -533,3 +533,363 @@ fn test_plan_step_inputs_redacted() {
         "the secret step is masked in place: {blobs:?}"
     );
 }
+
+// =============================================================================================
+// L3 — step-by-step + approve-all approval mechanics (the O-3 approval semantics).
+// approve(approval_id): a per-step approval drives ONLY its step; a plan-level approve-all
+// approval CASCADES to every non-critical step (each emitting its own Action* events tied to that
+// step's action_request_id + the shared plan approval_id). Critical (risk-4) is NEVER cascaded.
+// =============================================================================================
+
+/// the per-step approval_id for a given step `action_request_id`.
+fn step_approval_id(path: &std::path::Path, action_request_id: &str) -> String {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row(
+        "SELECT approval_id FROM approvals WHERE action_request_id = ?1",
+        [action_request_id],
+        |r| r.get(0),
+    )
+    .expect("a per-step approval exists")
+}
+
+/// the plan-level (action_request_id NULL) approval_id for a plan.
+fn plan_approval_id(path: &std::path::Path, plan_id: &str) -> String {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row(
+        "SELECT approval_id FROM approvals WHERE action_request_id IS NULL AND plan_id = ?1",
+        [plan_id],
+        |r| r.get(0),
+    )
+    .expect("a plan-level approval exists")
+}
+
+/// a step's current `action_requests.status`.
+fn step_status(path: &std::path::Path, action_request_id: &str) -> String {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row(
+        "SELECT status FROM action_requests WHERE action_request_id = ?1",
+        [action_request_id],
+        |r| r.get(0),
+    )
+    .expect("the step row exists")
+}
+
+/// the `Action*` event types correlated to a given step (by the action_request_id envelope FK).
+fn step_event_types(store: &EventStore, action_request_id: &str) -> Vec<String> {
+    store
+        .read_all()
+        .unwrap()
+        .iter()
+        .filter(|e| {
+            e.event_type.starts_with("Action")
+                && e.action_request_id.as_ref().map(|x| x.as_str()) == Some(action_request_id)
+        })
+        .map(|e| e.event_type.clone())
+        .collect()
+}
+
+// ---- L3 RED #11 — StepByStep: approve one step drives ONLY that step -------------------------
+
+#[test]
+fn test_step_by_step_approve_one_step() {
+    // spec(§6.1 / §11.5) — a StepByStep plan opens a per-step approval each; approve(step_approval)
+    // drives ONLY that step to succeeded; the sibling step stays awaiting_approval.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    let s1 = step(
+        "s1",
+        "git.create_worktree",
+        RiskLevel::Level2,
+        serde_json::json!({}),
+    );
+    let s2 = step(
+        "s2",
+        "github.create_pr",
+        RiskLevel::Level3,
+        serde_json::json!({}),
+    );
+    let ar1 = s1.action_request.action_request_id.as_str().to_string();
+    let ar2 = s2.action_request.action_request_id.as_str().to_string();
+    gw.submit_action_plan(&mut store, plan(vec![s1, s2], ApprovalMode::StepByStep))
+        .expect("submit");
+
+    gw.approve(&mut store, &step_approval_id(&path, &ar1))
+        .expect("approve step 1");
+
+    assert_eq!(
+        step_status(&path, &ar1),
+        "succeeded",
+        "step 1 drove to succeeded"
+    );
+    assert_eq!(
+        step_status(&path, &ar2),
+        "awaiting_approval",
+        "step 2 untouched — StepByStep approves each independently"
+    );
+    // step 2 emitted NO execution events
+    let s2_events = step_event_types(&store, &ar2);
+    for forbidden in ["ActionApproved", "ActionStarted", "ActionSucceeded"] {
+        assert!(
+            !s2_events.contains(&forbidden.to_string()),
+            "step 2 must not {forbidden} — only step 1 was approved"
+        );
+    }
+}
+
+// ---- L3 RED #12 — ApproveAll cascade executes non-critical, leaves critical ------------------
+
+#[test]
+fn test_approve_all_excludes_critical() {
+    // spec(§6.2/§11.5 "critical never in approve-all" — the safety pin) — approving the plan-level
+    // approve-all approval executes EVERY non-critical step; the risk-4 step stays awaiting_approval
+    // (covered by its OWN per-step approval, never by approve-all).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    let s1 = step(
+        "s1",
+        "git.create_worktree",
+        RiskLevel::Level2,
+        serde_json::json!({}),
+    );
+    let s2 = step(
+        "s2",
+        "git.force_push",
+        RiskLevel::Level4,
+        serde_json::json!({}),
+    ); // critical
+    let s3 = step(
+        "s3",
+        "project.rescan",
+        RiskLevel::Level1,
+        serde_json::json!({}),
+    );
+    let (ar1, ar2, ar3) = (
+        s1.action_request.action_request_id.as_str().to_string(),
+        s2.action_request.action_request_id.as_str().to_string(),
+        s3.action_request.action_request_id.as_str().to_string(),
+    );
+    let p = plan(vec![s1, s2, s3], ApprovalMode::ApproveAll);
+    let plan_id = p.plan_id.as_str().to_string();
+    gw.submit_action_plan(&mut store, p).expect("submit");
+
+    gw.approve(&mut store, &plan_approval_id(&path, &plan_id))
+        .expect("approve the plan-level approve-all");
+
+    assert_eq!(
+        step_status(&path, &ar1),
+        "succeeded",
+        "non-critical s1 executed"
+    );
+    assert_eq!(
+        step_status(&path, &ar3),
+        "succeeded",
+        "non-critical s3 executed"
+    );
+    assert_eq!(
+        step_status(&path, &ar2),
+        "awaiting_approval",
+        "the critical (risk-4) step is NEVER in approve-all — stays awaiting (safety pin)"
+    );
+}
+
+// ---- L3 RED #13 — the cascade emits each covered step's own Action* events -------------------
+
+#[test]
+fn test_approve_all_cascades_each_step_event() {
+    // spec(§15 every-mutation-has-an-event / AG §17.1) — the cascade emits a per-step ActionApproved
+    // + ActionStarted + ActionSucceeded for EACH covered step, each tied to that step's
+    // action_request_id + the SHARED plan approval_id.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    let s1 = step(
+        "s1",
+        "git.create_worktree",
+        RiskLevel::Level2,
+        serde_json::json!({}),
+    );
+    let s3 = step(
+        "s3",
+        "project.rescan",
+        RiskLevel::Level1,
+        serde_json::json!({}),
+    );
+    let (ar1, ar3) = (
+        s1.action_request.action_request_id.as_str().to_string(),
+        s3.action_request.action_request_id.as_str().to_string(),
+    );
+    let p = plan(vec![s1, s3], ApprovalMode::ApproveAll);
+    let plan_id = p.plan_id.as_str().to_string();
+    gw.submit_action_plan(&mut store, p).expect("submit");
+    let plan_appr = plan_approval_id(&path, &plan_id);
+
+    gw.approve(&mut store, &plan_appr).expect("approve cascade");
+
+    for ar in [&ar1, &ar3] {
+        let ev = step_event_types(&store, ar);
+        for t in ["ActionApproved", "ActionStarted", "ActionSucceeded"] {
+            assert!(ev.contains(&t.to_string()), "step {ar} emitted {t}");
+        }
+    }
+    // each covered step's ActionApproved carries the SHARED plan approval_id (envelope FK)
+    let approved: Vec<_> = store
+        .read_all()
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.event_type == "ActionApproved")
+        .collect();
+    assert_eq!(approved.len(), 2, "one ActionApproved per covered step");
+    assert!(
+        approved
+            .iter()
+            .all(|e| e.approval_id.as_deref() == Some(plan_appr.as_str())),
+        "every covered step's ActionApproved ties to the shared plan approval_id"
+    );
+}
+
+// ---- L3 RED #14 — plan deny + plan expiry never execute -------------------------------------
+
+#[test]
+fn test_plan_deny_and_expiry_no_execution() {
+    // spec(§17 / AG §8.8) — deny(plan_approval, reason) → covered steps terminal (denied), the
+    // executor is NEVER invoked; an expired plan approval → ActionExpired per covered step, none
+    // executed (fake clock — a past expiry stamped on the plan-level approval).
+
+    // deny path
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    let s1 = step(
+        "s1",
+        "git.create_worktree",
+        RiskLevel::Level2,
+        serde_json::json!({}),
+    );
+    let s2 = step(
+        "s2",
+        "project.rescan",
+        RiskLevel::Level1,
+        serde_json::json!({}),
+    );
+    let (ar1, ar2) = (
+        s1.action_request.action_request_id.as_str().to_string(),
+        s2.action_request.action_request_id.as_str().to_string(),
+    );
+    let p = plan(vec![s1, s2], ApprovalMode::ApproveAll);
+    let plan_id = p.plan_id.as_str().to_string();
+    gw.submit_action_plan(&mut store, p).expect("submit");
+    gw.deny(
+        &mut store,
+        &plan_approval_id(&path, &plan_id),
+        "not allowed",
+    )
+    .expect("deny the plan");
+    let deny_appr = plan_approval_id(&path, &plan_id);
+    for ar in [&ar1, &ar2] {
+        assert_eq!(
+            step_status(&path, ar),
+            "denied",
+            "covered step denied (terminal)"
+        );
+        let ev = step_event_types(&store, ar);
+        assert!(
+            ev.contains(&"ActionDenied".to_string()),
+            "each covered step emits ActionDenied (not just a silent status flip)"
+        );
+        for forbidden in ["ActionStarted", "ActionSucceeded"] {
+            assert!(
+                !ev.contains(&forbidden.to_string()),
+                "denied step {ar} must NOT execute — {forbidden} forbidden"
+            );
+        }
+    }
+    // every covered step's ActionDenied carries the SHARED plan approval_id (envelope FK)
+    let denied: Vec<_> = store
+        .read_all()
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.event_type == "ActionDenied")
+        .collect();
+    assert_eq!(denied.len(), 2, "one ActionDenied per covered step");
+    assert!(
+        denied
+            .iter()
+            .all(|e| e.approval_id.as_deref() == Some(deny_appr.as_str())),
+        "every covered step's ActionDenied ties to the shared plan approval_id"
+    );
+
+    // expiry path — a past expiry stamped on the plan-level approval
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    let s1b = step(
+        "s1",
+        "git.create_worktree",
+        RiskLevel::Level2,
+        serde_json::json!({}),
+    );
+    let arb = s1b.action_request.action_request_id.as_str().to_string();
+    let p2 = plan(vec![s1b], ApprovalMode::ApproveAll);
+    let plan_id2 = p2.plan_id.as_str().to_string();
+    gw.submit_action_plan(&mut store2, p2).expect("submit");
+    {
+        let c = rusqlite::Connection::open(&path2).expect("fixture conn");
+        c.busy_timeout(std::time::Duration::from_secs(2)).unwrap();
+        c.execute(
+            "UPDATE approvals SET expires_at = '2020-01-01T00:00:00Z' WHERE action_request_id IS NULL",
+            [],
+        )
+        .expect("stamp past expiry on the plan-level approval");
+    }
+    gw.approve(&mut store2, &plan_approval_id(&path2, &plan_id2))
+        .expect("approve-expired plan");
+    assert_eq!(
+        step_status(&path2, &arb),
+        "expired",
+        "an expired plan approval expires its steps"
+    );
+    let ev = step_event_types(&store2, &arb);
+    assert!(
+        ev.contains(&"ActionExpired".to_string()),
+        "ActionExpired emitted"
+    );
+    for forbidden in ["ActionStarted", "ActionSucceeded"] {
+        assert!(
+            !ev.contains(&forbidden.to_string()),
+            "an expired plan approval must NOT execute — {forbidden} forbidden"
+        );
+    }
+}
+
+// ---- L3 RED #15 — re-resolving a cascaded plan-level approval is rejected (R-9) --------------
+
+#[test]
+fn test_reapprove_cascaded_plan_rejected() {
+    // spec(§5.1 R-9) — once a plan-level approve-all approval is resolved (cascaded → approved), a
+    // second approve/deny on it is rejected with a typed IllegalTransition (the approval is terminal,
+    // its covered steps already executed) — the cascade can never re-execute already-resolved steps.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    let s1 = step(
+        "s1",
+        "git.create_worktree",
+        RiskLevel::Level2,
+        serde_json::json!({}),
+    );
+    let p = plan(vec![s1], ApprovalMode::ApproveAll);
+    let plan_id = p.plan_id.as_str().to_string();
+    gw.submit_action_plan(&mut store, p).expect("submit");
+    let plan_appr = plan_approval_id(&path, &plan_id);
+    gw.approve(&mut store, &plan_appr)
+        .expect("first approve cascades");
+
+    let err = gw
+        .approve(&mut store, &plan_appr)
+        .expect_err("re-approving a resolved plan-level approval is rejected");
+    assert!(
+        matches!(err, GatewayError::IllegalTransition { .. }),
+        "second approve → IllegalTransition (the approval is terminal), got {err:?}"
+    );
+}

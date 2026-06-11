@@ -160,7 +160,11 @@ fn str_param<'a>(params: &'a serde_json::Value, key: &str) -> Result<&'a str, Ip
         .ok_or(IpcErrorCode::ProtocolError)
 }
 
-/// `approve` — `{approval_id}` (edits/step_id → 2.1c). Drives the action to succeeded/failed.
+/// `approve` — `{approval_id, step_id?}` (§6.1). Resolves the approval: a per-step / single-action
+/// approval drives its action to succeeded/failed; a plan-level approve-all approval cascades over
+/// the plan's non-critical steps (2.1c). The optional `step_id` is accepted at the §6.1 boundary but
+/// RESERVED in 2.1c — `approve` resolves the WHOLE approval (targeting a single step of a plan-level
+/// approval is a later refinement); an unrecognized field is ignored, not rejected.
 fn approve(
     params: &serde_json::Value,
     write: &WriteHandle,

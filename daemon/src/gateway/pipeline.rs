@@ -14,7 +14,16 @@ use nexusops_shared::time::Timestamp;
 
 use crate::eventstore::{EventStore, GatewayTxn};
 use crate::gateway::executor::ExecutionOutcome;
-use crate::gateway::{approval, enum_wire, plan, request, Gateway, GatewayError};
+use crate::gateway::{approval, db_err, enum_wire, plan, request, Gateway, GatewayError};
+
+/// The shape of an approval the gateway is about to resolve (the 2.1c approve/deny dispatch).
+enum ApprovalTarget {
+    /// a single-action or per-step approval (`action_request_id` set) → the 2.1b single path.
+    Single,
+    /// a plan-level approve-all approval (`action_request_id` NULL) → cascade over the plan's
+    /// non-critical steps. Carries the `plan_id`.
+    Plan(String),
+}
 
 /// the well-known approver for the 2.1b stub decisions (RequiredApprover::current_user). 2.2/the
 /// real auth surface resolves the actual `decided_by` from the IPC peer identity.
@@ -319,10 +328,51 @@ impl Gateway {
         self.approve_collecting(store, approval_id, &mut Vec::new())
     }
 
-    /// `approve` accumulating the `proj_approval_queue` subscribe-delta(s) into `deltas` (Q6) — the
-    /// decision txn advances the approval row's status, so the write-actor nudges subscribers
-    /// post-commit. Same pipeline as [`Gateway::approve`].
+    /// `approve` accumulating the `proj_approval_queue` subscribe-delta(s) into `deltas` (Q6).
+    /// Dispatches on the approval shape (Q3): a per-step / single-action approval (action_request_id
+    /// set) runs the 2.1b single path; a plan-level approve-all approval (action_request_id NULL,
+    /// plan_id set) CASCADES over the plan's non-critical steps (§6.2/§11.5 — critical is never
+    /// cascaded). Same `step_id?` §6.1 surface (accepted at the IPC boundary; 2.1c resolves the whole
+    /// approval, so step-targeting within a plan-level approval is a later refinement).
     pub(crate) fn approve_collecting(
+        &self,
+        store: &mut EventStore,
+        approval_id: &str,
+        deltas: &mut Vec<ProjectionDelta>,
+    ) -> Result<ActionAck, GatewayError> {
+        match self.approval_target(store, approval_id)? {
+            ApprovalTarget::Single => self.approve_single(store, approval_id, deltas),
+            ApprovalTarget::Plan(plan_id) => {
+                self.approve_plan_cascade(store, approval_id, &plan_id, deltas)
+            }
+        }
+    }
+
+    /// Peek an approval's shape (a read-only txn) to dispatch single-action vs plan-level cascade.
+    /// (A second small load in the chosen path is acceptable for 2.1c — preview's read-txn precedent;
+    /// a fold-into-one optimization is a Carry-forward note.)
+    fn approval_target(
+        &self,
+        store: &mut EventStore,
+        approval_id: &str,
+    ) -> Result<ApprovalTarget, GatewayError> {
+        store.gateway_txn(|gtx| -> Result<ApprovalTarget, GatewayError> {
+            let appr = approval::load(gtx.tx(), approval_id)?;
+            match (appr.action_request_id.is_some(), appr.plan_id) {
+                (true, _) => Ok(ApprovalTarget::Single),
+                (false, Some(plan_id)) => Ok(ApprovalTarget::Plan(plan_id)),
+                (false, None) => Err(GatewayError::NotFound(format!(
+                    "approval {approval_id} ties to neither an action nor a plan"
+                ))),
+            }
+        })
+    }
+
+    /// `approve` a single-action / per-step approval (the 2.1b path): the decision txn emits
+    /// ActionApproved and transitions AwaitingApproval→Approved→Queued (R-9 guarded), then — if not
+    /// expired — the execute step runs. An approval past its `expires_at` → `ActionExpired`, never
+    /// executes (§17).
+    fn approve_single(
         &self,
         store: &mut EventStore,
         approval_id: &str,
@@ -342,7 +392,12 @@ impl Gateway {
                         to: "decided".to_string(),
                     });
                 }
-                let act_id = appr.action_request_id.clone();
+                // dispatched here only for a single/per-step approval → action_request_id is Some.
+                let act_id = appr.action_request_id.ok_or_else(|| {
+                    GatewayError::NotFound(format!(
+                        "approval {approval_id} has no action_request_id"
+                    ))
+                })?;
                 let req = request::load(gtx.tx(), &act_id)?;
 
                 // §17 expiry: an approval past expires_at lapses → ActionExpired, never executes.
@@ -405,12 +460,122 @@ impl Gateway {
         // --- execute step (structurally separate; the executor runs OFF the txn) ---
         // NOTE (Q6 corollary, →2.4): the decision txn above ALREADY committed the queue-row status
         // change (awaiting_approval→approved) + pushed its delta into `deltas`. If `execute`'s
-        // completion txn then errors, `approve_collecting` returns Err, so the write-actor's
+        // completion txn then errors, `approve_single` returns Err, so the write-actor's
         // `publish_after_commit` (result.is_ok() gate) SUPPRESSES that already-durable delta — the
         // subscriber is briefly stale until its next reconnect/`get_projection` (the lag-resync
         // policy covers it; the stub executor never fails, so it's unreached in 2.1c). 2.4 reconciles
         // the same two-txn boundary for crash recovery; the missed-nudge folds in there.
         self.execute(store, &req)
+    }
+
+    /// `approve` a PLAN-LEVEL approve-all approval (O-3 cascade) — drive EVERY non-critical step of
+    /// the plan (critical/risk-4 is never cascaded; it keeps its own per-step approval). The decision
+    /// txn marks the plan-level approval Approved + queues every covered step (each emitting its own
+    /// `ActionApproved` tied to that step's action_request_id + the SHARED plan approval_id); then
+    /// each step's executor runs (stub, off-txn) + its completion txn. An expired plan-level approval
+    /// → `ActionExpired` per covered step, none execute (§17). The decision is one atomic txn.
+    fn approve_plan_cascade(
+        &self,
+        store: &mut EventStore,
+        approval_id: &str,
+        plan_id: &str,
+        deltas: &mut Vec<ProjectionDelta>,
+    ) -> Result<ActionAck, GatewayError> {
+        let (steps, expired) =
+            store.gateway_txn(|gtx| -> Result<(Vec<ActionRequest>, bool), GatewayError> {
+                let now = gtx.now_rfc3339();
+                let appr = approval::load(gtx.tx(), approval_id)?;
+                if appr.status != ApprovalStatus::AwaitingApproval {
+                    return Err(GatewayError::IllegalTransition {
+                        machine: "Approval",
+                        from: format!("{:?}", appr.status),
+                        to: "decided".to_string(),
+                    });
+                }
+                // the covered steps: the plan's NON-critical steps still awaiting (criticals carry
+                // their own per-step approvals, untouched by the plan-level approve — the safety pin).
+                // INVARIANT (2.1c): a plan-level approval is opened (L2) ONLY when ≥1 non-critical
+                // step exists, and on the single write-actor those steps are still `awaiting_approval`
+                // at cascade time → `reqs` is non-empty. If 2.3+ widens the filter or a step can be
+                // cancelled mid-plan, an empty cascade would vacuously mark the approval Approved with
+                // no step events — guard it then (Step-9 flag).
+                let reqs = load_covered_steps(gtx, plan_id)?;
+
+                // §17 expiry on the plan-level approval → expire every covered step, none execute.
+                if appr
+                    .expires_at
+                    .as_deref()
+                    .is_some_and(|exp| exp < now.as_str())
+                {
+                    approval::update_status(
+                        gtx.tx(),
+                        approval_id,
+                        ApprovalStatus::AwaitingApproval,
+                        ApprovalStatus::Expired,
+                    )?;
+                    for req in &reqs {
+                        request::update_status(
+                            gtx.tx(),
+                            req.action_request_id.as_str(),
+                            ARStatus::AwaitingApproval,
+                            ARStatus::Expired,
+                        )?;
+                        gtx.append(&approval::expired_intent(req, approval_id, &now)?)?;
+                    }
+                    deltas.push(approval_queue_delta(approval_id));
+                    return Ok((reqs, true));
+                }
+
+                // approve: mark the plan-level approval Approved + queue every covered step.
+                approval::update_status(
+                    gtx.tx(),
+                    approval_id,
+                    ApprovalStatus::AwaitingApproval,
+                    ApprovalStatus::Approved,
+                )?;
+                approval::record_decision(gtx.tx(), approval_id, Some(STUB_DECIDER), &now)?;
+                for req in &reqs {
+                    let ar = req.action_request_id.as_str();
+                    request::update_status(
+                        gtx.tx(),
+                        ar,
+                        ARStatus::AwaitingApproval,
+                        ARStatus::Approved,
+                    )?;
+                    gtx.append(&approval::approved_intent(
+                        req,
+                        approval_id,
+                        Some(STUB_DECIDER),
+                        &now,
+                    )?)?;
+                    request::update_status(gtx.tx(), ar, ARStatus::Approved, ARStatus::Queued)?;
+                }
+                deltas.push(approval_queue_delta(approval_id));
+                Ok((reqs, false))
+            })?;
+
+        if expired {
+            return Ok(ActionAck {
+                action_request_id: approval_id.to_string(),
+                status: ARStatus::Expired,
+            });
+        }
+        // execute each covered step (stub; off-txn) → ActionStarted + ActionSucceeded per step.
+        // NOTE (cascade crash-recovery, →2.4): the decision txn above atomically queued ALL covered
+        // steps; this loop then runs each step's executor + completion txn SEPARATELY. A mid-loop
+        // failure (or a crash) strands the *remaining* steps at `queued` — the MULTI-STEP form of the
+        // single-action two-txn gap documented on `execute` below, and materially worse (N orphaned
+        // rows, not 1). Benign in 2.1c (the stub executor never fails); 2.4's orphaned-`queued`
+        // reconciliation by idempotency key MUST cover the cascade case, not just the single step.
+        for req in &steps {
+            self.execute(store, req)?;
+        }
+        // the ack reflects the cascade: `action_request_id` carries the plan-level approval_id (a
+        // plan approve has no single action — Step-9 field-reuse note), status the overall outcome.
+        Ok(ActionAck {
+            action_request_id: approval_id.to_string(),
+            status: ARStatus::Succeeded,
+        })
     }
 
     /// Run the executor for an approved+queued action, then record the outcome. The executor is
@@ -479,7 +644,9 @@ impl Gateway {
         self.deny_collecting(store, approval_id, reason, &mut Vec::new())
     }
 
-    /// `deny` accumulating the `proj_approval_queue` subscribe-delta into `deltas` (Q6).
+    /// `deny` accumulating the `proj_approval_queue` subscribe-delta into `deltas` (Q6). Dispatches
+    /// (Q3): a per-step / single-action approval denies its one action; a plan-level approve-all
+    /// approval denies EVERY covered non-critical step (each terminal; the executor never runs).
     pub(crate) fn deny_collecting(
         &self,
         store: &mut EventStore,
@@ -497,9 +664,7 @@ impl Gateway {
                     to: "denied".to_string(),
                 });
             }
-            let act_id = appr.action_request_id.clone();
-            let req = request::load(gtx.tx(), &act_id)?;
-
+            // stamp the plan/single-level approval Denied (terminal); the executor is NEVER invoked.
             approval::update_status(
                 gtx.tx(),
                 approval_id,
@@ -507,16 +672,33 @@ impl Gateway {
                 ApprovalStatus::Denied,
             )?;
             approval::record_decision(gtx.tx(), approval_id, Some(STUB_DECIDER), &now)?;
-            request::update_status(
-                gtx.tx(),
-                &act_id,
-                ARStatus::AwaitingApproval,
-                ARStatus::Denied,
-            )?;
-            gtx.append(&approval::denied_intent(&req, approval_id, reason, &now)?)?;
+
+            // the actions to deny: the single action (per-step/single approval) OR every covered
+            // non-critical step (a plan-level approve-all approval). The ack's `action_request_id`
+            // carries the single action's id (2.1b behavior preserved) or the plan-level approval_id.
+            let (reqs, ack_id) = match (&appr.action_request_id, &appr.plan_id) {
+                (Some(act_id), _) => (vec![request::load(gtx.tx(), act_id)?], act_id.clone()),
+                (None, Some(plan_id)) => {
+                    (load_covered_steps(gtx, plan_id)?, approval_id.to_string())
+                }
+                (None, None) => {
+                    return Err(GatewayError::NotFound(format!(
+                        "approval {approval_id} ties to neither an action nor a plan"
+                    )))
+                }
+            };
+            for req in &reqs {
+                request::update_status(
+                    gtx.tx(),
+                    req.action_request_id.as_str(),
+                    ARStatus::AwaitingApproval,
+                    ARStatus::Denied,
+                )?;
+                gtx.append(&approval::denied_intent(req, approval_id, reason, &now)?)?;
+            }
             deltas.push(approval_queue_delta(approval_id)); // queue row → denied
             Ok(ActionAck {
-                action_request_id: act_id,
+                action_request_id: ack_id,
                 status: ARStatus::Denied,
             })
         })
@@ -538,4 +720,31 @@ impl Gateway {
             Ok(self.executor().preview(&req, generated_at))
         })
     }
+}
+
+/// Load the plan's steps covered by a plan-level approve-all approval: the NON-critical
+/// (risk != 4) steps still `awaiting_approval`. Criticals carry their own per-step approvals and
+/// are NEVER cascaded (§6.2/§11.5 — the safety pin). The `risk_level <> 4` keys off the
+/// requester-supplied risk (recorded, not trusted — 2.1b stub-policy posture; 2.2's catalog risk
+/// makes the exclusion authoritative). Reads via the open gateway txn.
+fn load_covered_steps(gtx: &GatewayTxn, plan_id: &str) -> Result<Vec<ActionRequest>, GatewayError> {
+    let ids: Vec<String> = {
+        let mut stmt = gtx
+            .tx()
+            .prepare(
+                "SELECT action_request_id FROM action_requests \
+                 WHERE plan_id = ?1 AND risk_level <> 4 AND status = 'awaiting_approval' \
+                 ORDER BY action_request_id",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([plan_id], |r| r.get::<_, String>(0))
+            .map_err(db_err)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(db_err)?);
+        }
+        out
+    };
+    ids.iter().map(|id| request::load(gtx.tx(), id)).collect()
 }

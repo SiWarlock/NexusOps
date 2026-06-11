@@ -320,6 +320,51 @@ fn report_measured_envelope() {
     println!("===============================================================\n");
 }
 
+// ---- L2 — threshold tune-or-confirm (the bar is set by data, not the 1.7 first cut) ----------
+//
+// The L1 measurement shows the current thresholds are precision-optimal for the catchable set
+// (recall_catchable 1.0 / FP 0.0), and residual (b) hex≈git-SHA is irreducible by tuning (lowering
+// the bare bar to catch hex secrets would also mask real git-SHAs). So L2 = CONFIRM, with the
+// measurement as the justification; the recall bar does NOT move → ENGINE_VERSION is NOT bumped.
+
+use nexusopsd::eventstore::redaction::{
+    BARE_ENTROPY_BITS, BARE_MIN_LEN, KV_ENTROPY_BITS, KV_MIN_LEN,
+};
+
+/// The named entropy thresholds are at their CONFIRMED measured-optimal values, and the L1
+/// floor/ceiling envelope still holds at those values. The measurement IS the justification
+/// (`ARCHITECTURE.md §15` / OQ-SEC-2 line 360): a silent edit to a load-bearing threshold is
+/// caught, and the confirmed bar is proven to still meet the measured envelope.
+#[test]
+fn test_tuned_thresholds_named_and_measured() {
+    // confirmed measured-optimal — see redaction.rs for the per-const measured justification.
+    assert_eq!(KV_ENTROPY_BITS, 4.0, "KV entropy bar");
+    assert_eq!(KV_MIN_LEN, 20, "KV min length");
+    assert_eq!(BARE_ENTROPY_BITS, 4.5, "bare-run entropy bar");
+    assert_eq!(BARE_MIN_LEN, 40, "bare-run min length");
+
+    // the L1 envelope still holds AT these confirmed thresholds (the pin travels with the bar).
+    let r = measure(&PrefixRedactor, &corpus::all());
+    assert!(
+        r.recall_catchable().unwrap() >= BASELINE_RECALL_FLOOR,
+        "confirmed thresholds must still meet the §15 recall floor"
+    );
+    assert!(
+        r.fp_rate().unwrap() <= BASELINE_FP_CEILING,
+        "confirmed thresholds must still meet the §15 FP ceiling"
+    );
+}
+
+/// L2 CONFIRMED the thresholds (no retune) → the recall bar did NOT move → `ENGINE_VERSION` is NOT
+/// bumped. The engine version is the provenance contract of WHICH bar produced a persisted row
+/// (`redaction.rs:59`); a bump without a bar-move would be a false provenance signal. Pins the
+/// confirm decision (the inverse of brief test 7, which fires only if the bar moves).
+#[test]
+fn test_engine_version_unchanged_when_bar_unchanged() {
+    let out = PrefixRedactor.redact("{\"x\":1}");
+    assert_eq!(out.engine_version, "prefix-entropy-v2");
+}
+
 // ============================================================================================
 // harness — a pure, deterministic measurement harness over a labeled corpus.
 // ============================================================================================
@@ -524,7 +569,7 @@ mod corpus {
             ),
             // --- KvValue: KEY=value high-entropy (entropy fallback; catchable except split) ---
             Sample::secret(
-                "FAKEZx9Kq2Lm7Wp4Rn1Vc6Bt3Hy8Fd5Gj0Aa2Ss", // base64-ish 40-char value
+                "FAKEZx9Kq2Lm7Wp4Rn1Vc6Bt3Hy8Fd5Gj0Aa2Ss", // base64-ish 39-char value
                 "{\"env\":\"API_SECRET=FAKEZx9Kq2Lm7Wp4Rn1Vc6Bt3Hy8Fd5Gj0Aa2Ss\"}",
                 Category::KvValue,
                 true,
@@ -587,7 +632,7 @@ mod corpus {
                 Category::BareRun,
             ),
             Sample::non_secret(
-                "550e8400-e29b-41d4-a716-446655440000", // UUID v4 (dashes fragment the run)
+                "550e8400-e29b-41d4-a716-446655440000", // UUID v4 (len 36 < BARE_MIN_LEN=40 → spared by length; `-` is in the token alphabet)
                 "{\"uuid\":\"550e8400-e29b-41d4-a716-446655440000\"}",
                 Category::BareRun,
             ),

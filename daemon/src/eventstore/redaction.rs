@@ -60,19 +60,25 @@ const SECRET_PREFIXES: &[&str] = &["ghp_", "github_pat_", "sk-", "xox", "AKIA", 
 /// of WHICH recall bar produced a row (a future re-tune bumps it again).
 const ENGINE_VERSION: &str = "prefix-entropy-v2";
 
-/// `KEY=value` high-entropy value bar (OQ-SEC-2). The `=` assignment context raises
-/// confidence, so the bar is lower than a bare run. Tuned against the fixtures: a real
-/// 40-char key (≈5.5 bits/char) masks; `LOG_LEVEL=info`/`PORT=8080` (short, low-entropy)
-/// and ordinary paths/URLs (low-entropy) do not.
-const KV_ENTROPY_BITS: f64 = 4.0;
-const KV_MIN_LEN: usize = 20;
+/// `KEY=value` high-entropy value bar (OQ-SEC-2). The `=` assignment context raises confidence,
+/// so the bar is lower than a bare run. **Confirmed sufficient on the 2.0-SEC measured corpus**
+/// (`daemon/tests/redaction_recall.rs`, pinned by `test_tuned_thresholds_named_and_measured`): at
+/// 4.0 bits / 20 char the catchable KV secrets (base64 · `+`/`/` AWS · padding-diluted) all mask
+/// while `LOG_LEVEL=info`/`PORT=8080` and ordinary paths/URLs do not — recall_catchable 1.0 /
+/// FP 0.0. (Sufficient on the corpus, not a proven unique global optimum.) `pub` so the bar is a
+/// named, measured, regression-guarded contract.
+pub const KV_ENTROPY_BITS: f64 = 4.0;
+pub const KV_MIN_LEN: usize = 20;
 
-/// Bare high-entropy run bar — a high-entropy token NOT in a `KEY=value` position. Stricter
-/// than the KV bar because there is no `=` context: ≥40 char (spares ≤31-char prefixed-ULID
-/// IDs) AND ≥4.5 bits/char (spares 4.0-bit hex hashes / git SHAs). Catches a raw base64
-/// blob; over-masks only rare legit high-entropy blobs (low harm — the event still persists).
-const BARE_ENTROPY_BITS: f64 = 4.5;
-const BARE_MIN_LEN: usize = 40;
+/// Bare high-entropy run bar — a high-entropy token NOT in a `KEY=value` position. Stricter than
+/// the KV bar because there is no `=` context: ≥40 char (spares ≤31-char prefixed-ULID IDs) AND
+/// ≥4.5 bits/char (spares ~4.0-bit hex hashes / git SHAs). **Confirmed sufficient on the 2.0-SEC
+/// measured corpus**: catches a raw ≥40-char base64 blob with zero false masks. The 4.5 bar is
+/// load-bearing for precision — lowering it to catch hex≈git-SHA secrets (residual b, ~4.0 bits)
+/// would also mask real git-SHAs, since entropy can't discriminate them; that recall/precision
+/// trade is irreducible by tuning (→ an extend-detection decision, not a threshold one).
+pub const BARE_ENTROPY_BITS: f64 = 4.5;
+pub const BARE_MIN_LEN: usize = 40;
 
 impl Redactor for PrefixRedactor {
     fn redact(&self, payload_json: &str) -> RedactionOutcome {

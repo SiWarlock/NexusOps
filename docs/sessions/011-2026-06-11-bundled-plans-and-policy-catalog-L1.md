@@ -4,7 +4,7 @@
 - **Phase:** 2 (Action Gateway) — 2.1c COMPLETE; 2.2 IN PROGRESS (L1 landed, **resume at L2**)
 - **Track:** daemon (single-track, on `main`)
 - **Predecessor:** [010 — action-contract freeze + Gateway chokepoint](010-2026-06-11-action-contract-freeze-and-gateway-chokepoint.md)
-- **Successor:** _(next session — the fresh daemon-implementer resuming 2.2-L2)_
+- **Successor:** [012 — policy engine + executor framework (2.2 + 2.3 complete)](012-2026-06-11-policy-engine-and-executor-framework.md)
 - **Close-out reason:** IMPL-ONLY context cycle (impl 71% WARN; orchestrator 53% OK continues; no round seal — 2.2 mid-flight). Clean L1 boundary.
 
 ## Why this session existed

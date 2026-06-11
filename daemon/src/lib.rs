@@ -9,6 +9,7 @@
 pub mod bootstrap;
 pub mod clock;
 pub mod eventstore;
+pub mod gateway;
 pub mod idgen;
 pub mod ipc;
 pub mod locks;

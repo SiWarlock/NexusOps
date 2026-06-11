@@ -328,3 +328,42 @@ CREATE TABLE quarantine (
   audit_emitted INTEGER NOT NULL DEFAULT 0
 );
 ";
+
+/// Migration 7 (P2.1b Action Gateway) — the durable registry rows the Gateway pipeline operates
+/// on (DATA_MODEL §2.9, binding): `action_requests` (the submitted intents, `act_` PK) and
+/// `approvals` (the human/policy decisions, `appr_` PK). These persist the frozen §6.2 models (the
+/// contract is the `shared/` types; these tables materialize the current state — status columns
+/// bind the §5.1 ActionRequest(15)/Approval(10) enums). The Gateway writes them ONLY through the
+/// single write-actor, in the same txn as the authoritative `ActionExecution*` event (INV-SEC-1 /
+/// §15 fail-closed). `ux_action_idem` dedups by idempotency key (partial — NULL keys are
+/// unconstrained). Daemon-internal tables — not a new `shared/` surface.
+pub const MIGRATION_7_GATEWAY: &str = "\
+CREATE TABLE action_requests (
+  action_request_id  TEXT PRIMARY KEY,   -- 'act_' + ULID (§5.2)
+  project_id         TEXT,               -- NULL for project-less actions (global/system scope)
+  action_type        TEXT NOT NULL,      -- §6.3 catalog (String until 2.2)
+  requester_type     TEXT NOT NULL,      -- §6.2 RequesterType
+  requester_id       TEXT NOT NULL,
+  resource_refs_json TEXT NOT NULL,      -- §6.2 ResourceRef[]
+  inputs_json        TEXT,               -- the open per-action-type payload
+  risk_level         INTEGER NOT NULL,   -- §6.2 RiskLevel 0-4 (recorded; 2.2 makes it authoritative)
+  idempotency_key    TEXT,
+  fencing_token      INTEGER,            -- the lease token execution must present (§17; bound 2.4)
+  status             TEXT NOT NULL,      -- §5.1 ActionRequest (15)
+  preview_json       TEXT,               -- §6.2 ActionPreview (stub until 2.3)
+  created_at         TEXT NOT NULL
+);
+CREATE UNIQUE INDEX ux_action_idem ON action_requests(idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+CREATE TABLE approvals (
+  approval_id       TEXT PRIMARY KEY,    -- 'appr_' + ULID (§5.2)
+  action_request_id TEXT NOT NULL REFERENCES action_requests(action_request_id),
+  status            TEXT NOT NULL,       -- §5.1 Approval (10)
+  required_approver TEXT,                -- §6.2 RequiredApprover
+  decided_by        TEXT,
+  decided_at        TEXT,
+  expires_at        TEXT,
+  created_at        TEXT NOT NULL
+);
+CREATE INDEX ix_approvals_action ON approvals(action_request_id);
+";

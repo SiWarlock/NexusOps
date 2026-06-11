@@ -2,6 +2,8 @@
 
 **Date:** 2026-06-11 · **Track:** daemon · **Implementer close-out (LEAN — context HARD-STOP at 96%; orchestrator carries /preflight + close-out verification at /orchestrate-end).**
 
+**Successor:** [011 — bundled plans (2.1c) + policy-catalog L1 (2.2)](011-2026-06-11-bundled-plans-and-policy-catalog-L1.md)
+
 ## Slices landed (all committed, GREEN at each layer)
 
 | Slice | Commit | What |

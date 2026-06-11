@@ -779,6 +779,15 @@ impl Gateway {
     ) -> Result<ActionAck, GatewayError> {
         let act_id = req.action_request_id.as_str().to_string();
 
+        // §14 crash sim (cfg-gated, test-only — compiled out of release): abort BEFORE the
+        // executing-commit → leaves a `queued` orphan for L5's crash-reconcile.
+        #[cfg(feature = "fault-injection")]
+        if crate::fault::take_if(crate::fault::FaultPoint::BeforeExecutingTxn) {
+            return Err(GatewayError::Serialize(
+                "injected §14 crash (BeforeExecutingTxn)".to_string(),
+            ));
+        }
+
         // txn-A: queued → executing + ActionStarted. Commits FIRST so the action is durably `executing`
         // before the side effect / terminal write — a crash or a fail-closed terminal write then leaves
         // a reconcilable `executing` orphan (L5), not a lost pre-execution slot. (`WHERE status=queued`
@@ -859,6 +868,15 @@ impl Gateway {
         if self.precondition().recheck(req) == PreconditionStatus::Changed {
             self.record_stale_precondition(store, req)?;
             return Err(GatewayError::StalePrecondition);
+        }
+
+        // §14 crash sim (cfg-gated, test-only — compiled out of release): abort AFTER the
+        // executing-commit (txn-A) + BEFORE the terminal txn → leaves an `executing` orphan for L5.
+        #[cfg(feature = "fault-injection")]
+        if crate::fault::take_if(crate::fault::FaultPoint::BeforeTerminalTxn) {
+            return Err(GatewayError::Serialize(
+                "injected §14 crash (BeforeTerminalTxn)".to_string(),
+            ));
         }
 
         // the side effect (2.4 stubs: NONE) runs BETWEEN txn-A and txn-B (off the write-actor, §16).

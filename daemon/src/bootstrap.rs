@@ -110,6 +110,11 @@ pub enum BootstrapError {
     /// not start half-identified (§16).
     #[error("bootstrap registration error: {0}")]
     Registration(String),
+    /// crash-reconcile (2.4 L5) could not drive an orphaned action to terminal — a fail-closed
+    /// audit-write failure during reconcile. Fail-closed: the daemon does not start having silently
+    /// left a mid-pipeline orphan un-reconciled (§17). The orphan stays for the next restart.
+    #[error("bootstrap crash-reconcile error: {0}")]
+    Reconcile(String),
 }
 
 impl From<PidLockError> for BootstrapError {
@@ -169,6 +174,12 @@ pub fn cold_start(cfg: BootstrapConfig) -> Result<DaemonContext, BootstrapError>
     // 1.6c L2). Emitted HERE (the caller, after open) — replay itself stays append-free; idempotent
     // via the quarantine record (`audit_emitted`) + the `audit-integrity-{seq}` idempotency_key.
     store.emit_quarantine_audit_events()?;
+
+    // (7) crash-reconcile (§17 L5): drive any action a crash stranded mid-pipeline (`executing`/
+    // `queued`) to a terminal state + emit its missing terminal event. AFTER open's catch-up-replay +
+    // outbox crash-recovery + the quarantine audit-events — the restart-recovery composition point.
+    crate::gateway::recovery::reconcile_orphans(&mut store)
+        .map_err(|e| BootstrapError::Reconcile(e.to_string()))?;
 
     Ok(DaemonContext {
         _pidlock: pidlock,

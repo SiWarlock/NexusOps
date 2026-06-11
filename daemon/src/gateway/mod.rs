@@ -19,6 +19,7 @@ pub mod plan;
 pub mod policy;
 pub mod precondition;
 pub mod preview;
+pub mod recovery;
 pub mod request;
 
 use serde::Serialize;

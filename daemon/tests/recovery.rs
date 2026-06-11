@@ -24,7 +24,7 @@ use nexusopsd::fault::{arm, arm_n, FaultPoint};
 use nexusopsd::gateway::executor::{ActionExecutor, ExecError, ExecutionOutcome, StubExecutor};
 use nexusopsd::gateway::policy::CatalogPolicy;
 use nexusopsd::gateway::precondition::{PreconditionOracle, PreconditionStatus};
-use nexusopsd::gateway::Gateway;
+use nexusopsd::gateway::{recovery, Gateway};
 use nexusopsd::idgen::UlidGen;
 use nexusopsd::locks::{LeaseKind, OwnerId, ResourceId};
 
@@ -562,4 +562,185 @@ fn precondition_unchanged_executes() {
         "an unchanged precondition executes through to succeeded"
     );
     assert_eq!(action_status(&path).as_deref(), Some("succeeded"));
+}
+
+// =================================================================================================
+// L5 — crash-reconcile (the capstone, §17 daemon-crash-mid-action). On restart, the bootstrap scans
+// orphaned `executing`/`queued` action rows + drives each to a terminal state, emitting the missing
+// terminal event. `executing` (maybe-side-effect) → unknown_outcome + KEEP idempotency_key (dedup
+// protects a double-run); `queued` (execute never started → no side effect) → failed + CLEAR the key
+// (safe to re-submit). The §14 BeforeExecutingTxn / BeforeTerminalTxn checkpoints simulate the crash.
+// =================================================================================================
+
+/// the `idempotency_key` of the single action_requests row (NULL after a queued-orphan reconcile).
+fn action_idempotency_key(path: &std::path::Path) -> Option<String> {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row("SELECT idempotency_key FROM action_requests", [], |r| {
+        r.get::<_, Option<String>>(0)
+    })
+    .ok()
+    .flatten()
+}
+
+// ---- L5 RED #1 — an orphaned `executing` action is reconciled to unknown_outcome on restart ---------
+
+#[test]
+fn orphaned_executing_reconciled_on_restart() {
+    // spec(§17 daemon-crash-mid-action) — a crash AFTER the executing-commit but BEFORE the terminal
+    // event leaves an orphaned `executing` row. On restart, reconcile drives it to a terminal state +
+    // emits the missing terminal event. With 2.4's stub executor there is no real side-effect re-read,
+    // so the outcome is un-reconcilable → `unknown_outcome` (ActionFailed{UnknownOutcome}, the loud
+    // audit-integrity record). The action ends terminal (never stuck `executing`).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = catalog_gateway();
+
+    // §14 crash mid-execute: brain.ask (risk-0) auto-executes; BeforeTerminalTxn aborts after txn-A.
+    arm(FaultPoint::BeforeTerminalTxn);
+    let _ = gw.submit_action(&mut store, sample_request("brain.ask", RiskLevel::Level0));
+    assert_eq!(
+        action_status(&path).as_deref(),
+        Some("executing"),
+        "the crash left an orphaned `executing` row (txn-A committed, the terminal txn never ran)"
+    );
+
+    // restart reconcile.
+    let n = recovery::reconcile_orphans(&mut store).expect("reconcile orphans");
+    assert_eq!(n, 1, "exactly one orphan reconciled");
+    assert_eq!(
+        action_status(&path).as_deref(),
+        Some("failed"),
+        "the orphan is driven to a terminal state (no longer stuck executing)"
+    );
+    assert_eq!(
+        action_failed_error(&store),
+        Some(ActionError::UnknownOutcome),
+        "an executing orphan is un-reconcilable in 2.4 → unknown_outcome (the loud audit-integrity record)"
+    );
+    assert!(
+        action_event_types(&store).contains(&"ActionFailed".to_string()),
+        "the missing terminal event is emitted on reconcile"
+    );
+}
+
+// ---- L5 RED #2 — N orphans are ALL reconciled (the cascade form) -----------------------------------
+
+#[test]
+fn cascade_orphans_all_reconciled() {
+    // spec(§17 / 2.1c carry-forward) — the reconcile covers the N-orphan form, not just a single
+    // action (a plan cascade strands N steps; the reconcile logic is source-agnostic — exercised here
+    // by N aborted submits). Every orphan is driven to terminal; none is left `executing`.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = catalog_gateway();
+
+    // 3 actions, each crash-aborted mid-execute → 3 orphaned `executing` rows.
+    arm_n(FaultPoint::BeforeTerminalTxn, 3);
+    for _ in 0..3 {
+        let _ = gw.submit_action(&mut store, sample_request("brain.ask", RiskLevel::Level0));
+    }
+    let executing_before = nexusopsd::eventstore::open_read_only(&path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM action_requests WHERE status = 'executing'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(executing_before, 3, "3 orphaned executing rows");
+
+    let n = recovery::reconcile_orphans(&mut store).expect("reconcile orphans");
+    assert_eq!(n, 3, "ALL 3 orphans reconciled (not just one)");
+    let executing_after = nexusopsd::eventstore::open_read_only(&path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM action_requests WHERE status = 'executing'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        executing_after, 0,
+        "no orphan is left executing — all driven to terminal"
+    );
+}
+
+// ---- L5 RED #3 — a `queued` orphan reconciles to failed + CLEARS the idempotency_key (Q6) ----------
+
+#[test]
+fn reconcile_queued_orphan_clears_idempotency_key() {
+    // spec(§17 / Q6 dedup-key) — a `queued` orphan (the crash happened after approve+queue but BEFORE
+    // execute started → no side effect) reconciles to `failed` and CLEARS its idempotency_key: the
+    // action definitively never ran, so it is safe to re-submit (clearing the key avoids the 2.3 dedup
+    // re-run lockout). session.create is FromInputs-keyed (risk-2 → approve path; no resource_ref → no L3 fence).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = catalog_gateway();
+
+    gw.submit_action(
+        &mut store,
+        sample_request("session.create", RiskLevel::Level2),
+    )
+    .expect("submit");
+    assert!(
+        action_idempotency_key(&path).is_some(),
+        "session.create derives a FromInputs idempotency_key"
+    );
+    let appr = approval_id_of(&path);
+    // §14 crash BEFORE the executing-commit → leaves the action `queued`.
+    arm(FaultPoint::BeforeExecutingTxn);
+    let _ = gw.approve(&mut store, &appr);
+    assert_eq!(
+        action_status(&path).as_deref(),
+        Some("queued"),
+        "the crash left the action `queued` (the decision txn committed queued; execute never began)"
+    );
+
+    let n = recovery::reconcile_orphans(&mut store).expect("reconcile orphans");
+    assert_eq!(n, 1);
+    assert_eq!(
+        action_status(&path).as_deref(),
+        Some("failed"),
+        "a queued orphan → failed (never ran)"
+    );
+    assert!(
+        action_idempotency_key(&path).is_none(),
+        "the idempotency_key is CLEARED — safe to re-submit (no side effect happened)"
+    );
+}
+
+// ---- L5 RED #4 — an `executing` orphan KEEPS its idempotency_key (Q6 dedup-protect) -----------------
+
+#[test]
+fn reconcile_executing_orphan_keeps_idempotency_key() {
+    // spec(§17 / Q6 dedup-key) — an `executing` orphan (a crash mid-execute → a side effect MAY have
+    // landed) reconciles to unknown_outcome and KEEPS its idempotency_key: dedup must protect against a
+    // double-run of a maybe-applied mutation (a re-submit replays the original, not a 2nd execution).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = catalog_gateway();
+
+    gw.submit_action(
+        &mut store,
+        sample_request("session.create", RiskLevel::Level2),
+    )
+    .expect("submit");
+    let key_before = action_idempotency_key(&path).expect("a FromInputs key");
+    let appr = approval_id_of(&path);
+    // §14 crash AFTER the executing-commit → leaves the action `executing`.
+    arm(FaultPoint::BeforeTerminalTxn);
+    let _ = gw.approve(&mut store, &appr);
+    assert_eq!(action_status(&path).as_deref(), Some("executing"));
+
+    let n = recovery::reconcile_orphans(&mut store).expect("reconcile orphans");
+    assert_eq!(n, 1);
+    assert_eq!(
+        action_failed_error(&store),
+        Some(ActionError::UnknownOutcome)
+    );
+    assert_eq!(
+        action_idempotency_key(&path).as_deref(),
+        Some(key_before.as_str()),
+        "the idempotency_key is KEPT — dedup protects against a double-run of a maybe-applied mutation"
+    );
 }

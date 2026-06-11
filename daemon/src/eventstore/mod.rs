@@ -254,6 +254,14 @@ impl EventStore {
         Ok(result)
     }
 
+    /// A read borrow of the writer's connection — for the Gateway's crash-reconcile scan (2.4 L5),
+    /// which reads `action_requests` (the writer can read its own committed rows; this is a READ, not
+    /// a second writer — forbidden #3 governs WRITES). The caller collects owned data, releasing the
+    /// borrow before any `gateway_txn`.
+    pub(crate) fn read_conn(&self) -> &Connection {
+        &self.conn
+    }
+
     /// All events in canonical `seq` order. Strict — a malformed row is an error
     /// (use [`EventStore::read_all_degradable`] for resilient reads).
     pub fn read_all(&self) -> Result<Vec<EventEnvelope>, EventStoreError> {

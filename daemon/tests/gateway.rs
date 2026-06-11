@@ -175,6 +175,7 @@ fn test_action_request_transition_guard_legal_and_illegal() {
         (AR::AwaitingApproval, AR::Expired),
         (AR::Executing, AR::Failed),
         (AR::Executing, AR::PartiallySucceeded),
+        (AR::Queued, AR::Failed), // 2.4 L5 crash-reconcile: a queued orphan never ran → failed
     ] {
         assert!(t(from, to), "legal edge {from:?}→{to:?} must be accepted");
     }

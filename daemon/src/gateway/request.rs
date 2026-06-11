@@ -42,7 +42,9 @@ pub fn can_transition(from: ActionRequest, to: ActionRequest) -> bool {
             | (PolicyDecided, AwaitingApproval | Queued | Denied | Cancelled)
             | (AwaitingApproval, Approved | Denied | Expired | Cancelled)
             | (Approved, Queued | Cancelled)
-            | (Queued, Executing | Cancelled)
+            // 2.4 L5: a `queued` crash-orphan reconciles to `failed` (it never executed → no side
+            // effect → safe terminal). The crash-reconcile is the only driver of this edge.
+            | (Queued, Executing | Cancelled | Failed)
             | (Executing, Succeeded | Failed | PartiallySucceeded)
             // 2.4 — the §5.1 rollback edges: a settled outcome may be rolled back (the rollback seam;
             // the default executor rollback fails closed → rollback_failed). NOT a backdoor to
@@ -253,6 +255,51 @@ pub(crate) fn find_by_idempotency_key(
         Some((id, status)) => Ok(Some((id, from_wire(serde_json::Value::String(status))?))),
         None => Ok(None),
     }
+}
+
+/// Scan ALL orphaned action rows (status `executing` or `queued`) for crash-reconcile (2.4 L5). Returns
+/// `(action_request_id, status)` per orphan. **plan_id-AGNOSTIC** — a single action and a plan-cascade
+/// step are the same orphan to the reconciler (it drives each to terminal BY STATUS, regardless of
+/// source). Read over any `&Connection`.
+pub(crate) fn scan_orphans(
+    conn: &Connection,
+) -> Result<Vec<(String, ActionRequest)>, GatewayError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT action_request_id, status FROM action_requests \
+             WHERE status IN ('executing','queued')",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(db_err)?;
+    let mut out = Vec::new();
+    for r in rows {
+        let (id, status) = r.map_err(db_err)?;
+        out.push((id, from_wire(serde_json::Value::String(status))?));
+    }
+    Ok(out)
+}
+
+/// Clear the action's `idempotency_key` (2.4 L5 Q6) — a `queued` orphan definitively never ran (no side
+/// effect), so clearing its dedup key makes a re-submit re-runnable (no 2.3 dedup lockout). Conditioned
+/// on the row existing (a missing id → `NotFound`, never a silent no-op).
+pub(crate) fn clear_idempotency_key(
+    tx: &Transaction,
+    action_request_id: &str,
+) -> Result<(), GatewayError> {
+    let n = tx
+        .execute(
+            "UPDATE action_requests SET idempotency_key = NULL WHERE action_request_id = ?1",
+            [action_request_id],
+        )
+        .map_err(db_err)?;
+    if n == 0 {
+        return Err(GatewayError::NotFound(format!(
+            "action_requests {action_request_id} (clear idempotency_key)"
+        )));
+    }
+    Ok(())
 }
 
 /// Persist a generated `ActionPreview` (already serialized + §15-redacted) to the action's

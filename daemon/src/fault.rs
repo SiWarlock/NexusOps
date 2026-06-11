@@ -23,8 +23,12 @@ pub enum FaultPoint {
     /// Count > 1 fails BOTH the success record (txn-B) AND the best-effort partial-success record
     /// (txn-C) — the audit-fully-broken case.
     TerminalEventWrite,
-    // L5 adds `BeforeTerminalTxn` (a crash between the executing-commit and the terminal txn) WITH
-    // its consult site — declared there, not here, so no checkpoint ships without a firing site.
+    /// the gateway aborts at execute START, BEFORE the executing-commit (txn-A) — models a crash after
+    /// approve+queue but before execute began, leaving a `queued` orphan (L5 crash-reconcile). One-shot/counted.
+    BeforeExecutingTxn,
+    /// the gateway aborts AFTER the executing-commit (txn-A) + BEFORE the terminal txn — models a crash
+    /// mid-execute, leaving an `executing` orphan (L5 crash-reconcile). One-shot/counted.
+    BeforeTerminalTxn,
 }
 
 thread_local! {

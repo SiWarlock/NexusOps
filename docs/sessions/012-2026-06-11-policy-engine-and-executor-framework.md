@@ -4,7 +4,7 @@
 - **Phase:** 2 (Action Gateway) — **2.2 COMPLETE** (L2+L3 this session; L1 was `1b45e9d`) · **2.3 COMPLETE** (L1+L2+L3)
 - **Track:** daemon (single-track, on `main`)
 - **Predecessor:** [011 — bundled plans + policy-catalog L1](011-2026-06-11-bundled-plans-and-policy-catalog-L1.md)
-- **Successor:** _(next session — the fresh daemon-implementer resuming Phase 2.4)_
+- **Successor:** [013 — the Gateway's §17 safety capstone (2.4 L1–L5)](013-2026-06-11-gateway-17-safety-capstone.md)
 - **Close-out reason:** IMPL-ONLY context cycle (lead-rung at ACTION 77%); the orchestrator continues. Clean phase boundary (2.3 complete).
 
 ## Why this session existed

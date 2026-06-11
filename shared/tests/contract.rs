@@ -716,8 +716,9 @@ fn test_sensitive_output_redacted_wire_contract() {
 fn test_contract_version_bumped_for_sensitive_output_redacted() {
     // 0.15.0 = the 2.1a action-contract freeze (§6.2 models + 9 enums + gateway IDs + Timestamp);
     // 0.16.0 = the 2.1b ActionExecution* event family + ActionAck; 0.17.0 = the 2.1c PlanAck
-    // submit_action_plan wire type (O-3) — all additive (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.17.0");
+    // submit_action_plan wire type (O-3); 0.18.0 = the 2.2 ActionTypeCatalog + PolicyDecision
+    // extension — all additive (§5.0). (The canonical version pin is `test_contract_version_bumped_0_18_0`.)
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.18.0");
 }
 
 // ---- P2.1c L2 — the §6.1 PlanAck wire type (§2.5-seam snapshot, O-3) -----------------------
@@ -912,10 +913,14 @@ fn sample_action_result() -> nexusops_shared::actions::ActionResult {
 }
 
 fn sample_policy_decision() -> nexusops_shared::actions::PolicyDecision {
-    use nexusops_shared::actions::{PolicyDecision, PolicyDecisionStatus};
+    use nexusops_shared::actions::{PolicyDecision, PolicyDecisionStatus, RequiredApprover};
+    // fully-populated (every optional Some / non-empty) so the field-name snapshot sees every key.
     PolicyDecision {
         status: PolicyDecisionStatus::RequireApproval,
-        reasons: vec!["risk >= 2 requires approval".to_string()],
+        reasons: vec!["risk >= 1 requires approval".to_string()],
+        required_approvals: vec![RequiredApprover::current_user()],
+        constraints: vec!["execute within the active worktree".to_string()],
+        safer_alt: Some("github.create_pr_draft".to_string()),
     }
 }
 
@@ -1014,7 +1019,18 @@ fn test_action_model_field_names_snapshot() {
         &sample_evidence_ref(),
         &["type", "id", "label", "confidence"],
     );
-    expect_fields(&sample_policy_decision(), &["status", "reasons"]);
+    // PolicyDecision gained its 2.2 fields (required_approvals/constraints/safer_alt) — see also
+    // the dedicated P2.2 §2.5-seam snapshot `test_catalog_and_policy_decision_field_snapshot`.
+    expect_fields(
+        &sample_policy_decision(),
+        &[
+            "status",
+            "reasons",
+            "required_approvals",
+            "constraints",
+            "safer_alt",
+        ],
+    );
 }
 
 // ---- RED #2 — RequesterType wire values (§6.2 / R-2 / §15) --------------------------------
@@ -1363,4 +1379,125 @@ fn test_nested_structs_reject_unknown_fields() {
     assert_rejects_unknown!(ResourceRef, sample_resource_ref());
     assert_rejects_unknown!(EvidenceRef, sample_evidence_ref());
     assert_rejects_unknown!(ActionResult, sample_action_result());
+    // 2.2 — the catalog entry + the extended PolicyDecision carry deny_unknown_fields too.
+    assert_rejects_unknown!(
+        nexusops_shared::catalog::ActionTypeCatalogEntry,
+        sample_catalog_entry()
+    );
+    assert_rejects_unknown!(
+        nexusops_shared::actions::PolicyDecision,
+        sample_policy_decision()
+    );
+}
+
+// =====================================================================================
+// P2.2 L1 — the §6.3 ActionTypeCatalog contract (shared/) + the PolicyDecision extension.
+// BINDING: ARCHITECTURE Appendix A row ActionTypeCatalog (§6.3 — per action_type: params schema,
+// locked risk 0-4, required preview class, idempotency-key formula, executor, resource_refs
+// required) + the §6.3 LOCKED MVP 22-type set + AG §7 (risk defs) + §12 (PolicyDecision).
+// =====================================================================================
+
+// ---- L1 RED #1 — the catalog covers the §6.3 MVP set, each entry binding -------------------
+
+#[test]
+fn test_action_type_catalog_covers_mvp_set() {
+    // spec(§6.3) — every §6.3 MVP action_type has a binding catalog entry (a locked risk 0-4 +
+    // preview class + executor + the flags). The closed 22-type set; presence + a valid risk is the
+    // contract (the AS-BUILT per-type values are recorded in Appendix-A + reviewed at Step-2.5).
+    use nexusops_shared::actions::RiskLevel;
+    use nexusops_shared::catalog::{lookup, MVP_ACTION_TYPES};
+
+    assert_eq!(
+        MVP_ACTION_TYPES.len(),
+        22,
+        "the §6.3 LOCKED MVP set is 22 types"
+    );
+    for at in MVP_ACTION_TYPES {
+        let e = lookup(at).unwrap_or_else(|| panic!("catalog missing the MVP type {at}"));
+        assert!(
+            RiskLevel::ALL.contains(&e.locked_risk),
+            "{at} has a locked risk in 0..=4"
+        );
+    }
+    // the §6.3/OQ-WP-5 null-input_schema floor type is present + flagged (params_schema_present=false)
+    let wci = lookup("workflow.command.invoke").expect("workflow.command.invoke in the catalog");
+    assert!(
+        !wci.params_schema_present,
+        "workflow.command.invoke carries a null input_schema (the §6.3 approval floor)"
+    );
+    // pin the two LOAD-BEARING anchors of the AS-BUILT risk table (not just reflexive membership):
+    // the sole critical (the safety-pin anchor) + a read-only auto-execute-eligible type.
+    assert_eq!(
+        wci.locked_risk,
+        RiskLevel::Level4,
+        "workflow.command.invoke is the critical (risk-4) anchor — never auto-execute / approve-all"
+    );
+    assert_eq!(
+        lookup("git.status").unwrap().locked_risk,
+        RiskLevel::Level0,
+        "a read-only type is risk-0 (auto-execute eligible)"
+    );
+}
+
+// ---- L1 RED #2 — an unknown / deferred action_type fails closed (no default entry) ----------
+
+#[test]
+fn test_catalog_lookup_unknown_type_fails_closed() {
+    // spec(§15 fail-closed) — an action_type not in the closed catalog → None (a typed not-found),
+    // NEVER a default entry. A deferred high-risk type (force_push/merge/delete, AG §28.3) is
+    // simply absent — the policy denies it, never default-allows.
+    use nexusops_shared::catalog::lookup;
+    for unknown in [
+        "git.force_push",
+        "git.merge",
+        "git.delete_worktree",
+        "not.a.real.action",
+        "",
+    ] {
+        assert!(
+            lookup(unknown).is_none(),
+            "an unknown/deferred type `{unknown}` must fail closed (None), not default-allow"
+        );
+    }
+}
+
+// ---- L1 RED #3 — the catalog entry + PolicyDecision-extension field snapshots (§2.5-seam) ----
+
+fn sample_catalog_entry() -> nexusops_shared::catalog::ActionTypeCatalogEntry {
+    // the lookup result IS the entry; sample a concrete one for the field-name snapshot.
+    nexusops_shared::catalog::lookup("git.create_worktree").expect("git.create_worktree entry")
+}
+
+#[test]
+fn test_catalog_and_policy_decision_field_snapshot() {
+    // spec(§6.3 / §6.2) — §2.5-seam freeze guards. A field added/removed/renamed on the catalog
+    // entry or the extended PolicyDecision fails this snapshot. The expected sets ARE the freeze.
+    expect_fields(
+        &sample_catalog_entry(),
+        &[
+            "locked_risk",
+            "preview_class",
+            "idempotency_formula",
+            "executor",
+            "requires_resource_refs",
+            "params_schema_present",
+        ],
+    );
+    expect_fields(
+        &sample_policy_decision(),
+        &[
+            "status",
+            "reasons",
+            "required_approvals",
+            "constraints",
+            "safer_alt",
+        ],
+    );
+}
+
+#[test]
+fn test_contract_version_bumped_0_18_0() {
+    // 0.17.0 = the 2.1c PlanAck; 0.18.0 = the 2.2 ActionTypeCatalog (+ its enums) + the
+    // PolicyDecision extension (required_approvals/constraints/safer_alt) — additive (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.18.0");
 }

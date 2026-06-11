@@ -427,6 +427,45 @@
       "description": "`ActionSucceeded` payload (§6.2/§7.1; AG §17.1) — the executor completed the action successfully\n(executing→succeeded). Identity on the envelope; the created/changed resources land in the\n`ActionResult` surface (2.3). No payload delta in 2.1b.",
       "type": "object"
     },
+    "ActionTypeCatalogEntry": {
+      "additionalProperties": false,
+      "description": "The binding per-`action_type` catalog entry (§6.3; Appendix A row `ActionTypeCatalog`). The\n**`locked_risk` is authoritative** — the policy engine resolves risk from here. Reject-unknown\nend-to-end (§5.0/§15).",
+      "properties": {
+        "executor": {
+          "$ref": "#/$defs/ExecutorKind",
+          "description": "which executor adapter runs it (NAMED; realized 2.3)"
+        },
+        "idempotency_formula": {
+          "$ref": "#/$defs/IdempotencyFormula",
+          "description": "how the idempotency key derives (NAMED; realized 2.3)"
+        },
+        "locked_risk": {
+          "$ref": "#/$defs/RiskLevel",
+          "description": "the LOCKED risk 0-4 (authoritative; NOT the requester-supplied `risk_level`)"
+        },
+        "params_schema_present": {
+          "description": "whether the action's params carry a typed schema (`false` = the §6.3/OQ-WP-5 null-schema\nfloor — `workflow.command.invoke`)",
+          "type": "boolean"
+        },
+        "preview_class": {
+          "$ref": "#/$defs/PreviewClass",
+          "description": "the required dry-run preview class (the typed previews are 2.3)"
+        },
+        "requires_resource_refs": {
+          "description": "whether the action requires ≥1 `resource_ref`",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "locked_risk",
+        "preview_class",
+        "idempotency_formula",
+        "executor",
+        "requires_resource_refs",
+        "params_schema_present"
+      ],
+      "type": "object"
+    },
     "ActorRefBody": {
       "additionalProperties": false,
       "description": "A specific approving actor (§6.2 Approval; the `actor` of a [`RequiredApprover`]).",
@@ -877,6 +916,22 @@
       ],
       "type": "string"
     },
+    "ExecutorKind": {
+      "description": "Which executor adapter handles an action (§6.3). A NAME binding — the real per-namespace\nadapters (git CLI / octocrab / session host / …) land in 2.3.",
+      "enum": [
+        "brain",
+        "project",
+        "workflow",
+        "plan",
+        "session",
+        "git",
+        "github",
+        "linear",
+        "code",
+        "review"
+      ],
+      "type": "string"
+    },
     "GatewayObjectKind": {
       "description": "The 2 Gateway-addendum object kinds (§6.2). Serialized snake_case.",
       "enum": [
@@ -983,6 +1038,15 @@
       ],
       "type": "string"
     },
+    "IdempotencyFormula": {
+      "description": "How an action's idempotency key derives (§6.3). NAMED here; the real key derivation + the\ndedup store are 2.3. `None` = not idempotent; `FromInputs` = derived from the input payload;\n`NaturalResourceRef` = the targeted resource is the natural key.",
+      "enum": [
+        "none",
+        "from_inputs",
+        "natural_resource_ref"
+      ],
+      "type": "string"
+    },
     "IpcErrorCode": {
       "description": "The §6.4 structured wire error codes (closed set; reject-unknown). snake_case wire values.\n`protocol_error` (a bad-first-frame / handshake-required / malformed-frame violation, distinct\nfrom `unknown_method`) was added in 1.5 per the lead-ratified §6.4 gap resolution (Option B).",
       "enum": [
@@ -1073,13 +1137,34 @@
     },
     "PolicyDecision": {
       "additionalProperties": false,
-      "description": "The policy engine's decision (§6.2 / AG §12.2). Frozen as the stable core `{status, reasons}`\n— `required_approvals` / `constraints` / `safer_alt` (which reference the unpinned\nApprovalRequirement/ApprovalConstraint shapes + the safer-alt union) are the **2.2** policy-\nengine deliverable, added additively. DEFERRED → 2.2.",
+      "description": "The policy engine's decision (§6.2 / AG §12.2). The core `{status, reasons}` froze 2.1a; the 2.2\nfields landed with the catalog-driven policy engine (P2.2), defined MINIMALLY (Q3): the rich\nApprovalRequirement / ApprovalConstraint / safer-alt union shapes AG never pinned stay\npost-MVP — `required_approvals` reuses the frozen §6.2 [`RequiredApprover`], `constraints` is a\n`Vec<String>`, `safer_alt` is an `Option<String>` descriptor. Additive (optionals as `null`).",
       "properties": {
+        "constraints": {
+          "description": "minimal execution constraints the decision attaches (the rich ApprovalConstraint shape is\npost-MVP); a `Vec<String>` descriptor for now.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "reasons": {
           "items": {
             "type": "string"
           },
           "type": "array"
+        },
+        "required_approvals": {
+          "description": "the approver(s) the decision requires (empty for the non-approval statuses —\n`allow`/`deny`/`downgrade`/`needs_more_context`; populated for require_approval /\nrequire_step_approval). Reuses the frozen §6.2 [`RequiredApprover`].",
+          "items": {
+            "$ref": "#/$defs/RequiredApprover"
+          },
+          "type": "array"
+        },
+        "safer_alt": {
+          "description": "an optional safer-alternative `action_type` the engine suggests (the rich safer-alt union is\npost-MVP); a descriptor for now.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "status": {
           "$ref": "#/$defs/PolicyDecisionStatus"
@@ -1087,7 +1172,9 @@
       },
       "required": [
         "status",
-        "reasons"
+        "reasons",
+        "required_approvals",
+        "constraints"
       ],
       "type": "object"
     },
@@ -1100,6 +1187,19 @@
         "deny",
         "downgrade",
         "needs_more_context"
+      ],
+      "type": "string"
+    },
+    "PreviewClass": {
+      "description": "The required dry-run preview class for an action (§6.2/§6.3). The 6 typed per-class previews\n(command/diff/git/api/session/workflow/rollback) are 2.3's deliverable; the catalog names the\nclass each `action_type` must produce.",
+      "enum": [
+        "command",
+        "diff",
+        "git",
+        "api",
+        "session",
+        "workflow",
+        "rollback"
       ],
       "type": "string"
     },
@@ -1708,6 +1808,9 @@
     "action_succeeded": {
       "$ref": "#/$defs/ActionSucceeded"
     },
+    "action_type_catalog_entry": {
+      "$ref": "#/$defs/ActionTypeCatalogEntry"
+    },
     "actor_ref_body": {
       "$ref": "#/$defs/ActorRefBody"
     },
@@ -1762,6 +1865,9 @@
     "evidence_type": {
       "$ref": "#/$defs/EvidenceType"
     },
+    "executor_kind": {
+      "$ref": "#/$defs/ExecutorKind"
+    },
     "gateway_object_kind": {
       "$ref": "#/$defs/GatewayObjectKind"
     },
@@ -1776,6 +1882,9 @@
     },
     "id_kind": {
       "$ref": "#/$defs/IdKind"
+    },
+    "idempotency_formula": {
+      "$ref": "#/$defs/IdempotencyFormula"
     },
     "ipc_error_code": {
       "$ref": "#/$defs/IpcErrorCode"
@@ -1797,6 +1906,9 @@
     },
     "policy_decision_status": {
       "$ref": "#/$defs/PolicyDecisionStatus"
+    },
+    "preview_class": {
+      "$ref": "#/$defs/PreviewClass"
     },
     "project_brain": {
       "$ref": "#/$defs/ProjectBrain"
@@ -1963,9 +2075,13 @@
     "action_failed",
     "action_ack",
     "plan_ack",
-    "plan_step_ack"
+    "plan_step_ack",
+    "action_type_catalog_entry",
+    "preview_class",
+    "executor_kind",
+    "idempotency_formula"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.17.0"
+  "x-contract-version": "0.18.0"
 }

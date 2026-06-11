@@ -7,6 +7,7 @@
 
 pub mod actions;
 pub mod actor;
+pub mod catalog;
 pub mod event_envelope;
 pub mod events;
 pub mod gateway_ids;
@@ -45,7 +46,11 @@ pub mod time;
 /// 0.17.0 (2.1c) adds the §6.1 `submit_action_plan` result wire types `PlanAck`/`PlanStepAck` (the
 /// O-3 bundled-plan ack: the plan handle + per-step minted ids/status) — additive. The plan grouping
 /// itself is daemon-internal (`action_plans` table + `plan_id` FK), NOT a new `shared/` type / event.
-pub const CONTRACT_VERSION: &str = "0.17.0";
+/// 0.18.0 (2.2) adds the §6.3 `ActionTypeCatalog` contract (`ActionTypeCatalogEntry` + the
+/// `PreviewClass`/`ExecutorKind`/`IdempotencyFormula` enums, `shared/src/catalog.rs`) + the
+/// `PolicyDecision` extension (`required_approvals`/`constraints`/`safer_alt`) — additive (the
+/// catalog-driven policy engine's authoritative per-type risk + the richer decision payload).
+pub const CONTRACT_VERSION: &str = "0.18.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

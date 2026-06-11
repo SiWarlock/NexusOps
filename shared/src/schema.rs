@@ -16,6 +16,7 @@ use crate::actions::{
     RequiredApproverKind, ResourceRef, ResourceType, RiskLevel,
 };
 use crate::actor::ActorType;
+use crate::catalog::{ActionTypeCatalogEntry, ExecutorKind, IdempotencyFormula, PreviewClass};
 use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility};
 use crate::events::{
     ActionApprovalRequested, ActionApproved, ActionDenied, ActionExpired, ActionFailed,
@@ -133,6 +134,12 @@ struct ContractBundle {
     // 2.1c — the §6.1 `submit_action_plan` result wire type (O-3 bundled plans). Additive.
     plan_ack: PlanAck,
     plan_step_ack: PlanStepAck,
+    // 2.2 — the §6.3 ActionTypeCatalog contract (the per-type entry + its enums). The catalog DATA
+    // (the per-type table) lives in `catalog::lookup`; the schema captures the entry TYPE. Additive.
+    action_type_catalog_entry: ActionTypeCatalogEntry,
+    preview_class: PreviewClass,
+    executor_kind: ExecutorKind,
+    idempotency_formula: IdempotencyFormula,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

@@ -24,6 +24,10 @@ impl PolicyEngine for StubPolicy {
                 "2.1b stub policy: every action requires approval until the 2.2 risk engine"
                     .to_string(),
             ],
+            // the 2.2 PolicyDecision fields — empty for the require-approval-for-all stub.
+            required_approvals: vec![],
+            constraints: vec![],
+            safer_alt: None,
         }
     }
 }

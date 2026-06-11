@@ -156,6 +156,7 @@ fn test_contract_version_bumped_past_0_5() {
     // ActionResult-family models + 9 enums + the gateway IDs + Timestamp, shared/src/actions.rs);
     // 2.1b → 0.16.0 (the Gateway ActionExecution* event family — ActionRequested/ApprovalRequested/
     // Approved/Denied/Expired/Started/Succeeded/Failed — + the §6.1 ActionAck, shared/src/events.rs);
-    // 2.1c → 0.17.0 (the §6.1 submit_action_plan result PlanAck/PlanStepAck, O-3 bundled plans).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.17.0");
+    // 2.1c → 0.17.0 (the §6.1 submit_action_plan result PlanAck/PlanStepAck, O-3 bundled plans);
+    // 2.2 → 0.18.0 (the §6.3 ActionTypeCatalog contract + the PolicyDecision 2.2-field extension).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.18.0");
 }

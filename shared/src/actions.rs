@@ -260,15 +260,26 @@ pub struct EvidenceRef {
     pub confidence: Option<EvidenceConfidence>,
 }
 
-/// The policy engine's decision (§6.2 / AG §12.2). Frozen as the stable core `{status, reasons}`
-/// — `required_approvals` / `constraints` / `safer_alt` (which reference the unpinned
-/// ApprovalRequirement/ApprovalConstraint shapes + the safer-alt union) are the **2.2** policy-
-/// engine deliverable, added additively. DEFERRED → 2.2.
+/// The policy engine's decision (§6.2 / AG §12.2). The core `{status, reasons}` froze 2.1a; the 2.2
+/// fields landed with the catalog-driven policy engine (P2.2), defined MINIMALLY (Q3): the rich
+/// ApprovalRequirement / ApprovalConstraint / safer-alt union shapes AG never pinned stay
+/// post-MVP — `required_approvals` reuses the frozen §6.2 [`RequiredApprover`], `constraints` is a
+/// `Vec<String>`, `safer_alt` is an `Option<String>` descriptor. Additive (optionals as `null`).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
 pub struct PolicyDecision {
     pub status: PolicyDecisionStatus,
     pub reasons: Vec<String>,
+    /// the approver(s) the decision requires (empty for the non-approval statuses —
+    /// `allow`/`deny`/`downgrade`/`needs_more_context`; populated for require_approval /
+    /// require_step_approval). Reuses the frozen §6.2 [`RequiredApprover`].
+    pub required_approvals: Vec<RequiredApprover>,
+    /// minimal execution constraints the decision attaches (the rich ApprovalConstraint shape is
+    /// post-MVP); a `Vec<String>` descriptor for now.
+    pub constraints: Vec<String>,
+    /// an optional safer-alternative `action_type` the engine suggests (the rich safer-alt union is
+    /// post-MVP); a descriptor for now.
+    pub safer_alt: Option<String>,
 }
 
 /// A dry-run preview of an action (§6.2 ActionPreview envelope; AG §9.4). The 6 typed per-class

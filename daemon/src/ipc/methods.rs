@@ -118,11 +118,15 @@ fn gateway_error_to_code(e: &GatewayError) -> IpcErrorCode {
         // a protocol_error.
         | GatewayError::UnsupportedApprovalMode(_) => IpcErrorCode::PolicyDenied,
         // out-of-state action / missing-or-lapsed approval / fail-closed audit write — the
-        // mutation's precondition no longer holds (§6.4 precondition_stale).
+        // mutation's precondition no longer holds (§6.4 precondition_stale). (Q7 carry-forward: the
+        // AuditWriteFailed→internal_error correction lands with L5's UnknownOutcome→internal_error.)
         GatewayError::IllegalTransition { .. }
         | GatewayError::ApprovalExpired
         | GatewayError::NotFound(_)
         | GatewayError::AuditWriteFailed(_) => IpcErrorCode::PreconditionStale,
+        // 2.4 L3 — a stale fencing token: the NEVER-auto-resolved hard-conflict card (rule #6),
+        // distinct from the re-approvable precondition_stale (the Q7/§11.5 safety-card distinction).
+        GatewayError::FencingConflict => IpcErrorCode::FencingConflict,
         GatewayError::Serialize(_) => IpcErrorCode::ProtocolError,
     }
 }

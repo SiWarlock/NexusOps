@@ -277,6 +277,28 @@ pub(crate) fn update_preview(
     Ok(())
 }
 
+/// Persist the acquired fencing token to the action's `fencing_token` column (2.4 L3 — the execute
+/// path acquires a lease + binds its minted token here, so a crash reconcile (L5) re-derives the
+/// action's lease authority from the row). Conditioned on the row existing (missing → `NotFound`).
+pub(crate) fn bind_fencing_token(
+    tx: &Transaction,
+    action_request_id: &str,
+    token: i64,
+) -> Result<(), GatewayError> {
+    let n = tx
+        .execute(
+            "UPDATE action_requests SET fencing_token = ?1 WHERE action_request_id = ?2",
+            rusqlite::params![token, action_request_id],
+        )
+        .map_err(db_err)?;
+    if n == 0 {
+        return Err(GatewayError::NotFound(format!(
+            "action_requests {action_request_id} (fencing-token bind)"
+        )));
+    }
+    Ok(())
+}
+
 /// the raw `action_requests` columns (pre-reconstruction).
 struct ActionRow {
     project_id: Option<String>,

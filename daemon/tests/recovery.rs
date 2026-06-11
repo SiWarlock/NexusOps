@@ -9,17 +9,23 @@
 //! effect APPLIED but its terminal event unwritable → `ActionPartiallySucceeded` (the loud,
 //! consumer-visible audit-integrity record) + the action settles `partially_succeeded`, best-effort.
 
-use nexusops_shared::actions::{ActionPreview, ActionRequest, RequesterType, RiskLevel};
+use std::sync::{Arc, Mutex};
+
+use nexusops_shared::actions::{
+    ActionError, ActionPreview, ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
+};
+use nexusops_shared::events::ActionFailed;
 use nexusops_shared::ids::ActionRequestId;
 use nexusops_shared::status::ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
-use nexusopsd::clock::FixedClock;
+use nexusopsd::clock::{Clock, FixedClock};
 use nexusopsd::eventstore::{EventStore, PrefixRedactor};
 use nexusopsd::fault::{arm, arm_n, FaultPoint};
 use nexusopsd::gateway::executor::{ActionExecutor, ExecError, ExecutionOutcome, StubExecutor};
 use nexusopsd::gateway::policy::CatalogPolicy;
 use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
+use nexusopsd::locks::{LeaseKind, OwnerId, ResourceId};
 
 // ---- helpers (integration tests are separate crates → the small helpers are per-file, the codebase
 // convention; mirrors policy.rs / gateway.rs) ----------------------------------------------------
@@ -245,5 +251,212 @@ fn audit_fully_broken_stays_executing_never_partial() {
         !types.contains(&"ActionSucceeded".to_string())
             && !types.contains(&"ActionPartiallySucceeded".to_string()),
         "neither terminal record persisted — no outcome is claimed that the log doesn't hold, got {types:?}"
+    );
+}
+
+// =================================================================================================
+// L3 — fencing-conflict (the real 1.4 validate_held; §17 / safety rule #6, Option B).
+// =================================================================================================
+
+/// a clock the test advances by setting an explicit RFC3339 (drives lease TTL/expiry). Arc-shared so
+/// the test holds one handle while the EventStore holds another — advancing affects both.
+#[derive(Clone)]
+struct StepClock(Arc<Mutex<String>>);
+impl StepClock {
+    fn new(ts: &str) -> Self {
+        Self(Arc::new(Mutex::new(ts.to_string())))
+    }
+    fn set(&self, ts: &str) {
+        *self.0.lock().unwrap() = ts.to_string();
+    }
+}
+impl Clock for StepClock {
+    fn now_rfc3339(&self) -> String {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+/// open a store whose internal clock is the advanceable `StepClock` (so the gateway's lease ops +
+/// event timestamps both advance with the test).
+fn open_with_clock(path: &std::path::Path, clock: StepClock) -> EventStore {
+    EventStore::open(
+        path,
+        Box::new(UlidGen),
+        Box::new(clock),
+        Box::new(PrefixRedactor),
+    )
+    .expect("open event store")
+}
+
+/// a §6.2 ActionRequest fixture that mutates a resource (so the execute path holds a lease over it).
+fn sample_request_with_resource(
+    action_type: &str,
+    claimed_risk: RiskLevel,
+    resource_id: &str,
+) -> ActionRequest {
+    let mut req = sample_request(action_type, claimed_risk);
+    req.resource_refs = vec![ResourceRef {
+        resource_type: ResourceType::Worktree,
+        id: resource_id.to_string(),
+        uri: None,
+    }];
+    req
+}
+
+/// the `ActionError` carried on the single action's `ActionFailed` event, if one was emitted.
+fn action_failed_error(store: &EventStore) -> Option<ActionError> {
+    store
+        .read_all()
+        .unwrap()
+        .iter()
+        .find(|e| e.event_type == ActionFailed::EVENT_TYPE)
+        .map(|e| {
+            serde_json::from_str::<ActionFailed>(&e.payload_json)
+                .unwrap()
+                .error
+        })
+}
+
+// ---- L3 RED #1 — a stale fencing token (the resource held by another live owner) fails closed ------
+
+#[test]
+fn stale_fencing_token_fails_closed() {
+    // spec(§17 / 1.4 Option-B) — when the action's resource is held by a LIVE lease under ANOTHER
+    // owner ("stale" = NOT a live lease of OURS — superseded/held-by-another), the execute path's
+    // fencing check fails closed: ActionFailed(fencing_conflict), the action is terminal-`failed`,
+    // NEVER executed, NEVER auto-resolved (the hard-conflict surface a human resolves).
+    let clock = StepClock::new("2026-06-11T00:00:00Z");
+    let (_d, path) = temp_db();
+    let mut store = open_with_clock(&path, clock.clone());
+    let gw = catalog_gateway(); // CatalogPolicy + StubExecutor
+
+    // another owner holds the action's resource (a LIVE lease) — the concurrent-mutation conflict.
+    store
+        .acquire_lease(
+            &ResourceId("wt_x".into()),
+            &LeaseKind::resource_mutation(),
+            &OwnerId("other_session".into()),
+            300,
+            &clock,
+        )
+        .expect("the other owner acquires the resource lease");
+
+    // git.create_worktree is catalog-risk-2 → awaiting_approval → approve drives execute.
+    gw.submit_action(
+        &mut store,
+        sample_request_with_resource("git.create_worktree", RiskLevel::Level2, "wt_x"),
+    )
+    .expect("submit");
+    let appr = approval_id_of(&path);
+    // Option B (the leaned design): the fencing conflict is RECORDED as a terminal ActionFailed (the
+    // audit + hard-conflict surface) AND the caller is told via a typed GatewayError::FencingConflict
+    // (→ §6.4 fencing_conflict, the never-auto-resolved card; the Q7 mapping). Both: audit + caller-error.
+    let err = gw
+        .approve(&mut store, &appr)
+        .expect_err("a fencing conflict refuses the mutation with a typed error");
+
+    assert!(
+        matches!(err, nexusopsd::gateway::GatewayError::FencingConflict),
+        "the caller gets a typed FencingConflict (→ §6.4 fencing_conflict), got {err:?}"
+    );
+    assert_eq!(
+        action_status(&path).as_deref(),
+        Some("failed"),
+        "the action is recorded terminal-failed (the audit record of the fenced mutation)"
+    );
+    assert_eq!(
+        action_failed_error(&store),
+        Some(ActionError::FencingConflict),
+        "the ActionFailed event carries the FencingConflict taxonomy (the hard-conflict surface)"
+    );
+    assert!(
+        !action_event_types(&store).contains(&"ActionSucceeded".to_string()),
+        "the action NEVER executed — no ActionSucceeded (fenced before the executor)"
+    );
+}
+
+// ---- L3 RED #2 — the same-owner re-acquire contract: idempotent renew-like, NOT a conflict --------
+
+#[test]
+fn same_owner_reacquire_is_idempotent_renew() {
+    // spec(1.4 L1 flag — the gateway-owned contract) — 1.4's `acquire` returns Held{owner:self} on
+    // ANY live re-acquire incl. the SAME owner (it deliberately did not pin the semantics). The
+    // gateway's contract: a self-owned live lease is idempotent renew-like (a heartbeat), NEVER a
+    // fencing_conflict — the holder remains the authority + can renew its own token.
+    let clock = StepClock::new("2026-06-11T00:00:00Z");
+    let (_d, path) = temp_db();
+    let mut store = open_with_clock(&path, clock.clone());
+    let owner = OwnerId("act_self".into());
+    let res = ResourceId("wt_self".into());
+    let kind = LeaseKind::resource_mutation();
+
+    let first = store
+        .acquire_lease(&res, &kind, &owner, 60, &clock)
+        .unwrap();
+    // a same-owner re-acquire of the LIVE lease → 1.4 returns Held{owner:self} (the gateway adjudicates
+    // THIS as renew, not conflict — the decision point this layer pins).
+    let reacq = store.acquire_lease(&res, &kind, &owner, 60, &clock);
+    assert!(
+        matches!(reacq, Err(nexusopsd::locks::LeaseError::Held { ref owner_id }) if owner_id == "act_self"),
+        "1.4 returns Held{{owner:self}} on a live self re-acquire (got {reacq:?})"
+    );
+    // pins the LOCKS-LAYER contract the gateway relies on (NOT gateway-path coverage — this calls the
+    // 1.4 wrappers directly): the self-owned live lease is STILL the authority (the re-acquire did not
+    // break it) and is renewable (idempotent — token unchanged); the gateway maps this `Held{self}` to
+    // renew, never fence (the execute-path adjudication is exercised by the held-by-ANOTHER test above).
+    assert!(
+        store
+            .validate_lease_held(&res, &kind, &owner, first.fencing_token, &clock)
+            .unwrap(),
+        "the self-owned live lease remains the authority"
+    );
+    let renewed = store
+        .renew_lease(&first, 60, &clock)
+        .expect("the owner renews its own live lease (the heartbeat)");
+    assert_eq!(
+        renewed.fencing_token, first.fencing_token,
+        "renew keeps the token (idempotent renew, not a fresh acquire)"
+    );
+}
+
+// ---- L3 RED #3 — a long action that renews before its boundary does not self-fence ----------------
+
+#[test]
+fn long_action_renews_before_self_fence() {
+    // spec(1.4 strict-boundary flag) — a long-running action that RENEWS strictly BEFORE the
+    // `expires_at > now` boundary stays live (does not self-fence on its own expiry). The renew
+    // extends `expires_at`; it does not make the lease immortal (past the RENEWED boundary it expires).
+    let clock = StepClock::new("2026-06-11T00:00:00Z");
+    let (_d, path) = temp_db();
+    let mut store = open_with_clock(&path, clock.clone());
+    let owner = OwnerId("act_long".into());
+    let res = ResourceId("wt_long".into());
+    let kind = LeaseKind::resource_mutation();
+
+    let lease = store
+        .acquire_lease(&res, &kind, &owner, 60, &clock)
+        .unwrap(); // expires 00:01:00
+                   // the heartbeat: renew at 00:00:50 (strictly BEFORE the 00:01:00 boundary) → extends to 00:01:50.
+    clock.set("2026-06-11T00:00:50Z");
+    let renewed = store
+        .renew_lease(&lease, 60, &clock)
+        .expect("renew strictly before the boundary succeeds");
+
+    // advance PAST the ORIGINAL 00:01:00 boundary — without the renew this would be self-fenced;
+    // WITH the renew the lease is still the live authority.
+    clock.set("2026-06-11T00:01:30Z");
+    assert!(
+        store
+            .validate_lease_held(&res, &kind, &owner, renewed.fencing_token, &clock)
+            .unwrap(),
+        "a renewed long action does not self-fence past its ORIGINAL expiry"
+    );
+    // past the RENEWED 00:01:50 boundary it finally expires (renew extended, did not make immortal).
+    clock.set("2026-06-11T00:02:30Z");
+    assert!(
+        !store
+            .validate_lease_held(&res, &kind, &owner, renewed.fencing_token, &clock)
+            .unwrap(),
+        "past the RENEWED boundary the lease expires (a heartbeat extends, never makes immortal)"
     );
 }

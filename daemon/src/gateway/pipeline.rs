@@ -16,8 +16,14 @@ use nexusops_shared::time::Timestamp;
 use crate::eventstore::{EventStore, GatewayTxn};
 use crate::gateway::executor::ExecutionOutcome;
 use crate::gateway::{
-    approval, db_err, enum_wire, idempotency, plan, preview, request, Gateway, GatewayError,
+    approval, db_err, enum_wire, idempotency, lease_err, plan, preview, request, Gateway,
+    GatewayError,
 };
+use crate::locks::{FencingToken, LeaseError, LeaseKind, OwnerId, ResourceId};
+
+/// The TTL (seconds) of an action's execution lease (2.4 L3). A bound, conservative window for the
+/// synchronous stub execute; the real long-running executors (Phase 3+) renew it via the heartbeat seam.
+const FENCE_TTL_SECS: i64 = 300;
 
 /// The routed outcome of `submit_action`'s decision txn (2.2): either a terminal ack (the action
 /// rests at `awaiting_approval`), or a risk-0 `allow` action queued for the SEPARATE execute step
@@ -700,6 +706,29 @@ impl Gateway {
     /// durably `executing` (reconciled on restart by L5), never stuck pre-execution:
     /// **txn-A** `queued → executing` + `ActionStarted` (COMMITS) → the executor runs (off the
     /// write-actor — so `ActionStarted` precedes the side effect, §17.1) → **txn-B** `executing →
+    /// Record a §17 fencing conflict as a terminal `ActionFailed(FencingConflict)` (2.4 L3) — the
+    /// durable audit + the §11.5 hard-conflict surface. Its own gateway txn so it **COMMITS** before the
+    /// caller propagates `Err(GatewayError::FencingConflict)` — the recorded `failed` state must survive
+    /// the Err (never let the Err roll back the audit record). The action is at `executing` (txn-A) when
+    /// this runs → the `Executing → Failed` edge is legal.
+    fn record_fencing_conflict(
+        &self,
+        store: &mut EventStore,
+        req: &ActionRequest,
+    ) -> Result<(), GatewayError> {
+        let act_id = req.action_request_id.as_str().to_string();
+        store.gateway_txn(|gtx| -> Result<(), GatewayError> {
+            let now = gtx.now_rfc3339();
+            request::update_status(gtx.tx(), &act_id, ARStatus::Executing, ARStatus::Failed)?;
+            gtx.append(&request::failed_intent(
+                req,
+                ActionError::FencingConflict,
+                &now,
+            )?)?;
+            Ok(())
+        })
+    }
+
     /// succeeded/failed` + the terminal event. A terminal-event write failure (§15/§17) rolls txn-B
     /// back → the action STAYS `executing` → L5; never acked succeeded. If a real side effect was
     /// applied but its event is unwritable → `ActionPartiallySucceeded` best-effort (§17 / L2).
@@ -720,6 +749,64 @@ impl Gateway {
             gtx.append(&request::started_intent(req, &now)?)?;
             Ok(())
         })?;
+
+        // L3 — fencing (§17 / safety rule #6, 1.4 Option-B). A resource-bearing action holds a
+        // `resource_mutation` lease over its primary resource (owner = the action). Acquire the lock →
+        // bind the minted token (L5 re-derives authority from it) → re-check `validate_held` AFTER lock
+        // + BEFORE execute. A lease NOT live for THIS action (held by another owner, OR a stale bound
+        // token) → ActionFailed(fencing_conflict): recorded (COMMITS) THEN refused with the typed Err
+        // (never auto-resolved — rule #6). Risk-0 / no-resource actions hold NO lease → skipped.
+        // (Future-TODO: PRIMARY resource_ref ONLY — a multi-resource action leaves `resource_refs[1..]`
+        //  unfenced; fence ALL refs when multi-resource actions land. The MVP catalog is ~single-resource.)
+        if let Some(rref) = req.resource_refs.first() {
+            let resource_id = ResourceId(rref.id.clone());
+            let owner = OwnerId(act_id.clone());
+            let kind = LeaseKind::resource_mutation();
+            let token = match store.gw_acquire_lease(&resource_id, &kind, &owner, FENCE_TTL_SECS) {
+                Ok(lease) => {
+                    let bound = i64::try_from(lease.fencing_token.0).map_err(|_| {
+                        GatewayError::Serialize("fencing token overflow".to_string())
+                    })?;
+                    store
+                        .gateway_txn(|gtx| request::bind_fencing_token(gtx.tx(), &act_id, bound))?;
+                    lease.fencing_token
+                }
+                // self-Held (a re-execution of our OWN live lease — the L5 path) → idempotent renew-like:
+                // the action's bound token (carried on the durable-row `req`) is the authority, re-checked
+                // by validate_held below. A self-Held with NO valid recorded token (a crash between txn-A
+                // and the bind → NULL/invalid column) is an inconsistent state we cannot prove authority
+                // for, and we CANNOT re-acquire (the slot is live-held) → **fail closed (fence) EXPLICITLY**,
+                // never proceed with a guessed/zero token. 2.4's single-execute never hits self-Held; an L5
+                // re-execute loads `req` from the row with the bound token.
+                Err(LeaseError::Held { owner_id }) if owner_id == act_id => {
+                    match req
+                        .fencing_token
+                        .and_then(|t| u64::try_from(t).ok())
+                        .filter(|&t| t > 0)
+                    {
+                        Some(t) => FencingToken(t),
+                        None => {
+                            self.record_fencing_conflict(store, req)?;
+                            return Err(GatewayError::FencingConflict);
+                        }
+                    }
+                }
+                // a LIVE lease held by ANOTHER owner → superseded → fencing conflict.
+                Err(LeaseError::Held { .. }) => {
+                    self.record_fencing_conflict(store, req)?;
+                    return Err(GatewayError::FencingConflict);
+                }
+                Err(e) => return Err(lease_err(e)),
+            };
+            // §6.2/§17: validate_held AFTER lock + BEFORE execute → false (expired/superseded) → fence.
+            if !store
+                .gw_validate_lease(&resource_id, &kind, &owner, token)
+                .map_err(lease_err)?
+            {
+                self.record_fencing_conflict(store, req)?;
+                return Err(GatewayError::FencingConflict);
+            }
+        }
 
         // the side effect (2.4 stubs: NONE) runs BETWEEN txn-A and txn-B (off the write-actor, §16).
         let outcome = self.executor().execute(req);

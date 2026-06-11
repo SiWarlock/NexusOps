@@ -48,6 +48,15 @@ pub enum GatewayError {
     NotFound(String),
     #[error("policy denied the action")]
     PolicyDenied,
+    /// the action's resource lease is NOT live for THIS action (expired OR superseded — held by
+    /// another owner) at execute time (§17 / safety rule #6, 1.4 Option-B). The mutation is refused;
+    /// the action is recorded terminal-`failed` with `ActionError::FencingConflict` (the hard-conflict
+    /// surface) and the caller gets this typed error (→ §6.4 `fencing_conflict`). **NEVER auto-resolved**
+    /// — a human resolves the conflict + re-submits. The recorded ActionFailed COMMITS before this Err.
+    #[error(
+        "fencing conflict: the action's resource lease is not live (stale token, §17 rule #6)"
+    )]
+    FencingConflict,
     /// a `submit_action_plan` carried an `approval_mode` the Gateway does not accept from a proposer
     /// (2.1c: `Blocked` — a policy-ASSIGNED outcome, not a valid submitted mode; 2.2 owns it). Fail
     /// closed: never open phantom `awaiting_approval` steps with no approval object (Step-2.5 Mod 1).
@@ -67,6 +76,19 @@ pub enum GatewayError {
 /// gateway txn means the audited mutation didn't persist → roll back).
 pub(crate) fn db_err(e: rusqlite::Error) -> GatewayError {
     GatewayError::AuditWriteFailed(EventStoreError::Write(e))
+}
+
+/// Map a non-`Held` lease error → fail-closed `GatewayError` (2.4 L3). A lease-table DB error is an
+/// `AuditWriteFailed` (the audited mutation can't proceed safely); `NotHolder`/`TokenOverflow` are
+/// logic errors that fail closed. (`Held` is adjudicated by the caller — fencing-conflict vs self-renew
+/// — and never reaches here.)
+pub(crate) fn lease_err(e: crate::locks::LeaseError) -> GatewayError {
+    match e {
+        crate::locks::LeaseError::Db(inner) => {
+            GatewayError::AuditWriteFailed(EventStoreError::Write(inner))
+        }
+        other => GatewayError::Serialize(format!("lease error: {other}")),
+    }
 }
 
 /// A closed contract enum → its exact snake_case wire string (for a `TEXT` registry column). A

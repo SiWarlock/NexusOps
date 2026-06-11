@@ -454,6 +454,48 @@ impl EventStore {
         )
     }
 
+    /// Gateway-facing lease acquire (2.4 L3) — identical to [`EventStore::acquire_lease`] but uses
+    /// the store's OWN injected clock, so lease liveness + the action's event timestamps share ONE
+    /// clock (the gateway has no clock of its own). The execute-path fencing lock: acquire → bind the
+    /// minted token → validate before execute. Mints a strictly-monotonic token; `Held` if live-by-another.
+    pub fn gw_acquire_lease(
+        &mut self,
+        resource_id: &ResourceId,
+        lease_kind: &LeaseKind,
+        owner_id: &OwnerId,
+        ttl_secs: i64,
+    ) -> Result<Lease, LeaseError> {
+        let Self { conn, clock, .. } = self;
+        locks::acquire(
+            conn,
+            resource_id,
+            lease_kind,
+            owner_id,
+            ttl_secs,
+            clock.as_ref(),
+        )
+    }
+
+    /// Gateway-facing stale-token check (2.4 L3) — [`EventStore::validate_lease_held`] over the store's
+    /// OWN clock. `false` = NOT a live lease of `owner_id` with `token` (expired OR superseded) → the
+    /// §17 `fencing_conflict` path. The execute-path re-check after lock + before execute.
+    pub fn gw_validate_lease(
+        &self,
+        resource_id: &ResourceId,
+        lease_kind: &LeaseKind,
+        owner_id: &OwnerId,
+        token: FencingToken,
+    ) -> Result<bool, LeaseError> {
+        locks::validate_held(
+            &self.conn,
+            resource_id,
+            lease_kind,
+            owner_id,
+            token,
+            &self.clock.now_rfc3339(),
+        )
+    }
+
     /// Reap expired leases (§12): free every lease past `expires_at` (holder fields NULL,
     /// token kept) + return the reclaimed set. The deterministic unit; the Tokio interval
     /// spawn is the 1.6 bootstrap (joins the outbox drainer spawn).

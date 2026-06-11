@@ -2,6 +2,8 @@
 
 > **Phase note.** Spec-anchored task tracker for the NexusOps MVP, decomposed from the binding `ARCHITECTURE.md` (every phase cites its `§N` anchors; cross-doc-invariant models mirror `ARCHITECTURE.md` Appendix A). Scope is the **comprehensive MVP** the owner locked at arch-finalize (`§0.1`): both Claude Code **and** Codex live (O-1), **full resume-or-replay** survival (O-2), **full multi-step Brain action plans** (O-3), Claude supervision mode pending-spike (O-4), `NexusOps-ui-kit`/"Graphite Arc" as the canonical design system (O-5), full **PR Review Workspace** (O-6). macOS-only. Built backward from the **PRD §25 demo** (`§19.1`). Build order = invariants → lifecycle correctness → tests → local demo → polish. Living-state sections below start empty and accrete through `/tdd` work.
 >
+> **Re-derived production-grade (2026-06-11, posture migration):** decomposition re-anchored to the production-grade `ARCHITECTURE.md` (Build-posture line + the new `§2.5` dependency DAG). New machinery: the §2.5-derived **Parallelization plan (Track map)** with critical path + forced-serial bottleneck; per-task **`Depends on:`** edges (contract flow, not habit-order); **one discrete §18 benchmark task per budgeted hot path** (own cadence — never in the per-slice RED/GREEN loop); **covered-by waivers** on completed phases' Spec anchors lines (existing pre-tag tests are honored; only NEW tests carry `spec(§X)` tags); production concerns (CI gates, error paths, idempotency, audit baselines) promoted early. **Completion state reconciled in place** — Phase 0/1 + 2.0-SEC + Phase-6 ticks, evidence, and all living sections preserved, not reset.
+>
 > **Reading discipline.** Read this file **by section, not whole** — `/orchestrate-start` and `/session-start` grep the section header and read only "Currently in progress" + the active phase. The living sections below (Currently-in-progress, Carry-forward, Log, Trims, Decisions) are **bounded** — pruned/archived at `/orchestrate-end`, never left to grow — so a sectioned read stays cheap even late in the project.
 
 > **Session protocol:**
@@ -22,10 +24,9 @@
 
 <!-- REPLACE this section at every /orchestrate-end — do NOT append. It is a snapshot of NOW (≤ ~8 lines): last commit hash, suite count, next session target, active blockers. Stale lines are deleted, not stacked. -->
 
-- **⏸️ daemon team ENDED 2026-06-11 (/team-end → handoff `docs/team-handoffs/003-2026-06-11-phase2-2.0sec-done-scaffolding-upgrade.md`; round-seal `b76cdf2` on origin/main) — for a user-run scaffolding/workflow upgrade** (3-way-merges against committed state, so the tree is sealed + pushed) **→ then a FRESH team lead + agent teams on the UPGRADED scaffolding.** Teammates terminated; next `/team-start daemon` spawns fresh (re-validate spawn prompts vs the upgraded templates per handoff 003). **✅ 2.0-SEC §15 redactor-recall hardening DONE** — L1 `950957c` (synthetic corpus + measurement harness + regression pins) · L2 `2f61a77` (thresholds confirmed-sufficient + named `pub` consts) · L3 `55f1e7f` (JSON-value detection + value-shape ID-allowlist, human-ruled Option B; engine `v2→v3`); session doc `009`; brief `031`; round seal = this `/orchestrate-end` commit, pushed origin/main. The §15 recall envelope is now **measured** (`prefix-entropy-v3`: recall_catchable 1.0 / precision 1.0 / FP-rate 0.0) **+ extended** (residual (a) short JSON-value secrets closed for ≥20ch at 0% precision cost) **+ regression-pinned** (living corpus, floor ratchets up only) — the Option-C acceptance condition is discharged. **NEXT on resume: Phase 2.1** — Gateway pipeline + `ActionRequest`/`ActionPlan` model + mutation methods (§6/§6.1-6.3/§5.1); fold the 2.1 carry-forward (`Timestamp` newtype, `seq minimum:1`, the `"SessionStarted"`/event-type string-literal dedup).
-- **Team `nexusops-ui` (ui track) PAUSED 2026-06-09** — handoff: `docs/team-handoffs/001-2026-06-09-ui-phase6-done-styling-redo.md` · last round-seal `1dcfe0f` (branch tip `27a21b0`, with `main`/daemon Phase 1.1–1.4 merged in) · **next: SOLO prototype-driven styling+layout rebuild** (6.5 Graphite Arc theme was user-REJECTED as not matching `ui_kits/control-plane/index.html`); daemon-gated Phase 7/8 + 6.3d/e resume on a later `/team-start ui`. `track/ui` ready for the main-track merge (one `MVP_TASKS.md` union conflict at merge time). _(2026-06-10: ✅ **MERGED to main** at `46ed874` — the ui Phase 6/P7.3 design-faithful rebuild + the CONTRACT 0.12.0 consumer reconcile are now on `main`; see `docs/sessions/ui-007-2026-06-09-prototype-faithful-styling-rebuild.md`. UI track stays paused — daemon-gated Phase 7/8 + 6.3d/6.3e resume on a later `/team-start ui`.)_
-- **⏸️ TEAM PAUSED 2026-06-11 (/team-end) — handoff `docs/team-handoffs/002-2026-06-11-phase1-done-phase2-kickoff.md` · last round-seal `cf2b3f9` (origin/main) · resume: Phase 2 — 2.0-SEC (§15 redactor-recall hardening, owned) → 2.1 (Gateway pipeline). Next `/team-start daemon` spawns a FRESH orchestrator + implementer from the handoff's prompts.**
-- **✅ PHASE 1 DONE 2026-06-10 — trust-core foundation complete → Phase 2 (Action Gateway).** All slices **1.1–1.7 landed** (CONTRACT_VERSION **0.14.0**; 146 workspace green; security-reviewer PASS every safety slice; round-4 seal `310df20`, pushed origin/main). **§15 recall-envelope USER-ACCEPTED (Option C, 2026-06-10)** → the §15 Phase-1 acceptance bar is MET; the accepted residual is **owned** by the tracked **2.0-SEC** redactor-recall hardening task (early Phase 2). ui Phase 6/P7.3 on main. **NEXT: Phase 2 kickoff** — **2.1 Gateway pipeline + `ActionRequest`/`ActionPlan` model + mutation methods** (the INV-SEC-1 mutation chokepoint, §6). Orchestrator (me) prepping the 2.1 kickoff brief; **lead spawns a fresh implementer at Phase-2 dispatch** (HOLD dispatch until then). _(Round seals: P1.6 `804fa31`, P1.7 `310df20`.)_
+- **Re-derivation checkpoint (2026-06-11, branch `planning/production-grade-migration` — NOT pushed; user reviews + merges):** scaffolding upgraded `fada9b94→491dfb02` (posture=**production-grade**, manifest schema v2, `/phase-exit` + guards + spec-lint installed; commit `26836e7`) · `docs/layers/` derived (`4c63078`) · `ARCHITECTURE.md` gained Build-posture + **§2.5 DAG** + §18 deferral note (`4d8954d`) · this plan re-derived production-grade with completion state reconciled.
+- **Build state:** Phase 0 ✅ (HITL open: 0.1 credit-pool drain ≥2026-06-15 → cat-4 SDK-vs-PTY → 0.5b; 0.2 notarization run) · **Phase 1 ✅** (seal `310df20`; CONTRACT_VERSION 0.14.0; 133 daemon + 26 shared tests) · **2.0-SEC ✅** (seal `b76cdf2`; §15 envelope measured `prefix-entropy-v3` + extended + regression-pinned) · **Phase 6 ✅-modulo-parked** (6.3d/6.3e + intent seam gated on 2.1; 213/214 ui tests — the 1 red is the INTENDED contract-drift sentinel: `ui/src/contracts/generated.ts` pins 0.12.0 vs shared 0.14.0 → regen at ui resume).
+- **NEXT: Phase 2.1** — Gateway pipeline + `ActionRequest`/`ActionPlan` model + mutation methods (§6/§6.1–6.3/§5.1/§15/§17). Fold the 2.1 Carry-forward (`Timestamp` newtype · `seq minimum:1` · event-type string-literal dedup). Teams: all ended at handoff `003` — next `/team-start daemon` spawns FRESH on the upgraded scaffolding (re-validate spawn prompts vs the upgraded templates).
 
 **PHASE 0 — DETERMINISTIC WORK COMPLETE (2026-06-07).** All 4 spikes landed (`docs/spikes/*.md`) + the **0.5 contract freeze landed (06f9576)** — the serial neck. Single-writer holds (0.4 → §18 written MEASURED); git2 reads relative-worktrees (0.3 → §9 corrected); #27203 confirmed, bg subagents forbidden (0.1); shared/ contracts frozen Option-A (0.5, §5.0). Toolchain RESOLVED (Lesson §1).
 
@@ -78,12 +79,12 @@ _(LOCKED-text corrections + planning-doc reconciles are tracked in "Architecture
 | Deliverable | Status | Delivered by |
 |---|---|---|
 | PRD §25 demo runs end-to-end (add project → launch session → permission → approve → review → Brain PR plan → PR created + linked) | ❌ | Phase 10 |
-| Detached Rust daemon: event store + projections + IPC GatewayPort + leases | ❌ | Phase 1 |
+| Detached Rust daemon: event store + projections + IPC GatewayPort + leases | 🟢 (✅ 2026-06-10, seal `310df20`) | Phase 1 |
 | Action Gateway: typed actions, risk 0-4, ActionPlan + step approval, audit, fail-closed | ❌ | Phase 2 |
 | Claude **and** Codex adapters behind one HarnessAdapter contract + embedded terminals | ❌ | Phase 3 |
 | Full session survival (resume-or-replay) + failure-mode contract | ❌ | Phase 4 |
 | Project registry + dual-git/worktrees + Execution Profiles (keychain) | ❌ | Phase 5 |
-| Tauri shell + projection-driven UI (design system, status binding, a11y) | ❌ | Phase 6 |
+| Tauri shell + projection-driven UI (design system, status binding, a11y) | 🟢 (✅ logic+visual 2026-06-08; 6.3d/e parked on daemon contracts) | Phase 6 |
 | GitHub/Linear integration + full PR Review Workspace + Task Inbox | ❌ | Phase 7 |
 | Project Brain stdio-MCP seam + drawer (multi-step action plans, evidence) | ❌ | Phase 8 |
 | Workflow Pack detection + cc-crew + Plan view | ❌ | Phase 9 |
@@ -130,30 +131,47 @@ The MVP is "done" when:
 
 <!-- ▼ EXAMPLE BLOCK [id=parallelization-plan]: Parallelization plan / Track map — TEAM MODE ONLY. /tasks-gen authors this from ARCHITECTURE.md §2.5 (the subsystem dependency DAG) refined by the per-task `Depends on:` graph. It is the authority for valid `<track>` names; `/team-start <track>` reads it to scope a track's phases + provision its worktree. ▼ -->
 
-## Parallelization & track plan
+## Parallelization plan (Track map)
 
-Running this with multiple agent teams. The architecture is "daemon = single source of truth + sole mutator," so most surfaces consume daemon contracts — but **Phase 0.5 freezes those contracts into `shared/` up front**, which lets tracks build in parallel against the frozen *interface* (mocking the other side; the arch even mandates a mock GatewayPort for UI tests, §14). **The fan-out trigger is the end of Phase 0 — not daemon progress.**
+> **Authority chain:** `ARCHITECTURE.md §2.5` (subsystem DAG + seams) → this Track map (plan-level rendering, refined by per-task `Depends on:` edges) → `/team-start <track>` (consumes the table below). Track names here are the ONLY valid `<track>` prefixes (root `CLAUDE.md` "Naming + cross-bleed prevention"). Re-derived 2026-06-11 at the production-posture migration; supersedes the 2026-06-07 "Parallelization & track plan" (whose 2-track shape was validated in practice: daemon Phase 0–1 ∥ ui Phase 6 both completed on it).
 
-**Sequence:** spikes (parallel) → **freeze contracts (serial neck, 0.5)** → `daemon-core` ∥ `ui` [∥ `edges`] → converge → demo.
+**Phase/track DAG** (nodes = phases; edges = `Depends on (phases)`; ✅ = done):
 
-**Tracks** (`/team-start <track>`; track-prefixed `<track>-<area>-<role>` so peer DMs don't cross-bleed):
+```
+  P0 shared freeze ✅ ──┬──────────────────────────────────────────────┐
+                        ▼                                              ▼
+  P1 daemon spine ✅ ──► P2 GATEWAY ◄─────────────── (mockable iface)  P6 ui shell ✅ (modulo parked tail)
+        (CONTRACT 0.14.0)   │ the forced-serial bottleneck                  │
+                            ├────────────► P5 git/profiles (edges, vs frozen iface)
+                            ├────────────► P7.1 GitHub/Linear daemon side (edges)
+                            ├────────────► P6-tail 6.3d/e + intent seam (ui; + P3.4 for the Terminal well)
+                            ▼
+                        P3 harness + terminal (claude ∥ codex ∥ FakePty intra-phase)
+                            ▼
+                        P4 survival/failure-contract
+                            │           P8 Brain seam (converge; ◄ P2 + 0.2-HITL)
+                            │           P9 workflow packs (converge; ◄ P1+P2; Plan view ◄ P6)
+                            ▼
+                        P10 packaging + signing + PRD §25 demo  (integration — ALL-HANDS, ◄ everything incl. 0.2)
+```
 
-| Track | Phases | Area | Runs independently because… | Mocks | Gated by |
-|---|---|---|---|---|---|
-| **shared** (the neck) | 0 | `shared/` | one team; 6 spikes (parallel) then the contract freeze | — | — |
-| **daemon-core** (critical path / long pole) | 1 → 2 → 4 | `daemon/` | it *is* the foundation everyone consumes | — | 0.4, 0.5 |
-| **ui** (biggest independent arm) | 6 | `ui/` | projection-driven; the NexusOps-ui-kit already exists | GatewayPort + projections (fixtures) | 0.5 |
-| **edges** (optional 3rd) | 3, 5, 7 | `daemon/` (+`ui/` for PR review) | executor edges submit intents to the frozen Gateway iface | Gateway executor iface | 0.1, 0.3, 0.5 |
-| **converge** | 8, 9 | `daemon/`+`ui/` | layer on once core + edges exist | — | per-phase |
-| **integration** (final gate) | 10 | all | the demo needs everything | — | ~all (esp. 0.2) |
+**Critical path (serial floor):** **P2 → P3 → P4 → P10.** **Forced-serial bottleneck: Phase 2 (the Gateway)** — every mutating executor (P5/P7), the harness intercept (P3), the Brain proposal path (P8), and the ui mutation/intent seam (parked 6.3d/e + Gateway modal) all queue behind the P2 contract freeze (mutation methods + `ActionRequest`/`ActionPlan` + the §6.3 catalog). This mirrors the 0.5 contract freeze one layer up: **freeze the action contract early in P2, then fan out.**
 
-**Recommended cadence:**
-1. **One team — `/team-start daemon` → all of Phase 0.** Run the spikes in parallel; then **0.5 contract freeze** (the daemon team owns `shared/`). This is the only serial neck.
-2. **0.5 lands → `/team-start ui`** (parallel). Two arms now: daemon-core (1→2→4) + ui (6). The UI builds against the frozen enums/projections + a mock gateway-client + the NexusOps-ui-kit; it integrates with the real daemon per slice once that slice's daemon-side contract is live.
-3. **Bandwidth + 0.1/0.3 resolved → optionally `/team-start edges`** (3/5/7).
-4. **Converge** (8/9), then the **demo/deploy gate** (10) — all hands, not parallelizable.
+**Track map** (`/team-start <track>` reads this; team naming `<track>-<area>-<role>`):
 
-**Ceiling:** 2 tracks is the sweet spot, 3 if you have bandwidth. You are the escalation conduit for every team — past ~3 you become the bottleneck (the product's own "human attention is the scarce resource" thesis applies to *you*). **Don't fan out before 0.5** — contract churn after fan-out thrashes every track. The per-phase `Track / deps:` lines below make the dependency graph explicit.
+| Track | Phases | Area(s) | Worktree | Team name | Gated by | Status |
+|---|---|---|---|---|---|---|
+| **daemon** (critical path) | 2 → 3 → 4 | `daemon/`, `shared/` | main checkout | `nexusops-daemon` (`daemon-orchestrator` / `daemon-implementer`) | — (unblocked) | **ACTIVE-NEXT** (2.1) |
+| **ui** | 6-tail (6.3d/e + intent seam) → 7.2/7.3-UI → 8.2-UI | `ui/` | `track/ui` worktree | `nexusops-ui` (`ui-ui-orchestrator` / `ui-ui-implementer`) | P2.1 mutation-contract freeze (+ P3.4 Terminal Channel for 6.3d's well) | PAUSED (resume at P2 freeze) |
+| **edges** (optional 3rd) | 5 ∥ 7.1 | `daemon/` | `track/edges` worktree | `nexusops-edges` (`edges-daemon-orchestrator` / `edges-daemon-implementer`) | P2 Gateway-iface freeze (S4 — mock to start), 0.3 | OPTIONAL (bandwidth) |
+| _(converge — not a parallel track)_ | 8, 9 | `daemon/`+`ui/` | main | _(daemon team absorbs)_ | P2 (+0.2 HITL for P8 bundling) | queued |
+| _(integration — final gate)_ | 10 | all | main | all-hands | ~everything (esp. 0.2 notarization) | queued |
+
+**Integration/merge order (multi-track):** edges → main at each P5/P7.1 phase-exit (daemon-area code, same crate — rebase-merge, run `/phase-exit`); ui → main at its round seals (established pattern: `46ed874`). The daemon track owns `shared/` — **only the daemon track bumps `CONTRACT_VERSION`**; ui/edges consume via regen (the §5.0 mechanism).
+
+**Shared contracts across tracks** (freeze before fan-out — the §2.5-seam model list): the P2 Gateway surface (`ActionRequest`/`ActionPlan`/`Approval`/`ActionResult` §6.2 + `ActionTypeCatalog` §6.3 + the `submit_*`/`approve`/`deny`/`preview` wire methods §6.1/§6.4) is the next freeze; EventEnvelope/IDs/status machines/EventTypeRegistry (§7.1/§5.1/§5.2) already frozen @ 0.14.0; `HarnessAdapter` normalized types (§9.1) freeze at P3.1; `BrainEventMapping` (§13.1) at P8.1.
+
+**Ceiling (unchanged guidance, validated):** 2 tracks is the sweet spot, 3 with bandwidth — the human is the escalation conduit for every team and becomes the bottleneck past ~3. **Don't fan a track out before its gating contract freezes** — contract churn after fan-out thrashes every consumer (the 0.5 lesson, now applied to the P2 action contract).
 
 <!-- ▲ END EXAMPLE BLOCK [id=parallelization-plan] ▲ -->
 
@@ -163,9 +181,9 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Goal:** Resolve the build-gating spikes and freeze the shared contracts so downstream phases bind to stable enums/IDs. These are validation/decision tasks, not TDD code; each ends in a recorded decision (→ Decisions tabled / a `DECISIONS.md` note) or a `ARCHITECTURE.md` confirmation. **Gates the phases noted.**
 
-**Spec anchors:** `ARCHITECTURE.md §23` (spikes), `§0.3` (reconciliations), `§5.1`, `§5.2`, `§9.1`, `§13.1`, `§16`.
+**Spec anchors:** `ARCHITECTURE.md §23` (spikes), `§0.3` (reconciliations), `§5.1`, `§5.2`, `§9.1`, `§13.1`, `§16`. **Waivers (phase ✅ pre-tagging):** §23 (non-TDD: spike decision records `docs/spikes/*.md`) · §0.3 (covered-by: shared/tests/contract.rs) · §5.1 (covered-by: shared/tests/contract.rs) · §5.2 (covered-by: shared/tests/contract.rs) · §9.1 (non-TDD: OQ-HARN-SPIKE-7 decision record) · §13.1 (non-TDD: OQ-PLAT-SPIKE-1 decision record) · §16 (covered-by: daemon/tests/eventstore.rs migration/backup suite).
 
-**Track / deps:** `shared` (the serial neck — one team). **Deps:** none. **Parallel:** the 6 spikes run concurrently; **0.5 (contract freeze) is gated on 0.1 + 0.3** and is what unlocks every downstream track.
+**Track:** `shared` (the serial neck — one team) · **Depends on (phases):** none. **Parallel:** the 6 spikes run concurrently; **0.5 (contract freeze) gated on 0.1 + 0.3** unlocks every downstream track. _(✅ DONE — HITL residue: 0.1 drain ≥6/15 → cat-4 → 0.5b; 0.2 notarization run.)_
 
 ### 0.1 — Claude supervision-mode spike (O-4) — *gates Phase 3 Claude adapter*
 - [x] Empirically map `can_use_tool` coverage across direct bash/Write/Edit, MCP tools, Task subagents (fg/bg), and each permission mode; confirm the #27203 background-subagent gap. — **#27203 CONFIRMED present on CC 2.1.168** (closed won't-fix); bg subagents stay forbidden (matches §9.1, no change).
@@ -211,9 +229,9 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Goal:** The trust-core spine — a detached Rust daemon owning a single-writer WAL SQLite event store with rebuildable projections, an outbox, persistent lease locks, a UDS `GatewayPort`, single-instance + first-run bootstrap, and migrations with backup/rollback. Everything downstream writes through this.
 
-**Spec anchors:** `ARCHITECTURE.md §4`, `§6.1`, `§6.4`, `§7`, `§7.1`, `§7.2`, `§5.2`, `§8` (recovery rows), `§16` (bootstrap/migration/version-compat), `§12`.
+**Spec anchors:** `ARCHITECTURE.md §4`, `§6.1`, `§6.4`, `§7`, `§7.1`, `§7.2`, `§5.2`, `§8` (recovery rows), `§16` (bootstrap/migration/version-compat), `§12`. **Waivers (phase ✅ pre-tagging — existing untagged suites honored; new tests carry `spec(§X)`):** §4 (covered-by: daemon/tests/runtime.rs) · §6.1 (covered-by: daemon/tests/ipc.rs) · §6.4 (covered-by: daemon/tests/ipc.rs) · §7 (covered-by: daemon/tests/eventstore.rs + projections.rs + outbox.rs) · §7.1 (covered-by: shared/tests/envelope.rs) · §7.2 (covered-by: daemon/tests/replay.rs) · §5.2 (covered-by: shared/tests/contract.rs) · §8 (covered-by: daemon/tests/replay.rs recovery suite) · §16 (covered-by: daemon/tests/eventstore.rs + runtime.rs bootstrap suites) · §12 (covered-by: daemon/tests/runtime.rs write-actor suite).
 
-**Track / deps:** `daemon-core` (critical path / long pole). **Deps:** 0.4, 0.5. **Parallel-with:** Phase 6 (ui, via mock GatewayPort + fixture projections).
+**Track:** `daemon` (critical path) · **Depends on (phases):** 0 (0.4, 0.5). _(✅ DONE 2026-06-10, seal `310df20`.)_
 
 ### 1.1 — Event store: append-only events + envelope + FTS5 — ✅ **LANDED** (df753aa + b998f20 + 61089ea)
 - [x] WAL SQLite opened with the §2 pragmas; `events` table per `§7.1` envelope (incl. reserved `payload_hash`/`previous_event_hash`); `seq` canonical order (atomic, `BEGIN IMMEDIATE`); `user_version` migration runner + §16 backup/rollback. — **§15 redaction gate fail-closed** (never persists `unredacted`; `redaction_status` + prefix Redactor); single-write-actor (read-only WAL readers); CONTRACT_VERSION 0.7.0. _(FTS5 scaffolding → populated with the AuditTrail projection in 1.2.)_
@@ -251,15 +269,15 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 ### 1.6 — First-run bootstrap + migrations backup/rollback + version-compat — 🔄 **IN PROGRESS (1.6a ✅ DONE · 1.6c/1.6d remain)**
 > **Round 2026-06-08:** **1.6a-L1/L2 ✅ + 1.6b ✅ LANDED** (`48b7a2c`/`f1de088` + `26898a8`/`9448035`/`8d06ed7`/`f9c31b1`/`39f756e`; 105 workspace green; security PASS; daemon-internal — CONTRACT_VERSION stays 0.11.0; LESSONS §8/§9; session doc 006).
 > **Round 2026-06-10 (round 2):** **1.6a-L3 ✅ LANDED** (`980e1a0`; registration — `DeviceRegistered`/`LocalRunnerRegistered` System-actor events via the write-actor; **CONTRACT_VERSION 0.11.0→0.12.0**; 113 workspace green; security-reviewer PASS [INV-SEC-1/§15/frozen-22]; LESSON §10; **closes #11 → 1.6a DONE**). **Device-role contradiction surfaced + USER-RULED Option A** (binding §16 "registers desktop-host Device" vs frozen §5.3 "[DEFERRED]" → Device is MVP-live desktop-host; `is_deferred()` true only for RemoteClient; RemoteClient + Device's iOS multi-device/pairing dimension stay deferred). Round sealed + pushed; **cross-track UI↔main merge at this boundary**. **HELD:** **1.6c** (§17 degradable replay, USER-RULED Option C; brief 029) · **1.6d** (subscribe-SERVE push, #13). See Currently-in-progress + Decisions-tabled.
-- [ ] Cold-start ordering (§16) — 🔶 PARTIAL: the orchestration (create_dir_all → pidlock → `EventStore::open` → `DaemonVersionInfo`) ✅ LANDED 1.6a-L2 (`f1de088`); register desktop-host Device + LocalRunner ✅ **LANDED 1.6a-L3** (`980e1a0`); bind UDS ✅ 1.6b; launchd install → Phase 10. Pre-migration DB backup + restore-on-failure + `app_version↔user_version` floor were already in place (1.1); the **enforcing** version-compat floor at bootstrap = the DB `user_version` check.
+- [x] Cold-start ordering (§16) — ✅ COMPLETE for Phase-1 scope (launchd install = Phase-10 packaging, never 1.6 scope; reconciled 2026-06-11): the orchestration (create_dir_all → pidlock → `EventStore::open` → `DaemonVersionInfo`) ✅ LANDED 1.6a-L2 (`f1de088`); register desktop-host Device + LocalRunner ✅ **LANDED 1.6a-L3** (`980e1a0`); bind UDS ✅ 1.6b; launchd install → Phase 10. Pre-migration DB backup + restore-on-failure + `app_version↔user_version` floor were already in place (1.1); the **enforcing** version-compat floor at bootstrap = the DB `user_version` check.
 - [x] **Degradable catch-up replay on `open` (§17) — ✅ LANDED 1.6c** (`aeedc3f` L1 + `4df4078` L2; USER-RULED Option C; CONTRACT_VERSION 0.12.0→0.13.0; 123 workspace green; security-reviewer PASS 0 findings both layers; daemon-internal `quarantine` table [MIGRATION_6] + degrade-not-crash + a loud `AuditIntegrityViolation` System-actor event per newly-quarantined seq [exactly-once restart+rebuild]; degraded(unknown-version)≠quarantined; structural/content-free reason §15; LESSON §11). _Resolved mandate (orig. re-homed from the 1.2 L3 Finding, human-ratified Option-A defer 2026-06-07; the skip-vs-refuse call was escalated → USER-RULED Option C):_ 1.2's `catch_up_replay` reconstructs via the **strict** read path, so one corrupt event row aborts `open` → daemon won't start (no in-product recovery; `rebuild_projections` sits behind the failing `open`). §17 (line 391) requires the read path to **quarantine/degrade + continue** (`read_all_degradable`), not crash. **1.6 must DECIDE + TEST the semantics (not just swap readers):** the §17-correct behavior for a corrupt EVENT row — **degrade/skip-and-continue** (`read_all_degradable`) **vs refuse-safely + restore `.bak`** — carries an **audit-integrity dimension** (skip-and-continue could *silently drop a real event*). **Flag to the human at 1.6 if the skip-vs-refuse call turns load-bearing.** **Bundle:** a replay-time `redaction_status='unredacted'` **quarantine-skip** (security-medium; non-producible via the write gate today — defense-in-depth on replay). Tests: corrupt row → `open` recovers per the chosen semantics (degrades-not-crashes, or refuses-safely + restores `.bak`); legacy unredacted row → quarantine-skipped. **Bundle (1.6a-L1 cq-medium, routed 2026-06-08):** the `-1` unreadable-seq quarantine sentinel → a named const / `Option<i64>` typing (belongs with the §17 read-path that owns `DegradableEvent`; not fixed in 1.6a — scope). `(origin: 2026-06-07 P1.2 L3 — security+cq HIGH Finding; human-ratified defer + skip-vs-refuse design mandate)`
 - [x] **Wire the daemon-runtime Tokio tasks (re-homed from 1.3 + 1.4)** ✅ **LANDED 1.6b L2 (`9448035`)** — spawn the outbox `drain_once` loop on an interval (the 1.3 `drain_once` unit + `reset_in_flight`-on-`open` are ready; the *spawn* lands here, §12); **bound a single drain pass (LIMIT/batch)** so a large backlog can't starve the writer (1.3 security-low deferral). **Spawn the lease reaper `reap_once` loop on an interval** (the 1.4 `reap_once` unit is ready; only the spawn is here, §12). `(origin: 2026-06-08 P1.3 + P1.4)`
 - [x] **Wire the 1.4 `PidLock` into the cold-start ordering** ✅ **LANDED 1.6a-L2 (`f1de088`)** — the §16 cold-start bullet above ("pidlock → reclaim stale socket → …") is satisfied by the 1.4 `locks::PidLock` mechanism (std advisory file lock); this lands the *call site* (acquire the pidlock first; on `AlreadyHeld` refuse the second instance). `(origin: 2026-06-08 P1.4 L2)`
 - [x] **Wire the 1.5 UDS GatewayPort runtime (re-homed from 1.5)** — ✅ DONE: `bind()` (unlink-before-bind) + accept-loop + concurrency cap + the broadcast subscribe-**SOURCE** (publish-after-commit) ✅ LANDED 1.6b (`8d06ed7`/`f9c31b1`); **the socket subscribe-SERVE push ✅ LANDED 1.6d (`93f70a5`** — close-on-lag resync + dedicated-connection single-writer; LESSON §12); the platform cfg-guard + `subscription_id` handle + one-read-only-WAL-conn-per-session → Carry-forward (consumer-marked). Original scope: `bind()` + the accept-loop spawn (the §16 cold-start "bind UDS" step; `serve_connection` is ready); the **live `subscribe` delta-source** (`EventStore::append` → a `tokio::sync::broadcast` → the subscriber push, via the `try_clone` read/write split — a **writer↔IPC seam**, slightly more than a spawn); a **platform cfg-guard** (`getpeereid` is macOS/BSD-only → gate the UDS stack to the macOS-MVP target so a Linux build links — security-MEDIUM, reviewer-sanctioned defer); an accept-loop **concurrency cap** (bound concurrent 8 MiB frame buffers + live connections — anti-DoS at scale); **one read-only-WAL conn per session** (today `get_projection` opens per-request); a `subscription_id` handle on the subscribe ack if multiple concurrent subscriptions per connection are supported. `(origin: 2026-06-08 P1.5)`
 - [x] **`eventstore::user_version()` → `Result<u32>` (inlined from 1.1 L2 via 1.2 triage)** ✅ **LANDED 1.6a-L1 (`48b7a2c`)** — typed `Result<u32,_>` (out-of-u32 → `Migration`, not `Reconstruct`); the `-1` sentinel removed. `(origin: 2026-06-07 P1.1 L2; triaged 2026-06-08; done 1.6a-L1)`
-- [ ] Files: `daemon/src/bootstrap.rs` (NEW), `daemon/src/eventstore/migrations.rs` (extended)
+- [x] Files: `daemon/src/bootstrap.rs` (NEW), `daemon/src/eventstore/migrations.rs` (extended)
 - [x] Cross-doc invariant: NEW — Device, LocalRunner registration events (Appendix A, §5.3, §7.1 EventTypeRegistry); **Device-role MVP-live desktop-host (§5.3, user-ruled Option A)**; Version-compatibility matrix DB-floor (§16). _(1.6a-L3 `980e1a0` — orchestrator hot-write 2026-06-10)_
-- [ ] Tests: happy (clean first run creates DB + runs migrations); edge (stale socket reclaimed; second instance refused); error (bad migration → restore `.bak`, refuse-safely; downgraded binary sees newer DB → refuse); integration (daemon restart resumes against existing DB).
+- [x] Tests: happy (clean first run creates DB + runs migrations); edge (stale socket reclaimed; second instance refused); error (bad migration → restore `.bak`, refuse-safely; downgraded binary sees newer DB → refuse); integration (daemon restart resumes against existing DB). — ✅ covered (reconciled 2026-06-11): `daemon/tests/runtime.rs` (13) + `eventstore.rs` migration/backup suite (`:173`/`:396`) + `locks.rs` pidlock (`:417`/`:440`) + `replay.rs` restart suite.
 
 ### 1.7 — Redactor: entropy fallback (OQ-SEC-2) — ✅ **DONE** (`c795668` L1 + `f807913` L2; recall-envelope **USER-ACCEPTED — Option C, 2026-06-10**)
 - [x] Extend the 1.1 `Redactor` with the **Shannon-entropy fallback on `KEY=value` lines** + **bare high-entropy runs**, all masked **in-place** (engine `prefix-entropy-v2`); same redactor gates all 3 sinks (§15). ✅ L1 `c795668`.
@@ -270,9 +288,9 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 - [x] **🔓 HUMAN GATE — RESOLVED: USER-RULED Option C (ACCEPT the recall envelope), 2026-06-10 → Phase 1 DONE.** The §15 fail-closed gate holds; the **ACCEPTED residual is explicit**: entropy detection is **`KEY=value`-scoped by design** (+ bare-run masking) — **bare free-text high-entropy secrets in JSON-value / non-KV position are out-of-envelope and may persist** (primary control = rule #5 keychain-refs-only; the redactor is defense-in-depth for accidental leaks). **Condition of acceptance (user):** a TRACKED, OWNED §15 redactor-recall hardening task → **2.0-SEC** (Phase 2, below).
 
 ### Acceptance criteria (1)
-- [ ] Daemon starts detached, single-instance, survives UI restart; event store is the sole writer.
-- [ ] Projections rebuild deterministically; offsets crash-safe; `/preflight` clean.
-- [ ] Lease fencing rejects stale holders; UDS peer-auth (`getpeereid`) + handshake enforced.
+- [x] Daemon starts detached, single-instance, survives UI restart; event store is the sole writer. _(✅ reconciled 2026-06-11: `daemon/src/main.rs:34-102` + `locks/pidlock.rs:33-69` + the write-actor `runtime/writer.rs:153-157`; 133 daemon tests green.)_
+- [x] Projections rebuild deterministically; offsets crash-safe; `/preflight` clean. _(✅: rebuild-equivalence `daemon/tests/projections.rs:516`; offsets-never-ahead `:290`.)_
+- [x] Lease fencing rejects stale holders; UDS peer-auth (`getpeereid`) + handshake enforced. _(✅: `daemon/tests/locks.rs:271`/`:332`; `ipc.rs` peer-auth + skew suite.)_
 - [x] **§15 redaction: 1.1 fail-closed gate + the 1.7 entropy fallback (OQ-SEC-2) both landed** — gate holds (no event persists `unredacted`; prefix+entropy+bare-run recall, engine `prefix-entropy-v2`; property/fuzz-pinned). **Recall-envelope USER-ACCEPTED (Option C, 2026-06-10)** — the residual (`KEY=value`-scoped; bare free-text secrets out-of-envelope) is accepted with a tracked owned hardening task (**2.0-SEC**). ✅ **Phase-1 §15 acceptance bar MET.**
 
 ---
@@ -281,9 +299,9 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Goal:** The single, audited mutator. Typed `ActionRequest`/`ActionPlan` over the GatewayPort, the staged pipeline (normalize → resolve → policy/risk → preview/dry-run → approval → execute → audit), risk 0-4, **bundled ActionPlan + step-by-step approval (O-3)**, idempotency, fencing-guarded execution, stale-precondition re-check, fail-closed-on-audit-write, and the MVP executor adapters' interface.
 
-**Spec anchors:** `ARCHITECTURE.md §6`, `§6.1`, `§6.2`, `§6.3`, `§5.1` (Approval/ActionRequest), `§15` (INV-SEC-1, fail-closed), `§17` (stale-precondition, fencing-conflict, daemon-crash-mid-action).
+**Spec anchors:** `ARCHITECTURE.md §6`, `§6.1`, `§6.2`, `§6.3`, `§5.1` (Approval/ActionRequest), `§15` (INV-SEC-1, fail-closed), `§17` (stale-precondition, fencing-conflict, daemon-crash-mid-action), `§2.5` (non-TDD: planning DAG — realized by the Track map + per-task Depends-on edges, not testable code; the Gateway = forced-serial bottleneck, freeze the action contract early then fan out), plus for the promoted ops tasks: §5.0 (non-TDD: the CI schema-diff/3-way gates ARE the verification) · §14 (non-TDD: CI pipeline config; the §14 tiers run in CI) · §18 (benchmark).
 
-**Track / deps:** `daemon-core`. **Deps:** Phase 1, 0.5. **Parallel-with:** Phase 6 (ui); Phase 5 (git, against the frozen Gateway iface). Unblocks the `edges` track's intercept→intent path.
+**Track:** `daemon` (critical path — THE bottleneck phase, §2.5) · **Depends on (phases):** 1 (✅), 0 (✅) — **UNBLOCKED.** Unblocks at its contract freeze: `edges` (P5/P7.1 vs the frozen Gateway iface), the ui mutation/intent seam (parked 6.3d/e), P3 intercept→intent, P8 Brain proposals.
 
 ### 2.0-SEC — §15 redactor-recall hardening (OWNED — condition of the Option-C §15 acceptance) — ✅ **DONE 2026-06-11** (L1 `950957c` · L2 `2f61a77` · L3 _pending-commit, hash → round commit_; brief `031`)
 > **Owner:** daemon-implementer (a Phase-2 security pass); **tracked by** the orchestrator (slotted EARLY in Phase 2 — before the Gateway widens the payload-capture surface). **Provenance:** the user's CONDITION for accepting the 1.7 §15 recall envelope (Option C, 2026-06-10) — the residual must be **actively owned, not just documented**. This is a first-class task, NOT a loose TODO.
@@ -297,30 +315,48 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 ### 2.1 — Gateway pipeline + ActionRequest/ActionPlan model + mutation methods
 - [ ] `submit_action`/`submit_action_plan`/`preview_action`/`approve`/`deny` GatewayPort methods; the staged pipeline; `action_requests`/`approvals` durable rows; the two split state machines (R-5); authoritative `ActionExecution*` events emitted ONLY by the Gateway.
 - [ ] **proj_approval_queue projector body (re-homed from 1.2, Option-A)** — fold the Gateway's `ActionRequested`/`Approval*` events → `proj_approval_queue` (the Human Input Queue read model, AG §8; `sort_key` risk DESC, age). Table DDL pre-created in 1.2 (migration 3); this lands the projector + its event contract + tests. `(origin: 2026-06-07 P1.2)`
+- [ ] Depends on: none — all upstream landed (1.1–1.7 ✅; consumes the 1.4 lease oracle read-side + the 1.5 wire surface + the 1.2 `proj_approval_queue` DDL).
 - [ ] Files: `daemon/src/gateway/` (NEW: pipeline, request, approval), `daemon/src/ipc/` (extended)
 - [ ] Cross-doc invariant: NEW — ActionRequest, ActionPlan/ActionPlanStep, Approval, ActionResult, ActorRef, ResourceRef, EvidenceRef, PolicyDecision (Appendix A, §6.2)
-- [ ] Tests: happy (single action: submit→preview→approve→execute→succeeded events); edge (bundled plan: step-by-step approval, approve-all excludes critical/4); error (deny-with-reason; expired approval); integration (Brain/agent/UI all reach mutation only via submit_*).
+- [ ] **§2.5-seam:** these models cross a §2.5 dependency edge (shared contract across tracks) — the brief's RED outline MUST include the **schema-snapshot test** (field-name set == checked-in snapshot, `spec(§6.2)`-tagged), authored in the same `/tdd` cycle (reviewed at Step 2.5 like any test).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (single action: submit→preview→approve→execute→succeeded events); edge (bundled plan: step-by-step approval, approve-all excludes critical/4); error (deny-with-reason; expired approval); integration (Brain/agent/UI all reach mutation only via submit_*).
 
 ### 2.2 — Policy engine + risk 0-4 + per-type action catalog
 - [ ] Policy engine returning `{allow|require_approval|require_step_approval|deny|downgrade|needs_more_context}`; per-action risk resolution from the §6.3 ActionTypeCatalog (params schema, locked risk, required preview class, idempotency formula, executor); critical never in approve-all by default.
+- [ ] Depends on: 2.1 (the `ActionRequest`/`PolicyDecision` models the engine consumes).
 - [ ] Files: `daemon/src/policy/` (NEW), `daemon/src/gateway/catalog.rs` (NEW)
 - [ ] Cross-doc invariant: NEW — ActionTypeCatalog (Appendix A, §6.3)
-- [ ] Tests: happy (each MVP action type resolves to its locked risk + preview class); edge (risk-range action resolves by resource state, e.g. git.delete_worktree 3-4); error (workflow.command.invoke w/ null schema is approval-floored, never standing-granted); integration (policy decision drives approval requirement).
+- [ ] **§2.5-seam:** these models cross a §2.5 dependency edge (shared contract across tracks) — the brief's RED outline MUST include the **schema-snapshot test** (field-name set == checked-in snapshot, `spec(§6.3)`-tagged), authored in the same `/tdd` cycle (reviewed at Step 2.5 like any test).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (each MVP action type resolves to its locked risk + preview class); edge (risk-range action resolves by resource state, e.g. git.delete_worktree 3-4); error (workflow.command.invoke w/ null schema is approval-floored, never standing-granted); integration (policy decision drives approval requirement).
 
 ### 2.3 — Preview/dry-run + idempotency + executors interface
 - [ ] `ActionExecutor` interface (validate/preview/execute/optional rollback); preview classes (command/diff/git/api/session/workflow/rollback) + `cannotPreviewReason`; idempotency-key derivation + dedup store; MVP executor stubs wired to later phases.
+- [ ] Depends on: 2.1 (pipeline), 2.2 (per-type preview class + locked risk from the catalog).
 - [ ] Files: `daemon/src/gateway/executor.rs`, `daemon/src/gateway/preview.rs` (NEW)
 - [ ] Cross-doc invariant: extended — ActionPreview (Appendix A, §6.2)
-- [ ] Tests: happy (dry-run produces a preview); edge (preview-impossible escalates risk + sets cannotPreviewReason); error (duplicate idempotency key deduped); integration (executor only invoked post-approval).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (dry-run produces a preview); edge (preview-impossible escalates risk + sets cannotPreviewReason); error (duplicate idempotency key deduped); integration (executor only invoked post-approval).
 
 ### 2.4 — Fail-closed, stale-precondition re-check, fencing-conflict, crash reconciliation
 - [ ] Fail-closed: audit-required (risk≥1) actions abort if the terminal event can't be written (one txn boundary); stale-precondition re-read after lock + before execute → fresh approval if the diff/resource changed; stale fencing token → `ActionFailed(fencing_conflict)` + hard-conflict surface; on restart reconcile orphaned `executing` actions via idempotency key.
 - [ ] **Gateway fencing oracle = 1.4's `validate_held` (live-lease authority) + heartbeat/renew long actions** — Option B (human-ratified 2026-06-08): "stale" = NOT a live lease (**expired OR superseded**). The gateway calls `locks::validate_held(resource_id, lease_kind, owner, token, now)` after lock + before execute → false → `fencing_conflict`. It **must renew/heartbeat (or re-acquire)** a long-running action so a legitimately-long action isn't fenced by its **own** lease expiry (self-fence → false `fencing_conflict`). `(origin: 2026-06-08 P1.4 — fencing Option-B ruling)`
   - [ ] **Define the idempotent same-owner re-acquire contract** — 1.4 returns `Held{owner:self}` on ANY live re-acquire incl. the *same* owner (1.4 deliberately did NOT pin a guessed semantics). The gateway decides whether a same-owner re-acquire is idempotent (renew-like) or an error. `(origin: 2026-06-08 P1.4 L1 flag)`
   - [ ] **Account for the strict expiry boundary** — `validate_held`/renew use `expires_at > now` (strict) + reject TTL≤0; the gateway heartbeat loop must renew strictly *before* the boundary, not at it. `(origin: 2026-06-08 P1.4 L1 flag)`
+- [ ] Depends on: 2.1, 2.3; consumes 1.4 `locks::validate_held` (✅) as the fencing oracle.
 - [ ] Files: `daemon/src/gateway/` (extended), `daemon/src/gateway/recovery.rs` (NEW)
 - [ ] Cross-doc invariant: none
-- [ ] Tests: happy (normal execute commits event + side effect atomically); edge (state changed between preview and execute → re-approval required); error (audit-write fails → mutation NOT applied; fencing conflict → ActionFailed, never auto-resolved); integration (daemon crash mid-action → restart reconciles to succeeded/failed/unknown).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (normal execute commits event + side effect atomically); edge (state changed between preview and execute → re-approval required); error (audit-write fails → mutation NOT applied; fencing conflict → ActionFailed, never auto-resolved); integration (daemon crash mid-action → restart reconciles to succeeded/failed/unknown).
+
+### 2.5 — §18 event-write/reader benchmark (implements §18/§14; origin: 2026-06-11 production-posture re-derivation)
+- [ ] One discrete benchmark asserting the committed §18 CI regression guards against the AS-BUILT path (write-actor + redactor v3 + in-band projections + outbox + Gateway pipeline): event-write p95 < 30 ms / p99 < 75 ms @ N=20 · reader p95 < 10 ms under write load · sustained ≥ 1,500 commits/s. Reuses the 0.4 spike harness (`daemon/spikes/sqlite-loadtest`) re-pointed at the production submit path. Runs at its OWN cadence (`/phase-exit` + nightly), NEVER inside a per-slice RED/GREEN loop (timing assertions are flaky there); the phase Spec-anchors line carries the `§18 (benchmark)` waiver class for spec-lint.
+- [ ] Depends on: 2.1 (the Gateway submit path is the production entry the SLO governs; the 0.4 spike measured the raw store).
+- [ ] Files: `daemon/benches/event_write.rs` (NEW, `#[ignore]`-gated or criterion) + a `/phase-exit`-callable runner
+- [ ] Cross-doc invariant: none.
+
+### 2.6 — CI: stand up the §14 merge gates + audit baseline (implements §14/§5.0/§16; origin: 2026-06-11 production-posture re-derivation — promoted from Carry-forward "Phase 10, or earlier if CI is stood up")
+- [ ] `.github/workflows/ci.yml`: daemon (cargo test --workspace · clippy `-D warnings` · fmt --check) + ui (typecheck · oxlint · prettier --check · vitest run) + the §5.0 contract gates (schema-diff test 9 · 3-way verify · the ui TS drift test · `CONTRACT_VERSION`===`x-contract-version` pin) + `scripts/spec-lint.sh` wiring + the dependency-audit baseline (`cargo audit` + `pnpm audit --prod` → `docs/audits/` baseline the phase-exit row diffs against). The §9.1 Codex schema-regen gate joins at P3 (OQ-HARN-SPIKE-4). _(Consumes the Carry-forward "Wire the §5.0 contract gates into CI" item — fold its full checklist incl. the corepack note into the brief.)_
+- [ ] Depends on: none (infra; every later phase's merge gate consumes it).
+- [ ] Files: `.github/workflows/ci.yml` (NEW), `docs/audits/` (NEW)
+- [ ] Cross-doc invariant: none.
 
 ### Acceptance criteria (2)
 - [ ] **INV-SEC-1 architecture-invariant test passes** (no executor reachable except via the Gateway pipeline; every mutation has an event).
@@ -333,34 +369,45 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Goal:** One `HarnessAdapter` contract over two lifecycle models — Claude Code (drive-mode per the 0.1 spike; `can_use_tool`/`PreToolUse` defense-in-depth, default-mode-only, no background subagents) and Codex (`app-server` stdio). Embedded PTY terminals (portable-pty → xterm.js) with backpressure. Status derived from structured streams, never from PTY scraping.
 
-**Spec anchors:** `ARCHITECTURE.md §9.1`, `§5.1` (Session machine), `§6` (intercept→Gateway intent), `§7.2` (harness-derived SoT), `§9` (terminal/ADR-009), `§0.1` O-1/O-4, `§0.2` O-13.
+**Spec anchors:** `ARCHITECTURE.md §9.1`, `§5.1` (Session machine), `§6` (intercept→Gateway intent), `§7.2` (harness-derived SoT), `§9` (terminal/ADR-009), `§0.1` O-1/O-4, `§0.2` O-13, `§18 (benchmark)`.
 
-**Track / deps:** `edges`. **Deps:** 0.1 (Claude mode), 0.3 (Codex schema), 0.5, Phase 2 (Gateway intercept→intent; can mock the Gateway iface to start). **Parallel-with:** daemon-core (Phase 4), ui (Phase 6).
+**Track:** `daemon` (critical path — P4 survival depends on adapters existing; re-assigned from `edges` at the 2026-06-11 re-derivation per §2.5) · **Depends on (phases):** 2 (intercept→intent iface; mockable to start early), 0 (0.1 Claude-mode ruling ← HITL drain; 0.3 Codex schema capture ← HITL). **Intra-phase parallel (S3):** Claude adapter ∥ Codex adapter ∥ FakeHarness/FakePty behind the one trait; terminal (3.4) parallel to status derivation (S6).
 
 ### 3.1 — HarnessAdapter contract + normalized types + capabilities
 - [ ] The trait `{launch, stream_status, intercept_mutation, read_transcript, telemetry_heartbeat, resume, capabilities}` + normalized types (NormalizedStatus[17], TelemetrySample{context_pct:Option, metric_quality}, MutationIntercept, TranscriptRef, ResumeResult) + `HarnessCapabilities` (10 fields); per-harness coverage matrix.
 - [ ] **proj_usage_ledger projector body (re-homed from 1.2, Option-A)** — fold telemetry/usage events (derived from `TelemetrySample`) → `proj_usage_ledger` rollups (tokens/context/cost per day|project|session|model, `metric_quality`, §18). Table DDL pre-created in 1.2 (migration 3); this lands the projector + its event contract + tests. `(origin: 2026-06-07 P1.2)`
+- [ ] Depends on: 2.1 (intercept→intent submits into the Gateway; the iface is mockable so 3.1 can start at the P2 contract freeze).
 - [ ] Files: `daemon/src/harness/mod.rs` (NEW), `shared/contracts/harness` (NEW)
 - [ ] Cross-doc invariant: NEW — HarnessAdapter trait + normalized types, HarnessCapabilities, Per-harness coverage matrix (Appendix A, §9.1)
-- [ ] Tests: happy (both adapters satisfy the trait); edge (Codex `supportsContextMetadata=false` → context None); error (unsupported capability surfaced, not faked); integration (a shared conformance suite runs against recorded fixtures for both).
+- [ ] **§2.5-seam:** these models cross a §2.5 dependency edge (shared contract across tracks) — the brief's RED outline MUST include the **schema-snapshot test** (field-name set == checked-in snapshot, `spec(§9.1)`-tagged), authored in the same `/tdd` cycle (reviewed at Step 2.5 like any test).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (both adapters satisfy the trait); edge (Codex `supportsContextMetadata=false` → context None); error (unsupported capability surfaced, not faked); integration (a shared conformance suite runs against recorded fixtures for both).
 
 ### 3.2 — Claude Code adapter (drive-mode per 0.1)
 - [ ] Launch + status (SDK stream or PTY+hooks per spike) → Session 17-state machine; `can_use_tool`/`PreToolUse` → Gateway intent (default mode only; forbid background subagents); transcript JSONL (`~/.claude/projects/.../<id>.jsonl`) tail; telemetry merge (ResultMessage + statusLine `refreshInterval` + transcript); settable session_id (1:1).
+- [ ] Depends on: 3.1 (trait), the 0.1 cat-4 SDK-vs-PTY ruling (HITL drain ≥2026-06-15) for drive-mode.
 - [ ] Files: `daemon/src/harness/claude/` (NEW)
 - [ ] Cross-doc invariant: extended — NormalizedStatus
-- [ ] Tests: happy (launch → status transitions → completed); edge (permission request → MutationIntercept → Gateway); error (no-TTY hang guarded; SDK schema pinned); integration (mutation interception covers direct tool calls; coverage-matrix gaps asserted).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (launch → status transitions → completed); edge (permission request → MutationIntercept → Gateway); error (no-TTY hang guarded; SDK schema pinned); integration (mutation interception covers direct tool calls; coverage-matrix gaps asserted).
 
 ### 3.3 — Codex adapter (app-server, O-1)
 - [ ] `codex app-server --stdio` JSON-RPC (stable methods only); `thread/start{cwd}` → mint `sess_` ULID + `harness_session_map`; `thread/list?cwd=` re-association; push status → Session machine; host-routed approvals → Gateway; rollout dir pre-created 0700, files 0600; context-% = unknown.
+- [ ] Depends on: 3.1 (trait), 0.3 live schema capture (HITL — codex CLI install). Parallel with 3.2 (S3).
 - [ ] Files: `daemon/src/harness/codex/` (NEW)
 - [ ] Cross-doc invariant: NEW — harness_session_map (Appendix A, §5.2)
-- [ ] Tests: happy (thread start → status push → turn completed); edge (no settable id → cwd+thread_id mapping; -32001 overload retried); error (rollout never observable at 0644; legacy approval shape handled); integration (re-association after restart via thread/list).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (thread start → status push → turn completed); edge (no settable id → cwd+thread_id mapping; -32001 overload retried); error (rollout never observable at 0644; legacy approval shape handled); integration (re-association after restart via thread/list).
 
 ### 3.4 — Embedded terminal (portable-pty → Tauri Channel → xterm.js)
 - [ ] Daemon owns each PTY via portable-pty; headless VT state; Terminal Channel frames over UDS with explicit backpressure (pause/resume watermarks, ~30fps batch, XON/XOFF); scrollback serialize; **PTY is display-only, never a status source**.
+- [ ] Depends on: 3.1 (session host binding). Decides the §6.4 Terminal-variant encoding (JSON-base64 vs binary) WITH throughput data. Unblocks ui 6.3d.
 - [ ] Files: `daemon/src/terminal/` (NEW), `ui/src/terminal/` (NEW: xterm.js host)
 - [ ] Cross-doc invariant: none
-- [ ] Tests: happy (PTY output streams to xterm.js); edge (high-output backpressure bounds buffer, no OOM/stall); error (PTY death → TerminalProcessExited event); integration (alt-screen TUI scrollback serialize/replay fidelity vs golden corpus).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (PTY output streams to xterm.js); edge (high-output backpressure bounds buffer, no OOM/stall); error (PTY death → TerminalProcessExited event); integration (alt-screen TUI scrollback serialize/replay fidelity vs golden corpus).
+
+### 3.5 — §18 terminal-attach benchmark (implements §18; origin: 2026-06-11 production-posture re-derivation)
+- [ ] Bench terminal attach latency end-to-end (attach intent → first rendered frame) against the §18 budget **< 250 ms**; also captures the Terminal-Channel throughput numbers that decide the §6.4 Terminal-variant encoding AND feed the deferred §18 terminal-throughput budget (owner-recorded deferral — committed with this data). Runs at its OWN cadence (`/phase-exit` + nightly), NEVER inside a per-slice RED/GREEN loop (timing assertions are flaky there); the phase Spec-anchors line carries the `§18 (benchmark)` waiver class for spec-lint.
+- [ ] Depends on: 3.4 (the Terminal Channel must exist).
+- [ ] Files: `daemon/benches/terminal_attach.rs` (NEW)
+- [ ] Cross-doc invariant: none (writes the §18 deferred-budget numbers via an orchestrator arch-doc edit when measured).
 
 ### Acceptance criteria (3)
 - [ ] Both harnesses launch + are supervised with reliable, non-scraped status + worktree/task association.
@@ -375,25 +422,28 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Spec anchors:** `ARCHITECTURE.md §17`, `§10`, `§8` (recovery rows), `§0.1` O-2, `§5.1` (stale, Session terminals).
 
-**Track / deps:** `daemon-core`. **Deps:** Phase 1, Phase 3 (sessions/adapters must exist to survive/recover). **Parallel-with:** ui (Phase 6), edges (Phase 5/7).
+**Track:** `daemon` (critical path) · **Depends on (phases):** 1 (✅), 3 (sessions/adapters must exist to survive/recover). **Parallel-with:** edges (P5/P7.1), ui-tail.
 
 ### 4.1 — Survival: UI-restart reconnect + daemon-restart resume-or-replay
 - [ ] UI restart → reconnect live (daemon alive). Daemon restart → rebuild projections, re-read git2, ping Brain, reclaim leases, then per session: resume (harness `--resume`/`thread/resume`) else serialized-scrollback replay + relaunch; emit resumed-vs-replayed signal.
+- [ ] Depends on: 3.2 + 3.3 (resume requires both adapters), 1.6 (✅ cold-start).
 - [ ] Files: `daemon/src/harness/resume.rs` (NEW), `daemon/src/bootstrap.rs` (extended)
 - [ ] Cross-doc invariant: none
-- [ ] Tests: happy (UI reload reconnects live); edge (resume succeeds for one harness, replay+relaunch for the other); error (resume fails → relaunch + "restart session" affordance); integration (kill daemon mid-run via fault-injection → recover, no orphaned PTY/sidecar).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (UI reload reconnects live); edge (resume succeeds for one harness, replay+relaunch for the other); error (resume fails → relaunch + "restart session" affordance); integration (kill daemon mid-run via fault-injection → recover, no orphaned PTY/sidecar).
 
 ### 4.2 — Supervised-child-death recovery (daemon alive)
 - [ ] Detect agent/PTY/app-server child exit (process-group reaper) → `SessionFailed`/`TerminalProcessExited`/`TerminalPTYFailed`; fail in-flight ActionRequest + release lease; Codex pipe-drop (reconnect) vs crash (relaunch) distinction.
+- [ ] Depends on: 3.2 + 3.3 (children to supervise), 2.1 (in-flight ActionRequest failure semantics).
 - [ ] Files: `daemon/src/harness/supervisor.rs` (NEW)
 - [ ] Cross-doc invariant: none
-- [ ] Tests: happy (child exit → SessionFailed); edge (Codex pipe drop reconnects); error (in-flight action of dead session → ActionFailed + lease released); integration (no orphan processes after SIGKILL).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (child exit → SessionFailed); edge (Codex pipe drop reconnects); error (in-flight action of dead session → ActionFailed + lease released); integration (no orphan processes after SIGKILL).
 
 ### 4.3 — Background jobs + failure-mode contract surfaces
 - [ ] Heartbeat/status pollers (derive `stale` by age); WAL checkpointer; sidecar supervisor (ping/restart/backoff/timeout); failure-table events for: fail-closed/audit-integrity, integration auth/rate-limit, projection-degraded, network-offline, fencing-conflict — emitted so the UI (Phase 6) can render them.
+- [ ] Depends on: 4.1 (recovery paths the jobs wrap), 2.1 (failure events feed the audit/approval surfaces).
 - [ ] Files: `daemon/src/jobs/` (NEW)
 - [ ] Cross-doc invariant: none
-- [ ] Tests: happy (heartbeat keeps session live); edge (heartbeat age > threshold → stale, recomputed on rebuild not replayed); error (each §17 row emits its event); integration (offline → local cockpit operational, integration reads marked stale).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (heartbeat keeps session live); edge (heartbeat age > threshold → stale, recomputed on rebuild not replayed); error (each §17 row emits its event); integration (offline → local cockpit operational, integration reads marked stale).
 
 ### Acceptance criteria (4)
 - [ ] Resume-or-replay verified deterministically (injectable clock + FakeHarness + fault-injection).
@@ -405,28 +455,37 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Goal:** Project registry + detection, the dual git backend (git2 reads / git-CLI mutations) with worktree lifecycle as Gateway actions, and Execution Profiles (keychain-backed, explicit, no silent account-hopping).
 
-**Spec anchors:** `ARCHITECTURE.md §9` (git/integrations), `§7.2` (git/profile SoT + re-read), `§5.1` (Worktree derived, ExecutionProfile), `§6.3` (git.* actions), `§15` (profile binding, keychain).
+**Spec anchors:** `ARCHITECTURE.md §9` (git/integrations), `§7.2` (git/profile SoT + re-read), `§5.1` (Worktree derived, ExecutionProfile), `§6.3` (git.* actions), `§15` (profile binding, keychain), `§18 (benchmark)`.
 
-**Track / deps:** `edges`. **Deps:** 0.3 (git2/octocrab), 0.5, Phase 2 (git mutations are Gateway actions; mock to start). **Parallel-with:** daemon-core, ui.
+**Track:** `edges` (S4 — builds against the frozen Gateway iface, mocked until P2 lands) · **Depends on (phases):** 2 (iface freeze; mockable), 0 (0.3 ✅ git2 verified). **Parallel-with:** daemon (P3/P4), ui-tail. 5.3 ExecutionProfile is additionally 0.5b-gated (cat-4 HITL).
 
 ### 5.1 — Project registry + detection
 - [ ] `projects`/`repositories` registry; `project.rescan` action detects git state, GitHub remote, workflow/cc-crew signals, Brain status, plan files; emits events → projections.
+- [ ] Depends on: 2.1-iface (`project.rescan` is a Gateway action — mock to start; S4).
 - [ ] Files: `daemon/src/git/detect.rs`, `daemon/src/workflow/detect.rs` (NEW), `daemon/src/eventstore` (registry tables)
 - [ ] Cross-doc invariant: none
-- [ ] Tests: happy (add project → detect git/remote/signals); edge (non-git path; basic project w/ no pack still works); error (missing path → degraded); integration (detection feeds proj_project_activity + graph).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (add project → detect git/remote/signals); edge (non-git path; basic project w/ no pack still works); error (missing path → degraded); integration (detection feeds proj_project_activity + graph).
 
 ### 5.2 — Dual git backend + worktree lifecycle (Gateway actions)
 - [ ] git2 for status/diff/log/branch reads (projection refresh, live re-read before mutate); git CLI for `git.create_worktree`/`create_branch`/commit/checkout/merge as Gateway actions; derived worktree status precedence (§7.2); git watcher (hooks + git2).
 - [ ] **proj_worktree projector body (re-homed from 1.2, Option-A; incl. the Q6 two-axis precedence fn)** — fold worktree events + live git2 reads → `proj_worktree` with the git+overlay status precedence (§7.2; §5.1 R-7). Table DDL pre-created in 1.2 (migration 3); this lands the projector + precedence fn + tests. `(origin: 2026-06-07 P1.2)`
+- [ ] Depends on: 5.1, 2.2 (`git.*` catalog risk resolution).
 - [ ] Files: `daemon/src/git/` (NEW: reads, cli_mutations, worktree, watcher)
 - [ ] Cross-doc invariant: extended — Worktree status (Appendix A, §5.1)
-- [ ] Tests: happy (create worktree + branch via Gateway); edge (relative-worktrees repo → CLI-read fallback per 0.3; precedence collapse locked/conflicts>dirty); error (dirty/conflict worktree mutation gated); integration (worktree status matches the user's terminal git).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (create worktree + branch via Gateway); edge (relative-worktrees repo → CLI-read fallback per 0.3; precedence collapse locked/conflicts>dirty); error (dirty/conflict worktree mutation gated); integration (worktree status matches the user's terminal git).
 
 ### 5.3 — Execution Profiles (keychain, binding)
 - [ ] `execution_profiles` registry (config vs runtime split); keychain (`keyring`) secrets w/ startup self-test; profile resolved at session.create approval time + recorded in SessionStarted; no Brain/silent switching; runtime status re-derived on restart.
+- [ ] Depends on: 5.1, 2.2 (profile resolved at approval time), **0.5b** (the ExecutionProfile enum re-freeze — cat-4 HITL gate).
 - [ ] Files: `daemon/src/profiles/` (NEW), `daemon/src/policy/` (extended)
 - [ ] Cross-doc invariant: extended — ExecutionProfile (Appendix A, §5.1)
-- [ ] Tests: happy (create profile → launch session under it); edge (rate_limited/auth_expired runtime states; keychain self-test misconfig → 'misconfigured'); error (profile change requires new approval); integration (profile recorded in SessionStarted; never silently switched).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (create profile → launch session under it); edge (rate_limited/auth_expired runtime states; keychain self-test misconfig → 'misconfigured'); error (profile change requires new approval); integration (profile recorded in SessionStarted; never silently switched).
+
+### 5.4 — §18 project-scan benchmark (implements §18; origin: 2026-06-11 production-posture re-derivation)
+- [ ] Bench `project.rescan` on a typical repo against the §18 budget **< 3 s** (git detect + workflow detect + Brain-status ping path, Brain faked). Runs at its OWN cadence (`/phase-exit` + nightly), NEVER inside a per-slice RED/GREEN loop (timing assertions are flaky there); the phase Spec-anchors line carries the `§18 (benchmark)` waiver class for spec-lint.
+- [ ] Depends on: 5.1.
+- [ ] Files: `daemon/benches/project_scan.rs` (NEW)
+- [ ] Cross-doc invariant: none.
 
 ### Acceptance criteria (5)
 - [ ] Worktree mutations are Gateway actions matching terminal git; reads are fast via git2.
@@ -438,9 +497,9 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Goal:** The Tauri shell as a projection-driven reattaching client implementing the canonical design system (O-5), the status-rendering binding, attention-first ordering, the core screens, the net-new daemon/survival/degraded surfaces, and the accessibility MUSTs.
 
-**Spec anchors:** `ARCHITECTURE.md §11`, `§11.1`–`§11.7`, `§4` (UI=client), `§5.1` (status binding), `§7.2` (degraded SoT), `§14` (frontend tests).
+**Spec anchors:** `ARCHITECTURE.md §11`, `§11.1`–`§11.7`, `§4` (UI=client), `§5.1` (status binding), `§7.2` (degraded SoT), `§14` (frontend tests), `§18 (benchmark)`. **Waivers (Phase-6 logic+visual ✅ pre-tagging; parked 6.3d/e surfaces covered at their unpark slices):** §11 (covered-by: ui/src 43 *.test.tsx suites, 214 cases) · §11.1 (covered-by: ui/src/theme tests + visual gate) · §11.2 (covered-by: ui/src/views + shell tests) · §11.3 (covered-by: ui/src/status/descriptors.test.ts completeness sweep) · §11.4 (covered-by: ui/src/{connection,recovery,safety} tests) · §11.5 (covered-by: Phase-8 unpark — Gateway modal/Brain drawer not yet built) · §11.6 (covered-by: ui/src/a11y/reachability tests) · §11.7 (covered-by: ui/src/status + views component tests) · §4 (covered-by: ui/src/gateway-client/mock.ts boundary tests) · §5.1 (covered-by: ui/src/contracts/generated.test.ts) · §7.2 (covered-by: ui/src/connection tests) · §14 (covered-by: the ui Vitest merge-gate suite).
 
-**Track / deps:** `ui` (biggest independent arm — open it the moment 0.5 lands). **Deps:** 0.5 only (frozen enums/projections/GatewayPort) + the existing NexusOps-ui-kit. **Parallel-with:** ALL of daemon-core + edges — builds against a mock gateway-client + fixture projections; integrate with the real daemon per slice once that slice's daemon-side contract is live (team-protocol rule).
+**Track:** `ui` · **Depends on (phases):** 0 (0.5 ✅). _(✅ DONE-modulo-parked 2026-06-08; the parked tail — 6.3d/6.3e + the mutation/intent seam — **Depends on (phases): 2** (mutation-method freeze) **+ 3.4** (Terminal Channel) and resumes the ui track at that freeze.)_
 
 ### 6.1 — App shell + design-system integration + daemon-connection/read-only mode ✅ (6.1a fd9738b + 6.1b 39a87c6 + 6.1c 402f4c5)
 - [x] Tauri shell (top bar, project switcher, sidebar, right drawer stack, activity dock, status bar); link `NexusOps-ui-kit` tokens + components; **daemon-connection indicator** (connected/reconnecting/disconnected) distinct from LocalRunner health; **global READ-ONLY degraded mode** disabling all intent-submitting controls + banner/Repair (fail-safe `canSubmitIntent`; security-reviewer PASS).
@@ -460,16 +519,16 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 - [ ] Command Center triage (needs-attention/working/settled incl. a Changes-ready grouping) ✅ **6.3a (144b6b6)**; Project Graph **with list/table fallback** ✅ **6.3b (c420cd7+885cc0d)**; Sessions list/board (dense table) ✅ **6.3c (23fbda3)**; Session Terminal (PTY + inline permission card) ⏸️ **PARKED — daemon-1.5 (6.3d)**; Code/Diff review with per-hunk actions ⏸️ **PARKED — daemon-1.5 (6.3e)**.
 - [ ] Files: `ui/src/views/{command,graph,sessions,terminal,code}/` (extended from kit)
 - [ ] Cross-doc invariant: none
-- [ ] Tests: happy (each screen renders fixtures); edge (graph list-fallback a11y equivalence — every node/edge appears as a row); error (empty/degraded states); integration (graph node → Inspector; session → terminal).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (each screen renders fixtures); edge (graph list-fallback a11y equivalence — every node/edge appears as a row); error (empty/degraded states); integration (graph node → Inspector; session → terminal).
 - [x] **Graph zero-projects degraded state** ✅ **RESOLVED by P7.3(fwd) active-project (`86727ec`)** — the Graph now re-roots at the active project (Q3 resolved) + an explicit `graph-no-project` guard renders when there's no active project (distinct from the per-project `graph-empty`); no more empty-pid root. _(origin: 2026-06-07 P6.3b)_
 - [x] **Sessions-table filtering** ✅ **LANDED — polish slice 3 (brief `024`, hash at round close)** — pure `filterSessionRows` (status-exact AND ci name|project substring, fields OR'd independently — cross-boundary false-positive caught + pinned in review) + `distinctStatuses` (from the unfiltered set); composed **filter→sort** (attention order holds in the subset); labeled status `<select>` + search `<input>`; filtered-empty distinct from truly-empty. §13 family; Lesson §13 extended; §11.2 facets pinned. **Project facet deferred** as redundant — project scoping is owned by the active-project switcher (the Shell pre-filters rows); re-add only on a real unscoped need. _(origin: 2026-06-07 P6.3c)_
 
 ### 6.4 — Survival/failure UI surfaces + Usage dashboard + Settings + accessibility — ✅ DONE (6.4a–e + 6.4d-2 + checking-banner; **Phase-6 LOGIC COMPLETE** — only 6.5 theme/visual pass remains)
 > **Decomposed (Decision C, 2026-06-07):** split by daemon-dependence. **Daemon-INDEPENDENT (active, fixture-drivable) → do now:** ✅ **6.4a §11.6 a11y MUSTs** (global `:focus-visible` ring + reduced-motion — LOCKED merge-gate; **`f70757e`**) → ✅ **6.4b Usage dashboard** (accuracy labels / Codex=unknown / credit-pool meter; **`db9b89b`** — interim 4th content-view, **relocates to a Settings tab at 6.4c**) → ✅ **6.4c Settings tabbed surface + Usage relocation** (`765923f` — ARIA tablist; honest pending stubs; ExecutionProfile 0.5b-gated; **nav-reconcile §11.2 TopBar tracked**) → ✅ **6.4d Survival/recovery DISPLAY** (`290381a` — recovery banner + resumed/replayed indicator; **split:** the **§17 safety-state display [6.4d-2: fencing/hard-conflict + fail-closed/audit-integrity — touches §15/§17 → security-reviewer]** is the **NEXT** sub-slice) → ✅ **TopBar slice (P6.4e §11.2 nav rewire + accessible-names — `823d16e`)** · ✅ **6.4d-2** (§17 safety-state display — L1 fencing/hard-conflict card #6 `ff2f8d6` + L2 fail-closed/audit-integrity alert #5 `503b6a2`; security-reviewer PASS both layers; 128 green) · ✅ **checking/handshaking banner** (`5f40149` — silent-read-only closed; connected+unknown trigger-pending → daemon-1.5 spread) · **Phase-6 LOGIC COMPLETE** → remaining: **6.5 the theme/visual pass (below).** **PARKED/GATED:** the **intent-submitting controls** scattered here (restart-session, Notifications toggles, policy/`save-as-policy`) share the **daemon-1.5 intent seam** (parked with 6.3d/6.3e — see Carry-forward); **drag→non-drag equivalents** (TASK-5) are **forward-looking** — the named drag surfaces (task-chip/Dispatch-dialog) are intent-coupled + don't exist yet, so the non-drag MUST lands with them (forbidden #5 still pins the rule); the **ExecutionProfile Settings tab** stays **0.5b-gated** (don't hard-bind).
-- [ ] Recovery banner + per-session resumed/replayed indicator + "restart session"; fencing/hard-conflict + fail-closed/audit-integrity surfaces; Usage dashboard (exact/estimated/unavailable, **Codex context=unknown**, **credit-pool meter**); Settings (Integrations health, Execution Profiles, Security & policy, Notifications); **global `:focus-visible` ring**; **drag→non-drag equivalents**; reduced-motion.
-- [ ] Files: `ui/src/views/{usage,settings}/`, `ui/src/recovery/`, `ui/src/a11y/` (NEW/extended)
-- [ ] Cross-doc invariant: none
-- [ ] Tests: happy (usage labels render; Codex shows "unknown"); edge (every drag has a button/menu path — TASK-5; focus ring on all controls); error (credit-pool near-exhaustion + hard-stop states); integration (recovery banner after restart; audit-integrity alert renders).
+- [x] Recovery banner + per-session resumed/replayed indicator + "restart session"; fencing/hard-conflict + fail-closed/audit-integrity surfaces; Usage dashboard (exact/estimated/unavailable, **Codex context=unknown**, **credit-pool meter**); Settings (Integrations health, Execution Profiles, Security & policy, Notifications); **global `:focus-visible` ring**; **drag→non-drag equivalents**; reduced-motion.
+- [x] Files: `ui/src/views/{usage,settings}/`, `ui/src/recovery/`, `ui/src/a11y/` (NEW/extended)
+- [x] Cross-doc invariant: none
+- [x] Tests: happy (usage labels render; Codex shows "unknown"); edge (every drag has a button/menu path — TASK-5; focus ring on all controls); error (credit-pool near-exhaustion + hard-stop states); integration (recovery banner after restart; audit-integrity alert renders). _(✅ reconciled 2026-06-11 — 214-case ui suite; drag→non-drag rides the intent-coupled surfaces per the section note.)_
 - [ ] **Accessible names on shell controls + kit closed-props (§11.7)** — kit components have **closed prop types with no `HTMLAttributes`/`aria-*`/`data-*` passthrough** (confirmed across `Button` [aria-label], `StatusPill`/`AttentionMarker` [data-*]). Back/forward + icon-only controls need accessible names; the surface chip / markers route `aria-*`/`data-*` onto NexusOps wrapper elements as the current workaround. Resolve via a §11.7 kit component-contract addition (HTMLAttributes passthrough) or keep the wrapper pattern. _(origin: 2026-06-07 P6.1b; broadened P6.2b)_
 - [ ] **ExecutionProfile status descriptors/pill** — add the 10th machine's `(machine,status)` attention-rank descriptors + StatusPill mapping once its enum freezes (0.5b); surfaces in the Settings → Execution Profiles tab. The 6.2a completeness test iterates only the generated layer, so it won't fail until the enum lands. _(inlined from Carry-forward; origin: 2026-06-07 P6.2a → 0.5b gate)_
 - [ ] **"Checking/handshaking" degraded-banner variant** — `deriveDegradedState(connected, version=unknown)` → "ok" (no banner) while `canSubmitIntent` is FALSE; add a checking/handshaking banner so read-only is never silently unexplained once intent controls exist (currently unreachable-through-Shell + security-confirmed). _(inlined from Carry-forward; origin: 2026-06-07 P6.1c)_
@@ -494,6 +553,18 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 - [x] **Automated visual gate (acceptance mechanism + standing gate)** ✅ — ran the gstack-browser comparison (dev server over HTTP vs the prototype, all views + driven safety/degraded fixtures, 6 screenshots); **standing gate established** for UI styling work going forward. _(origin: 2026-06-07 theme-finding / human decision)_
 - [x] **Acceptance = VISUAL** ✅ **LEAD-ACCEPTED (best-effort, production-grade) 2026-06-08** — the foundation token-matches the prototype (dark canvas / Geist / grid / chrome / additive-severity surfaces); every divergence = an unbuilt Phase-7/8 feature or an approved app-specific adaptation, no theme defects. **Final aesthetic sign-off flagged for the user on return.**
 
+### 6.6 — §18 graph-render benchmark (implements §18; origin: 2026-06-11 production-posture re-derivation)
+- [ ] Bench Project-Graph render against the §18 budget **< 500 ms** for a typical project graph (fixture-driven; runnable NOW — the view exists). Runs at its OWN cadence (`/phase-exit` + nightly), NEVER inside a per-slice RED/GREEN loop (timing assertions are flaky there); the phase Spec-anchors line carries the `§18 (benchmark)` waiver class for spec-lint.
+- [ ] Depends on: none (Phase-6 graph view ✅).
+- [ ] Files: `ui/src/views/graph/graph.bench.ts` (NEW — vitest bench)
+- [ ] Cross-doc invariant: none.
+
+### 6.7 — §18 diff-open benchmark (implements §18; origin: 2026-06-11 production-posture re-derivation)
+- [ ] Bench diff-open (git2 read → rendered hunks) against the §18 budget **< 500 ms**. Gated with the 6.3e Code/Diff unpark (the surface it measures).
+- [ ] Depends on: 6.3e unpark (← Phase 2 intent seam), 5.2 (git2 read path).
+- [ ] Files: `ui/src/views/code/diff.bench.ts` + `daemon/benches/diff_read.rs` (NEW)
+- [ ] Cross-doc invariant: none.
+
 ### Acceptance criteria (6) — ✅ MET (Phase 6 logic + visual complete; modulo parked 6.3d/e on daemon-1.5)
 - [x] Projection-driven UI; read-only degraded mode works; status binding covers all **9 frozen** machines (ExecutionProfile = the 10th, 0.5b-gated — deferred, not Phase-6-blocking).
 - [x] Accessibility MUSTs pass (graph list fallback, focus ring) — frontend merge-gate tests green. _(drag→non-drag: the named drag surfaces are intent-coupled + don't exist yet; the non-drag MUST lands with them — forbidden #5 still pins the rule.)_
@@ -507,27 +578,30 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Spec anchors:** `ARCHITECTURE.md §9`, `§11.2` (PR Review), `§7.2` (PR SoT), `§6.3` (github/linear actions), `§17` (integration-failure contract), `§8` (intake/PR flows).
 
-**Track / deps:** `edges`. **Deps:** 0.3, Phase 2 (Gateway), Phase 5 (git). **Parallel-with:** ui (Phase 6); the PR-Review-Workspace UI lands in the ui track and consumes this track's GitHub data.
+**Track:** `edges` (7.1 daemon side) + `ui` (7.2/7.3 surfaces consume 7.1's data + the P2 intent seam) · **Depends on (phases):** 2 (Gateway), 5 (git), 0 (0.3 octocrab ✅-spot-checked). **Parallel-with:** daemon (P3/P4).
 
 ### 7.1 — GitHub + Linear integration (read/link first)
 - [ ] octocrab (issues/PRs/checks) + gh-token bootstrap else Device Flow; Linear SDK (PKCE/key, 24h refresh); `integration_connections` (keychain); reads cached as projections; integration-failure contract (§17).
 - [ ] **proj_pull_request projector body (re-homed from 1.2, Option-A)** — fold GitHub PR sync events → `proj_pull_request` (the GitHub-authoritative synced cache w/ `pr_checked_at`; status ∈ PullRequest[11], §7.2). Table DDL pre-created in 1.2 (migration 3); this lands the projector + its event contract + tests. `(origin: 2026-06-07 P1.2)`
 - [ ] **github + linear outbox-drainer adapters (re-homed from 1.3, Option-A)** — the `Destination` impls the 1.3 outbox drains: GitHub/Linear delivery (octocrab / Linear SDK) with the §17 retryable/terminal classification feeding the drainer's backoff + bounded dead-letter. The drainer framework + `drain_once` already landed in 1.3 (`343cc09`/`707845a`). `(origin: 2026-06-08 P1.3)`
+- [ ] Depends on: 2.1-iface (writes are Gateway actions; mockable), 1.3 (✅ outbox drainer framework the adapters plug into).
 - [ ] Files: `daemon/src/integrations/{github,linear}/` (NEW)
 - [ ] Cross-doc invariant: none
-- [ ] Tests: happy (list issues/PRs); edge (token expiry → re-auth card; rate-limit backoff); error (offline → stale projection + queued writes); integration (auth bootstrap order: gh token → device flow → keychain).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (list issues/PRs); edge (token expiry → re-auth card; rate-limit backoff); error (offline → stale projection + queued writes); integration (auth bootstrap order: gh token → device flow → keychain).
 
 ### 7.2 — Full PR Review Workspace (O-6)
 - [ ] PR-review mode in Code/Diff: header (number/branch/base/author/session/task), checks, reviews/comments, mergeability, risk summary, Brain evidence, agent-session summary; Approve/Merge/Squash/Rebase/Request-changes/Ask-agent-to-fix-checks; **merge re-fetches GitHub (§7.2)** + routes through Gateway at risk≥3.
+- [ ] Depends on: 7.1 (PR data), 2.1 (merge = risk≥3 Gateway action), the ui-track resume (intent seam).
 - [ ] Files: `ui/src/views/pr-review/` (NEW), `daemon/src/integrations/github/pr.rs` (extended)
 - [ ] Cross-doc invariant: extended — PullRequest status (Appendix A, §5.1)
-- [ ] Tests: happy (open PR → review panels render); edge (mergeable gated on fresh re-fetch); error (checks failing → "fix via agent" routes a Gateway action); integration (merge is a risk≥3 Gateway action with re-fetch).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (open PR → review panels render); edge (mergeable gated on fresh re-fetch); error (checks failing → "fix via agent" routes a Gateway action); integration (merge is a risk≥3 Gateway action with re-fetch).
 
 ### 7.3 — Task Inbox + Dispatch + manual linking
 - [ ] Task Inbox (GitHub/Linear/plan-task chips); Dispatch dialog (target {new session, existing session, team}, harness, profile → Gateway); `plan.link_task`/`linear.link_issue` manual linking; the 4 canonical chains stay traceable.
+- [ ] Depends on: 7.1 (external-task rows), 2.1 (dispatch/link intents); plan-task chips additionally on 9.2 (cross-phase — ship external-task chips first).
 - [ ] Files: `ui/src/views/tasks/` (extended from kit), `daemon/src/gateway/catalog.rs` (link actions)
 - [ ] Cross-doc invariant: extended — `tasks` table kind-scoped (Appendix A, §5.1 R-8)
-- [ ] Tests: happy (dispatch a task → session via Gateway); edge (drag + non-drag both dispatch); error (dispatch under offline → queued); integration (linking keeps ticket→session→worktree→PR traceable).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (dispatch a task → session via Gateway); edge (drag + non-drag both dispatch); error (dispatch under offline → queued); integration (linking keeps ticket→session→worktree→PR traceable).
 - [ ] **Expand Command Center triage sources to include tasks** — P6.3a's Command Center sources = sessions+PRs+approvals only (no `proj_task` in Phase 6); add Task items to the CC triage groups once the Task/PlanProgress projection lands here. _(inlined from Carry-forward; origin: 2026-06-07 P6.3a)_
 - [x] **Active-project model + selection + view re-rooting** ✅ **LANDED P7.3(fwd) (`86727ec`)** — UI active-project state (`active-project.ts` + `ActiveProjectProvider`/`useActiveProject`, daemon-independent — Lesson §13) + single-select ProjectSwitcher (`aria-pressed` + ✓Active) + graph re-root + Sessions filter (CC global). Resolved 6.3b Q3 + the zero-projects guard. **The dropdown-popover WIDGET ✅ LANDED — polish slice 5 (brief `026`, 2 commits `0af44a5`+L2, hash at round close):** trigger (`aria-haspopup=listbox` + active name + caret + disabled "No project") + roving `role="listbox"` popover (Arrow/Home/End/Enter/Escape; open-focuses-active; Enter/Escape return focus to trigger; click-outside closes); reuses the shared **orientation-aware** `nextTabIndex` (`a11y/roving.ts`); the §9 audit generalized to {tab-in-tablist, option-in-listbox}. Lesson §9 extended (point 5). _(origin: 2026-06-08 P6.5c → active-project landed P7.3(fwd); dropdown widget landed polish slice 5)_
 
@@ -541,22 +615,31 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Goal:** The Brain stdio-MCP sidecar seam (daemon-owned lifecycle, propose-not-execute) and the drawer with full modes, multi-step action plans (O-3), evidence freshness/confidence, and graceful degradation. Brain internals are out of scope (sibling product).
 
-**Spec anchors:** `ARCHITECTURE.md §13.1`, `§11.5`, `§6` (Brain→Gateway intents), `§7.1` (Brain outbox payload), `§5.1` (ProjectBrain status), `§0.1` O-3, `§13.1` (notarization spike/fallback).
+**Spec anchors:** `ARCHITECTURE.md §13.1`, `§11.5`, `§6` (Brain→Gateway intents), `§7.1` (Brain outbox payload), `§5.1` (ProjectBrain status), `§0.1` O-3, `§13.1` (notarization spike/fallback), `§18 (benchmark)`.
 
-**Track / deps:** `converge`. **Deps:** 0.2 (sidecar notarization/fallback), Phase 1 (events/outbox), Phase 2 (Gateway). **Parallel-with:** Phase 9; the Brain-drawer UI lands in the ui track.
+**Track:** converge (daemon team absorbs; Brain decoupled per §2.5-S5 — never blocks the core loop) · **Depends on (phases):** 2 (Gateway), 1 (✅ events/outbox), 0.2 HITL for the *bundled-sidecar* packaging call (the loopback-HTTP fallback de-risks the build). **Parallel-with:** Phase 9; 8.2 drawer UI lands in the ui track.
 
 ### 8.1 — Brain MCP sidecar lifecycle + notification→event adapter
 - [ ] Spawn/own the Brain stdio MCP sidecar (`rmcp`); ping/restart/backoff/process-group-kill; MCP-notification→event mapping (BrainEventMapping); Brain outbox payload (redacted envelope, object_refs by shared ID); degrade gracefully when absent/stale (`brain_status_reported_at`).
 - [ ] **brain_mcp outbox-drainer adapter (re-homed from 1.3, Option-A)** — the `Destination` impl delivering the redacted Brain outbox payload (envelope minus restricted/secret, §7.1/§13.1) the 1.3 drainer drains. Drainer framework already in 1.3. `(origin: 2026-06-08 P1.3)`
+- [ ] Depends on: 2.1 (`submit_action_plan` O-3 — Brain proposals are plans), 1.3 (✅ outbox). The 0.2 notarization HITL gates only the *bundled-sidecar packaging* call (the §13.1 loopback-HTTP fallback de-risks the build).
 - [ ] Files: `daemon/src/brainclient/` (NEW)
 - [ ] Cross-doc invariant: NEW — BrainEventMapping (Appendix A, §13.1)
-- [ ] Tests: happy (sidecar starts, notifications → events); edge (Brain stale → degraded banner, platform unaffected); error (in-flight call timeout → fail brain.* action, respawn); integration (Brain reaches mutations only via Gateway — INV-SEC-1).
+- [ ] **§2.5-seam:** these models cross a §2.5 dependency edge (shared contract across tracks) — the brief's RED outline MUST include the **schema-snapshot test** (field-name set == checked-in snapshot, `spec(§13.1)`-tagged), authored in the same `/tdd` cycle (reviewed at Step 2.5 like any test).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (sidecar starts, notifications → events); edge (Brain stale → degraded banner, platform unaffected); error (in-flight call timeout → fail brain.* action, respawn); integration (Brain reaches mutations only via Gateway — INV-SEC-1).
 
 ### 8.2 — Brain drawer (modes, evidence, multi-step action plans)
 - [ ] Drawer with full modes (Ask/Plan/Review/Decisions/Memory/Actions) each functional; scope chips that constrain retrieval; header (live index status + grounded-at/staleness + privacy/transport); per-answer confidence/verification; EvidenceChip 5-state freshness + confidence; **"Run via Gateway" submits the exact reviewed plan.steps** → multi-step Gateway modal; `actor_type=project_brain` stamped.
+- [ ] Depends on: 8.1 (live seam), 2.1 (step-approval modal contract), the ui-track resume.
 - [ ] Files: `ui/src/views/brain/` (extended from kit), `ui/src/views/gateway-modal/` (extended for ActionPlan)
 - [ ] Cross-doc invariant: extended — EvidenceChip freshness (Appendix A, §11.7)
-- [ ] Tests: happy (ask → grounded answer + evidence + plan); edge (each mode renders its own view; unverified-claim treatment); error (Brain unreachable → drawer degraded, not blocking); integration (Brain plan → step-by-step Gateway approval → execute — demo steps 12-16).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (ask → grounded answer + evidence + plan); edge (each mode renders its own view; unverified-claim treatment); error (Brain unreachable → drawer degraded, not blocking); integration (Brain plan → step-by-step Gateway approval → execute — demo steps 12-16).
+
+### 8.3 — §18 brain-drawer first-token benchmark (implements §18; origin: 2026-06-11 production-posture re-derivation)
+- [ ] Bench Brain-drawer response (ask → first token rendered) against the §18 budget **< 1.5 s** with a fixture/fake Brain answering instantly (isolates the platform overhead from Brain inference time — the budget is Brain-bound, the bench pins OUR share). Runs at its OWN cadence (`/phase-exit` + nightly), NEVER inside a per-slice RED/GREEN loop (timing assertions are flaky there); the phase Spec-anchors line carries the `§18 (benchmark)` waiver class for spec-lint.
+- [ ] Depends on: 8.2.
+- [ ] Files: `daemon/benches/brain_roundtrip.rs` (NEW)
+- [ ] Cross-doc invariant: none.
 
 ### Acceptance criteria (8)
 - [ ] Brain proposes multi-step action plans executed only via the Gateway; never executes directly.
@@ -570,27 +653,30 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Spec anchors:** `ARCHITECTURE.md §13.2`, `§11.2` (Plan/Packs screens), `§5.1` (WorkflowInstance, AgentTeam R-6), `§15` (pack trust gate), `§19.2` (orchestration deferred).
 
-**Track / deps:** `converge`. **Deps:** Phase 1, Phase 2; the Plan-view + Workflow-Packs UI depends on Phase 6 (ui). **Parallel-with:** Phase 8.
+**Track:** converge (daemon team absorbs) · **Depends on (phases):** 1 (✅), 2; the Plan-view UI additionally on 6 (✅). **Parallel-with:** Phase 8.
 
 ### 9.1 — Workflow Pack detection + readiness + command registry
 - [ ] Pack/Instance model (pack≠instance); detection-advisory → explicit readiness checks; `command_registry`; workflow-owned manifests read-only (re-hash on scan → drift); trust-gated script execution (untrusted → Gateway risk≥3).
+- [ ] Depends on: 2.2 (the §13.2 trust gate is a policy rule: untrusted pack exec = risk≥3), 5.1 (detection feeds).
 - [ ] Files: `daemon/src/workflow/` (extended)
 - [ ] Cross-doc invariant: extended — WorkflowInstance status (Appendix A, §5.1)
-- [ ] Tests: happy (detect cc-crew → readiness states); edge (template pack not-ready until personalized; manifest drift detected); error (untrusted pack script gated behind approval); integration (basic project w/ no pack fully works).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (detect cc-crew → readiness states); edge (template pack not-ready until personalized; manifest drift detected); error (untrusted pack script gated behind approval); integration (basic project w/ no pack fully works).
 
 ### 9.2 — cc-crew parsers (plan + architecture anchors) + Plan view
 - [ ] MVP_TASKS.md/ARCHITECTURE.md §N anchor parsers → ImplementationPlan + PlanTask; Plan view (Phase→Track→PlanTask, anchors, AC, dispatch); plan-task linking stored in platform metadata (no write-back in MVP).
 - [ ] **proj_plan_progress projector body (re-homed from 1.2, Option-A)** — fold plan/task events (`ImplementationPlanUpdated` + task-status changes) → `proj_plan_progress` (status ∈ Task[17] R-8). Table DDL pre-created in 1.2 (migration 3); this lands the projector + its event contract + tests. `(origin: 2026-06-07 P1.2)`
+- [ ] Depends on: 9.1, 6 (✅ the Plan-view host shell).
 - [ ] Files: `daemon/src/workflow/parsers/` (NEW), `ui/src/views/plan/` (extended from kit)
 - [ ] Cross-doc invariant: extended — PlanTask kind-scoped (Appendix A, §5.1 R-8)
-- [ ] Tests: happy (parse a plan → PlanTasks with anchors); edge (ambiguous structure → raw-preview fallback); error (missing anchors degrade w/ warnings); integration (dispatch a plan task → session linked to the plan task — demo step 5).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (parse a plan → PlanTasks with anchors); edge (ambiguous structure → raw-preview fallback); error (missing anchors degrade w/ warnings); integration (dispatch a plan task → session linked to the plan task — demo step 5).
 
 ### 9.3 — AgentTeam object + projection (modeling only)
 - [ ] `agent_teams` registry + `proj_agent_team` projection over the 9-state machine (R-6); team membership/role on sessions; `active_teams` counter; graph team/lead/orchestrator/worker nodes. (Full `/team-start` orchestration is P1, §19.2.)
 - [ ] **proj_agent_team projector body (re-homed from 1.2, Option-A)** — the `proj_agent_team` table DDL was pre-created in 1.2 (migration 3); this task builds the projector body over it (already in the deliverable above). `(origin: 2026-06-07 P1.2)`
+- [ ] Depends on: 9.1 (registry conventions), 1.2 (✅ the `proj_agent_team` DDL).
 - [ ] Files: `daemon/src/eventstore` (agent_teams table), `daemon/src/projections/agent_team.rs` (NEW), `ui/src/views/team/` (extended from kit)
 - [ ] Cross-doc invariant: extended — AgentTeam status (Appendix A, §5.1 R-6)
-- [ ] Tests: happy (team object created + status renders); edge (worker session shows team + role); error (orchestration actions are P1-gated/absent); integration (active_teams counter derives from team status).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (team object created + status renders); edge (worker session shows team + role); error (orchestration actions are P1-gated/absent); integration (active_teams counter derives from team status).
 
 ### Acceptance criteria (9)
 - [ ] Detection-advisory + readiness; cc-crew parsers feed the Plan view; basic projects unaffected.
@@ -602,34 +688,44 @@ Running this with multiple agent teams. The architecture is "daemon = single sou
 
 **Goal:** The First-Launch Setup Wizard + consent/TCC map, native notifications, signed/notarized packaging (incl. the Python sidecar), and the PRD §25 demo wired end-to-end as the release gate.
 
-**Spec anchors:** `ARCHITECTURE.md §16`, `§11.4` (setup wizard, consent, notifications), `§10` (notifier), `§19.1` (demo), `§14` (demo e2e), `§13.1` (sidecar notarization, 0.2 spike).
+**Spec anchors:** `ARCHITECTURE.md §16`, `§11.4` (setup wizard, consent, notifications), `§10` (notifier), `§19.1` (demo), `§14` (demo e2e), `§13.1` (sidecar notarization, 0.2 spike), `§18 (benchmark)`.
 
-**Track / deps:** `integration` (all hands — final gate, NOT parallelizable). **Deps:** ~everything (esp. 0.2 notarization, Phase 2 Gateway, Phase 6 ui, Phase 8 Brain). The Setup Wizard + consent map can be drafted in the ui track earlier; the demo e2e + signing are the convergence gate.
+**Track:** integration (all hands — final gate, NOT parallelizable) · **Depends on (phases):** ~everything (esp. 0.2 notarization HITL, 2, 3, 4, 7, 8). The Setup Wizard + consent map can be drafted in the ui track earlier; the demo e2e + signing are the convergence gate. _(Production note: §16's deploy/rollback machinery — migrations backup/rollback, version-compat floor, refuse-safely — already LANDED 1.1/1.6a; this phase adds the packaging/updater/consent surface, not the recovery spine.)_
 
 ### 10.1 — First-Launch Setup Wizard + consent/TCC map
 - [ ] Stepper (welcome, runtime check, Claude/Codex detection, Execution Profiles, Brain, git/GitHub/Linear, Workflow Pack library, security/approval policy, finish/add-project) as idempotent/reversible/skippable Gateway intents; consent card + denied-degraded + repair for keychain ACL, notification permission, Full Disk Access, launchd Background Item, AppleEvents.
+- [ ] Depends on: 2.1 (wizard steps are idempotent Gateway intents), 5.1 + 5.3 (detection + profiles the steps drive).
 - [ ] Files: `ui/src/views/setup-wizard/` (NEW), `daemon/src/bootstrap.rs` (extended)
 - [ ] Cross-doc invariant: none
-- [ ] Tests: happy (first run → all-passed → add project); edge (tool missing → installable/manual states; consent denied → degraded + repair); error (re-run is idempotent); integration (wizard completes → Command Center).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (first run → all-passed → add project); edge (tool missing → installable/manual states; consent denied → degraded + repair); error (re-run is idempotent); integration (wizard completes → Command Center).
 
 ### 10.2 — Native notifications (notifier) + settings
 - [ ] `notifier` module → macOS UserNotifications for SessionWaitingOnHumanInput/Permission, CheckFailed, SessionCompleted; per-type toggles; permission state + request; redacted lock-screen previews; in-app bell mirror.
 - [ ] **notifier outbox-drainer adapter (re-homed from 1.3, Option-A)** — the `Destination` impl delivering notifier events the 1.3 outbox drains → macOS UserNotifications (redacted previews). Drainer framework already in 1.3. `(origin: 2026-06-08 P1.3)`
+- [ ] Depends on: 1.3 (✅ outbox destination seam), 4.3 (the failure/waiting events worth notifying on).
 - [ ] Files: `daemon/src/notifier/` (NEW), `ui/src/views/settings/notifications.tsx` (NEW)
 - [ ] Cross-doc invariant: none
-- [ ] Tests: happy (waiting session → notification); edge (permission not granted → degraded, in-app only); error (previews redacted — no secrets); integration (notifier consumes outbox events).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (waiting session → notification); edge (permission not granted → degraded, in-app only); error (previews redacted — no secrets); integration (notifier consumes outbox events).
 
 ### 10.3 — Packaging, signing & notarization (incl. Python sidecar, per 0.2)
 - [ ] Tauri bundle + deep-sign order (inner libs → sidecar → daemon → .app) + notarytool + staple; entitlements; `spctl`/`codesign` CI gate; updater; app-update-while-running (prepare_for_update → drain → relaunch).
+- [ ] Depends on: 0.2 (notarization HITL — Apple creds), 8.1 (sidecar bundling decision: bundled vs loopback-HTTP fallback).
 - [ ] Files: `ci/sign-notarize.sh`, `src-tauri/entitlements.plist`, `tauri.conf.json` (NEW)
 - [ ] Cross-doc invariant: none
-- [ ] Tests: happy (signed+notarized build passes spctl); edge (sidecar deep-signed; if #11992 blocks → loopback-HTTP Brain fallback per 0.2); error (keychain ACL no-prompt with Developer ID); integration (app-update drains daemon + relaunches).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (signed+notarized build passes spctl); edge (sidecar deep-signed; if #11992 blocks → loopback-HTTP Brain fallback per 0.2); error (keychain ACL no-prompt with Developer ID); integration (app-update drains daemon + relaunches).
 
 ### 10.4 — PRD §25 demo end-to-end (release gate)
 - [ ] Wire + verify the 17-step demo: add project → detect → execution profile → plan task → worktree + Claude session → sidebar/graph → permission → Human Input Queue → approve via Gateway → edit → review diff → ask Brain (evidence) → Brain proposes PR action plan → approve → PR created + task/session/worktree/PR linked + events. Demo preconditions checked (reachable Brain + non-exhausted Claude profile).
+- [ ] Depends on: 10.1–10.3 + phases 2–9 (the release gate; demo preconditions = reachable Brain (8) + non-exhausted Claude profile (5.3)).
 - [ ] Files: `tests/e2e/prd-25-demo.spec.ts` (NEW)
 - [ ] Cross-doc invariant: none
-- [ ] Tests: happy (full 17-step path green via Tauri driver + FakeHarness or live); edge (demo-precondition check fails gracefully); error (each step's failure surfaces correctly); integration (the whole spine exercised end-to-end).
+- [ ] Acceptance (behaviors to pin — test design is authored at brief time, reviewed at Step 2.5): happy (full 17-step path green via Tauri driver + FakeHarness or live); edge (demo-precondition check fails gracefully); error (each step's failure surfaces correctly); integration (the whole spine exercised end-to-end).
+
+### 10.5 — §18 app-launch benchmark (implements §18; origin: 2026-06-11 production-posture re-derivation)
+- [ ] Bench cold app launch (open `.app` → interactive shell w/ daemon connected) against the §18 budget **< 2 s**, on the signed/packaged build. Runs at its OWN cadence (`/phase-exit` + nightly), NEVER inside a per-slice RED/GREEN loop (timing assertions are flaky there); the phase Spec-anchors line carries the `§18 (benchmark)` waiver class for spec-lint.
+- [ ] Depends on: 10.3 (packaged app).
+- [ ] Files: `tests/e2e/launch.bench.ts` (NEW)
+- [ ] Cross-doc invariant: none.
 
 ### Acceptance criteria (10)
 - [ ] Signed/notarized app installs + runs first-run bootstrap + consent map.
@@ -651,6 +747,8 @@ Deferred items with come-back guidance. (Seeded from `ARCHITECTURE.md §19.2`; e
 ## Decisions tabled
 
 Open scope/design questions awaiting resolution, with rationale. **Resolved entries move into the Log (with the resolution) and out of here** — this holds only *open* questions.
+
+- **[SEEDED 2026-06-11 — production-posture re-derivation] Full schema-snapshot coverage (all Appendix-A models).** The §2.5-seam rule mandates a schema-snapshot test (field-name set == checked-in snapshot, `spec(§X)`-tagged) only for models whose `§` crosses a §2.5 dependency edge, authored in the same `/tdd` cycle that touches the model. Whether to extend snapshot coverage to ALL Appendix-A models is deliberately tabled — revisit off accumulated `/phase-exit` arch-drift-audit verdicts (if the auditor keeps finding drift on un-snapshotted models, widen; if green, the seam-only rule suffices). `(origin: 2026-06-11 tasks-gen re-derivation)`
 
 - **[RESOLVED 2026-06-07 — §15 safety-design, human-decided] 1.1 redaction sequencing = Option (a+).** 1.1 ships the **`redaction_status` column + `Redactor` trait + fail-closed gate** (never persist `redaction_status='unredacted'`) + the **high-recall token-prefix Redactor**; the **entropy fallback (OQ-SEC-2) is a BLOCKING Phase-1 task (1.7)**, not a fast-follow — chosen so secret-detection recall can't drift. Pin the §15 invariant with the fail-closed test (the load-bearing assertion). `redaction_status` on the envelope = cross-doc invariant → Appendix A / §7.1 / DATA_MODEL §2.1 atomic edit at 1.1 Step 9. `(origin: 2026-06-07 P1.1)`
 - **[RESOLVED 2026-06-07 — cat-4, user-locked] Cross-language contract source-of-truth = Option A.** Rust `shared` crate = native authority (newtypes, serde-closed enums); `schemars` → **JSON Schema as a first-class, versioned, CI-diff-gated published artifact** (`shared/contracts/schema/`, `CONTRACT_VERSION`); TS Zod + Python Pydantic generated from it (drift-caught); reject-unknown end-to-end. Documented at **`ARCHITECTURE.md §5.0`** (direct anchored edit, owner-locked). This is the mechanism for ALL contract surfaces, not just 0.5. `(origin: 2026-06-07 P0.5)`
@@ -703,6 +801,12 @@ Applied this round (2026-06-07), committed atomically with the round commit:
 ## Log
 
 The orchestrator's framing of each round, date-stamped. **Bounded, not unbounded-append:** keep the most recent ~10 rounds inline; roll older entries into `docs/sessions/` (the technical narrative) or `docs/archive/TASKS-LOG.md`, leaving a one-line pointer here. (Archive — never delete — the round history is an audit trail.)
+
+### 2026-06-11 — Production-posture migration: scaffolding upgrade + ARCHITECTURE §2.5 + plan re-derivation (meta-round, no application code)
+
+- **Completed (branch `planning/production-grade-migration` — NOT pushed; user reviews):** (1) `/layer-docs` initial derivation → `docs/layers/` (8 layer docs + OVERVIEW, 722 verified anchors, 4 drift flags — incl. the INTENDED ui contract-drift sentinel firing: `generated.ts` 0.12.0 vs shared 0.14.0). (2) **`/scaffold-upgrade` fada9b94→491dfb02** (45 commits, 9 migrations M-0003…M-0011): tracker renamed **MVP_TASKS.md → IMPLEMENTATION_PLAN.md** (body preserved; references rippled; historical docs untouched), manifest schema v2 + **posture=production-grade**, `/phase-exit` + `arch-drift-auditor` + `scripts/spec-lint.sh` + PreToolUse guard hooks (`.claude/settings.json` + `scripts/guards/`) installed, phase-exit checklist gained the machinery rows + the posture-gated trio (`AUDIT_CMD = cargo audit && (cd ui && pnpm audit --prod)`). (3) **`ARCHITECTURE.md`**: Build-posture line + **NEW §2.5** (subsystem DAG + 7 seams + critical path) + §18 explicit deferral for the 2 unbudgeted hot paths (terminal throughput; recovery latency — owner-ruled). (4) **This plan re-derived production-grade** (`/tasks-gen` re-run): §2.5-derived Track map (3 tracks; critical path P2→P3→P4→P10; bottleneck = Phase 2), per-task `Depends on:` edges, 7 §18 benchmark tasks (2.5/3.5/5.4/6.6/6.7/8.3/10.5) + CI task 2.6 (promoted from Carry-forward), §2.5-seam snapshot notes (2.1/2.2/3.1/8.1), covered-by waivers on Phase 0/1/6 anchors (spec-lint PASS verified), open-task `Tests:` lines relabeled to behavior-contract `Acceptance` lines (test design stays at brief time), completion state reconciled (P1 residual ticks + AC(1) evidence; P6 6.4 ticks). Phase 3 re-assigned `edges`→`daemon` (it IS the critical path per §2.5).
+- **Decisions:** posture=production-grade (user, M-0006) · §18 two-path deferral (user) · snapshot-coverage question seeded to Decisions-tabled (the one sanctioned seed). Manifest `tracks[]` updated `["daemon","ui"]`→`["daemon","ui","edges"]` to match the Track map (drives MODE pruning on future upgrades).
+- **Next session target:** unchanged — **Phase 2.1** (Gateway pipeline; the bottleneck phase). Fresh `/team-start daemon` on the upgraded scaffolding per handoff `003`.
 
 ### 2026-06-11 — Phase 2.0-SEC: §15 redactor-recall hardening (measured → extended) + clean PAUSE for scaffolding upgrade
 

@@ -11,7 +11,8 @@
   "track": "daemon",
   "tracks": [
     "daemon",
-    "ui"
+    "ui",
+    "edges"
   ],
   "optionalCommands": [
     "trace"
@@ -25,8 +26,8 @@
   ],
   "placeholders": {
     "PROJECT_NAME": "NexusOps",
-    "PROJECT_TAGLINE": "Air-traffic control for AI coding agents — a desktop-first, local-runtime control plane for supervising Claude Code + Codex across local projects.",
-    "ARCHITECTURE_SENTENCE": "A desktop-first cockpit whose detached Rust daemon is the single, audited mutator of all state — every change is a typed, risk-classified, approved Action recorded as an immutable event; the UI reads projections, agents and the Project Brain only propose intents, and the local machine is the trust boundary.",
+    "PROJECT_TAGLINE": "Air-traffic control for AI coding agents \u2014 a desktop-first, local-runtime control plane for supervising Claude Code + Codex across local projects.",
+    "ARCHITECTURE_SENTENCE": "A desktop-first cockpit whose detached Rust daemon is the single, audited mutator of all state \u2014 every change is a typed, risk-classified, approved Action recorded as an immutable event; the UI reads projections, agents and the Project Brain only propose intents, and the local machine is the trust boundary.",
     "REPO_DIRNAME": "NexusOps",
     "GIT_REMOTE": "origin (git@github.com:SiWarlock/NexusOps.git)",
     "AI_TRAILER": "Assisted-by: Claude Code",

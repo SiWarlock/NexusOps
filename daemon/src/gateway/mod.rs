@@ -14,6 +14,7 @@
 pub mod approval;
 pub mod executor;
 pub mod pipeline;
+pub mod plan;
 pub mod policy;
 pub mod request;
 
@@ -45,6 +46,11 @@ pub enum GatewayError {
     NotFound(String),
     #[error("policy denied the action")]
     PolicyDenied,
+    /// a `submit_action_plan` carried an `approval_mode` the Gateway does not accept from a proposer
+    /// (2.1c: `Blocked` — a policy-ASSIGNED outcome, not a valid submitted mode; 2.2 owns it). Fail
+    /// closed: never open phantom `awaiting_approval` steps with no approval object (Step-2.5 Mod 1).
+    #[error("unsupported approval_mode for a submitted plan: {0}")]
+    UnsupportedApprovalMode(String),
     /// the policy returned a decision 2.1b does not route yet (the stub is require-approval-for-all;
     /// the allow→queue/execute, deny, downgrade, needs-more-context routing is 2.2). Fail-closed —
     /// distinct from `PolicyDenied` (which means the policy actively denied), and never a panic in

@@ -26,8 +26,8 @@ use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::ids::IdKind;
 use crate::ipc::{
     ActionAck, Capabilities, DeltaKind, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode,
-    ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, RpcResponse, ServerFrame,
-    SubscribeParams, VersionSkewError, WireError,
+    PlanAck, PlanStepAck, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest,
+    RpcResponse, ServerFrame, SubscribeParams, VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
 use crate::status::{
@@ -130,6 +130,9 @@ struct ContractBundle {
     action_succeeded: ActionSucceeded,
     action_failed: ActionFailed,
     action_ack: ActionAck,
+    // 2.1c — the §6.1 `submit_action_plan` result wire type (O-3 bundled plans). Additive.
+    plan_ack: PlanAck,
+    plan_step_ack: PlanStepAck,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

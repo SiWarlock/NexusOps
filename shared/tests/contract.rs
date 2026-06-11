@@ -715,8 +715,43 @@ fn test_sensitive_output_redacted_wire_contract() {
 #[test]
 fn test_contract_version_bumped_for_sensitive_output_redacted() {
     // 0.15.0 = the 2.1a action-contract freeze (§6.2 models + 9 enums + gateway IDs + Timestamp);
-    // 0.16.0 = the 2.1b ActionExecution* event family + ActionAck — additive (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.16.0");
+    // 0.16.0 = the 2.1b ActionExecution* event family + ActionAck; 0.17.0 = the 2.1c PlanAck
+    // submit_action_plan wire type (O-3) — all additive (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.17.0");
+}
+
+// ---- P2.1c L2 — the §6.1 PlanAck wire type (§2.5-seam snapshot, O-3) -----------------------
+
+fn sample_plan_ack() -> nexusops_shared::ipc::PlanAck {
+    use nexusops_shared::ipc::{PlanAck, PlanStepAck};
+    use nexusops_shared::status::ActionRequestStatus;
+    PlanAck {
+        plan_id: "aplan_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        steps: vec![PlanStepAck {
+            step_id: "s1".to_string(),
+            action_request_id: "act_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+            status: ActionRequestStatus::AwaitingApproval,
+        }],
+    }
+}
+
+#[test]
+fn test_plan_ack_field_names_snapshot() {
+    // spec(§6.1) — §2.5-seam GatewayPort wire-surface freeze guard: a field added/removed/renamed on
+    // PlanAck / PlanStepAck fails this snapshot. The expected sets ARE the checked-in freeze.
+    expect_fields(&sample_plan_ack(), &["plan_id", "steps"]);
+    expect_fields(
+        &sample_plan_ack().steps[0],
+        &["step_id", "action_request_id", "status"],
+    );
+    // reject-unknown end-to-end (§5.0/§15 fail-closed)
+    let rogue = serde_json::json!({
+        "plan_id": "aplan_x", "steps": [], "extra": true
+    });
+    assert!(
+        serde_json::from_value::<nexusops_shared::ipc::PlanAck>(rogue).is_err(),
+        "unknown field rejected"
+    );
 }
 
 // =====================================================================================

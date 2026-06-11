@@ -1030,6 +1030,47 @@
       ],
       "type": "object"
     },
+    "PlanAck": {
+      "additionalProperties": false,
+      "description": "`submit_action_plan` result (§6.1, O-3) — the bundled-plan ack: the minted `plan_id` + a\nper-step ack (mirrors [`ActionAck`]) so the client can `preview_action`/track each step + hold\nthe plan handle. Richer fields (`approval_ids`/`overall_status`) are additive-later (2.1c L2,\nQ1 default). Reject-unknown; optionals (none today) would serialize as `null`.",
+      "properties": {
+        "plan_id": {
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/PlanStepAck"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "plan_id",
+        "steps"
+      ],
+      "type": "object"
+    },
+    "PlanStepAck": {
+      "additionalProperties": false,
+      "description": "One step's ack inside a [`PlanAck`] (§6.1, O-3): the step's plan-local `step_id` + the minted\n`action_request_id` (so the client can `preview_action`/track it) + its current `status`.",
+      "properties": {
+        "action_request_id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ActionRequestStatus"
+        },
+        "step_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_id",
+        "action_request_id",
+        "status"
+      ],
+      "type": "object"
+    },
     "PolicyDecision": {
       "additionalProperties": false,
       "description": "The policy engine's decision (§6.2 / AG §12.2). Frozen as the stable core `{status, reasons}`\n— `required_approvals` / `constraints` / `safer_alt` (which reference the unpinned\nApprovalRequirement/ApprovalConstraint shapes + the safer-alt union) are the **2.2** policy-\nengine deliverable, added additively. DEFERRED → 2.2.",
@@ -1745,6 +1786,12 @@
     "local_runner_registered": {
       "$ref": "#/$defs/LocalRunnerRegistered"
     },
+    "plan_ack": {
+      "$ref": "#/$defs/PlanAck"
+    },
+    "plan_step_ack": {
+      "$ref": "#/$defs/PlanStepAck"
+    },
     "policy_decision": {
       "$ref": "#/$defs/PolicyDecision"
     },
@@ -1914,9 +1961,11 @@
     "action_started",
     "action_succeeded",
     "action_failed",
-    "action_ack"
+    "action_ack",
+    "plan_ack",
+    "plan_step_ack"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.16.0"
+  "x-contract-version": "0.17.0"
 }

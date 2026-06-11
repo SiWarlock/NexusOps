@@ -47,11 +47,13 @@ pub fn can_transition(from: ActionRequest, to: ActionRequest) -> bool {
 
 /// INSERT a new `action_requests` row at `status` (DATA_MODEL §2.9). The §6.2 model's
 /// resource_refs/inputs/preview serialize to the JSON columns; `risk_level` → its integer; the
-/// status/requester_type enums → their snake_case wire strings. Called inside the gateway txn.
+/// status/requester_type enums → their snake_case wire strings. `plan_id` is the step's parent plan
+/// (2.1c, MIGRATION_8) — `None` for a single action. Called inside the gateway txn.
 pub(crate) fn insert(
     gtx: &GatewayTxn,
     ar: &ActionRequestModel,
     status: ActionRequest,
+    plan_id: Option<&str>,
     created_at: &str,
 ) -> Result<(), GatewayError> {
     // §15 / rule #4 (the general row-redaction gate): EVERY caller-supplied `action_requests`
@@ -78,8 +80,8 @@ pub(crate) fn insert(
             "INSERT INTO action_requests \
          (action_request_id, project_id, action_type, requester_type, requester_id, \
           resource_refs_json, inputs_json, risk_level, idempotency_key, fencing_token, \
-          status, preview_json, created_at) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+          status, preview_json, plan_id, created_at) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             rusqlite::params![
                 ar.action_request_id.as_str(),
                 ar.project_id.as_ref().map(|x| x.as_str()),
@@ -93,6 +95,7 @@ pub(crate) fn insert(
                 ar.fencing_token,
                 enum_wire(&status)?,
                 preview_json,
+                plan_id,
                 created_at,
             ],
         )

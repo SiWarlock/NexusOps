@@ -42,7 +42,10 @@ pub mod time;
 /// ActionApprovalRequested, ActionApproved, ActionDenied, ActionExpired, ActionStarted,
 /// ActionSucceeded, ActionFailed) + the §6.1 `ActionAck` submit-result wire type — additive (the
 /// chokepoint's authoritative event family + the ui/Brain intent-seam ack).
-pub const CONTRACT_VERSION: &str = "0.16.0";
+/// 0.17.0 (2.1c) adds the §6.1 `submit_action_plan` result wire types `PlanAck`/`PlanStepAck` (the
+/// O-3 bundled-plan ack: the plan handle + per-step minted ids/status) — additive. The plan grouping
+/// itself is daemon-internal (`action_plans` table + `plan_id` FK), NOT a new `shared/` type / event.
+pub const CONTRACT_VERSION: &str = "0.17.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

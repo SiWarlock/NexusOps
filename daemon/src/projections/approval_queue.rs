@@ -60,39 +60,54 @@ impl Projector for ApprovalQueueProjector {
 }
 
 /// UPSERT the OPEN queue row when an approval is requested. The immutable fields are sibling-read
-/// (Q8): risk/requester/project from `action_requests` (single action — the 2.1c L1 path; the
-/// plan-level NULL-`action_request_id` read from `action_plans` lands in L2). `expires_at` from
-/// `approvals`. The UPSERT is idempotent under replay/rebuild (same `approval_id` PK).
+/// (Q8): from `action_requests` for a single action OR a plan STEP (`action_request_id` present);
+/// from `action_plans` for a plan-LEVEL approve-all approval (`action_request_id` NULL → the plan's
+/// `overall_risk` + submit context). `plan_id`/`expires_at` come from `approvals`. The UPSERT is
+/// idempotent under replay/rebuild (same `approval_id` PK).
 fn open_row(
     tx: &Transaction,
     env: &EventEnvelope,
     approval_id: &str,
 ) -> Result<(), ProjectionError> {
-    let action_request_id = match env.action_request_id.as_ref() {
-        Some(a) => a.as_str(),
-        // L1: single-action approvals only (action_request_id present); the plan-level approval
-        // (action_request_id NULL, plan_id set) lands in L2 with the action_plans sibling read.
-        None => return Ok(()),
-    };
-    // immutable, never-change-post-submit fields — a sibling read in the same txn. A missing
-    // sibling row is a true integrity break (the Gateway wrote it in this very txn / it is durable
-    // for a rebuild) → propagate as a Db error (fail-closed), never a silent default.
+    // the parent plan + expiry come from the approvals row (plan_id NULL for a standalone action).
+    // A missing sibling row is a true integrity break (the Gateway wrote it in this very txn / it
+    // is durable for a rebuild) → propagate as a Db error (fail-closed), never a silent default.
+    let (plan_id, expires_at): (Option<String>, Option<String>) = tx.query_row(
+        "SELECT plan_id, expires_at FROM approvals WHERE approval_id = ?1",
+        [approval_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+
+    let action_request_id = env.action_request_id.as_ref().map(|a| a.as_str());
+    // immutable, never-change-post-submit identity/risk fields — sibling-read in the same txn.
     let (risk_level, requester_type, requester_id, project_id): (
         i64,
         String,
         String,
         Option<String>,
-    ) = tx.query_row(
-        "SELECT risk_level, requester_type, requester_id, project_id \
+    ) = match action_request_id {
+        // single action OR a plan step → from action_requests (the step's own risk + requester).
+        Some(ar) => tx.query_row(
+            "SELECT risk_level, requester_type, requester_id, project_id \
              FROM action_requests WHERE action_request_id = ?1",
-        [action_request_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-    )?;
-    let expires_at: Option<String> = tx.query_row(
-        "SELECT expires_at FROM approvals WHERE approval_id = ?1",
-        [approval_id],
-        |r| r.get(0),
-    )?;
+            [ar],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?,
+        // plan-LEVEL approve-all approval → from action_plans (overall_risk + the plan submitter).
+        None => {
+            let pid = plan_id.as_deref().ok_or_else(|| {
+                ProjectionError::Decode(
+                    "plan-level approval row carries no plan_id (integrity)".to_string(),
+                )
+            })?;
+            tx.query_row(
+                "SELECT overall_risk, requester_type, requester_id, project_id \
+                 FROM action_plans WHERE plan_id = ?1",
+                [pid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?
+        }
+    };
 
     let requested_at = env.occurred_at.as_str();
     // risk-DESC then age-ASC in ONE lexical ORDER BY: `4 - risk` flips the rank (risk 4 → "0_",
@@ -101,21 +116,22 @@ fn open_row(
 
     tx.execute(
         "INSERT INTO proj_approval_queue \
-         (approval_id, action_request_id, project_id, session_id, agent_team_id, risk_level, \
-          status, requester_type, requester_id, preview_summary, requested_at, expires_at, \
-          sort_key, updated_at_seq) \
-         VALUES (?1,?2,?3,?4,?5,?6,'awaiting_approval',?7,?8,NULL,?9,?10,?11,?12) \
+         (approval_id, action_request_id, plan_id, project_id, session_id, agent_team_id, \
+          risk_level, status, requester_type, requester_id, preview_summary, requested_at, \
+          expires_at, sort_key, updated_at_seq) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,'awaiting_approval',?8,?9,NULL,?10,?11,?12,?13) \
          ON CONFLICT(approval_id) DO UPDATE SET \
-           action_request_id=excluded.action_request_id, project_id=excluded.project_id, \
-           session_id=excluded.session_id, agent_team_id=excluded.agent_team_id, \
-           risk_level=excluded.risk_level, status='awaiting_approval', \
-           requester_type=excluded.requester_type, requester_id=excluded.requester_id, \
-           preview_summary=excluded.preview_summary, requested_at=excluded.requested_at, \
-           expires_at=excluded.expires_at, sort_key=excluded.sort_key, \
-           updated_at_seq=excluded.updated_at_seq",
+           action_request_id=excluded.action_request_id, plan_id=excluded.plan_id, \
+           project_id=excluded.project_id, session_id=excluded.session_id, \
+           agent_team_id=excluded.agent_team_id, risk_level=excluded.risk_level, \
+           status='awaiting_approval', requester_type=excluded.requester_type, \
+           requester_id=excluded.requester_id, preview_summary=excluded.preview_summary, \
+           requested_at=excluded.requested_at, expires_at=excluded.expires_at, \
+           sort_key=excluded.sort_key, updated_at_seq=excluded.updated_at_seq",
         params![
             approval_id,
             action_request_id,
+            plan_id,
             project_id,
             env.session_id.as_ref().map(|s| s.as_str()),
             env.agent_team_id.as_ref().map(|a| a.as_str()),

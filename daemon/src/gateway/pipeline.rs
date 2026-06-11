@@ -2,16 +2,19 @@
 //! L3 adds `approve`/`deny`/`preview_action` + execution completion.
 
 use nexusops_shared::actions::{
-    ActionPreview, ActionRequest, PolicyDecisionStatus, RequiredApprover,
+    ActionPlan, ActionPreview, ActionRequest, ApprovalMode, PolicyDecisionStatus, RequiredApprover,
+    RiskLevel,
 };
 use nexusops_shared::gateway_ids::ApprovalId;
-use nexusops_shared::ipc::{ActionAck, DeltaKind, ProjectionDelta, ProjectionName};
+use nexusops_shared::ipc::{
+    ActionAck, DeltaKind, PlanAck, PlanStepAck, ProjectionDelta, ProjectionName,
+};
 use nexusops_shared::status::{ActionRequest as ARStatus, Approval as ApprovalStatus};
 use nexusops_shared::time::Timestamp;
 
-use crate::eventstore::EventStore;
+use crate::eventstore::{EventStore, GatewayTxn};
 use crate::gateway::executor::ExecutionOutcome;
-use crate::gateway::{approval, request, Gateway, GatewayError};
+use crate::gateway::{approval, enum_wire, plan, request, Gateway, GatewayError};
 
 /// the well-known approver for the 2.1b stub decisions (RequiredApprover::current_user). 2.2/the
 /// real auth surface resolves the actual `decided_by` from the IPC peer identity.
@@ -65,7 +68,8 @@ impl Gateway {
             let act_id = req.action_request_id.as_str().to_string();
 
             // 1. persist the intent at Submitted (inputs §15-redacted at rest) + emit ActionRequested.
-            request::insert(gtx, &req, ARStatus::Submitted, &now)?;
+            //    plan_id = None — a single action is not part of a bundled plan (2.1c).
+            request::insert(gtx, &req, ARStatus::Submitted, None, &now)?;
             gtx.append(&request::action_requested_intent(&req, &now)?)?;
 
             // 2. policy decision (2.1b stub: always require_approval — risk-blind).
@@ -92,7 +96,8 @@ impl Gateway {
                     approval::insert(
                         gtx.tx(),
                         &appr_id,
-                        &act_id,
+                        Some(&act_id),
+                        None, // a single action has no parent plan (2.1c)
                         ApprovalStatus::AwaitingApproval,
                         &RequiredApprover::current_user(),
                         None, // no expiry on the stub submit; the expiry path is exercised at L3
@@ -116,6 +121,187 @@ impl Gateway {
                 ))),
             }
         })
+    }
+
+    /// `submit_action_plan` (§6.1/AG §8, O-3) — the bundled-plan intake. ONE atomic gateway txn
+    /// (fail-closed — the WHOLE plan persists or nothing): insert the `action_plans` grouping row;
+    /// for each step insert its `action_requests` row (`plan_id` set; inputs §15-row-redacted) +
+    /// emit `ActionRequested` + advance Submitted→PolicyDecided→AwaitingApproval (R-9 guarded,
+    /// reusing the 2.1b helpers); open the approval object(s) per `approval_mode` (Q3) + emit
+    /// `ActionApprovalRequested`. Any step failure rolls the whole txn back (no partial plan,
+    /// INV-SEC-1/§15/§17). The plan is a durable GROUPING, NOT a new event type (Q7).
+    pub fn submit_action_plan(
+        &self,
+        store: &mut EventStore,
+        plan: ActionPlan,
+    ) -> Result<PlanAck, GatewayError> {
+        self.submit_action_plan_collecting(store, plan, &mut Vec::new())
+    }
+
+    /// `submit_action_plan` accumulating the `proj_approval_queue` subscribe-delta(s) into `deltas`
+    /// (Q6) — the write-actor publishes them post-commit. Same pipeline as
+    /// [`Gateway::submit_action_plan`].
+    pub(crate) fn submit_action_plan_collecting(
+        &self,
+        store: &mut EventStore,
+        plan: ActionPlan,
+        deltas: &mut Vec<ProjectionDelta>,
+    ) -> Result<PlanAck, GatewayError> {
+        // fail-closed up front, BEFORE the txn (Step-2.5 Mod 1): `Blocked` is a policy-ASSIGNED
+        // outcome (2.2 owns it), never a valid proposer-submitted mode — rejecting it avoids
+        // opening phantom `awaiting_approval` steps with no approval object. An empty plan is also
+        // rejected (nothing to group / no submitter context to record).
+        if plan.approval_mode == ApprovalMode::Blocked {
+            return Err(GatewayError::UnsupportedApprovalMode("blocked".to_string()));
+        }
+        if plan.steps.is_empty() {
+            return Err(GatewayError::UnsupportedApprovalMode(
+                "a submitted plan must carry at least one step".to_string(),
+            ));
+        }
+        store.gateway_txn(|gtx| {
+            let now = gtx.now_rfc3339();
+            let plan_id = plan.plan_id.as_str().to_string();
+            // the plan-submit IMMUTABLE context — all steps of a submitted plan share the submitter
+            // (recorded on `action_plans` so the projector populates a plan-level queue row without a
+            // step cross-join, Step-2.5 Flag 2).
+            let first = &plan.steps[0].action_request;
+            let project_id = first.project_id.as_ref().map(|p| p.as_str());
+            let requester_type_wire = enum_wire(&first.requester_type)?;
+
+            // 1. the action_plans grouping row.
+            plan::insert(
+                gtx,
+                &plan,
+                project_id,
+                &requester_type_wire,
+                &first.requester_id,
+                &now,
+            )?;
+
+            // 2. each step: persist + ActionRequested + advance to awaiting_approval (R-9 guarded).
+            let mut step_acks = Vec::with_capacity(plan.steps.len());
+            for step in &plan.steps {
+                let req = &step.action_request;
+                let act_id = req.action_request_id.as_str().to_string();
+                request::insert(gtx, req, ARStatus::Submitted, Some(&plan_id), &now)?;
+                gtx.append(&request::action_requested_intent(req, &now)?)?;
+                // policy stub: every step requires approval (risk-blind; 2.2 makes risk authoritative).
+                request::update_status(
+                    gtx.tx(),
+                    &act_id,
+                    ARStatus::Submitted,
+                    ARStatus::PolicyDecided,
+                )?;
+                request::update_status(
+                    gtx.tx(),
+                    &act_id,
+                    ARStatus::PolicyDecided,
+                    ARStatus::AwaitingApproval,
+                )?;
+                step_acks.push(PlanStepAck {
+                    step_id: step.step_id.clone(),
+                    action_request_id: act_id,
+                    status: ARStatus::AwaitingApproval,
+                });
+            }
+
+            // 3. open the approval object(s) per approval_mode (Q3) + emit ActionApprovalRequested.
+            self.open_plan_approvals(gtx, &plan, &plan_id, &now, deltas)?;
+
+            Ok(PlanAck {
+                plan_id,
+                steps: step_acks,
+            })
+        })
+    }
+
+    /// Open the approval object(s) for a submitted plan per `approval_mode` (Q3). `StepByStep`/
+    /// `Mixed` → one per-step approval each (`Mixed` is a safe over-approximation in 2.1c, marker).
+    /// `ApproveAll` → ONE plan-level approval over the NON-critical steps + a SEPARATE per-step
+    /// approval for EACH critical (risk-4) step — **critical is never in approve-all** (§6.2/§11.5,
+    /// the safety pin). Critical keys off the requester-supplied `risk_level` (recorded, not trusted
+    /// — the 2.1b stub-policy posture; 2.2's catalog-authoritative risk enforces it on the TRUE risk).
+    fn open_plan_approvals(
+        &self,
+        gtx: &GatewayTxn,
+        plan: &ActionPlan,
+        plan_id: &str,
+        now: &str,
+        deltas: &mut Vec<ProjectionDelta>,
+    ) -> Result<(), GatewayError> {
+        match plan.approval_mode {
+            ApprovalMode::StepByStep | ApprovalMode::Mixed => {
+                for step in &plan.steps {
+                    self.open_step_approval(gtx, &step.action_request, plan_id, now, deltas)?;
+                }
+            }
+            ApprovalMode::ApproveAll => {
+                let is_critical = |s: &nexusops_shared::actions::ActionPlanStep| {
+                    s.action_request.risk_level == RiskLevel::Level4
+                };
+                // ONE plan-level approval over the non-critical steps (opened only if any exist —
+                // an all-critical plan gets only per-step approvals, no empty plan-level approval).
+                if plan.steps.iter().any(|s| !is_critical(s)) {
+                    let first = &plan.steps[0].action_request;
+                    let appr_id = ApprovalId::new();
+                    approval::insert(
+                        gtx.tx(),
+                        &appr_id,
+                        None, // plan-level: no single action (scope=Plan)
+                        Some(plan_id),
+                        ApprovalStatus::AwaitingApproval,
+                        &RequiredApprover::current_user(),
+                        None,
+                        now,
+                    )?;
+                    gtx.append(&approval::plan_approval_requested_intent(
+                        plan_id,
+                        &appr_id,
+                        first.requester_type,
+                        &first.requester_id,
+                        first.project_id.as_ref(),
+                        now,
+                    )?)?;
+                    deltas.push(approval_queue_delta(appr_id.as_str()));
+                }
+                // each critical (risk-4) step gets its OWN per-step approval — never approve-all.
+                for step in plan.steps.iter().filter(|s| is_critical(s)) {
+                    self.open_step_approval(gtx, &step.action_request, plan_id, now, deltas)?;
+                }
+            }
+            // unreachable: Blocked is rejected before the txn (Mod 1). Fail closed if ever reached.
+            ApprovalMode::Blocked => {
+                return Err(GatewayError::UnsupportedApprovalMode("blocked".to_string()))
+            }
+        }
+        Ok(())
+    }
+
+    /// Open ONE per-step approval (a single step of a plan): an `approvals` row tying the step's
+    /// `action_request_id` + the `plan_id` + emit a per-step `ActionApprovalRequested`.
+    fn open_step_approval(
+        &self,
+        gtx: &GatewayTxn,
+        req: &ActionRequest,
+        plan_id: &str,
+        now: &str,
+        deltas: &mut Vec<ProjectionDelta>,
+    ) -> Result<(), GatewayError> {
+        let appr_id = ApprovalId::new();
+        approval::insert(
+            gtx.tx(),
+            &appr_id,
+            Some(req.action_request_id.as_str()),
+            Some(plan_id),
+            ApprovalStatus::AwaitingApproval,
+            &RequiredApprover::current_user(),
+            None,
+            now,
+        )?;
+        gtx.append(&approval::approval_requested_intent(req, &appr_id, now)?)?;
+        deltas.push(approval_queue_delta(appr_id.as_str()));
+        Ok(())
     }
 
     /// `approve` (§6.1/AG §8.8) — resolve an awaiting approval. The **decision txn** (emits

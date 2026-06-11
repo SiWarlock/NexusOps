@@ -13,9 +13,9 @@ use std::thread::JoinHandle;
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use nexusops_shared::actions::{ActionPreview, ActionRequest};
+use nexusops_shared::actions::{ActionPlan, ActionPreview, ActionRequest};
 use nexusops_shared::ids::EventId;
-use nexusops_shared::ipc::{ActionAck, DeltaKind, ProjectionDelta, ProjectionName};
+use nexusops_shared::ipc::{ActionAck, DeltaKind, PlanAck, ProjectionDelta, ProjectionName};
 
 use crate::clock::Clock;
 use crate::eventstore::{AppendIntent, Destination, DrainSummary, EventStore, EventStoreError};
@@ -66,6 +66,11 @@ enum Command {
     GatewaySubmit {
         req: Box<ActionRequest>,
         reply: oneshot::Sender<Result<ActionAck, GatewayError>>,
+    },
+    // 2.1c: bundled-plan submission (O-3). Boxed — ActionPlan is large (clippy large_enum_variant).
+    GatewayPlanSubmit {
+        plan: Box<ActionPlan>,
+        reply: oneshot::Sender<Result<PlanAck, GatewayError>>,
     },
     GatewayApprove {
         approval_id: String,
@@ -179,6 +184,22 @@ impl WriteHandle {
         self.tx
             .blocking_send(Command::GatewaySubmit {
                 req: Box::new(req),
+                reply,
+            })
+            .map_err(|_| RuntimeError::ActorGone)?;
+        rx.blocking_recv().map_err(|_| RuntimeError::ActorGone)
+    }
+
+    /// `submit_action_plan` through the single writer (the §6.1 O-3 mutation path; the plan pipeline
+    /// runs on the write-actor). Each step's inputs blob is §15-redacted at rest inside the pipeline.
+    pub fn submit_action_plan_blocking(
+        &self,
+        plan: ActionPlan,
+    ) -> Result<Result<PlanAck, GatewayError>, RuntimeError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .blocking_send(Command::GatewayPlanSubmit {
+                plan: Box::new(plan),
                 reply,
             })
             .map_err(|_| RuntimeError::ActorGone)?;
@@ -334,6 +355,13 @@ fn run_actor(
             Command::GatewaySubmit { req, reply } => {
                 let mut queue_deltas = Vec::new();
                 let result = gateway.submit_action_collecting(&mut store, *req, &mut queue_deltas);
+                publish_after_commit(&deltas, &result, queue_deltas);
+                let _ = reply.send(result);
+            }
+            Command::GatewayPlanSubmit { plan, reply } => {
+                let mut queue_deltas = Vec::new();
+                let result =
+                    gateway.submit_action_plan_collecting(&mut store, *plan, &mut queue_deltas);
                 publish_after_commit(&deltas, &result, queue_deltas);
                 let _ = reply.send(result);
             }

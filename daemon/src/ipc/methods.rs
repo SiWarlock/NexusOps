@@ -11,7 +11,7 @@ use std::path::Path;
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
 
-use nexusops_shared::actions::ActionRequest;
+use nexusops_shared::actions::{ActionPlan, ActionRequest};
 use nexusops_shared::ipc::{
     Capabilities, GetProjectionParams, IpcErrorCode, ProjectionName, RpcRequest, RpcResponse,
     SubscribeParams, WireError,
@@ -56,6 +56,7 @@ pub(crate) fn dispatch(
         // mutator, forbidden #2/#3). A `GatewayError` → a structured `IpcErrorCode` response; the
         // write-actor being gone is an infra failure → `Err(IpcError)` (disconnect).
         "submit_action" => submit_action(&req.params, write)?,
+        "submit_action_plan" => submit_action_plan(&req.params, write)?,
         "approve" => approve(&req.params, write)?,
         "deny" => deny(&req.params, write)?,
         "preview_action" => preview_action(&req.params, write)?,
@@ -110,9 +111,12 @@ fn gateway_result<T: serde::Serialize>(
 /// Map a daemon-internal [`GatewayError`] → the closed §6.4 `IpcErrorCode` set.
 fn gateway_error_to_code(e: &GatewayError) -> IpcErrorCode {
     match e {
-        GatewayError::PolicyDenied | GatewayError::UnsupportedPolicyDecision(_) => {
-            IpcErrorCode::PolicyDenied
-        }
+        GatewayError::PolicyDenied
+        | GatewayError::UnsupportedPolicyDecision(_)
+        // a Blocked-mode plan submission is rejected on policy grounds (Blocked is a 2.2-assigned
+        // outcome, not a submittable mode) — the request parses fine, so it is policy_denied, not
+        // a protocol_error.
+        | GatewayError::UnsupportedApprovalMode(_) => IpcErrorCode::PolicyDenied,
         // out-of-state action / missing-or-lapsed approval / fail-closed audit write — the
         // mutation's precondition no longer holds (§6.4 precondition_stale).
         GatewayError::IllegalTransition { .. }
@@ -133,6 +137,18 @@ fn submit_action(
         Err(_) => return Ok(Err(IpcErrorCode::ProtocolError)),
     };
     gateway_result(write.submit_action_blocking(req))
+}
+
+/// `submit_action_plan` — parse the §6.2 `ActionPlan`, run the plan pipeline → `PlanAck` (O-3).
+fn submit_action_plan(
+    params: &serde_json::Value,
+    write: &WriteHandle,
+) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
+    let plan: ActionPlan = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(_) => return Ok(Err(IpcErrorCode::ProtocolError)),
+    };
+    gateway_result(write.submit_action_plan_blocking(plan))
 }
 
 /// a required string field from the JSON-RPC params (a missing/non-string field is a client

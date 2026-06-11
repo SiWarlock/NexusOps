@@ -115,9 +115,15 @@ fn test_action_requests_approvals_migrations_match_data_model() {
         assert!(ap.contains_key(col), "approvals.{col} missing");
     }
     assert!(ap["approval_id"].2, "approval_id is the PK");
-    for col in ["action_request_id", "status", "created_at"] {
+    for col in ["status", "created_at"] {
         assert!(ap[col].1, "approvals.{col} must be NOT NULL");
     }
+    // 2.1c / MIGRATION_8: action_request_id became NULLABLE (a plan-level approve-all approval has
+    // no single action — the frozen §6.2 Approval already typed it Option; the table caught up).
+    assert!(
+        !ap["action_request_id"].1,
+        "approvals.action_request_id is now nullable (the 2.1c plan dimension)"
+    );
 
     // the ux_action_idem index — must be UNIQUE + partial (the uniqueness IS the idempotency-dedup
     // invariant; a regression to a plain CREATE INDEX would silently allow duplicate submits).

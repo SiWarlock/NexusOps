@@ -7,11 +7,15 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
-use nexusops_shared::actions::{ActionRequest as ActionRequestModel, RequiredApprover};
+use nexusops_shared::actions::{
+    ActionRequest as ActionRequestModel, RequesterType, RequiredApprover,
+};
+use nexusops_shared::event_envelope::{Sensitivity, SourceType, Visibility};
 use nexusops_shared::events::{
     ActionApprovalRequested, ActionApproved, ActionDenied, ActionExpired,
 };
 use nexusops_shared::gateway_ids::ApprovalId;
+use nexusops_shared::ids::{ProjectId, WorkspaceId};
 use nexusops_shared::status::Approval;
 
 use crate::eventstore::AppendIntent;
@@ -107,12 +111,18 @@ pub fn can_transition(from: Approval, to: Approval) -> bool {
 }
 
 /// INSERT a new `approvals` row at `status` (DATA_MODEL §2.9), with `required_approver` serialized
-/// to its JSON column + an optional `expires_at`. `decided_by`/`decided_at` start NULL. Called
-/// inside the gateway txn.
+/// to its JSON column + an optional `expires_at`. `decided_by`/`decided_at` start NULL. `plan_id`
+/// is the parent plan (2.1c, MIGRATION_8); `action_request_id` is `None` for a **plan-level**
+/// approve-all approval (`scope=Plan`, per the frozen §6.2 `Approval` whose `action_request_id` is
+/// `Option`). Called inside the gateway txn.
+// the args are the distinct `approvals` row columns of an INSERT — a params struct would add
+// indirection without clarity for a single DB write helper (mirrors `request::insert`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn insert(
     tx: &Transaction,
     approval_id: &ApprovalId,
-    action_request_id: &str,
+    action_request_id: Option<&str>,
+    plan_id: Option<&str>,
     status: Approval,
     required_approver: &RequiredApprover,
     expires_at: Option<&str>,
@@ -122,12 +132,13 @@ pub(crate) fn insert(
         .map_err(|e| GatewayError::Serialize(e.to_string()))?;
     tx.execute(
         "INSERT INTO approvals \
-         (approval_id, action_request_id, status, required_approver, decided_by, decided_at, \
-          expires_at, created_at) \
-         VALUES (?1,?2,?3,?4,NULL,NULL,?5,?6)",
+         (approval_id, action_request_id, plan_id, status, required_approver, decided_by, \
+          decided_at, expires_at, created_at) \
+         VALUES (?1,?2,?3,?4,?5,NULL,NULL,?6,?7)",
         rusqlite::params![
             approval_id.as_str(),
             action_request_id,
+            plan_id,
             enum_wire(&status)?,
             approver_json,
             expires_at,
@@ -157,6 +168,48 @@ pub(crate) fn approval_requested_intent(
         occurred_at,
         Some(approval_id.as_str().to_string()),
     ))
+}
+
+/// Build a **plan-level** `ActionApprovalRequested` AppendIntent (2.1c approve-all, O-3). A
+/// plan-level approval has no single `ActionRequest`, so the envelope ties to the plan via
+/// `correlation_id = plan_id` + `action_request_id = NULL` (Step-2.5 Mod 2 — the frozen envelope has
+/// no `action_plan_id` column, and the `ActionApprovalRequested` PAYLOAD stays `{approval_id}`, so
+/// no event contract changes). The projector sibling-reads `plan_id` from `approvals.plan_id`. The
+/// audited actor is the plan submitter's mapped `ActorType` (R-2).
+pub(crate) fn plan_approval_requested_intent(
+    plan_id: &str,
+    approval_id: &ApprovalId,
+    requester_type: RequesterType,
+    requester_id: &str,
+    project_id: Option<&ProjectId>,
+    occurred_at: &str,
+) -> Result<AppendIntent, GatewayError> {
+    let payload = serde_json::to_string(&ActionApprovalRequested {
+        approval_id: approval_id.as_str().to_string(),
+    })
+    .map_err(|e| GatewayError::Serialize(e.to_string()))?;
+    Ok(AppendIntent {
+        event_type: ActionApprovalRequested::EVENT_TYPE.to_string(),
+        event_version: 1,
+        occurred_at: occurred_at.to_string(),
+        workspace_id: WorkspaceId::system(),
+        actor_type: requester_type.to_actor_type(),
+        actor_id: requester_id.to_string(),
+        source_type: SourceType::ActionGateway,
+        source_id: "action_gateway".to_string(),
+        correlation_id: plan_id.to_string(), // Mod 2: the event-level plan tie (no action_plan_id col)
+        sensitivity: Sensitivity::Internal,
+        payload_json: payload,
+        schema_version: "event-envelope-v1".to_string(),
+        idempotency_key: None,
+        project_id: project_id.cloned(),
+        session_id: None,
+        agent_team_id: None,
+        visibility: Some(Visibility::Project),
+        action_request_id: None, // Mod 2: a plan-level approve-all approval has no single action
+        approval_id: Some(approval_id.as_str().to_string()),
+        causation_id: None,
+    })
 }
 
 /// Build the `ActionApproved` AppendIntent (a human/policy approved; identity + approval_id on the

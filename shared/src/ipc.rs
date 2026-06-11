@@ -170,6 +170,27 @@ pub struct ActionAck {
     pub status: crate::status::ActionRequestStatus,
 }
 
+/// `submit_action_plan` result (§6.1, O-3) — the bundled-plan ack: the minted `plan_id` + a
+/// per-step ack (mirrors [`ActionAck`]) so the client can `preview_action`/track each step + hold
+/// the plan handle. Richer fields (`approval_ids`/`overall_status`) are additive-later (2.1c L2,
+/// Q1 default). Reject-unknown; optionals (none today) would serialize as `null`.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct PlanAck {
+    pub plan_id: String,
+    pub steps: Vec<PlanStepAck>,
+}
+
+/// One step's ack inside a [`PlanAck`] (§6.1, O-3): the step's plan-local `step_id` + the minted
+/// `action_request_id` (so the client can `preview_action`/track it) + its current `status`.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct PlanStepAck {
+    pub step_id: String,
+    pub action_request_id: String,
+    pub status: crate::status::ActionRequestStatus,
+}
+
 /// `get_projection` params (§6.1). `page` (pagination) is provisional and omitted for MVP.
 ///
 /// **MVP NOTE:** `scope` is **accepted but NOT YET enforced** — the daemon returns the full

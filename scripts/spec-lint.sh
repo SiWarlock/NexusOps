@@ -84,9 +84,14 @@ cmd_brief() {
   task_ids=$(grep -E '^\- \*\*Task ID:?\*\*' "$brief" | grep -oE '[A-Za-z]+[0-9]*\.[0-9]+' | sort -u || true)
   [ -n "$task_ids" ] || bad "no Task ID line found (## Use case + traceability)"
   for tid in $task_ids; do
-    if ! grep -E "^###+ *${tid}([^0-9]|$)" "$TRACKER" >/dev/null 2>&1; then
-      bad "task $tid not found in $TRACKER"
-    elif ! awk -v t="$tid" '
+    # Tracker task headings are numeric (### 2.1); brief Task IDs are alpha-prefixed (P2.1) per the
+    # brief-template convention. Strip the leading non-digit prefix to match (P2.1 → 2.1). The
+    # extraction also drops a trailing sub-letter (P2.1a → P2.1 → 2.1), so a 2.1a/2.1b sub-slice
+    # resolves to its parent task's heading + checkbox.
+    local tnum="${tid#"${tid%%[0-9]*}"}"
+    if ! grep -E "^###+ *${tnum}([^0-9]|$)" "$TRACKER" >/dev/null 2>&1; then
+      bad "task $tid (→ ${tnum}) not found in $TRACKER"
+    elif ! awk -v t="$tnum" '
         $0 ~ "^###+ *" t "([^0-9]|$)" {intask=1; next}
         intask && /^###? / {exit}
         intask && /^- \[ \]/ {found=1}
@@ -97,10 +102,11 @@ cmd_brief() {
 
   # 3. brief anchors ⊆ the phase's Spec anchors (prefix-aware), unless explicitly widened
   local phase="${task_ids%%.*}"; phase="${phase%%$'\n'*}"
+  local pnum="${phase#"${phase%%[0-9]*}"}"   # P2 → 2 (tracker phase headings are numeric: "## Phase 2")
   local pline pset
-  pline=$(phase_anchor_line "$phase")
+  pline=$(phase_anchor_line "$pnum")
   if [ -z "$pline" ]; then
-    note "phase $phase has no Spec anchors: line — subset check skipped"
+    note "phase $phase (→ ${pnum}) has no Spec anchors: line — subset check skipped"
   else
     pset=$(printf '%s\n' "$pline" | extract_anchors)
     if grep -qi 'widens phase scope because' "$brief"; then

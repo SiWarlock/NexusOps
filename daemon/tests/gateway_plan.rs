@@ -277,7 +277,7 @@ fn test_submit_action_plan_approve_all_opens_plan_and_critical_approvals() {
             ),
             step(
                 "s2",
-                "git.force_push",
+                "workflow.command.invoke",
                 RiskLevel::Level4,
                 serde_json::json!({}),
             ), // critical
@@ -506,7 +506,7 @@ fn test_plan_step_inputs_redacted() {
             ),
             step(
                 "s2",
-                "brain.send",
+                "brain.summarize_session",
                 RiskLevel::Level3,
                 serde_json::json!({ "env": format!("API_SECRET={secret}") }),
             ),
@@ -655,7 +655,7 @@ fn test_approve_all_excludes_critical() {
     );
     let s2 = step(
         "s2",
-        "git.force_push",
+        "workflow.command.invoke",
         RiskLevel::Level4,
         serde_json::json!({}),
     ); // critical

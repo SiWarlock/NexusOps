@@ -17,6 +17,17 @@ use crate::eventstore::{EventStore, GatewayTxn};
 use crate::gateway::executor::ExecutionOutcome;
 use crate::gateway::{approval, db_err, enum_wire, plan, request, Gateway, GatewayError};
 
+/// The routed outcome of `submit_action`'s decision txn (2.2): either a terminal ack (the action
+/// rests at `awaiting_approval`), or a risk-0 `allow` action queued for the SEPARATE execute step
+/// (the executor runs OFF the write-actor txn — LESSON §16; 2.3 moves it off-thread).
+enum Routed {
+    /// the require-approval path: the ack is final (no execution without a human approve).
+    Done(ActionAck),
+    /// the risk-0 `allow` auto-execute path: run the executor + completion txn after commit.
+    /// Boxed — `ActionRequest` is much larger than `ActionAck` (clippy::large_enum_variant).
+    Execute(Box<ActionRequest>),
+}
+
 /// The shape of an approval the gateway is about to resolve (the 2.1c approve/deny dispatch).
 enum ApprovalTarget {
     /// a single-action or per-step approval (`action_request_id` set) → the 2.1b single path.
@@ -82,7 +93,7 @@ impl Gateway {
             req.risk_level = entry.locked_risk;
         }
 
-        store.gateway_txn(|gtx| {
+        let routed = store.gateway_txn(|gtx| -> Result<Routed, GatewayError> {
             let now = gtx.now_rfc3339();
             let act_id = req.action_request_id.as_str().to_string();
 
@@ -126,24 +137,60 @@ impl Gateway {
                     // the queue row was just folded in-band → nudge subscribers (publish post-commit).
                     deltas.push(approval_queue_delta(appr_id.as_str()));
 
-                    Ok(ActionAck {
+                    Ok(Routed::Done(ActionAck {
                         action_request_id: act_id,
                         status: ARStatus::AwaitingApproval,
-                    })
+                    }))
                 }
-                // a policy `deny` is now a ROUTED outcome (an uncatalogued type → fail-closed deny):
+                // a policy `deny` is a ROUTED outcome (an uncatalogued type → fail-closed deny):
                 // surface the honest PolicyDenied (→ §6.4 policy_denied), never the misleading
-                // UnsupportedPolicyDecision ("not supported until 2.2"). Terminal — nothing executes.
+                // UnsupportedPolicyDecision. Terminal — nothing executes.
                 PolicyDecisionStatus::Deny => Err(GatewayError::PolicyDenied),
-                // the risk-0 `allow` auto-execute path is L3 (the INV-SEC-1 safety layer — its OWN
-                // commit; the auto-execute path is never bundled with the L2 engine). Until L3 wires
-                // it, a risk-0 `allow` is fail-closed (never silently auto-queued). `downgrade` /
-                // `needs_more_context` have no MVP trigger → genuinely unrouted (a later policy slice).
-                other => Err(GatewayError::UnsupportedPolicyDecision(format!(
-                    "{other:?}"
-                ))),
+                // 2.2 INV-SEC-1 — the FIRST no-human-approval execution path: a risk-0 `allow` action
+                // auto-executes (submitted → policy_decided → queued → … → succeeded) with NO approval
+                // row + NO ActionApprovalRequested. Gated STRICTLY on `allow` AND catalog-risk-0 — the
+                // pipeline RE-VERIFIES risk-0 here (defense-in-depth: a policy bug returning `allow`
+                // for a non-zero risk must NEVER open the auto-queue; the §14 invariant extends to "no
+                // non-zero / non-allow auto-queue").
+                PolicyDecisionStatus::Allow => {
+                    if req.risk_level != RiskLevel::Level0 {
+                        return Err(GatewayError::UnsupportedPolicyDecision(format!(
+                            "policy returned `allow` for catalog-risk-{} '{}' — refusing to \
+                             auto-queue a non-risk-0 action (INV-SEC-1)",
+                            req.risk_level as u8, req.action_type
+                        )));
+                    }
+                    // submitted → policy_decided → queued (NO approval; the auto-execute edge).
+                    request::update_status(
+                        gtx.tx(),
+                        &act_id,
+                        ARStatus::Submitted,
+                        ARStatus::PolicyDecided,
+                    )?;
+                    request::update_status(
+                        gtx.tx(),
+                        &act_id,
+                        ARStatus::PolicyDecided,
+                        ARStatus::Queued,
+                    )?;
+                    // hand the (reconciled) request to the SEPARATE execute step after commit.
+                    Ok(Routed::Execute(Box::new(req.clone())))
+                }
+                // `downgrade` / `needs_more_context` have no MVP trigger → genuinely unrouted;
+                // fail-closed (never mis-routed, never a write-actor panic).
+                other @ (PolicyDecisionStatus::Downgrade
+                | PolicyDecisionStatus::NeedsMoreContext) => Err(
+                    GatewayError::UnsupportedPolicyDecision(format!("{other:?}")),
+                ),
             }
-        })
+        })?;
+
+        match routed {
+            Routed::Done(ack) => Ok(ack),
+            // the risk-0 allow auto-execute path: run the executor + the completion txn (off the
+            // decision txn that already committed submitted→policy_decided→queued — LESSON §16).
+            Routed::Execute(req) => self.execute(store, &req),
+        }
     }
 
     /// `submit_action_plan` (§6.1/AG §8, O-3) — the bundled-plan intake. ONE atomic gateway txn
@@ -182,6 +229,19 @@ impl Gateway {
                 "a submitted plan must carry at least one step".to_string(),
             ));
         }
+        // 2.2 #11 — every step's action_type MUST be in the §6.3 catalog; an uncatalogued step
+        // rejects the WHOLE plan fail-closed (PolicyDenied), consistent with the single-action
+        // unknown→deny + whole-plan atomicity. NEVER admit an uncatalogued step: it has no
+        // authoritative risk (the §11.5 exclusion can't be evaluated on it) and no executor binding,
+        // and falling back to the proposer's claimed risk would reopen the claim-0-into-approve-all
+        // bypass via the unknown-type door.
+        if plan
+            .steps
+            .iter()
+            .any(|s| catalog::lookup(&s.action_request.action_type).is_none())
+        {
+            return Err(GatewayError::PolicyDenied);
+        }
         store.gateway_txn(|gtx| {
             let now = gtx.now_rfc3339();
             let plan_id = plan.plan_id.as_str().to_string();
@@ -205,11 +265,19 @@ impl Gateway {
             // 2. each step: persist + ActionRequested + advance to awaiting_approval (R-9 guarded).
             let mut step_acks = Vec::with_capacity(plan.steps.len());
             for step in &plan.steps {
-                let req = &step.action_request;
+                // 2.2 Q5 — reconcile each step's recorded risk to the AUTHORITATIVE §6.3 catalog risk
+                // before persist, so `action_requests.risk_level` (which `load_covered_steps`' SQL
+                // reads for the approve-all cascade) + the ActionRequested event carry the TRUE risk,
+                // not the proposer's claim. Every step is catalogued (checked above) → lookup is Some.
+                let mut req = step.action_request.clone();
+                if let Some(entry) = catalog::lookup(&req.action_type) {
+                    req.risk_level = entry.locked_risk;
+                }
                 let act_id = req.action_request_id.as_str().to_string();
-                request::insert(gtx, req, ARStatus::Submitted, Some(&plan_id), &now)?;
-                gtx.append(&request::action_requested_intent(req, &now)?)?;
-                // policy stub: every step requires approval (risk-blind; 2.2 makes risk authoritative).
+                request::insert(gtx, &req, ARStatus::Submitted, Some(&plan_id), &now)?;
+                gtx.append(&request::action_requested_intent(&req, &now)?)?;
+                // plan steps never auto-execute in 2.2 (no plan-step allow path) — each routes to
+                // approval per `approval_mode`; advance submitted → policy_decided → awaiting_approval.
                 request::update_status(
                     gtx.tx(),
                     &act_id,
@@ -243,8 +311,8 @@ impl Gateway {
     /// `Mixed` → one per-step approval each (`Mixed` is a safe over-approximation in 2.1c, marker).
     /// `ApproveAll` → ONE plan-level approval over the NON-critical steps + a SEPARATE per-step
     /// approval for EACH critical (risk-4) step — **critical is never in approve-all** (§6.2/§11.5,
-    /// the safety pin). Critical keys off the requester-supplied `risk_level` (recorded, not trusted
-    /// — the 2.1b stub-policy posture; 2.2's catalog-authoritative risk enforces it on the TRUE risk).
+    /// the safety pin). 2.2 keys `critical` off the AUTHORITATIVE §6.3 catalog risk (not the
+    /// requester-supplied `risk_level`), so an under-claimed catalog-risk-4 step is still excluded.
     fn open_plan_approvals(
         &self,
         gtx: &GatewayTxn,
@@ -260,8 +328,13 @@ impl Gateway {
                 }
             }
             ApprovalMode::ApproveAll => {
+                // §11.5 migration — `critical` keys off the AUTHORITATIVE §6.3 catalog risk, NOT the
+                // requester-supplied `risk_level` (recorded, not trusted). A proposer under-claiming a
+                // catalog-risk-4 step as risk-0 still gets it excluded from approve-all. Every step is
+                // catalogued (rejected upfront otherwise), so lookup is Some.
                 let is_critical = |s: &nexusops_shared::actions::ActionPlanStep| {
-                    s.action_request.risk_level == RiskLevel::Level4
+                    catalog::lookup(&s.action_request.action_type).map(|e| e.locked_risk)
+                        == Some(RiskLevel::Level4)
                 };
                 // ONE plan-level approval over the non-critical steps (opened only if any exist —
                 // an all-critical plan gets only per-step approvals, no empty plan-level approval).
@@ -738,9 +811,10 @@ impl Gateway {
 
 /// Load the plan's steps covered by a plan-level approve-all approval: the NON-critical
 /// (risk != 4) steps still `awaiting_approval`. Criticals carry their own per-step approvals and
-/// are NEVER cascaded (§6.2/§11.5 — the safety pin). The `risk_level <> 4` keys off the
-/// requester-supplied risk (recorded, not trusted — 2.1b stub-policy posture; 2.2's catalog risk
-/// makes the exclusion authoritative). Reads via the open gateway txn.
+/// are NEVER cascaded (§6.2/§11.5 — the safety pin). The `risk_level <> 4` reads the PERSISTED risk,
+/// which 2.2 reconciled to the AUTHORITATIVE §6.3 catalog risk at submit — so a proposer who
+/// under-claims a catalog-risk-4 step as risk-0 still can't slip it into the cascade. Reads via the
+/// open gateway txn.
 fn load_covered_steps(gtx: &GatewayTxn, plan_id: &str) -> Result<Vec<ActionRequest>, GatewayError> {
     let ids: Vec<String> = {
         let mut stmt = gtx

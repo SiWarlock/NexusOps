@@ -461,6 +461,28 @@ CREATE TABLE approvals (
 );
 ```
 
+**[IMPLEMENTED — the 2.1c MIGRATION_8 plan dimension (`b9e00a1`); `SUPPORTED_USER_VERSION` 7→8]** the O-3 bundled-plan addition — a thin `action_plans` metadata table + the `plan_id` FK + the plan-level-approval generalization:
+
+```sql
+CREATE TABLE action_plans (
+  plan_id         TEXT PRIMARY KEY,    -- 'aplan_' + ULID
+  project_id      TEXT,
+  requester_type  TEXT NOT NULL,       -- §6.2 RequesterType (plan submitter)
+  requester_id    TEXT NOT NULL,
+  title           TEXT NOT NULL,
+  overall_risk    INTEGER NOT NULL,    -- §6.2 RiskLevel 0-4
+  approval_mode   TEXT NOT NULL,       -- §6.2 ApprovalMode (approve_all|step_by_step|mixed|blocked)
+  created_at      TEXT NOT NULL
+);
+ALTER TABLE action_requests ADD COLUMN plan_id TEXT;  -- nullable FK → action_plans (single action = NULL)
+-- approvals + proj_approval_queue GENERALIZED (table-rebuild): action_request_id → NULLABLE, + plan_id —
+-- so a plan-level approve-all approval (scope=Plan, plan_id set, action_request_id NULL) persists,
+-- matching the frozen §6.2 Approval.action_request_id: Option (the 2.1b NOT NULL was a single-action shortcut).
+-- proj_approval_queue is a projection → DROP+CREATE with the new shape + reset its offset (re-fold).
+```
+
+The plan = grouping-over-`action_requests` (single action = `plan_id` NULL); `submit_action_plan` is ONE atomic gateway txn (whole-plan fail-closed). An uncatalogued-action_type step rejects the whole plan (2.2 #11).
+
 ### 2.10 (reserved) — see §6 for the 4 new desktop objects (`devices`, `remote_clients`, `local_runners`, `event_projections`).
 
 ### 2.11 FTS5 search `[LOCKED — ADR-003]`

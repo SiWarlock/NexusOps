@@ -226,6 +226,29 @@ pub(crate) fn load(
     })
 }
 
+/// Look up an existing action by its idempotency key — the dedup-on-submit check (2.3 L1). Returns
+/// the original action's `(action_request_id, status)` if a row carries this key (the `ux_action_idem`
+/// UNIQUE partial index makes the hit at-most-one), else `None`. A keyed re-submit replays the
+/// original (at-most-one execution) instead of creating a second row/event/execution. Reads via the
+/// open gateway txn (or any `&Connection`).
+pub(crate) fn find_by_idempotency_key(
+    conn: &Connection,
+    idempotency_key: &str,
+) -> Result<Option<(String, ActionRequest)>, GatewayError> {
+    let row = conn
+        .query_row(
+            "SELECT action_request_id, status FROM action_requests WHERE idempotency_key = ?1",
+            [idempotency_key],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(db_err)?;
+    match row {
+        Some((id, status)) => Ok(Some((id, from_wire(serde_json::Value::String(status))?))),
+        None => Ok(None),
+    }
+}
+
 /// the raw `action_requests` columns (pre-reconstruction).
 struct ActionRow {
     project_id: Option<String>,

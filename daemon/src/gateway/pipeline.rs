@@ -15,7 +15,9 @@ use nexusops_shared::time::Timestamp;
 
 use crate::eventstore::{EventStore, GatewayTxn};
 use crate::gateway::executor::ExecutionOutcome;
-use crate::gateway::{approval, db_err, enum_wire, plan, request, Gateway, GatewayError};
+use crate::gateway::{
+    approval, db_err, enum_wire, idempotency, plan, request, Gateway, GatewayError,
+};
 
 /// The routed outcome of `submit_action`'s decision txn (2.2): either a terminal ack (the action
 /// rests at `awaiting_approval`), or a risk-0 `allow` action queued for the SEPARATE execute step
@@ -84,18 +86,36 @@ impl Gateway {
         mut req: ActionRequest,
         deltas: &mut Vec<ProjectionDelta>,
     ) -> Result<ActionAck, GatewayError> {
-        // 2.2 Q5 — reconcile the recorded risk to the AUTHORITATIVE §6.3 catalog risk BEFORE the row
-        // + the ActionRequested event persist, so the audit trail records the TRUE risk, not the
-        // proposer's claim (§15 recorded-not-trusted). Policy-independent (the catalog is the risk
-        // authority regardless of the injected engine). An uncatalogued type has no catalog risk → it
-        // keeps its claim and is DENIED by the policy below (nothing persists — the txn rolls back).
+        // 2.2 Q5 + 2.3 L1 — reconcile the recorded risk AND derive the idempotency key from the
+        // AUTHORITATIVE §6.3 catalog BEFORE persist, so the audit trail + the dedup key record the
+        // TRUE values, not the proposer's claim (§15 recorded-not-trusted). Policy-independent. An
+        // uncatalogued type resolves to neither (it is DENIED by the policy below — nothing persists).
         if let Some(entry) = catalog::lookup(&req.action_type) {
             req.risk_level = entry.locked_risk;
+            // OVERWRITE any requester-supplied idempotency_key with the catalog-derived one: a proposer
+            // must not control the dedup key (a chosen key could force a collision to suppress a
+            // victim's action, or evade dedup). `None`-formula actions derive `None` (never deduped).
+            req.idempotency_key = idempotency::derive_key(&req, &entry);
         }
 
         let routed = store.gateway_txn(|gtx| -> Result<Routed, GatewayError> {
             let now = gtx.now_rfc3339();
             let act_id = req.action_request_id.as_str().to_string();
+
+            // 2.3 L1 dedup-on-submit: if a keyed action with this idempotency key already exists,
+            // REPLAY the original (at-most-one execution) — no 2nd row, no 2nd ActionRequested, no 2nd
+            // execution. The `ux_action_idem` UNIQUE index is the backstop (a racing insert → fail-
+            // closed AuditWriteFailed); on the single write-actor this lookup is authoritative.
+            if let Some(key) = &req.idempotency_key {
+                if let Some((orig_id, orig_status)) =
+                    request::find_by_idempotency_key(gtx.tx(), key)?
+                {
+                    return Ok(Routed::Done(ActionAck {
+                        action_request_id: orig_id,
+                        status: orig_status,
+                    }));
+                }
+            }
 
             // 1. persist the intent at Submitted (inputs §15-redacted at rest) + emit ActionRequested
             //    (carrying the reconciled authoritative risk). plan_id = None — single action (2.1c).

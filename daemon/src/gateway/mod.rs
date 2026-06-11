@@ -13,6 +13,7 @@
 
 pub mod approval;
 pub mod executor;
+pub mod idempotency;
 pub mod pipeline;
 pub mod plan;
 pub mod policy;

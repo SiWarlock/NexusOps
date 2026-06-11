@@ -36,8 +36,19 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "syn
 sha2 = "0.10"
 # (the `nexusopsd` bin is auto-discovered from src/main.rs — no explicit [[bin]] needed.)
 
+[features]
+# §14 deterministic fault-injection (2.4) — arms checkpoints (TerminalEventWrite / BeforeTerminalTxn)
+# that the gateway/eventstore consult to exercise the §17 fail-closed + crash-reconcile paths WITHOUT
+# a real SIGKILL. Compiled OUT of `cargo build`/`cargo run`/release (no production fault surface); the
+# self-dev-dependency below enables it ONLY for the daemon's own test/bench targets.
+fault-injection = []
+
 [dev-dependencies]
 tempfile = "3"
+# enable the `fault-injection` feature for the daemon's OWN integration tests (which link the lib as a
+# normal dependency, WITHOUT cfg(test)). Standard self-dev-dependency idiom: ON for test targets, OFF
+# for `cargo build`/release. Lets daemon/tests/recovery.rs arm §14 faults; the hook stays out of prod.
+nexusopsd = { path = ".", features = ["fault-injection"] }
 # integration tests inject corrupt/future-version rows directly to exercise the
 # read-path degrade/quarantine (§17) without a pub test-backdoor in the API.
 rusqlite = { version = "0.34", features = ["bundled"] }

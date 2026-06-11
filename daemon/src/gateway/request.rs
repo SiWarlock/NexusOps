@@ -13,7 +13,9 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::de::DeserializeOwned;
 
 use nexusops_shared::actions::{ActionError, ActionRequest as ActionRequestModel};
-use nexusops_shared::events::{ActionFailed, ActionRequested, ActionStarted, ActionSucceeded};
+use nexusops_shared::events::{
+    ActionFailed, ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
+};
 use nexusops_shared::ids::{ActionRequestId, ProjectId};
 use nexusops_shared::status::ActionRequest;
 use nexusops_shared::time::Timestamp;
@@ -317,6 +319,28 @@ pub(crate) fn succeeded_intent(
     Ok(gateway_event_intent(
         ar,
         ActionSucceeded::EVENT_TYPE,
+        payload,
+        occurred_at,
+        None,
+    ))
+}
+
+/// Build the `ActionPartiallySucceeded` AppendIntent (§17 — a side effect was applied but its terminal
+/// event could not be written; L2 best-effort record). The `reason` is a redaction-safe STRUCTURAL
+/// string ONLY — never row/payload content (§15; the L2 security obligation).
+pub(crate) fn partially_succeeded_intent(
+    ar: &ActionRequestModel,
+    occurred_at: &str,
+) -> Result<AppendIntent, GatewayError> {
+    let payload = serde_json::to_string(&ActionPartiallySucceeded {
+        reason: "side effect applied; the terminal ActionSucceeded event could not be written \
+                 (§17 fail-closed audit-write)"
+            .to_string(),
+    })
+    .map_err(|e| GatewayError::Serialize(e.to_string()))?;
+    Ok(gateway_event_intent(
+        ar,
+        ActionPartiallySucceeded::EVENT_TYPE,
         payload,
         occurred_at,
         None,

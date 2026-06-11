@@ -694,30 +694,47 @@ impl Gateway {
     }
 
     /// Run the executor for an approved+queued action, then record the outcome. The executor is
-    /// invoked OUTSIDE any write-actor txn (2.3's git-CLI/octocrab executors move off-thread here);
-    /// the ActionStarted + ActionSucceeded/Failed transitions land in one atomic completion txn.
+    /// invoked OUTSIDE any write-actor txn (2.3's git-CLI/octocrab executors move off-thread here).
+    ///
+    /// **2.4 — the completion is SPLIT into two txns** so a fail-closed audit-write leaves the action
+    /// durably `executing` (reconciled on restart by L5), never stuck pre-execution:
+    /// **txn-A** `queued → executing` + `ActionStarted` (COMMITS) → the executor runs (off the
+    /// write-actor — so `ActionStarted` precedes the side effect, §17.1) → **txn-B** `executing →
+    /// succeeded/failed` + the terminal event. A terminal-event write failure (§15/§17) rolls txn-B
+    /// back → the action STAYS `executing` → L5; never acked succeeded. If a real side effect was
+    /// applied but its event is unwritable → `ActionPartiallySucceeded` best-effort (§17 / L2).
     fn execute(
         &self,
         store: &mut EventStore,
         req: &ActionRequest,
     ) -> Result<ActionAck, GatewayError> {
-        // the side effect (stub: none) runs BETWEEN the decision txn and the completion txn.
-        let outcome = self.executor().execute(req);
         let act_id = req.action_request_id.as_str().to_string();
-        store.gateway_txn(|gtx| -> Result<ActionAck, GatewayError> {
+
+        // txn-A: queued → executing + ActionStarted. Commits FIRST so the action is durably `executing`
+        // before the side effect / terminal write — a crash or a fail-closed terminal write then leaves
+        // a reconcilable `executing` orphan (L5), not a lost pre-execution slot. (`WHERE status=queued`
+        // makes a stale slot a typed NotFound, never a silent double-execute.)
+        store.gateway_txn(|gtx| -> Result<(), GatewayError> {
             let now = gtx.now_rfc3339();
-            // 2.1b: `approve`'s decision txn + this completion txn both run inside ONE
-            // `Command::GatewayApprove` on the single write-actor → fully serialized, so no second
-            // approve can race this Queued→Executing slot. The remaining gap is CRASH recovery — a
-            // crash between the two txns strands the action at `queued` (harmless with the no-side-
-            // effect stub; with a real executor, 2.4 reconciles orphaned queued/executing actions
-            // by idempotency key + adds the fencing guard, §17/Q6). The `WHERE status=queued` guard
-            // already makes a stale slot a typed `NotFound`, never a silent double-execute.
             request::update_status(gtx.tx(), &act_id, ARStatus::Queued, ARStatus::Executing)?;
             gtx.append(&request::started_intent(req, &now)?)?;
-            match outcome {
+            Ok(())
+        })?;
+
+        // the side effect (2.4 stubs: NONE) runs BETWEEN txn-A and txn-B (off the write-actor, §16).
+        let outcome = self.executor().execute(req);
+
+        // txn-B: executing → succeeded/failed + the terminal event. A fail-closed audit-write here
+        // (§15/§17 — the terminal event can't be written) rolls txn-B back → the action STAYS
+        // `executing` (txn-A committed) → L5 reconciles; NEVER acked succeeded.
+        // (Two-txn delta corollary, 2.1c→2.4: on a txn-B failure the post-commit publish is Err-gated →
+        // the outcome delta is suppressed while the row is durably `executing`; a subscriber sees
+        // `executing` until lag-resync — benign, the durable row is the source of truth.)
+        let terminal = store.gateway_txn(|gtx| -> Result<ActionAck, GatewayError> {
+            let now = gtx.now_rfc3339();
+            match &outcome {
                 // the executor's changed_resources/detail (Q7) are daemon-internal — recorded on the
-                // §6.2 ActionResult in 2.4; the 2.3 ActionSucceeded event payload stays empty.
+                // §6.2 ActionResult in a later phase; the ActionSucceeded event payload stays empty.
                 ExecutionOutcome::Succeeded { .. } => {
                     request::update_status(
                         gtx.tx(),
@@ -738,11 +755,13 @@ impl Gateway {
                         ARStatus::Executing,
                         ARStatus::Failed,
                     )?;
-                    // 2.4 L1: the executor's free-string failure is the ExecutorError variant of the
-                    // structured taxonomy (the §17-specific variants land at L2-L5). No info lost.
+                    // the executor's free-string failure is the ExecutorError variant of the structured
+                    // taxonomy (the §17-specific variants land at L3-L5). No info lost.
                     gtx.append(&request::failed_intent(
                         req,
-                        ActionError::ExecutorError { message: err },
+                        ActionError::ExecutorError {
+                            message: err.clone(),
+                        },
                         &now,
                     )?)?;
                     Ok(ActionAck {
@@ -751,7 +770,42 @@ impl Gateway {
                     })
                 }
             }
-        })
+        });
+
+        match terminal {
+            Ok(ack) => Ok(ack),
+            // txn-B could not write the terminal event (§15/§17 fail-closed). The next step depends on
+            // whether a DURABLE side effect was applied that can no longer be un-done:
+            Err(audit_err) => {
+                if !outcome.side_effect_applied() {
+                    // no durable change was applied — a side-effect-free `Succeeded` (every 2.4 stub) or
+                    // any `Failed` (which by definition applied nothing) → clean rollback → the action
+                    // stays `executing` → L5 reconciles. Fail closed (never acked succeeded).
+                    return Err(audit_err);
+                }
+                // a real side effect WAS applied but its success event is lost → record the divergence
+                // BEST-EFFORT in its own txn-C: `ActionPartiallySucceeded` (the loud, consumer-visible
+                // audit-integrity record). If txn-C ALSO can't write (audit fully broken) → return the
+                // original AuditWriteFailed + stay `executing` (→ L5): NEVER claim a partial-success the
+                // audit log does not hold (the ultimate fail-closed).
+                store
+                    .gateway_txn(|gtx| -> Result<ActionAck, GatewayError> {
+                        let now = gtx.now_rfc3339();
+                        request::update_status(
+                            gtx.tx(),
+                            &act_id,
+                            ARStatus::Executing,
+                            ARStatus::PartiallySucceeded,
+                        )?;
+                        gtx.append(&request::partially_succeeded_intent(req, &now)?)?;
+                        Ok(ActionAck {
+                            action_request_id: act_id.clone(),
+                            status: ARStatus::PartiallySucceeded,
+                        })
+                    })
+                    .map_err(|_txn_c_failed| audit_err)
+            }
+        }
     }
 
     /// `deny` (§6.1/AG §8.8) — deny an awaiting approval with a `reason`. ONE atomic txn: stamp the

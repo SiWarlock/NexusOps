@@ -40,10 +40,38 @@ pub enum ExecutionOutcome {
     Succeeded {
         changed_resources: Vec<ResourceRef>,
         detail: String,
+        /// whether a **durable external side effect was applied** (git/FS/network/session state). The
+        /// 2.4 fail-closed path keys off this: if the terminal event can't be written (§17), a
+        /// `false` (no real change — every 2.4 stub) rolls back cleanly → the action stays `executing`
+        /// → L5; a `true` (a real change that can't be un-done) → `ActionPartiallySucceeded`. The 2.4
+        /// stubs report `false`; the real adapters (Phase 3/5/7/8) report `true` after a durable change.
+        side_effect_applied: bool,
     },
     /// the executor (or its `validate`) failed; the message is recorded on `ActionFailed`
-    /// (structured taxonomy → 2.4).
+    /// (structured taxonomy → 2.4). **A `Failed` outcome ALWAYS implies no durable side effect was
+    /// applied** — an executor must fail BEFORE or DURING the operation, never report `Failed` after an
+    /// irreversible change (such a half-applied change is a `Succeeded { side_effect_applied: true }`
+    /// the executor could not complete cleanly, OR a future rollback concern — never a `Failed`).
     Failed(String),
+}
+
+impl ExecutionOutcome {
+    /// Whether a **durable external side effect was applied** — the signal the 2.4 fail-closed path
+    /// keys off (a terminal-event write that fails after a real change → `ActionPartiallySucceeded`,
+    /// else a clean rollback that stays `executing`). `true` ONLY for `Succeeded { side_effect_applied:
+    /// true }`; `false` for a side-effect-free `Succeeded` AND for every `Failed` (a `Failed` never
+    /// applied a durable change — see the variant doc). Centralizing it here keeps the fail-closed
+    /// contract in ONE place, so a future `Failed`-with-detail variant can't silently skip the partial
+    /// path by being matched only against `Succeeded`.
+    pub fn side_effect_applied(&self) -> bool {
+        matches!(
+            self,
+            ExecutionOutcome::Succeeded {
+                side_effect_applied: true,
+                ..
+            }
+        )
+    }
 }
 
 /// Runs (or previews) an action's side effect (§6.2/§6.3). The Gateway invokes `execute` BETWEEN the
@@ -81,10 +109,12 @@ impl ActionExecutor for StubExecutor {
 
     fn execute(&self, _req: &ActionRequest) -> ExecutionOutcome {
         // would-execute: no FS/git/network side effect — the lifecycle completes so the chokepoint +
-        // its events stay test-first.
+        // its events stay test-first. `side_effect_applied: false` — nothing durable changed, so a
+        // fail-closed terminal write rolls back cleanly (no partial-success record needed).
         ExecutionOutcome::Succeeded {
             changed_resources: vec![],
             detail: "stub: no side effect".to_string(),
+            side_effect_applied: false,
         }
     }
 
@@ -147,6 +177,9 @@ impl ActionExecutor for CatalogExecutor {
                 preview::namespace_label(entry.executor),
                 preview::owning_phase(entry.executor),
             ),
+            // 2.4 stubs apply NO durable side effect → false. Each phase's real adapter reports `true`
+            // after a durable git/FS/network/session change (so the §17 fail-closed path is exact).
+            side_effect_applied: false,
         }
     }
 

@@ -514,6 +514,7 @@ impl ActionExecutor for RecordingExecutor {
         ExecutionOutcome::Succeeded {
             changed_resources: req.resource_refs.clone(),
             detail: "recorded".to_string(),
+            side_effect_applied: false,
         }
     }
     fn preview(&self, req: &ActionRequest, generated_at: Timestamp) -> ActionPreview {
@@ -543,6 +544,7 @@ fn catalog_executor_dispatches_by_executor_kind() {
         ExecutionOutcome::Succeeded {
             detail,
             changed_resources,
+            ..
         } => (detail, changed_resources),
         ExecutionOutcome::Failed(e) => panic!("the git stub should succeed, got {e}"),
     };

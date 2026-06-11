@@ -539,6 +539,26 @@ impl GatewayTxn<'_> {
     /// WITHIN this gateway txn (fail-closed: a redaction/write failure aborts the whole txn → the
     /// caller's row writes roll back too).
     pub fn append(&self, i: &AppendIntent) -> Result<EventId, EventStoreError> {
+        // §14 fault-injection (2.4) — armed ONLY in the daemon's own test targets (the `fault-injection`
+        // feature; compiled out of release). When `TerminalEventWrite` is armed, the next terminal-event
+        // append fails with an injected write error, exercising the §17 fail-closed path deterministically.
+        #[cfg(feature = "fault-injection")]
+        {
+            use nexusops_shared::events::{
+                ActionFailed, ActionPartiallySucceeded, ActionSucceeded,
+            };
+            let is_terminal = i.event_type == ActionSucceeded::EVENT_TYPE
+                || i.event_type == ActionFailed::EVENT_TYPE
+                || i.event_type == ActionPartiallySucceeded::EVENT_TYPE;
+            if is_terminal && crate::fault::take_if(crate::fault::FaultPoint::TerminalEventWrite) {
+                // a synthetic SQLITE_IOERR — the realistic shape of an audit-write failure (disk I/O),
+                // wrapped exactly as a real write error so the fail-closed path is identical.
+                return Err(EventStoreError::Write(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+                    Some("injected §14 audit-write fault (TerminalEventWrite)".to_string()),
+                )));
+            }
+        }
         append_in_txn(self.tx, i, self.redactor, self.idgen, self.clock)
     }
 

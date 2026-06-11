@@ -5,7 +5,7 @@ use nexusops_shared::actions::{
     ActionPreview, ActionRequest, PolicyDecisionStatus, RequiredApprover,
 };
 use nexusops_shared::gateway_ids::ApprovalId;
-use nexusops_shared::ipc::ActionAck;
+use nexusops_shared::ipc::{ActionAck, DeltaKind, ProjectionDelta, ProjectionName};
 use nexusops_shared::status::{ActionRequest as ARStatus, Approval as ApprovalStatus};
 use nexusops_shared::time::Timestamp;
 
@@ -16,6 +16,20 @@ use crate::gateway::{approval, request, Gateway, GatewayError};
 /// the well-known approver for the 2.1b stub decisions (RequiredApprover::current_user). 2.2/the
 /// real auth surface resolves the actual `decided_by` from the IPC peer identity.
 const STUB_DECIDER: &str = "current_user";
+
+/// The `proj_approval_queue` subscribe-delta for a touched approval row (§6.1 subscribe, Q6): a
+/// "something changed" Upsert nudge keyed by `approval_id` (the subscriber re-reads the row via
+/// `get_projection`, consistent with the lag-resync policy). The Gateway pipeline accumulates these
+/// into a `&mut Vec`; the write-actor publishes them **after commit** (forbidden #3 — a reader
+/// never back-pressures the writer).
+pub(crate) fn approval_queue_delta(approval_id: &str) -> ProjectionDelta {
+    ProjectionDelta {
+        projection: ProjectionName::ApprovalQueue,
+        kind: DeltaKind::Upsert,
+        row: None,
+        id: Some(approval_id.to_string()),
+    }
+}
 
 impl Gateway {
     /// `submit_action` (§6.1/AG §8) — run the staged single-action pipeline to `awaiting_approval`.
@@ -31,6 +45,20 @@ impl Gateway {
         &self,
         store: &mut EventStore,
         req: ActionRequest,
+    ) -> Result<ActionAck, GatewayError> {
+        // public 2.1b signature, unchanged — collects+discards the subscribe-deltas. The write-actor
+        // path (`submit_action_collecting`) keeps them to publish post-commit (Q6).
+        self.submit_action_collecting(store, req, &mut Vec::new())
+    }
+
+    /// `submit_action` accumulating the `proj_approval_queue` subscribe-delta(s) it produces into
+    /// `deltas` (Q6) — the write-actor publishes them AFTER the txn commits. Same pipeline as
+    /// [`Gateway::submit_action`]; only the delta accumulation differs.
+    pub(crate) fn submit_action_collecting(
+        &self,
+        store: &mut EventStore,
+        req: ActionRequest,
+        deltas: &mut Vec<ProjectionDelta>,
     ) -> Result<ActionAck, GatewayError> {
         store.gateway_txn(|gtx| {
             let now = gtx.now_rfc3339();
@@ -71,6 +99,8 @@ impl Gateway {
                         &now,
                     )?;
                     gtx.append(&approval::approval_requested_intent(&req, &appr_id, &now)?)?;
+                    // the queue row was just folded in-band → nudge subscribers (publish post-commit).
+                    deltas.push(approval_queue_delta(appr_id.as_str()));
 
                     Ok(ActionAck {
                         action_request_id: act_id,
@@ -98,6 +128,19 @@ impl Gateway {
         &self,
         store: &mut EventStore,
         approval_id: &str,
+    ) -> Result<ActionAck, GatewayError> {
+        // public 2.1b signature, unchanged (collects+discards deltas — Q6).
+        self.approve_collecting(store, approval_id, &mut Vec::new())
+    }
+
+    /// `approve` accumulating the `proj_approval_queue` subscribe-delta(s) into `deltas` (Q6) — the
+    /// decision txn advances the approval row's status, so the write-actor nudges subscribers
+    /// post-commit. Same pipeline as [`Gateway::approve`].
+    pub(crate) fn approve_collecting(
+        &self,
+        store: &mut EventStore,
+        approval_id: &str,
+        deltas: &mut Vec<ProjectionDelta>,
     ) -> Result<ActionAck, GatewayError> {
         // --- decision txn: returns (the loaded action, queued?) — queued=false means expired ---
         let (req, queued) =
@@ -138,6 +181,7 @@ impl Gateway {
                         ARStatus::Expired,
                     )?;
                     gtx.append(&approval::expired_intent(&req, approval_id, &now)?)?;
+                    deltas.push(approval_queue_delta(approval_id)); // queue row → expired
                     return Ok((req, false));
                 }
 
@@ -162,6 +206,7 @@ impl Gateway {
                     &now,
                 )?)?;
                 request::update_status(gtx.tx(), &act_id, ARStatus::Approved, ARStatus::Queued)?;
+                deltas.push(approval_queue_delta(approval_id)); // queue row → approved
                 Ok((req, true))
             })?;
 
@@ -172,6 +217,13 @@ impl Gateway {
             });
         }
         // --- execute step (structurally separate; the executor runs OFF the txn) ---
+        // NOTE (Q6 corollary, →2.4): the decision txn above ALREADY committed the queue-row status
+        // change (awaiting_approval→approved) + pushed its delta into `deltas`. If `execute`'s
+        // completion txn then errors, `approve_collecting` returns Err, so the write-actor's
+        // `publish_after_commit` (result.is_ok() gate) SUPPRESSES that already-durable delta — the
+        // subscriber is briefly stale until its next reconnect/`get_projection` (the lag-resync
+        // policy covers it; the stub executor never fails, so it's unreached in 2.1c). 2.4 reconciles
+        // the same two-txn boundary for crash recovery; the missed-nudge folds in there.
         self.execute(store, &req)
     }
 
@@ -237,6 +289,18 @@ impl Gateway {
         approval_id: &str,
         reason: &str,
     ) -> Result<ActionAck, GatewayError> {
+        // public 2.1b signature, unchanged (collects+discards deltas — Q6).
+        self.deny_collecting(store, approval_id, reason, &mut Vec::new())
+    }
+
+    /// `deny` accumulating the `proj_approval_queue` subscribe-delta into `deltas` (Q6).
+    pub(crate) fn deny_collecting(
+        &self,
+        store: &mut EventStore,
+        approval_id: &str,
+        reason: &str,
+        deltas: &mut Vec<ProjectionDelta>,
+    ) -> Result<ActionAck, GatewayError> {
         store.gateway_txn(|gtx| -> Result<ActionAck, GatewayError> {
             let now = gtx.now_rfc3339();
             let appr = approval::load(gtx.tx(), approval_id)?;
@@ -264,6 +328,7 @@ impl Gateway {
                 ARStatus::Denied,
             )?;
             gtx.append(&approval::denied_intent(&req, approval_id, reason, &now)?)?;
+            deltas.push(approval_queue_delta(approval_id)); // queue row → denied
             Ok(ActionAck {
                 action_request_id: act_id,
                 status: ARStatus::Denied,

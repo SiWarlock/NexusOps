@@ -609,6 +609,130 @@ async fn test_append_publishes_delta_after_commit() {
     actor2.shutdown().await;
 }
 
+// ---- P2.1c L1 — a committed gateway approval publishes an ApprovalQueue delta -----------------
+
+/// a minimal §6.2 ActionRequest at risk `level` (the gateway delta-source input).
+fn sample_action_request(
+    risk: nexusops_shared::actions::RiskLevel,
+) -> nexusops_shared::actions::ActionRequest {
+    use nexusops_shared::actions::{ActionRequest, RequesterType};
+    use nexusops_shared::ids::ActionRequestId;
+    use nexusops_shared::status::ActionRequestStatus;
+    use nexusops_shared::time::Timestamp;
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id: None,
+        action_type: "git.create_worktree".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs: vec![],
+        inputs: serde_json::json!({ "branch": "feature/x" }),
+        risk_level: risk,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn test_gateway_approval_publishes_queue_delta() {
+    // spec(§6.1 subscribe / forbidden #3) — a COMMITTED submit_action publishes an ApprovalQueue
+    // Upsert delta (the approval row it opened) on the write-actor broadcast, publish-after-commit;
+    // a ROLLED-BACK submit (the §15 gate refuses) publishes NOTHING. Closes the 2.1b flag (b).
+    use nexusops_shared::actions::RiskLevel;
+
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+
+    // committed submit → an ApprovalQueue Upsert delta keyed by the appr_ approval_id (Q6).
+    let h = handle.clone();
+    let ack = tokio::task::spawn_blocking(move || {
+        h.submit_action_blocking(sample_action_request(RiskLevel::Level2))
+    })
+    .await
+    .unwrap()
+    .expect("write-actor reachable")
+    .expect("submit");
+    assert!(ack.action_request_id.starts_with("act_"));
+    let delta = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("a queue delta was published within 2s")
+        .expect("a committed gateway submit published a queue delta");
+    assert_eq!(delta.projection, ProjectionName::ApprovalQueue);
+    assert!(matches!(delta.kind, DeltaKind::Upsert));
+    let appr_id = delta
+        .id
+        .clone()
+        .expect("the delta is keyed by the approval_id");
+    assert!(
+        appr_id.starts_with("appr_"),
+        "keyed by the appr_ approval_id"
+    );
+
+    // a committed approve ALSO publishes a queue delta (the row status advances) — exercises the
+    // GatewayApprove → approve_collecting → publish_after_commit wiring, not just submit.
+    let h = handle.clone();
+    let appr = appr_id.clone();
+    tokio::task::spawn_blocking(move || h.approve_blocking(appr))
+        .await
+        .unwrap()
+        .expect("write-actor reachable")
+        .expect("approve");
+    let approve_delta = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("a queue delta was published within 2s")
+        .expect("a committed gateway approve published a queue delta");
+    assert_eq!(approve_delta.projection, ProjectionName::ApprovalQueue);
+    assert_eq!(
+        approve_delta.id.as_deref(),
+        Some(appr_id.as_str()),
+        "the approve delta is keyed by the same approval_id"
+    );
+    actor.shutdown().await;
+
+    // rolled-back submit (NeverRedacts refuses the §15 gate) → no delta published.
+    let (_d2, path2) = temp_db();
+    let store2 = EventStore::open(
+        &path2,
+        Box::new(UlidGen),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        Box::new(NeverRedacts),
+    )
+    .unwrap();
+    let actor2 = WriteActor::spawn(
+        store2,
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle2 = actor2.handle();
+    let mut rx2 = handle2.subscribe();
+    let h2 = handle2.clone();
+    let refused = tokio::task::spawn_blocking(move || {
+        h2.submit_action_blocking(sample_action_request(RiskLevel::Level3))
+    })
+    .await
+    .unwrap()
+    .expect("write-actor reachable");
+    assert!(refused.is_err(), "the §15 gate refused the gateway submit");
+    // precise: Empty (nothing sent) — NOT Lagged (a dropped delta would also be `is_err`).
+    assert!(
+        matches!(
+            rx2.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "a rolled-back gateway submit publishes no delta (Empty, not Lagged)"
+    );
+    actor2.shutdown().await;
+}
+
 #[tokio::test]
 async fn test_lagging_subscriber_never_stalls_writer() {
     // forbidden #3 — a reader must NEVER back-pressure the writer. A subscriber that never drains

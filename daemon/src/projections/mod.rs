@@ -12,6 +12,7 @@
 //! `apply_all` + the projector bodies, recovery in L3.
 
 mod activity;
+mod approval_queue;
 mod audit;
 mod graph;
 mod object_refs;
@@ -60,9 +61,11 @@ pub trait Projector {
 
 /// The registered projectors, in apply order. **`object_refs` is first**: the graph
 /// projector folds from the `object_refs` rows it writes (same txn). 1.2 ships the
-/// Phase-1-feedable bodies; the later-phase projectors (ApprovalQueue, Worktree,
-/// PullRequest, PlanProgress, AgentTeam, UsageLedger) get their bodies with the
+/// Phase-1-feedable bodies; the later-phase projectors get their bodies with the
 /// phase that emits their feeding events (their tables already exist, migration 3).
+/// **`approval_queue` (2.1c)** folds the Gateway's approval events (the Human Input
+/// Queue read model) — order-independent of the others (it sibling-reads the
+/// `action_requests`/`approvals` registry tables, not another projection).
 fn projectors() -> Vec<Box<dyn Projector>> {
     vec![
         Box::new(object_refs::ObjectRefsProjector),
@@ -70,6 +73,7 @@ fn projectors() -> Vec<Box<dyn Projector>> {
         Box::new(graph::GraphProjector),
         Box::new(audit::AuditProjector),
         Box::new(activity::ActivityProjector),
+        Box::new(approval_queue::ApprovalQueueProjector),
     ]
 }
 

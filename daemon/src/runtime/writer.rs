@@ -327,20 +327,33 @@ fn run_actor(
             }
             // 2.1b Action Gateway mutations run the pipeline against the single writable store
             // (each transition's row+event is its own atomic txn inside the method). The gateway's
-            // events fold into projections in-band; the live subscribe BROADCAST for gateway
-            // projections (proj_approval_queue) lands with that projector in 2.1c.
+            // events fold into projections in-band; 2.1c (Q6) accumulates the `proj_approval_queue`
+            // subscribe-deltas the pipeline touched + PUBLISHES them AFTER the txn commits (an
+            // Err/rolled-back op publishes nothing; broadcast::send never back-pressures the writer,
+            // forbidden #3) — mirroring the `Command::Append` publish-after-commit above.
             Command::GatewaySubmit { req, reply } => {
-                let _ = reply.send(gateway.submit_action(&mut store, *req));
+                let mut queue_deltas = Vec::new();
+                let result = gateway.submit_action_collecting(&mut store, *req, &mut queue_deltas);
+                publish_after_commit(&deltas, &result, queue_deltas);
+                let _ = reply.send(result);
             }
             Command::GatewayApprove { approval_id, reply } => {
-                let _ = reply.send(gateway.approve(&mut store, &approval_id));
+                let mut queue_deltas = Vec::new();
+                let result =
+                    gateway.approve_collecting(&mut store, &approval_id, &mut queue_deltas);
+                publish_after_commit(&deltas, &result, queue_deltas);
+                let _ = reply.send(result);
             }
             Command::GatewayDeny {
                 approval_id,
                 reason,
                 reply,
             } => {
-                let _ = reply.send(gateway.deny(&mut store, &approval_id, &reason));
+                let mut queue_deltas = Vec::new();
+                let result =
+                    gateway.deny_collecting(&mut store, &approval_id, &reason, &mut queue_deltas);
+                publish_after_commit(&deltas, &result, queue_deltas);
+                let _ = reply.send(result);
             }
             Command::GatewayPreview {
                 action_request_id,
@@ -349,6 +362,22 @@ fn run_actor(
                 let _ = reply.send(gateway.preview_action(&mut store, &action_request_id));
             }
             Command::Shutdown => break,
+        }
+    }
+}
+
+/// Publish the gateway pipeline's accumulated `proj_approval_queue` deltas — but ONLY if the
+/// operation committed (`result.is_ok()`); a rolled-back / errored op publishes nothing (Q6 /
+/// publish-after-commit). `broadcast::send` never blocks — a lagging subscriber is dropped, never
+/// back-pressures this writer (forbidden #3). `Err = no subscribers`, not an error here.
+fn publish_after_commit<T>(
+    deltas: &broadcast::Sender<ProjectionDelta>,
+    result: &Result<T, GatewayError>,
+    pending: Vec<ProjectionDelta>,
+) {
+    if result.is_ok() {
+        for delta in pending {
+            let _ = deltas.send(delta);
         }
     }
 }

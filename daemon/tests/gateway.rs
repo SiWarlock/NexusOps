@@ -755,3 +755,239 @@ fn test_submit_redacts_inputs_at_rest() {
         "a non-secret input survives unchanged (no-op): {inputs2}"
     );
 }
+
+// =============================================================================================
+// P2.1c L1 — the proj_approval_queue projector (Human Input Queue read model) + subscribe-delta.
+// The projector folds the Gateway's approval events into proj_approval_queue: status from the
+// EVENT TYPE, immutable fields (risk/requester/project/expires_at) sibling-read from the
+// action_requests/approvals rows (rebuild-safe — those never change post-submit). AG §8/§14.3.
+// =============================================================================================
+
+/// one proj_approval_queue row by approval_id: (status, risk_level, requester_type, requester_id,
+/// expires_at, sort_key) over a read-only connection. None if absent.
+#[allow(clippy::type_complexity)]
+fn queue_row(
+    path: &std::path::Path,
+    approval_id: &str,
+) -> Option<(String, i64, String, String, Option<String>, Option<String>)> {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row(
+        "SELECT status, risk_level, requester_type, requester_id, expires_at, sort_key \
+         FROM proj_approval_queue WHERE approval_id = ?1",
+        [approval_id],
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        },
+    )
+    .ok()
+}
+
+/// COUNT(*) of proj_approval_queue rows.
+fn queue_count(path: &std::path::Path) -> i64 {
+    count(path, "proj_approval_queue")
+}
+
+/// a stable fingerprint of the whole approval-queue surface (for rebuild-equivalence).
+fn queue_fingerprint(path: &std::path::Path) -> String {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    let mut stmt = conn
+        .prepare(
+            "SELECT approval_id, status, risk_level, sort_key FROM proj_approval_queue \
+             ORDER BY approval_id",
+        )
+        .unwrap();
+    let rows: Vec<String> = stmt
+        .query_map([], |r| {
+            Ok(format!(
+                "{}|{}|{}|{}",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    rows.join(",")
+}
+
+// ---- L1 RED #1 — fold a single-action approval into the open queue ---------------------------
+
+#[test]
+fn test_approval_queue_folds_single_action_approval() {
+    // spec(§7 / AG §8) — submit_action (ActionRequested + ActionApprovalRequested) folds ONE
+    // proj_approval_queue row at awaiting_approval; risk_level/requester_type/requester_id come
+    // from the action_requests row, expires_at from the approval (the in-band §7 fold).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    gw.submit_action(
+        &mut store,
+        sample_request("git.create_worktree", RiskLevel::Level2),
+    )
+    .expect("submit");
+
+    assert_eq!(
+        queue_count(&path),
+        1,
+        "one queue row for the single approval"
+    );
+    let appr = approval_id_of(&path);
+    let (status, risk, rtype, rid, _exp, sort_key) =
+        queue_row(&path, &appr).expect("a proj_approval_queue row");
+    assert_eq!(status, "awaiting_approval", "open at awaiting_approval");
+    assert_eq!(risk, 2, "risk_level sibling-read from action_requests");
+    assert_eq!(
+        rtype, "user",
+        "requester_type sibling-read from action_requests"
+    );
+    assert_eq!(
+        rid, "u_local",
+        "requester_id sibling-read from action_requests"
+    );
+    // sort_key = "{4-risk}_{requested_at}" — risk-2 → the "2_" rank prefix (not merely non-NULL).
+    assert!(
+        sort_key.as_deref().is_some_and(|k| k.starts_with("2_")),
+        "sort_key carries the 4-risk rank prefix (risk 2 → '2_'): {sort_key:?}"
+    );
+}
+
+// ---- L1 RED #2b — deny + expire advance the queue status (the resolution event types) --------
+
+#[test]
+fn test_approval_queue_folds_deny_and_expire() {
+    // spec(§5.1 Approval / AG §14.3) — the projector advances the row's status for EVERY
+    // resolution event type, derived from the event: ActionDenied→denied, ActionExpired→expired
+    // (sibling of the approve→approved path). Both rows stay for history.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+
+    // deny path
+    gw.submit_action(&mut store, sample_request("a", RiskLevel::Level3))
+        .expect("submit a");
+    let appr_a = approval_id_of(&path);
+    gw.deny(&mut store, &appr_a, "not allowed in MVP")
+        .expect("deny");
+    let (status_a, ..) = queue_row(&path, &appr_a).expect("queue row a");
+    assert_eq!(status_a, "denied", "ActionDenied → denied (event-derived)");
+
+    // expire path — a second action with a past expiry stamped on its approval, then approve→expire
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    gw.submit_action(&mut store2, sample_request("b", RiskLevel::Level1))
+        .expect("submit b");
+    let appr_b = approval_id_of(&path2);
+    {
+        let c = rusqlite::Connection::open(&path2).expect("fixture conn");
+        c.busy_timeout(std::time::Duration::from_secs(2)).unwrap();
+        c.execute(
+            "UPDATE approvals SET expires_at = '2020-01-01T00:00:00Z'",
+            [],
+        )
+        .expect("stamp past expiry");
+    }
+    gw.approve(&mut store2, &appr_b).expect("approve-expired");
+    let (status_b, ..) = queue_row(&path2, &appr_b).expect("queue row b");
+    assert_eq!(
+        status_b, "expired",
+        "ActionExpired → expired (event-derived)"
+    );
+}
+
+// ---- L1 RED #2 — resolve advances the status; the row leaves the OPEN queue (Q4) -------------
+
+#[test]
+fn test_approval_queue_status_advances_and_leaves_on_resolve() {
+    // spec(§5.1 Approval / AG §14.3) — approve advances the row's status; a resolved approval
+    // leaves the OPEN queue (status != awaiting_approval) but the row STAYS for history (Q4 —
+    // status-marked, not deleted). status is derived from the EVENT TYPE, never the registry value.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    gw.submit_action(
+        &mut store,
+        sample_request("git.create_worktree", RiskLevel::Level2),
+    )
+    .expect("submit");
+    let appr = approval_id_of(&path);
+    gw.approve(&mut store, &appr).expect("approve");
+
+    assert_eq!(queue_count(&path), 1, "the row stays for history (Q4)");
+    let (status, ..) = queue_row(&path, &appr).expect("queue row");
+    assert_eq!(
+        status, "approved",
+        "the resolved approval leaves the OPEN queue (status advanced from the event)"
+    );
+}
+
+// ---- L1 RED #3 — sort_key orders risk-DESC then age (oldest-first) ---------------------------
+
+#[test]
+fn test_approval_queue_sort_key_risk_desc_then_age() {
+    // spec(AG §8) — the Human Input Queue ranks risk-DESC then age-ASC; the projector populates
+    // sort_key so a single `ORDER BY sort_key` yields that order.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    gw.submit_action(&mut store, sample_request("low", RiskLevel::Level1))
+        .expect("submit low");
+    gw.submit_action(&mut store, sample_request("high", RiskLevel::Level3))
+        .expect("submit high");
+
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let ordered: Vec<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT risk_level FROM proj_approval_queue ORDER BY sort_key")
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    assert_eq!(
+        ordered,
+        vec![3, 1],
+        "ORDER BY sort_key yields risk-DESC (3 before 1)"
+    );
+}
+
+// ---- L1 RED #4 — rebuild reproduces identical proj_approval_queue state (§7.2) ---------------
+
+#[test]
+fn test_approval_queue_rebuild_equivalent() {
+    // spec(§7.2) — rebuild() reproduces identical proj_approval_queue state: status re-derived
+    // from the event stream, immutable fields re-read from the action_requests/approvals registry
+    // rows (which rebuild preserves — they are NOT in REBUILD_TABLES). Deterministic fold.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    gw.submit_action(&mut store, sample_request("a", RiskLevel::Level2))
+        .expect("s1");
+    let appr = approval_id_of(&path);
+    gw.approve(&mut store, &appr).expect("approve"); // resolved row stays, status=approved
+    gw.submit_action(&mut store, sample_request("b", RiskLevel::Level3))
+        .expect("s2"); // a second, still-open approval
+
+    let before = queue_fingerprint(&path);
+    // guard against a vacuous pass (empty == empty): there must be rows to compare.
+    assert_eq!(
+        queue_count(&path),
+        2,
+        "two approval rows folded (one resolved, one open) before the rebuild"
+    );
+    store.rebuild_projections().unwrap();
+    let after = queue_fingerprint(&path);
+    assert_eq!(
+        before, after,
+        "full rebuild reproduces the incremental approval-queue state"
+    );
+}

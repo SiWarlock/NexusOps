@@ -50,7 +50,10 @@ pub mod time;
 /// `PreviewClass`/`ExecutorKind`/`IdempotencyFormula` enums, `shared/src/catalog.rs`) + the
 /// `PolicyDecision` extension (`required_approvals`/`constraints`/`safer_alt`) — additive (the
 /// catalog-driven policy engine's authoritative per-type risk + the richer decision payload).
-pub const CONTRACT_VERSION: &str = "0.18.0";
+/// 0.19.0 (2.4 L1) adds the §17 failure-mode contract: the `ActionPartiallySucceeded` event (the
+/// side-effect-applied-but-terminal-event-unwritable record) + the structured `ActionError`
+/// taxonomy now carried on `ActionFailed` (replacing the 2.1b free-string `error`) — additive.
+pub const CONTRACT_VERSION: &str = "0.19.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

@@ -86,6 +86,80 @@
       ],
       "type": "object"
     },
+    "ActionError": {
+      "description": "The structured execute-error taxonomy carried on the [`crate::events::ActionFailed`] event\n(§7.1 / §17). 2.4 replaces the 2.1b free-string `ActionFailed{error: String}` with this typed\nset so the §17 failure modes are distinguishable in the audit log + drivable to the right\nsurface (a `fencing_conflict` → a hard-conflict card; a `stale_precondition` → re-approval). The\nL2-L5 behaviors each emit their specific variant; the pre-2.4 free-string failure maps to\n[`ActionError::ExecutorError`] (no information lost). **Internally tagged on `kind`** (the\n[`crate::ipc::ServerFrame`] `frame_type` precedent) so the §5.0 schema stays a single named\ndiscriminated union (LESSON §15 trap 2 — never a bare untagged variant union). snake_case `kind`.",
+      "oneOf": [
+        {
+          "description": "the audit-required terminal event could NOT be written (§15/§17 fail-closed): the mutation is\nnot acknowledged; the action stays `executing` for crash-reconcile (L2).",
+          "properties": {
+            "kind": {
+              "const": "audit_write_failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "the live source changed between preview and execute (§6.2 AG 16.4 / §7.2 re-read): the action\ndid not execute; the preview is regenerated + fresh approval required (L4).",
+          "properties": {
+            "kind": {
+              "const": "stale_precondition",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "a stale fencing token (NOT a live lease — expired OR superseded, §17 / 1.4 Option-B): the\nmutation is rejected, a hard-conflict surface raised, NEVER auto-resolved (L3).",
+          "properties": {
+            "kind": {
+              "const": "fencing_conflict",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "a crash-orphaned action whose true outcome cannot be re-derived (§17 daemon-crash-mid-action):\ndriven to a terminal state with a loud audit-integrity alert, never left dangling (L5).",
+          "properties": {
+            "kind": {
+              "const": "unknown_outcome",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "the executor (or its `validate`) failed — the catch-all for an executor-reported error; carries\nthe free `message` (the home the 2.1b `ActionFailed{error: String}` maps into).",
+          "properties": {
+            "kind": {
+              "const": "executor_error",
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ActionExpired": {
       "additionalProperties": false,
       "description": "`ActionExpired` payload (§6.2/§7.1; AG §17.1) — the approval lapsed past `expires_at` before a\ndecision (§17); the action is terminal, never executed. Carries the `approval_id`.",
@@ -101,14 +175,27 @@
     },
     "ActionFailed": {
       "additionalProperties": false,
-      "description": "`ActionFailed` payload (§6.2/§7.1; AG §17.1) — the executor failed (executing→failed). Carries\nthe failure `error` message (the structured ActionError taxonomy → 2.4).",
+      "description": "`ActionFailed` payload (§6.2/§7.1; AG §17.1) — the executor failed (executing→failed). Carries\nthe structured [`crate::actions::ActionError`] taxonomy (2.4 — replaced the 2.1b free-string `error`): the §17\nfailure modes (`audit_write_failed`/`stale_precondition`/`fencing_conflict`/`unknown_outcome`)\n+ `executor_error{message}` (the home the prior free string maps into).",
       "properties": {
         "error": {
-          "type": "string"
+          "$ref": "#/$defs/ActionError"
         }
       },
       "required": [
         "error"
+      ],
+      "type": "object"
+    },
+    "ActionPartiallySucceeded": {
+      "additionalProperties": false,
+      "description": "`ActionPartiallySucceeded` payload (§7.1; AG §17) — the §17 \"side effect APPLIED but its terminal\nevent could NOT be written\" record (executing→partially_succeeded). Emitted best-effort when a\nreal executor reported a side effect but the `ActionSucceeded` write failed (the fail-closed\naudit-write path, L2). Carries a redaction-safe **structural** `reason` ONLY — never row/payload\ncontent (§15; mirrors [`AuditIntegrityViolation`]). A loud, consumer-visible audit-integrity record.",
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
       ],
       "type": "object"
     },
@@ -1048,7 +1135,7 @@
       "type": "string"
     },
     "IpcErrorCode": {
-      "description": "The §6.4 structured wire error codes (closed set; reject-unknown). snake_case wire values.\n`protocol_error` (a bad-first-frame / handshake-required / malformed-frame violation, distinct\nfrom `unknown_method`) was added in 1.5 per the lead-ratified §6.4 gap resolution (Option B).",
+      "description": "The §6.4 structured wire error codes (closed set; reject-unknown). snake_case wire values.\n`protocol_error` (a bad-first-frame / handshake-required / malformed-frame violation, distinct\nfrom `unknown_method`) was added in 1.5 per the lead-ratified §6.4 gap resolution (Option B).\n`fencing_conflict` + `internal_error` were added in 2.4 L1 (lead-ruled Option A, away-authority):\nthe §17 failure modes need honest codes that drive the THREE distinct §11.5 safety cards with\nDIFFERENT resolution semantics — `fencing_conflict` → the **never-auto-resolved** hard-conflict\ncard (rule #6); `precondition_stale` → the **re-approvable** stale card; `internal_error` → the\n**fail-closed** integrity alert (`AuditWriteFailed`/`UnknownOutcome`). Collapsing them to\n`precondition_stale` would render a fencing conflict as re-approvable → break rule #6 at the UI.",
       "enum": [
         "version_skew",
         "frame_too_large",
@@ -1056,7 +1143,9 @@
         "unauthorized_peer",
         "policy_denied",
         "precondition_stale",
-        "protocol_error"
+        "fencing_conflict",
+        "protocol_error",
+        "internal_error"
       ],
       "type": "string"
     },
@@ -1769,11 +1858,17 @@
     "action_dependency": {
       "$ref": "#/$defs/ActionDependency"
     },
+    "action_error": {
+      "$ref": "#/$defs/ActionError"
+    },
     "action_expired": {
       "$ref": "#/$defs/ActionExpired"
     },
     "action_failed": {
       "$ref": "#/$defs/ActionFailed"
+    },
+    "action_partially_succeeded": {
+      "$ref": "#/$defs/ActionPartiallySucceeded"
     },
     "action_plan": {
       "$ref": "#/$defs/ActionPlan"
@@ -2073,6 +2168,8 @@
     "action_started",
     "action_succeeded",
     "action_failed",
+    "action_partially_succeeded",
+    "action_error",
     "action_ack",
     "plan_ack",
     "plan_step_ack",
@@ -2083,5 +2180,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.18.0"
+  "x-contract-version": "0.19.0"
 }

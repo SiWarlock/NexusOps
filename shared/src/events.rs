@@ -193,14 +193,32 @@ impl ActionSucceeded {
 }
 
 /// `ActionFailed` payload (§6.2/§7.1; AG §17.1) — the executor failed (executing→failed). Carries
-/// the failure `error` message (the structured ActionError taxonomy → 2.4).
+/// the structured [`crate::actions::ActionError`] taxonomy (2.4 — replaced the 2.1b free-string `error`): the §17
+/// failure modes (`audit_write_failed`/`stale_precondition`/`fencing_conflict`/`unknown_outcome`)
+/// + `executor_error{message}` (the home the prior free string maps into).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
 pub struct ActionFailed {
-    pub error: String,
+    pub error: crate::actions::ActionError,
 }
 
 impl ActionFailed {
     /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
     pub const EVENT_TYPE: &'static str = "ActionFailed";
+}
+
+/// `ActionPartiallySucceeded` payload (§7.1; AG §17) — the §17 "side effect APPLIED but its terminal
+/// event could NOT be written" record (executing→partially_succeeded). Emitted best-effort when a
+/// real executor reported a side effect but the `ActionSucceeded` write failed (the fail-closed
+/// audit-write path, L2). Carries a redaction-safe **structural** `reason` ONLY — never row/payload
+/// content (§15; mirrors [`AuditIntegrityViolation`]). A loud, consumer-visible audit-integrity record.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionPartiallySucceeded {
+    pub reason: String,
+}
+
+impl ActionPartiallySucceeded {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
+    pub const EVENT_TYPE: &'static str = "ActionPartiallySucceeded";
 }

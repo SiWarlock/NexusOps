@@ -2,8 +2,8 @@
 //! L3 adds `approve`/`deny`/`preview_action` + execution completion.
 
 use nexusops_shared::actions::{
-    ActionPlan, ActionPreview, ActionRequest, ApprovalMode, PolicyDecisionStatus, RequiredApprover,
-    RiskLevel,
+    ActionError, ActionPlan, ActionPreview, ActionRequest, ApprovalMode, PolicyDecisionStatus,
+    RequiredApprover, RiskLevel,
 };
 use nexusops_shared::catalog;
 use nexusops_shared::gateway_ids::ApprovalId;
@@ -738,7 +738,13 @@ impl Gateway {
                         ARStatus::Executing,
                         ARStatus::Failed,
                     )?;
-                    gtx.append(&request::failed_intent(req, &err, &now)?)?;
+                    // 2.4 L1: the executor's free-string failure is the ExecutorError variant of the
+                    // structured taxonomy (the §17-specific variants land at L2-L5). No info lost.
+                    gtx.append(&request::failed_intent(
+                        req,
+                        ActionError::ExecutorError { message: err },
+                        &now,
+                    )?)?;
                     Ok(ActionAck {
                         action_request_id: act_id.clone(),
                         status: ARStatus::Failed,

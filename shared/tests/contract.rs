@@ -481,7 +481,10 @@ fn test_schema_artifact_matches_rust() {
 fn test_ipc_contract_wire_values() {
     use nexusops_shared::ipc::{IpcErrorCode, ProjectionName};
 
-    // §6.4 structured error codes — snake_case, the closed ADR-004 set
+    // §6.4 structured error codes — snake_case. 2.4 L1 adds `fencing_conflict` + `internal_error`
+    // (lead-ruled Option A — the §17 failures need honest codes driving the THREE distinct §11.5
+    // safety cards: fencing_conflict→never-auto-resolved hard-conflict (rule #6) · precondition_stale
+    // →re-approvable · internal_error→fail-closed integrity; frozen here at 0.19.0, additive).
     check_values(
         IpcErrorCode::ALL,
         &[
@@ -491,7 +494,9 @@ fn test_ipc_contract_wire_values() {
             "unauthorized_peer",
             "policy_denied",
             "precondition_stale",
+            "fencing_conflict",
             "protocol_error",
+            "internal_error",
         ],
     );
     // §6.1 projection names — PascalCase (match the ui's pinned get_projection literals + the
@@ -717,8 +722,8 @@ fn test_contract_version_bumped_for_sensitive_output_redacted() {
     // 0.15.0 = the 2.1a action-contract freeze (§6.2 models + 9 enums + gateway IDs + Timestamp);
     // 0.16.0 = the 2.1b ActionExecution* event family + ActionAck; 0.17.0 = the 2.1c PlanAck
     // submit_action_plan wire type (O-3); 0.18.0 = the 2.2 ActionTypeCatalog + PolicyDecision
-    // extension — all additive (§5.0). (The canonical version pin is `test_contract_version_bumped_0_18_0`.)
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.18.0");
+    // extension — all additive (§5.0). (The canonical version pin is `test_contract_version_bumped_0_19_0`.)
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.19.0");
 }
 
 // ---- P2.1c L2 — the §6.1 PlanAck wire type (§2.5-seam snapshot, O-3) -----------------------
@@ -1499,5 +1504,189 @@ fn test_catalog_and_policy_decision_field_snapshot() {
 fn test_contract_version_bumped_0_18_0() {
     // 0.17.0 = the 2.1c PlanAck; 0.18.0 = the 2.2 ActionTypeCatalog (+ its enums) + the
     // PolicyDecision extension (required_approvals/constraints/safer_alt) — additive (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.18.0");
+    // (The CURRENT canonical version pin is `test_contract_version_bumped_0_19_0`.)
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.19.0");
+}
+
+// =====================================================================================
+// Phase 2.4 L1 — §17 failure-mode CONTRACT additions (freeze; CONTRACT 0.18.0 → 0.19.0):
+//   • a NEW `ActionPartiallySucceeded` event in the §7.1 ActionExecution* family
+//     (the §17 "side effect applied but the terminal event could not be written" record);
+//   • a structured `ActionError` taxonomy on `ActionFailed` (replacing the 2.1b
+//     `ActionFailed{error: String}`) — the typed execute-error set L2-L5 emit;
+//   • the §5.1 rollback `can_transition` edges (pinned daemon-side in tests/gateway.rs).
+// BINDING: ARCHITECTURE §7.1 (EventTypeRegistry) + §17 (failure-mode contract) + §5.1.
+// NO behavior — L2-L5 consume these. ActionError is internally-tagged on `kind` (the
+// `ServerFrame` precedent, §6.4) so the §5.0 3-way verify stays exact (LESSON §15 trap 2).
+// =====================================================================================
+
+// ---- 2.4 L1 RED #1 — the ActionPartiallySucceeded event payload (§17 side-effect-applied record) ----
+
+#[test]
+fn test_action_partially_succeeded_wire_contract() {
+    // spec(§7.1) — the §17 "side effect applied but the terminal event could not be written" record,
+    // added to the ActionExecution* family. Carries a redaction-safe STRUCTURAL `reason` only (never
+    // row/payload content, §15 — mirrors AuditIntegrityViolation); snake_case; round-trips;
+    // deny_unknown_fields; ONE EVENT_TYPE home (no new bare string-literal in the emit/projector dup set).
+    use nexusops_shared::events::ActionPartiallySucceeded;
+    let v = ActionPartiallySucceeded {
+        reason: "side effect applied; terminal ActionSucceeded event write failed".to_string(),
+    };
+    let j = serde_json::to_value(&v).unwrap();
+    assert!(j.get("reason").is_some(), "reason wire field");
+    assert_eq!(
+        serde_json::from_value::<ActionPartiallySucceeded>(j).unwrap(),
+        v,
+        "ActionPartiallySucceeded round-trips"
+    );
+    let rogue = serde_json::json!({ "reason": "x", "extra": true });
+    assert!(
+        serde_json::from_value::<ActionPartiallySucceeded>(rogue).is_err(),
+        "unknown field rejected (deny_unknown_fields, §5.0/§15)"
+    );
+    assert_eq!(
+        ActionPartiallySucceeded::EVENT_TYPE,
+        "ActionPartiallySucceeded"
+    );
+}
+
+// ---- 2.4 L1 RED #2 — the structured ActionError taxonomy (the §17 typed execute-error set) ----
+
+#[test]
+fn test_action_error_taxonomy_wire_contract() {
+    // spec(§7.1) — the typed execute-error taxonomy replacing the 2.1b `ActionFailed{error:String}`.
+    // Internally-tagged on `kind` (the ServerFrame precedent): 5 variants — 4 unit (audit_write_failed
+    // / stale_precondition / fencing_conflict / unknown_outcome) + executor_error carrying a free
+    // `message`. Each serializes to its `kind`, round-trips; an unknown kind fails closed (§15).
+    use nexusops_shared::actions::ActionError;
+    let cases: &[(ActionError, &str)] = &[
+        (ActionError::AuditWriteFailed, "audit_write_failed"),
+        (ActionError::StalePrecondition, "stale_precondition"),
+        (ActionError::FencingConflict, "fencing_conflict"),
+        (ActionError::UnknownOutcome, "unknown_outcome"),
+        (
+            ActionError::ExecutorError {
+                message: "boom".to_string(),
+            },
+            "executor_error",
+        ),
+    ];
+    for (variant, kind) in cases {
+        let j = serde_json::to_value(variant).unwrap();
+        assert_eq!(
+            j.get("kind").and_then(|k| k.as_str()),
+            Some(*kind),
+            "ActionError serializes its `kind` discriminant"
+        );
+        assert_eq!(
+            &serde_json::from_value::<ActionError>(j).unwrap(),
+            variant,
+            "ActionError round-trips"
+        );
+    }
+    // executor_error carries its free message alongside the discriminant
+    let ee = serde_json::to_value(&ActionError::ExecutorError {
+        message: "boom".to_string(),
+    })
+    .unwrap();
+    assert_eq!(ee.get("message").and_then(|m| m.as_str()), Some("boom"));
+    // an unknown discriminant fails closed (§15 reject-unknown)
+    assert!(
+        serde_json::from_value::<ActionError>(serde_json::json!({ "kind": "nope" })).is_err(),
+        "unknown ActionError kind rejected"
+    );
+    // the struct variant's required field is enforced: executor_error WITHOUT its message fails closed
+    // (a missing required field is not a silent default — §15 fail-closed parse).
+    assert!(
+        serde_json::from_value::<ActionError>(serde_json::json!({ "kind": "executor_error" }))
+            .is_err(),
+        "executor_error without its required message rejected"
+    );
+}
+
+// ---- 2.4 L1 RED #3 — ActionFailed now carries the structured ActionError (the contract change) ----
+
+#[test]
+fn test_action_failed_carries_structured_error() {
+    // spec(§7.1) — `ActionFailed.error` changed `String → ActionError` (the 2.4 typed taxonomy). The
+    // top-level field set stays {error}; each variant round-trips on the event payload. The 2.1b
+    // free-string failure maps to `ExecutorError{message}` (no information lost).
+    use nexusops_shared::actions::ActionError;
+    use nexusops_shared::events::ActionFailed;
+    let v = ActionFailed {
+        error: ActionError::FencingConflict,
+    };
+    let j = serde_json::to_value(&v).unwrap();
+    let exp: BTreeSet<String> = ["error"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        field_names(&v),
+        exp,
+        "ActionFailed top-level field set is {{error}}"
+    );
+    assert_eq!(
+        j["error"]["kind"].as_str(),
+        Some("fencing_conflict"),
+        "the structured error nests under `error`"
+    );
+    assert_eq!(
+        serde_json::from_value::<ActionFailed>(j).unwrap(),
+        v,
+        "ActionFailed round-trips a unit variant"
+    );
+    let ee = ActionFailed {
+        error: ActionError::ExecutorError {
+            message: "validate: missing required resource_ref".to_string(),
+        },
+    };
+    let je = serde_json::to_value(&ee).unwrap();
+    assert_eq!(
+        serde_json::from_value::<ActionFailed>(je).unwrap(),
+        ee,
+        "ActionFailed round-trips the executor_error variant (the 2.1b String home)"
+    );
+    let rogue = serde_json::json!({ "error": { "kind": "fencing_conflict" }, "extra": 1 });
+    assert!(
+        serde_json::from_value::<ActionFailed>(rogue).is_err(),
+        "unknown field rejected (deny_unknown_fields)"
+    );
+}
+
+// ---- 2.4 L1 RED #4 — the §2.5-seam field-name snapshot for the changed/new event family ----
+
+#[test]
+fn test_action_failure_family_field_snapshot() {
+    // spec(§7.1) — §2.5-seam freeze guard for the 2.4 contract additions: a field added/removed/
+    // renamed on ActionPartiallySucceeded / ActionFailed / ActionError fails this snapshot. The
+    // expected sets ARE the checked-in freeze.
+    use nexusops_shared::actions::ActionError;
+    use nexusops_shared::events::{ActionFailed, ActionPartiallySucceeded};
+    expect_fields(
+        &ActionPartiallySucceeded {
+            reason: "x".to_string(),
+        },
+        &["reason"],
+    );
+    expect_fields(
+        &ActionFailed {
+            error: ActionError::UnknownOutcome,
+        },
+        &["error"],
+    );
+    // the data-carrying variant's internally-tagged wire shape is {kind, message}; a unit variant {kind}.
+    expect_fields(
+        &ActionError::ExecutorError {
+            message: "x".to_string(),
+        },
+        &["kind", "message"],
+    );
+    expect_fields(&ActionError::AuditWriteFailed, &["kind"]);
+}
+
+// ---- 2.4 L1 RED #5 — CONTRACT_VERSION bumped to 0.19.0 (the additive event/taxonomy change) ----
+
+#[test]
+fn test_contract_version_bumped_0_19_0() {
+    // 0.18.0 = the 2.2 catalog + PolicyDecision extension; 0.19.0 = the 2.4 §17 contract additions
+    // (the ActionPartiallySucceeded event + the structured ActionError on ActionFailed) — additive (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.19.0");
 }

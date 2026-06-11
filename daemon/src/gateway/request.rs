@@ -12,7 +12,7 @@
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::de::DeserializeOwned;
 
-use nexusops_shared::actions::ActionRequest as ActionRequestModel;
+use nexusops_shared::actions::{ActionError, ActionRequest as ActionRequestModel};
 use nexusops_shared::events::{ActionFailed, ActionRequested, ActionStarted, ActionSucceeded};
 use nexusops_shared::ids::{ActionRequestId, ProjectId};
 use nexusops_shared::status::ActionRequest;
@@ -42,6 +42,10 @@ pub fn can_transition(from: ActionRequest, to: ActionRequest) -> bool {
             | (Approved, Queued | Cancelled)
             | (Queued, Executing | Cancelled)
             | (Executing, Succeeded | Failed | PartiallySucceeded)
+            // 2.4 — the §5.1 rollback edges: a settled outcome may be rolled back (the rollback seam;
+            // the default executor rollback fails closed → rollback_failed). NOT a backdoor to
+            // re-execute (no edge back to executing/queued). rolled_back/rollback_failed are sinks.
+            | (Succeeded | PartiallySucceeded, RolledBack | RollbackFailed)
     )
 }
 
@@ -319,16 +323,15 @@ pub(crate) fn succeeded_intent(
     ))
 }
 
-/// Build the `ActionFailed` AppendIntent (execution failed; the `error` message in the payload).
+/// Build the `ActionFailed` AppendIntent (execution failed; the structured [`ActionError`] in the
+/// payload — 2.4 typed taxonomy). The pre-2.4 free-string failure maps to `ExecutorError{message}`.
 pub(crate) fn failed_intent(
     ar: &ActionRequestModel,
-    error: &str,
+    error: ActionError,
     occurred_at: &str,
 ) -> Result<AppendIntent, GatewayError> {
-    let payload = serde_json::to_string(&ActionFailed {
-        error: error.to_string(),
-    })
-    .map_err(|e| GatewayError::Serialize(e.to_string()))?;
+    let payload = serde_json::to_string(&ActionFailed { error })
+        .map_err(|e| GatewayError::Serialize(e.to_string()))?;
     Ok(gateway_event_intent(
         ar,
         ActionFailed::EVENT_TYPE,

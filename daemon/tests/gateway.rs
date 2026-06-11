@@ -224,6 +224,52 @@ fn test_action_request_transition_guard_legal_and_illegal() {
     );
 }
 
+// ---- 2.4 L1 RED — the §5.1 rollback transition edges (succeeded/partially → rolled_back/rollback_failed) ----
+
+#[test]
+fn test_rollback_transition_edges() {
+    // spec(§5.1) — 2.4 adds the rollback edges to the R-9 guard: a settled outcome (succeeded OR
+    // partially_succeeded) may transition to rolled_back or rollback_failed (the rollback seam; the
+    // default executor rollback fails closed → rollback_failed). rolled_back/rollback_failed are TRUE
+    // sinks. Pre-2.4 succeeded had no outgoing edge — a rollback must NOT be a backdoor to re-execute.
+    use nexusopsd::gateway::request::can_transition as t;
+
+    // legal — the NEW rollback edges
+    for (from, to) in [
+        (AR::Succeeded, AR::RolledBack),
+        (AR::Succeeded, AR::RollbackFailed),
+        (AR::PartiallySucceeded, AR::RolledBack),
+        (AR::PartiallySucceeded, AR::RollbackFailed),
+    ] {
+        assert!(
+            t(from, to),
+            "rollback edge {from:?}→{to:?} must be legal (2.4)"
+        );
+    }
+    // rolled_back / rollback_failed are TRUE sinks — NO legal outgoing edge to ANY state (iterate the
+    // full machine so a future edit that accidentally opens an outgoing edge is caught, incl. backwards
+    // edges like RolledBack→Failed/Approved/AwaitingApproval that a 5-state spot-check would miss).
+    for from in [AR::RolledBack, AR::RollbackFailed] {
+        for &to in AR::ALL {
+            assert!(
+                !t(from, to),
+                "{from:?} is a TRUE sink: {from:?}→{to:?} must be rejected"
+            );
+        }
+    }
+    // a rollback is NOT a backdoor to re-execute: a settled outcome can't return to executing/queued
+    for (from, to) in [
+        (AR::Succeeded, AR::Executing),
+        (AR::Succeeded, AR::Queued),
+        (AR::PartiallySucceeded, AR::Executing),
+    ] {
+        assert!(
+            !t(from, to),
+            "rollback must not re-open execution: {from:?}→{to:?} rejected"
+        );
+    }
+}
+
 // ---- L1 RED #3 — Approval(10) transition guard (R-9) -----------------------------------------
 
 #[test]

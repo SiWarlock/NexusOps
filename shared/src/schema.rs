@@ -9,7 +9,7 @@
 use schemars::JsonSchema;
 
 use crate::actions::{
-    ActionDependency, ActionPlan, ActionPlanStep, ActionPreview,
+    ActionDependency, ActionError, ActionPlan, ActionPlanStep, ActionPreview,
     ActionRequest as ActionRequestModel, ActionResult, ActionResultStatus, ActorRefBody,
     Approval as ApprovalModel, ApprovalMode, ApprovalScope, EvidenceConfidence, EvidenceRef,
     EvidenceType, PolicyDecision, PolicyDecisionStatus, RequesterType, RequiredApprover,
@@ -20,8 +20,9 @@ use crate::catalog::{ActionTypeCatalogEntry, ExecutorKind, IdempotencyFormula, P
 use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility};
 use crate::events::{
     ActionApprovalRequested, ActionApproved, ActionDenied, ActionExpired, ActionFailed,
-    ActionRequested, ActionStarted, ActionSucceeded, AuditIntegrityViolation, DeviceRegistered,
-    LocalRunnerRegistered, SensitiveOutputRedacted, SessionStarted,
+    ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
+    AuditIntegrityViolation, DeviceRegistered, LocalRunnerRegistered, SensitiveOutputRedacted,
+    SessionStarted,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::ids::IdKind;
@@ -130,6 +131,10 @@ struct ContractBundle {
     action_started: ActionStarted,
     action_succeeded: ActionSucceeded,
     action_failed: ActionFailed,
+    // 2.4 L1 — the §17 failure-mode additions: the side-effect-applied-but-event-unwritable event +
+    // the structured ActionError taxonomy now carried on ActionFailed. Additive (CONTRACT 0.19.0).
+    action_partially_succeeded: ActionPartiallySucceeded,
+    action_error: ActionError,
     action_ack: ActionAck,
     // 2.1c — the §6.1 `submit_action_plan` result wire type (O-3 bundled plans). Additive.
     plan_ack: PlanAck,

@@ -11,7 +11,10 @@
 //!     ApprovalConstraint shapes are unpinned — not invented here).
 //!   - `ActionPreview` per-class previews (command/diff/api/session/workflow/rollback) → 2.3.
 //!   - `PolicyDecision.{required_approvals,constraints,safer_alt}` → 2.2 (the policy engine).
-//!   - `ActionResult.error` structured taxonomy → 2.4 (`Option<String>` message for now).
+//!   - `ActionResult.error`: the structured [`ActionError`] taxonomy now EXISTS (2.4 L1), but
+//!     `ActionResult` is a frozen-but-UNCONSUMED §6.2 type (nothing emits it yet) — so its
+//!     `error: Option<String>` aligns to `ActionError` when ActionResult is first EMITTED (with the
+//!     real executors / a later phase), NOT a 2.4 layer (the 2.4 taxonomy lives on `ActionFailed`).
 //!
 //! All deferrals are additive-later (a new optional field = an additive `CONTRACT_VERSION` bump,
 //! the `events.rs` accretion convention). Reject-unknown end-to-end via
@@ -391,4 +394,32 @@ pub struct ActionResult {
     pub emitted_events: Vec<EventId>,
     pub error: Option<String>,
     pub rollback_available: bool,
+}
+
+/// The structured execute-error taxonomy carried on the [`crate::events::ActionFailed`] event
+/// (§7.1 / §17). 2.4 replaces the 2.1b free-string `ActionFailed{error: String}` with this typed
+/// set so the §17 failure modes are distinguishable in the audit log + drivable to the right
+/// surface (a `fencing_conflict` → a hard-conflict card; a `stale_precondition` → re-approval). The
+/// L2-L5 behaviors each emit their specific variant; the pre-2.4 free-string failure maps to
+/// [`ActionError::ExecutorError`] (no information lost). **Internally tagged on `kind`** (the
+/// [`crate::ipc::ServerFrame`] `frame_type` precedent) so the §5.0 schema stays a single named
+/// discriminated union (LESSON §15 trap 2 — never a bare untagged variant union). snake_case `kind`.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ActionError {
+    /// the audit-required terminal event could NOT be written (§15/§17 fail-closed): the mutation is
+    /// not acknowledged; the action stays `executing` for crash-reconcile (L2).
+    AuditWriteFailed,
+    /// the live source changed between preview and execute (§6.2 AG 16.4 / §7.2 re-read): the action
+    /// did not execute; the preview is regenerated + fresh approval required (L4).
+    StalePrecondition,
+    /// a stale fencing token (NOT a live lease — expired OR superseded, §17 / 1.4 Option-B): the
+    /// mutation is rejected, a hard-conflict surface raised, NEVER auto-resolved (L3).
+    FencingConflict,
+    /// a crash-orphaned action whose true outcome cannot be re-derived (§17 daemon-crash-mid-action):
+    /// driven to a terminal state with a loud audit-integrity alert, never left dangling (L5).
+    UnknownOutcome,
+    /// the executor (or its `validate`) failed — the catch-all for an executor-reported error; carries
+    /// the free `message` (the home the 2.1b `ActionFailed{error: String}` maps into).
+    ExecutorError { message: String },
 }

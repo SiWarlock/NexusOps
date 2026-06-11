@@ -293,9 +293,13 @@ fn open_with(path: &std::path::Path, redactor: Box<dyn Redactor>) -> EventStore 
     .expect("open event store")
 }
 
-/// the staged-pipeline default: a stub-policy Gateway (require-approval for all, until 2.2).
+/// the staged-pipeline default: a stub-policy + stub-executor Gateway (require-approval for all
+/// until 2.2; no real side effect until 2.3).
 fn stub_gateway() -> Gateway {
-    Gateway::new(Box::new(nexusopsd::gateway::policy::StubPolicy))
+    Gateway::new(
+        Box::new(nexusopsd::gateway::policy::StubPolicy),
+        Box::new(nexusopsd::gateway::executor::StubExecutor),
+    )
 }
 
 fn sample_request(action_type: &str, risk: RiskLevel) -> ActionRequest {
@@ -507,5 +511,247 @@ fn test_action_requested_payload_redacted() {
     assert!(
         requested.redaction_engine_version.is_some(),
         "the redaction engine version is recorded (provenance)"
+    );
+}
+
+// =============================================================================================
+// L3 — approve/deny/preview + execution completion (via the StubExecutor) + CONTRACT 0.16.0.
+// The execute phase is a STRUCTURALLY-DISTINCT seam from approve (the executor runs BETWEEN the
+// ActionApproved txn and the ActionStarted/Succeeded txn) so 2.3's real executors move off-thread.
+// =============================================================================================
+
+/// the `approval_id` of the single approvals row, over a read-only connection.
+fn approval_id_of(path: &std::path::Path) -> String {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row("SELECT approval_id FROM approvals", [], |r| r.get(0))
+        .expect("an approvals row exists")
+}
+
+/// the set of `Action*` event types emitted, in seq order.
+fn action_event_types(store: &EventStore) -> Vec<String> {
+    store
+        .read_all()
+        .unwrap()
+        .iter()
+        .filter(|e| e.event_type.starts_with("Action"))
+        .map(|e| e.event_type.clone())
+        .collect()
+}
+
+// ---- L3 RED #8 — approve drives execution to succeeded -------------------------------------
+
+#[test]
+fn test_approve_drives_execute_to_succeeded() {
+    // spec(§6.1/AG8.8-8.11) — approve → queued→executing→succeeded via the StubExecutor; the
+    // ActionApproved + ActionStarted + ActionSucceeded events; the action ends `succeeded`.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    gw.submit_action(
+        &mut store,
+        sample_request("git.create_worktree", RiskLevel::Level2),
+    )
+    .expect("submit");
+    let appr = approval_id_of(&path);
+
+    let ack = gw.approve(&mut store, &appr).expect("approve");
+    assert_eq!(
+        ack.status,
+        ActionRequestStatus::Succeeded,
+        "action succeeded"
+    );
+    assert_eq!(action_status(&path), Some("succeeded".to_string()));
+    assert_eq!(approval_status(&path), Some("approved".to_string()));
+
+    let family = action_event_types(&store);
+    for ev in ["ActionApproved", "ActionStarted", "ActionSucceeded"] {
+        assert!(family.contains(&ev.to_string()), "{ev} emitted");
+    }
+    // the approval-decision events carry the approval_id envelope FK
+    let approved = store
+        .read_all()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.event_type == "ActionApproved")
+        .expect("ActionApproved");
+    assert!(
+        approved.approval_id.as_deref().is_some_and(|a| a == appr),
+        "ActionApproved carries the approval_id FK"
+    );
+}
+
+// ---- L3 RED #9 — deny is terminal; the executor is NOT invoked ------------------------------
+
+#[test]
+fn test_deny_with_reason_terminal() {
+    // spec(§6.1/AG8.8) — deny → ActionDenied, the action is terminal (`denied`), the executor is
+    // NEVER invoked (no ActionStarted/ActionSucceeded).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    gw.submit_action(
+        &mut store,
+        sample_request("github.create_pr", RiskLevel::Level3),
+    )
+    .expect("submit");
+    let appr = approval_id_of(&path);
+
+    let ack = gw
+        .deny(&mut store, &appr, "policy: not allowed in MVP")
+        .expect("deny");
+    assert_eq!(ack.status, ActionRequestStatus::Denied);
+    assert_eq!(action_status(&path), Some("denied".to_string()));
+    assert_eq!(approval_status(&path), Some("denied".to_string()));
+
+    let family = action_event_types(&store);
+    assert!(family.contains(&"ActionDenied".to_string()), "ActionDenied");
+    for forbidden in ["ActionStarted", "ActionSucceeded"] {
+        assert!(
+            !family.contains(&forbidden.to_string()),
+            "deny must NOT execute — {forbidden} forbidden"
+        );
+    }
+}
+
+// ---- L3 RED #10 — an expired approval is not executed ---------------------------------------
+
+#[test]
+fn test_expired_approval_not_executed() {
+    // spec(§17/AG8.8) — approving an approval past its expires_at → ActionExpired; the executor is
+    // NEVER invoked. The fixed clock (store-open time) is after the (test-set) past expiry.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    gw.submit_action(
+        &mut store,
+        sample_request("project.rescan", RiskLevel::Level1),
+    )
+    .expect("submit");
+    // test fixture: stamp a PAST expiry on the approval (a denied/expired path needs an expiry; the
+    // stub submit opens an open-ended approval). A throwaway writable conn — fixture-only setup.
+    {
+        let c = rusqlite::Connection::open(&path).expect("fixture conn");
+        c.busy_timeout(std::time::Duration::from_secs(2)).unwrap();
+        c.execute(
+            "UPDATE approvals SET expires_at = '2020-01-01T00:00:00Z'",
+            [],
+        )
+        .expect("stamp past expiry");
+    }
+    let appr = approval_id_of(&path);
+
+    let ack = gw.approve(&mut store, &appr).expect("approve-expired");
+    assert_eq!(ack.status, ActionRequestStatus::Expired, "action expired");
+    assert_eq!(action_status(&path), Some("expired".to_string()));
+    assert_eq!(approval_status(&path), Some("expired".to_string()));
+
+    let family = action_event_types(&store);
+    assert!(
+        family.contains(&"ActionExpired".to_string()),
+        "ActionExpired"
+    );
+    for forbidden in ["ActionStarted", "ActionSucceeded"] {
+        assert!(
+            !family.contains(&forbidden.to_string()),
+            "an expired approval must NOT execute — {forbidden} forbidden"
+        );
+    }
+}
+
+// ---- L3 RED #11 — preview_action returns a stub preview envelope ----------------------------
+
+#[test]
+fn test_preview_action_returns_stub_preview() {
+    // spec(§6.1/§6.2) — preview_action returns an ActionPreview envelope (stub; the 6 typed
+    // per-class previews → 2.3). It references the action + carries a summary, no cannot_preview.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    let ack = gw
+        .submit_action(&mut store, sample_request("brain.ask", RiskLevel::Level0))
+        .expect("submit");
+
+    let preview = gw
+        .preview_action(&mut store, &ack.action_request_id)
+        .expect("preview");
+    assert_eq!(
+        preview.action_request_id.as_str(),
+        ack.action_request_id,
+        "preview references the action"
+    );
+    assert!(
+        !preview.summary.is_empty(),
+        "the stub preview has a summary"
+    );
+    assert!(
+        preview.cannot_preview_reason.is_none(),
+        "the stub can preview"
+    );
+}
+
+// ---- L3 — §15/rule-#4: inputs are redacted at rest in the registry row ----------------------
+
+#[test]
+fn test_submit_redacts_inputs_at_rest() {
+    // spec(§15 / rule-#4) — the open `inputs` blob comes from UNTRUSTED proposers; the Gateway runs
+    // the SAME §15 Redactor over it before the action_requests row persists, so a secret cannot
+    // land unredacted at rest. A normal (non-secret) input is a no-op (the redactor masks in place).
+    // Uses the real PrefixRedactor (the `open` helper) — the masking path, not the test stub.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+
+    // a 40-char high-entropy KEY=value secret in BOTH the open inputs blob AND a resource_ref uri
+    // (e.g. a token in a git-remote URL) — the §15 row-redaction gate covers every caller-supplied
+    // registry-row payload column (inputs_json + resource_refs_json), not just inputs.
+    let secret = "Zx9Kq2Lm7Wp4Rn1Vc6Bt3Hy8Fd5Gj0Aa2Ss4Dd";
+    let ref_secret = "Pq8Wm3Nx7Kc2Vb5Rt9Hy4Fd6Gj1Bb3Ss5Dd7Aa";
+    let mut req = sample_request("brain.send_raw_transcript_to_cloud", RiskLevel::Level4);
+    req.inputs = serde_json::json!({ "env": format!("API_SECRET={secret}") });
+    req.resource_refs = vec![nexusops_shared::actions::ResourceRef {
+        resource_type: nexusops_shared::actions::ResourceType::Repo,
+        id: "repo_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        uri: Some(format!("https://github.com/x/y?TOKEN={ref_secret}")),
+    }];
+    gw.submit_action(&mut store, req).expect("submit");
+
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let (inputs_json, resource_refs_json): (String, String) = conn
+        .query_row(
+            "SELECT inputs_json, resource_refs_json FROM action_requests",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(
+        !inputs_json.contains(secret),
+        "the inputs secret must be masked at rest: {inputs_json}"
+    );
+    assert!(
+        inputs_json.contains("[REDACTED]"),
+        "inputs masked in place: {inputs_json}"
+    );
+    assert!(
+        !resource_refs_json.contains(ref_secret),
+        "the resource_ref uri secret must be masked at rest: {resource_refs_json}"
+    );
+    assert!(
+        resource_refs_json.contains("[REDACTED]"),
+        "resource_refs masked in place: {resource_refs_json}"
+    );
+
+    // a non-secret input is a no-op — the redactor never corrupts a legitimate keychain-ref/value
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    let mut req2 = sample_request("git.create_worktree", RiskLevel::Level2);
+    req2.inputs = serde_json::json!({ "branch": "feature/x", "base": "main" });
+    gw.submit_action(&mut store2, req2).expect("submit2");
+    let conn2 = nexusopsd::eventstore::open_read_only(&path2).unwrap();
+    let inputs2: String = conn2
+        .query_row("SELECT inputs_json FROM action_requests", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        inputs2.contains("feature/x") && inputs2.contains("main"),
+        "a non-secret input survives unchanged (no-op): {inputs2}"
     );
 }

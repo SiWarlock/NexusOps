@@ -104,6 +104,15 @@ impl Redactor for NeverRedacts {
     }
 }
 
+/// a 2.1b stub Action Gateway (require-approval-for-all policy + no-side-effect executor) for the
+/// write-actor in runtime tests.
+fn stub_gateway() -> nexusopsd::gateway::Gateway {
+    nexusopsd::gateway::Gateway::new(
+        Box::new(nexusopsd::gateway::policy::StubPolicy),
+        Box::new(nexusopsd::gateway::executor::StubExecutor),
+    )
+}
+
 #[tokio::test]
 async fn test_write_actor_is_sole_writer() {
     // forbidden #3 / LESSON §3: ALL THREE mutators (append, drain_once, reap_leases) route through
@@ -113,6 +122,7 @@ async fn test_write_actor_is_sole_writer() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
 
@@ -159,6 +169,7 @@ async fn test_graceful_shutdown_stops_loops_clean() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
     handle
@@ -186,6 +197,7 @@ async fn test_bounded_drain_pass_respects_limit() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
 
@@ -219,6 +231,7 @@ async fn test_drain_loop_survives_a_failed_pass() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
     actor.shutdown().await; // now every handle.drain_once → Err(ActorGone)
@@ -249,6 +262,7 @@ async fn test_reaper_loop_survives_a_failed_pass() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
     actor.shutdown().await; // every handle.reap_leases → Err(ActorGone)
@@ -284,7 +298,11 @@ async fn test_reaper_loop_invokes_reap_once() {
         .unwrap();
 
     // the actor's clock is an hour later → the lease is expired from the reaper's view.
-    let actor = WriteActor::spawn(store, Box::new(FixedClock::new("2026-06-08T01:00:00Z")));
+    let actor = WriteActor::spawn(
+        store,
+        Box::new(FixedClock::new("2026-06-08T01:00:00Z")),
+        stub_gateway(),
+    );
     let handle = actor.handle();
 
     let (sd_tx, sd_rx) = watch::channel(false);
@@ -397,6 +415,7 @@ async fn test_foreign_peer_rejected_in_accept_path() {
         wrong_daemon_uid,
         8,
         no_deltas(),
+        nexusopsd::runtime::WriteHandle::disconnected(),
         sd_rx,
     );
 
@@ -424,7 +443,15 @@ async fn test_connection_cap_enforced() {
     let listener = bind(&sock).unwrap();
     let (sd_tx, sd_rx) = watch::channel(false);
     let uid = current_euid();
-    let accept = spawn_accept_loop(listener, path.clone(), uid, 1, no_deltas(), sd_rx); // cap = 1
+    let accept = spawn_accept_loop(
+        listener,
+        path.clone(),
+        uid,
+        1,
+        no_deltas(),
+        nexusopsd::runtime::WriteHandle::disconnected(),
+        sd_rx,
+    ); // cap = 1
 
     let sock_a = sock.clone();
     // A handshakes + keeps the connection open → holds the single permit (acquired before its ack).
@@ -458,7 +485,15 @@ async fn test_connection_permit_released_on_close() {
     let listener = bind(&sock).unwrap();
     let (sd_tx, sd_rx) = watch::channel(false);
     let uid = current_euid();
-    let accept = spawn_accept_loop(listener, path.clone(), uid, 1, no_deltas(), sd_rx); // cap = 1
+    let accept = spawn_accept_loop(
+        listener,
+        path.clone(),
+        uid,
+        1,
+        no_deltas(),
+        nexusopsd::runtime::WriteHandle::disconnected(),
+        sd_rx,
+    ); // cap = 1
 
     let sock_a = sock.clone();
     let _resp = tokio::task::spawn_blocking(move || {
@@ -493,7 +528,15 @@ async fn test_read_projection_over_real_socket() {
     let listener = bind(&sock).unwrap();
     let (sd_tx, sd_rx) = watch::channel(false);
     let uid = current_euid();
-    let accept = spawn_accept_loop(listener, path.clone(), uid, 8, no_deltas(), sd_rx);
+    let accept = spawn_accept_loop(
+        listener,
+        path.clone(),
+        uid,
+        8,
+        no_deltas(),
+        nexusopsd::runtime::WriteHandle::disconnected(),
+        sd_rx,
+    );
 
     let sock2 = sock.clone();
     let resp =
@@ -520,6 +563,7 @@ async fn test_append_publishes_delta_after_commit() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
     let mut rx = handle.subscribe();
@@ -547,7 +591,11 @@ async fn test_append_publishes_delta_after_commit() {
         Box::new(NeverRedacts),
     )
     .unwrap();
-    let actor2 = WriteActor::spawn(store2, Box::new(FixedClock::new("2026-06-08T00:00:00Z")));
+    let actor2 = WriteActor::spawn(
+        store2,
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
     let handle2 = actor2.handle();
     let mut rx2 = handle2.subscribe();
     let refused = handle2
@@ -572,6 +620,7 @@ async fn test_lagging_subscriber_never_stalls_writer() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
     let mut rx = handle.subscribe(); // a subscriber that NEVER drains (lags)

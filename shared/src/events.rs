@@ -125,3 +125,82 @@ impl ActionApprovalRequested {
     /// The EventTypeRegistry name — ONE home (the Gateway emit path + the approval-queue projector).
     pub const EVENT_TYPE: &'static str = "ActionApprovalRequested";
 }
+
+/// `ActionApproved` payload (§6.2/§7.1; AG §17.1) — a human/policy approved the action (2.1b L3).
+/// Identity (`action_request_id`/`approval_id`) on the envelope; the payload echoes `approval_id` +
+/// the optional `decided_by` (the approver, when known).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionApproved {
+    pub approval_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+}
+
+impl ActionApproved {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit/queue projectors).
+    pub const EVENT_TYPE: &'static str = "ActionApproved";
+}
+
+/// `ActionDenied` payload (§6.2/§7.1; AG §17.1) — the action was denied (terminal). Carries the
+/// `approval_id` + the denial `reason` (the audit record of WHY).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionDenied {
+    pub approval_id: String,
+    pub reason: String,
+}
+
+impl ActionDenied {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
+    pub const EVENT_TYPE: &'static str = "ActionDenied";
+}
+
+/// `ActionExpired` payload (§6.2/§7.1; AG §17.1) — the approval lapsed past `expires_at` before a
+/// decision (§17); the action is terminal, never executed. Carries the `approval_id`.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionExpired {
+    pub approval_id: String,
+}
+
+impl ActionExpired {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
+    pub const EVENT_TYPE: &'static str = "ActionExpired";
+}
+
+/// `ActionStarted` payload (§6.2/§7.1; AG §17.1) — the executor began running the approved action
+/// (queued→executing). Identity on the envelope; no delta beyond the event itself.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionStarted {}
+
+impl ActionStarted {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
+    pub const EVENT_TYPE: &'static str = "ActionStarted";
+}
+
+/// `ActionSucceeded` payload (§6.2/§7.1; AG §17.1) — the executor completed the action successfully
+/// (executing→succeeded). Identity on the envelope; the created/changed resources land in the
+/// `ActionResult` surface (2.3). No payload delta in 2.1b.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionSucceeded {}
+
+impl ActionSucceeded {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
+    pub const EVENT_TYPE: &'static str = "ActionSucceeded";
+}
+
+/// `ActionFailed` payload (§6.2/§7.1; AG §17.1) — the executor failed (executing→failed). Carries
+/// the failure `error` message (the structured ActionError taxonomy → 2.4).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionFailed {
+    pub error: String,
+}
+
+impl ActionFailed {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
+    pub const EVENT_TYPE: &'static str = "ActionFailed";
+}

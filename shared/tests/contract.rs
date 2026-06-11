@@ -714,9 +714,9 @@ fn test_sensitive_output_redacted_wire_contract() {
 
 #[test]
 fn test_contract_version_bumped_for_sensitive_output_redacted() {
-    // re-pointed at the 2.1a action-contract freeze (0.14.0 → 0.15.0): the §6.2 action models +
-    // 9 enums + gateway IDs + Timestamp accrete the contract surface → minor additive bump (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.15.0");
+    // 0.15.0 = the 2.1a action-contract freeze (§6.2 models + 9 enums + gateway IDs + Timestamp);
+    // 0.16.0 = the 2.1b ActionExecution* event family + ActionAck — additive (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.16.0");
 }
 
 // =====================================================================================

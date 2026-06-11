@@ -38,7 +38,11 @@ pub mod time;
 /// ResourceType/EvidenceType/EvidenceConfidence) + the non-cross-product gateway IDs
 /// (ApprovalId/ActionPlanId, off GatewayObjectKind) + the Timestamp newtype — additive, no
 /// frozen type reshaped. Pure contract freeze; the Gateway pipeline/rows/events are 2.1b.
-pub const CONTRACT_VERSION: &str = "0.15.0";
+/// 0.16.0 (2.1b) adds the Gateway `ActionExecution*` EventTypeRegistry payloads (ActionRequested,
+/// ActionApprovalRequested, ActionApproved, ActionDenied, ActionExpired, ActionStarted,
+/// ActionSucceeded, ActionFailed) + the §6.1 `ActionAck` submit-result wire type — additive (the
+/// chokepoint's authoritative event family + the ui/Brain intent-seam ack).
+pub const CONTRACT_VERSION: &str = "0.16.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

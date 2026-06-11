@@ -122,7 +122,14 @@ fn test_unauthorized_peer_disconnects_unserved() {
     let daemon_uid = 1000u32;
     let (_d, path) = temp_db();
 
-    let outcome = serve_connection(server, daemon_uid + 1, daemon_uid, &path, no_deltas());
+    let outcome = serve_connection(
+        server,
+        daemon_uid + 1,
+        daemon_uid,
+        &path,
+        no_deltas(),
+        &nexusopsd::runtime::WriteHandle::disconnected(),
+    );
     assert!(
         matches!(outcome, Err(IpcError::UnauthorizedPeer { .. })),
         "a foreign-uid connection is rejected by the handler"
@@ -180,8 +187,15 @@ fn test_handshake_hello_ack() {
 
     // same-uid auth passes → in-range handshake → HelloAck written, handler returns Ok
     let (_d, path) = temp_db();
-    serve_connection(server, uid, uid, &path, no_deltas())
-        .expect("authorized in-range handshake succeeds");
+    serve_connection(
+        server,
+        uid,
+        uid,
+        &path,
+        no_deltas(),
+        &nexusopsd::runtime::WriteHandle::disconnected(),
+    )
+    .expect("authorized in-range handshake succeeds");
 
     let ack: HelloAck = recv(&client);
     assert_eq!(
@@ -213,7 +227,14 @@ fn test_version_skew_disconnects() {
 
     // out-of-range → the handler writes a VersionSkewError and returns Err (disconnect)
     let (_d, path) = temp_db();
-    let outcome = serve_connection(server, uid, uid, &path, no_deltas());
+    let outcome = serve_connection(
+        server,
+        uid,
+        uid,
+        &path,
+        no_deltas(),
+        &nexusopsd::runtime::WriteHandle::disconnected(),
+    );
     assert!(
         matches!(outcome, Err(IpcError::VersionSkew { .. })),
         "an out-of-range protocol_version is a version-skew failure"
@@ -250,7 +271,14 @@ fn test_method_before_handshake_rejected() {
     );
 
     let (_d, path) = temp_db();
-    let outcome = serve_connection(server, uid, uid, &path, no_deltas());
+    let outcome = serve_connection(
+        server,
+        uid,
+        uid,
+        &path,
+        no_deltas(),
+        &nexusopsd::runtime::WriteHandle::disconnected(),
+    );
     assert!(
         matches!(outcome, Err(IpcError::Protocol(_))),
         "a method frame before the handshake is a protocol violation"
@@ -376,7 +404,15 @@ fn test_get_projection_returns_rows() {
     // serve over the seeded db (read-only WAL); the client gets the proj_session row(s)
     let responses = std::thread::scope(|s| {
         let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
-        serve_connection(server, uid, uid, &path, no_deltas()).expect("serve get_projection");
+        serve_connection(
+            server,
+            uid,
+            uid,
+            &path,
+            no_deltas(),
+            &nexusopsd::runtime::WriteHandle::disconnected(),
+        )
+        .expect("serve get_projection");
         h.join().unwrap()
     });
 
@@ -391,6 +427,87 @@ fn test_get_projection_returns_rows() {
         Some("active"),
         "the proj_session row carries the folded status"
     );
+}
+
+// ---- §14 reachability — submit_action reaches the Gateway through the REAL IPC dispatch -------
+
+/// a minimal §6.2 ActionRequest at Submitted (for the IPC reachability test).
+fn sample_action_request() -> nexusops_shared::actions::ActionRequest {
+    use nexusops_shared::actions::{ActionRequest, RequesterType, RiskLevel};
+    use nexusops_shared::ids::ActionRequestId;
+    use nexusops_shared::status::ActionRequestStatus;
+    use nexusops_shared::time::Timestamp;
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id: None,
+        action_type: "git.create_worktree".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs: vec![],
+        inputs: serde_json::json!({ "branch": "feature/x" }),
+        risk_level: RiskLevel::Level2,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse("2026-06-11T00:00:00Z").unwrap(),
+    }
+}
+
+#[test]
+fn test_submit_action_reachable_through_ipc_dispatch() {
+    // §14 / Step-7.5 — the mutation arm is wired to the REAL `methods::dispatch` path (IPC →
+    // write-actor → Gateway pipeline), NOT only the in-process Gateway calls. A LIVE write-actor
+    // (vs `disconnected()`) is required — the action only persists if the dispatch reaches it.
+    use nexusopsd::clock::FixedClock;
+    use nexusopsd::eventstore::{EventStore, PrefixRedactor};
+    use nexusopsd::gateway::{executor::StubExecutor, policy::StubPolicy, Gateway};
+    use nexusopsd::runtime::WriteActor;
+
+    let (_d, path) = temp_db();
+    let store = EventStore::open(
+        &path,
+        Box::new(nexusopsd::idgen::UlidGen),
+        Box::new(FixedClock::new("2026-06-11T00:00:00Z")),
+        Box::new(PrefixRedactor),
+    )
+    .unwrap();
+    let gateway = Gateway::new(Box::new(StubPolicy), Box::new(StubExecutor));
+    let actor = WriteActor::spawn(
+        store,
+        Box::new(FixedClock::new("2026-06-11T00:00:00Z")),
+        gateway,
+    );
+    let handle = actor.handle();
+
+    let (server, client) = UnixStream::pair().unwrap();
+    let uid = 1000u32;
+    let req = RpcRequest {
+        method: "submit_action".to_string(),
+        params: serde_json::to_value(sample_action_request()).unwrap(),
+        id: 7,
+    };
+    let responses = std::thread::scope(|s| {
+        let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
+        serve_connection(server, uid, uid, &path, no_deltas(), &handle).expect("serve submit");
+        h.join().unwrap()
+    });
+
+    assert_eq!(responses.len(), 1);
+    let resp = &responses[0];
+    assert!(resp.error.is_none(), "submit succeeded: {:?}", resp.error);
+    let ack = resp.result.as_ref().expect("an ActionAck result");
+    assert_eq!(
+        ack.get("status").and_then(|v| v.as_str()),
+        Some("awaiting_approval"),
+        "the ActionAck status (stub policy → awaiting approval)"
+    );
+    // the durable row persisted via the dispatch→actor→Gateway path — the reachability proof.
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM action_requests", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1, "the action persisted via the REAL IPC dispatch path");
 }
 
 // ---- Test 9 — an unfed projection returns its empty table, not an error ------
@@ -413,7 +530,15 @@ fn test_get_projection_unfed_is_empty_not_error() {
     };
     let responses = std::thread::scope(|s| {
         let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
-        serve_connection(server, uid, uid, &path, no_deltas()).expect("serve unfed projection");
+        serve_connection(
+            server,
+            uid,
+            uid,
+            &path,
+            no_deltas(),
+            &nexusopsd::runtime::WriteHandle::disconnected(),
+        )
+        .expect("serve unfed projection");
         h.join().unwrap()
     });
 
@@ -450,8 +575,15 @@ fn test_unknown_method_and_get_capabilities() {
     ];
     let responses = std::thread::scope(|s| {
         let h = s.spawn(|| client_session(&client, &reqs));
-        serve_connection(server, uid, uid, &path, no_deltas())
-            .expect("serve capabilities + unknown");
+        serve_connection(
+            server,
+            uid,
+            uid,
+            &path,
+            no_deltas(),
+            &nexusopsd::runtime::WriteHandle::disconnected(),
+        )
+        .expect("serve capabilities + unknown");
         h.join().unwrap()
     });
 
@@ -491,7 +623,15 @@ fn test_get_projection_scope_not_yet_enforced() {
     };
     let responses = std::thread::scope(|s| {
         let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
-        serve_connection(server, uid, uid, &path, no_deltas()).expect("serve scoped projection");
+        serve_connection(
+            server,
+            uid,
+            uid,
+            &path,
+            no_deltas(),
+            &nexusopsd::runtime::WriteHandle::disconnected(),
+        )
+        .expect("serve scoped projection");
         h.join().unwrap()
     });
 
@@ -600,7 +740,15 @@ fn test_subscribe_method_recognized() {
     };
     let responses = std::thread::scope(|s| {
         let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
-        serve_connection(server, uid, uid, &path, no_deltas()).expect("serve subscribe ack");
+        serve_connection(
+            server,
+            uid,
+            uid,
+            &path,
+            no_deltas(),
+            &nexusopsd::runtime::WriteHandle::disconnected(),
+        )
+        .expect("serve subscribe ack");
         h.join().unwrap()
     });
 
@@ -687,7 +835,14 @@ fn test_subscriber_receives_delta_frame() {
     let push = std::thread::scope(|s| {
         let deltas_serve = deltas.clone();
         s.spawn(move || {
-            let _ = serve_connection(server, uid, uid, &path, deltas_serve);
+            let _ = serve_connection(
+                server,
+                uid,
+                uid,
+                &path,
+                deltas_serve,
+                &nexusopsd::runtime::WriteHandle::disconnected(),
+            );
         });
         let client_h = s.spawn(move || {
             send(
@@ -764,7 +919,14 @@ fn test_subscribe_connection_is_dedicated() {
     let closed = std::thread::scope(|s| {
         let deltas_serve = deltas.clone();
         s.spawn(move || {
-            let _ = serve_connection(server, uid, uid, &path, deltas_serve);
+            let _ = serve_connection(
+                server,
+                uid,
+                uid,
+                &path,
+                deltas_serve,
+                &nexusopsd::runtime::WriteHandle::disconnected(),
+            );
         });
         let client_h = s.spawn(move || {
             send(

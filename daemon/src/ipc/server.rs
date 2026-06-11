@@ -34,6 +34,7 @@ pub fn serve_connection(
     daemon_uid: u32,
     db_path: &Path,
     deltas: broadcast::Sender<ProjectionDelta>,
+    write: &crate::runtime::WriteHandle,
 ) -> Result<(), IpcError> {
     // Rule #7 (§15 / ADR-004): peer-auth before anything else — before any frame is read.
     authorize_peer(peer_uid, daemon_uid)?;
@@ -115,7 +116,7 @@ pub fn serve_connection(
         if req.method == "subscribe" {
             if let Ok(params) = serde_json::from_value::<SubscribeParams>(req.params.clone()) {
                 let rx = deltas.subscribe();
-                let ack = methods::dispatch(&req, db_path)?;
+                let ack = methods::dispatch(&req, db_path, write)?;
                 let accepted = ack.error.is_none();
                 let buf = serde_json::to_vec(&ServerFrame::RpcResponse(ack))
                     .map_err(|e| IpcError::Protocol(e.to_string()))?;
@@ -145,7 +146,7 @@ pub fn serve_connection(
         }
         // wrap the response in the frame-type-tagged ServerFrame envelope (§6.4 multiplexing) so
         // the client demuxes rpc-responses from subscription-push frames on one connection.
-        let frame = ServerFrame::RpcResponse(methods::dispatch(&req, db_path)?);
+        let frame = ServerFrame::RpcResponse(methods::dispatch(&req, db_path, write)?);
         let buf = serde_json::to_vec(&frame).map_err(|e| IpcError::Protocol(e.to_string()))?;
         write_frame(&mut stream, &buf)?;
     }

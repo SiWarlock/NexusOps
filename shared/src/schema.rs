@@ -18,13 +18,14 @@ use crate::actions::{
 use crate::actor::ActorType;
 use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility};
 use crate::events::{
-    AuditIntegrityViolation, DeviceRegistered, LocalRunnerRegistered, SensitiveOutputRedacted,
-    SessionStarted,
+    ActionApprovalRequested, ActionApproved, ActionDenied, ActionExpired, ActionFailed,
+    ActionRequested, ActionStarted, ActionSucceeded, AuditIntegrityViolation, DeviceRegistered,
+    LocalRunnerRegistered, SensitiveOutputRedacted, SessionStarted,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::ids::IdKind;
 use crate::ipc::{
-    Capabilities, DeltaKind, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode,
+    ActionAck, Capabilities, DeltaKind, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode,
     ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, RpcResponse, ServerFrame,
     SubscribeParams, VersionSkewError, WireError,
 };
@@ -118,6 +119,17 @@ struct ContractBundle {
     approval_id: ApprovalId,
     action_plan_id: ActionPlanId,
     timestamp: Timestamp,
+    // 2.1b — the Gateway ActionExecution* EventTypeRegistry payloads (§7.1/AG§17.1) + the §6.1
+    // submit-result ActionAck. Additive event family for the INV-SEC-1 chokepoint.
+    action_requested: ActionRequested,
+    action_approval_requested: ActionApprovalRequested,
+    action_approved: ActionApproved,
+    action_denied: ActionDenied,
+    action_expired: ActionExpired,
+    action_started: ActionStarted,
+    action_succeeded: ActionSucceeded,
+    action_failed: ActionFailed,
+    action_ack: ActionAck,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

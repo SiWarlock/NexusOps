@@ -11,12 +11,15 @@ use std::path::Path;
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
 
+use nexusops_shared::actions::ActionRequest;
 use nexusops_shared::ipc::{
     Capabilities, GetProjectionParams, IpcErrorCode, ProjectionName, RpcRequest, RpcResponse,
     SubscribeParams, WireError,
 };
 
 use super::IpcError;
+use crate::gateway::GatewayError;
+use crate::runtime::WriteHandle;
 
 /// The `proj_*` table backing each §6.1 projection name (the §7 registry → DATA_MODEL §2.3 map).
 /// The mapped name is a compile-time constant — never client input — so it is safe to interpolate
@@ -40,11 +43,22 @@ fn projection_table(name: ProjectionName) -> &'static str {
 /// Dispatch one §6.1 request → a response. A client error (unknown method / bad params) becomes
 /// a structured `WireError` response (the loop continues); an infrastructure read failure is an
 /// `Err(IpcError)` (the connection disconnects). Reads never mutate — no Action, no event.
-pub(crate) fn dispatch(req: &RpcRequest, db_path: &Path) -> Result<RpcResponse, IpcError> {
+pub(crate) fn dispatch(
+    req: &RpcRequest,
+    db_path: &Path,
+    write: &WriteHandle,
+) -> Result<RpcResponse, IpcError> {
     let outcome: Result<serde_json::Value, IpcErrorCode> = match req.method.as_str() {
         "get_capabilities" => Ok(capabilities_value()),
         "get_projection" => get_projection(&req.params, db_path)?,
         "subscribe" => subscribe_ack(&req.params),
+        // §6.1 mutation methods (2.1b) — run the Gateway pipeline on the write-actor (the sole
+        // mutator, forbidden #2/#3). A `GatewayError` → a structured `IpcErrorCode` response; the
+        // write-actor being gone is an infra failure → `Err(IpcError)` (disconnect).
+        "submit_action" => submit_action(&req.params, write)?,
+        "approve" => approve(&req.params, write)?,
+        "deny" => deny(&req.params, write)?,
+        "preview_action" => preview_action(&req.params, write)?,
         _ => Err(IpcErrorCode::UnknownMethod),
     };
     Ok(match outcome {
@@ -73,6 +87,101 @@ fn subscribe_ack(params: &serde_json::Value) -> Result<serde_json::Value, IpcErr
     let name = serde_json::to_value(params.projection)
         .expect("ProjectionName serializes to a JSON string infallibly");
     Ok(serde_json::json!({ "subscribed": name }))
+}
+
+// --- §6.1 mutation methods (2.1b) — parse params, run the Gateway pipeline on the write-actor ---
+
+/// Map a write-actor gateway result → the dispatch's (structured-response | infra-disconnect) form:
+/// a `GatewayError` becomes a structured `IpcErrorCode` (the connection continues); the write-actor
+/// being gone is infrastructure failure → `Err(IpcError)` (disconnect).
+fn gateway_result<T: serde::Serialize>(
+    r: Result<Result<T, GatewayError>, crate::runtime::RuntimeError>,
+) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
+    match r {
+        Err(_) => Err(IpcError::Read("write-actor unavailable".to_string())),
+        Ok(Err(ge)) => Ok(Err(gateway_error_to_code(&ge))),
+        // infallible: an ActionAck/ActionPreview always serializes to a JSON value.
+        Ok(Ok(value)) => Ok(Ok(
+            serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
+        )),
+    }
+}
+
+/// Map a daemon-internal [`GatewayError`] → the closed §6.4 `IpcErrorCode` set.
+fn gateway_error_to_code(e: &GatewayError) -> IpcErrorCode {
+    match e {
+        GatewayError::PolicyDenied | GatewayError::UnsupportedPolicyDecision(_) => {
+            IpcErrorCode::PolicyDenied
+        }
+        // out-of-state action / missing-or-lapsed approval / fail-closed audit write — the
+        // mutation's precondition no longer holds (§6.4 precondition_stale).
+        GatewayError::IllegalTransition { .. }
+        | GatewayError::ApprovalExpired
+        | GatewayError::NotFound(_)
+        | GatewayError::AuditWriteFailed(_) => IpcErrorCode::PreconditionStale,
+        GatewayError::Serialize(_) => IpcErrorCode::ProtocolError,
+    }
+}
+
+/// `submit_action` — parse the §6.2 `ActionRequest`, run the pipeline → `ActionAck`.
+fn submit_action(
+    params: &serde_json::Value,
+    write: &WriteHandle,
+) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
+    let req: ActionRequest = match serde_json::from_value(params.clone()) {
+        Ok(r) => r,
+        Err(_) => return Ok(Err(IpcErrorCode::ProtocolError)),
+    };
+    gateway_result(write.submit_action_blocking(req))
+}
+
+/// a required string field from the JSON-RPC params (a missing/non-string field is a client
+/// protocol violation → `protocol_error`).
+fn str_param<'a>(params: &'a serde_json::Value, key: &str) -> Result<&'a str, IpcErrorCode> {
+    params
+        .get(key)
+        .and_then(|v| v.as_str())
+        .ok_or(IpcErrorCode::ProtocolError)
+}
+
+/// `approve` — `{approval_id}` (edits/step_id → 2.1c). Drives the action to succeeded/failed.
+fn approve(
+    params: &serde_json::Value,
+    write: &WriteHandle,
+) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
+    let approval_id = match str_param(params, "approval_id") {
+        Ok(s) => s.to_string(),
+        Err(c) => return Ok(Err(c)),
+    };
+    gateway_result(write.approve_blocking(approval_id))
+}
+
+/// `deny` — `{approval_id, reason}`.
+fn deny(
+    params: &serde_json::Value,
+    write: &WriteHandle,
+) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
+    let approval_id = match str_param(params, "approval_id") {
+        Ok(s) => s.to_string(),
+        Err(c) => return Ok(Err(c)),
+    };
+    let reason = match str_param(params, "reason") {
+        Ok(s) => s.to_string(),
+        Err(c) => return Ok(Err(c)),
+    };
+    gateway_result(write.deny_blocking(approval_id, reason))
+}
+
+/// `preview_action` — `{action_request_id}` → the stub `ActionPreview`.
+fn preview_action(
+    params: &serde_json::Value,
+    write: &WriteHandle,
+) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
+    let action_request_id = match str_param(params, "action_request_id") {
+        Ok(s) => s.to_string(),
+        Err(c) => return Ok(Err(c)),
+    };
+    gateway_result(write.preview_action_blocking(action_request_id))
 }
 
 fn capabilities_value() -> serde_json::Value {

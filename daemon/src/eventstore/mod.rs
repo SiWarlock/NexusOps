@@ -552,6 +552,20 @@ impl GatewayTxn<'_> {
     pub fn now_rfc3339(&self) -> String {
         self.clock.now_rfc3339()
     }
+
+    /// Run the §15 Redactor over a **registry-row** payload (e.g. `action_requests.inputs_json`)
+    /// before it persists at rest. The Gateway's proposers (agents / Brain / UI) are UNTRUSTED, so
+    /// a secret slipped into the open `inputs` blob must be masked the same way an event payload is
+    /// (rule #3 *same redactor gates persist*; rule #4 *secrets never in rows*). Fail-closed: a
+    /// payload the Redactor cannot bring to `redacted` (quarantine / unredactable) is REFUSED — a
+    /// row is not an event, so there is no divert path; it never persists unredacted.
+    pub fn redact_row(&self, payload: &str) -> Result<String, EventStoreError> {
+        let outcome = self.redactor.redact(payload);
+        if outcome.status != RedactionStatus::Redacted {
+            return Err(EventStoreError::RedactionRequired);
+        }
+        Ok(outcome.payload_json)
+    }
 }
 
 /// Append one event into the caller's transaction: the §15 redaction GATE (strictly BEFORE the

@@ -12,6 +12,7 @@
 //! never writes the DB directly. `approve`/`deny`/`preview` + execution → L3.
 
 pub mod approval;
+pub mod executor;
 pub mod pipeline;
 pub mod policy;
 pub mod request;
@@ -115,19 +116,29 @@ pub(crate) fn gateway_event_intent(
     }
 }
 
-/// The Action Gateway — holds the injected policy engine (and, at L3, the executor). The pipeline
-/// methods (`submit_action`, …) live in [`pipeline`].
+/// The Action Gateway — holds the injected policy engine + executor (both stubbed in 2.1b; 2.2
+/// swaps the policy, 2.3 the executor). The pipeline methods (`submit_action`/`approve`/`deny`/
+/// `preview_action`) live in [`pipeline`].
 pub struct Gateway {
     policy: Box<dyn policy::PolicyEngine>,
+    executor: Box<dyn executor::ActionExecutor>,
 }
 
 impl Gateway {
-    pub fn new(policy: Box<dyn policy::PolicyEngine>) -> Self {
-        Self { policy }
+    pub fn new(
+        policy: Box<dyn policy::PolicyEngine>,
+        executor: Box<dyn executor::ActionExecutor>,
+    ) -> Self {
+        Self { policy, executor }
     }
 
     /// the injected policy engine (the pipeline submodule consults it).
     pub(crate) fn policy(&self) -> &dyn policy::PolicyEngine {
         self.policy.as_ref()
+    }
+
+    /// the injected executor (the pipeline runs it BETWEEN the approve + completion txns).
+    pub(crate) fn executor(&self) -> &dyn executor::ActionExecutor {
+        self.executor.as_ref()
     }
 }

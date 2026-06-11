@@ -153,6 +153,8 @@ fn test_contract_version_bumped_past_0_5() {
     // 1.6c L2 → 0.13.0 (the §17 AuditIntegrityViolation event payload, Option C);
     // 1.7 L2 → 0.14.0 (the §15 SensitiveOutputRedacted quarantine-divert event payload);
     // 2.1a → 0.15.0 (the §6.2 action-contract freeze: the 10 ActionRequest/ActionPlan/Approval/
-    // ActionResult-family models + 9 enums + the gateway IDs + Timestamp, shared/src/actions.rs).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.15.0");
+    // ActionResult-family models + 9 enums + the gateway IDs + Timestamp, shared/src/actions.rs);
+    // 2.1b → 0.16.0 (the Gateway ActionExecution* event family — ActionRequested/ApprovalRequested/
+    // Approved/Denied/Expired/Started/Succeeded/Failed — + the §6.1 ActionAck, shared/src/events.rs).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.16.0");
 }

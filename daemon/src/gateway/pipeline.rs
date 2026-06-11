@@ -1,13 +1,21 @@
 //! The staged Action Gateway pipeline (§6/§6.1). L2: `submit_action` (intake → awaiting_approval).
 //! L3 adds `approve`/`deny`/`preview_action` + execution completion.
 
-use nexusops_shared::actions::{ActionRequest, PolicyDecisionStatus, RequiredApprover};
+use nexusops_shared::actions::{
+    ActionPreview, ActionRequest, PolicyDecisionStatus, RequiredApprover,
+};
 use nexusops_shared::gateway_ids::ApprovalId;
 use nexusops_shared::ipc::ActionAck;
 use nexusops_shared::status::{ActionRequest as ARStatus, Approval as ApprovalStatus};
+use nexusops_shared::time::Timestamp;
 
 use crate::eventstore::EventStore;
+use crate::gateway::executor::ExecutionOutcome;
 use crate::gateway::{approval, request, Gateway, GatewayError};
+
+/// the well-known approver for the 2.1b stub decisions (RequiredApprover::current_user). 2.2/the
+/// real auth surface resolves the actual `decided_by` from the IPC peer identity.
+const STUB_DECIDER: &str = "current_user";
 
 impl Gateway {
     /// `submit_action` (§6.1/AG §8) — run the staged single-action pipeline to `awaiting_approval`.
@@ -28,8 +36,8 @@ impl Gateway {
             let now = gtx.now_rfc3339();
             let act_id = req.action_request_id.as_str().to_string();
 
-            // 1. persist the intent at Submitted + emit ActionRequested (atomic: row + event).
-            request::insert(gtx.tx(), &req, ARStatus::Submitted, &now)?;
+            // 1. persist the intent at Submitted (inputs §15-redacted at rest) + emit ActionRequested.
+            request::insert(gtx, &req, ARStatus::Submitted, &now)?;
             gtx.append(&request::action_requested_intent(&req, &now)?)?;
 
             // 2. policy decision (2.1b stub: always require_approval — risk-blind).
@@ -77,6 +85,206 @@ impl Gateway {
                     "{other:?}"
                 ))),
             }
+        })
+    }
+
+    /// `approve` (§6.1/AG §8.8) — resolve an awaiting approval. The **decision txn** (emits
+    /// ActionApproved and transitions the action AwaitingApproval→Approved→Queued, R-9 guarded,
+    /// atomic) runs first; then — if not expired — the **execute step** runs structurally SEPARATELY
+    /// (the executor OFF the write-actor txn, then a completion txn for ActionStarted plus
+    /// ActionSucceeded/Failed). An approval past its `expires_at` → `ActionExpired`, the executor is
+    /// NEVER invoked (§17). Fail-closed throughout.
+    pub fn approve(
+        &self,
+        store: &mut EventStore,
+        approval_id: &str,
+    ) -> Result<ActionAck, GatewayError> {
+        // --- decision txn: returns (the loaded action, queued?) — queued=false means expired ---
+        let (req, queued) =
+            store.gateway_txn(|gtx| -> Result<(ActionRequest, bool), GatewayError> {
+                let now = gtx.now_rfc3339();
+                let appr = approval::load(gtx.tx(), approval_id)?;
+                // the approval must still be awaiting a decision — re-deciding a resolved approval
+                // (already approved/denied/expired — all terminal) is rejected up front.
+                if appr.status != ApprovalStatus::AwaitingApproval {
+                    return Err(GatewayError::IllegalTransition {
+                        machine: "Approval",
+                        from: format!("{:?}", appr.status),
+                        to: "decided".to_string(),
+                    });
+                }
+                let act_id = appr.action_request_id.clone();
+                let req = request::load(gtx.tx(), &act_id)?;
+
+                // §17 expiry: an approval past expires_at lapses → ActionExpired, never executes.
+                // RFC3339-`Z` strings sort lexically == chronologically (LESSON §5) — so the
+                // expires_at a real caller writes (2.1c sets one; the 2.1b stub leaves it NULL) MUST
+                // be a `Z`-suffix UTC string, not a numeric `+00:00` offset (which would mis-sort).
+                if appr
+                    .expires_at
+                    .as_deref()
+                    .is_some_and(|exp| exp < now.as_str())
+                {
+                    approval::update_status(
+                        gtx.tx(),
+                        approval_id,
+                        ApprovalStatus::AwaitingApproval,
+                        ApprovalStatus::Expired,
+                    )?;
+                    request::update_status(
+                        gtx.tx(),
+                        &act_id,
+                        ARStatus::AwaitingApproval,
+                        ARStatus::Expired,
+                    )?;
+                    gtx.append(&approval::expired_intent(&req, approval_id, &now)?)?;
+                    return Ok((req, false));
+                }
+
+                // approve: stamp the decision, transition both machines, emit ActionApproved, queue.
+                approval::update_status(
+                    gtx.tx(),
+                    approval_id,
+                    ApprovalStatus::AwaitingApproval,
+                    ApprovalStatus::Approved,
+                )?;
+                approval::record_decision(gtx.tx(), approval_id, Some(STUB_DECIDER), &now)?;
+                request::update_status(
+                    gtx.tx(),
+                    &act_id,
+                    ARStatus::AwaitingApproval,
+                    ARStatus::Approved,
+                )?;
+                gtx.append(&approval::approved_intent(
+                    &req,
+                    approval_id,
+                    Some(STUB_DECIDER),
+                    &now,
+                )?)?;
+                request::update_status(gtx.tx(), &act_id, ARStatus::Approved, ARStatus::Queued)?;
+                Ok((req, true))
+            })?;
+
+        if !queued {
+            return Ok(ActionAck {
+                action_request_id: req.action_request_id.as_str().to_string(),
+                status: ARStatus::Expired,
+            });
+        }
+        // --- execute step (structurally separate; the executor runs OFF the txn) ---
+        self.execute(store, &req)
+    }
+
+    /// Run the executor for an approved+queued action, then record the outcome. The executor is
+    /// invoked OUTSIDE any write-actor txn (2.3's git-CLI/octocrab executors move off-thread here);
+    /// the ActionStarted + ActionSucceeded/Failed transitions land in one atomic completion txn.
+    fn execute(
+        &self,
+        store: &mut EventStore,
+        req: &ActionRequest,
+    ) -> Result<ActionAck, GatewayError> {
+        // the side effect (stub: none) runs BETWEEN the decision txn and the completion txn.
+        let outcome = self.executor().execute(req);
+        let act_id = req.action_request_id.as_str().to_string();
+        store.gateway_txn(|gtx| -> Result<ActionAck, GatewayError> {
+            let now = gtx.now_rfc3339();
+            // 2.1b: `approve`'s decision txn + this completion txn both run inside ONE
+            // `Command::GatewayApprove` on the single write-actor → fully serialized, so no second
+            // approve can race this Queued→Executing slot. The remaining gap is CRASH recovery — a
+            // crash between the two txns strands the action at `queued` (harmless with the no-side-
+            // effect stub; with a real executor, 2.4 reconciles orphaned queued/executing actions
+            // by idempotency key + adds the fencing guard, §17/Q6). The `WHERE status=queued` guard
+            // already makes a stale slot a typed `NotFound`, never a silent double-execute.
+            request::update_status(gtx.tx(), &act_id, ARStatus::Queued, ARStatus::Executing)?;
+            gtx.append(&request::started_intent(req, &now)?)?;
+            match outcome {
+                ExecutionOutcome::Succeeded => {
+                    request::update_status(
+                        gtx.tx(),
+                        &act_id,
+                        ARStatus::Executing,
+                        ARStatus::Succeeded,
+                    )?;
+                    gtx.append(&request::succeeded_intent(req, &now)?)?;
+                    Ok(ActionAck {
+                        action_request_id: act_id.clone(),
+                        status: ARStatus::Succeeded,
+                    })
+                }
+                ExecutionOutcome::Failed(err) => {
+                    request::update_status(
+                        gtx.tx(),
+                        &act_id,
+                        ARStatus::Executing,
+                        ARStatus::Failed,
+                    )?;
+                    gtx.append(&request::failed_intent(req, &err, &now)?)?;
+                    Ok(ActionAck {
+                        action_request_id: act_id.clone(),
+                        status: ARStatus::Failed,
+                    })
+                }
+            }
+        })
+    }
+
+    /// `deny` (§6.1/AG §8.8) — deny an awaiting approval with a `reason`. ONE atomic txn: stamp the
+    /// decision, transition Approval→Denied + action AwaitingApproval→Denied, emit `ActionDenied`.
+    /// Terminal — the executor is NEVER invoked.
+    pub fn deny(
+        &self,
+        store: &mut EventStore,
+        approval_id: &str,
+        reason: &str,
+    ) -> Result<ActionAck, GatewayError> {
+        store.gateway_txn(|gtx| -> Result<ActionAck, GatewayError> {
+            let now = gtx.now_rfc3339();
+            let appr = approval::load(gtx.tx(), approval_id)?;
+            if appr.status != ApprovalStatus::AwaitingApproval {
+                return Err(GatewayError::IllegalTransition {
+                    machine: "Approval",
+                    from: format!("{:?}", appr.status),
+                    to: "denied".to_string(),
+                });
+            }
+            let act_id = appr.action_request_id.clone();
+            let req = request::load(gtx.tx(), &act_id)?;
+
+            approval::update_status(
+                gtx.tx(),
+                approval_id,
+                ApprovalStatus::AwaitingApproval,
+                ApprovalStatus::Denied,
+            )?;
+            approval::record_decision(gtx.tx(), approval_id, Some(STUB_DECIDER), &now)?;
+            request::update_status(
+                gtx.tx(),
+                &act_id,
+                ARStatus::AwaitingApproval,
+                ARStatus::Denied,
+            )?;
+            gtx.append(&approval::denied_intent(&req, approval_id, reason, &now)?)?;
+            Ok(ActionAck {
+                action_request_id: act_id,
+                status: ARStatus::Denied,
+            })
+        })
+    }
+
+    /// `preview_action` (§6.1) — a dry-run preview of an action (read-only). Returns the stub
+    /// `ActionPreview` envelope (the 6 typed per-class previews → 2.3). Runs through `gateway_txn`
+    /// for uniform row access; it performs no write, so the txn commits a no-op.
+    pub fn preview_action(
+        &self,
+        store: &mut EventStore,
+        action_request_id: &str,
+    ) -> Result<ActionPreview, GatewayError> {
+        store.gateway_txn(|gtx| -> Result<ActionPreview, GatewayError> {
+            let now = gtx.now_rfc3339();
+            let req = request::load(gtx.tx(), action_request_id)?;
+            let generated_at =
+                Timestamp::parse(&now).map_err(|e| GatewayError::Serialize(e.to_string()))?;
+            Ok(self.executor().preview(&req, generated_at))
         })
     }
 }

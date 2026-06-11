@@ -1,5 +1,71 @@
 {
   "$defs": {
+    "ActionAck": {
+      "additionalProperties": false,
+      "description": "`submit_action` result (§6.1) — the ack the ui/Brain intent seam receives: the minted\n`action_request_id` (so the client can `preview_action`/track it) + the action's current\n`status` (§5.1 ActionRequest(15); in 2.1b the stub policy lands it at `awaiting_approval`).\n2.1b L2: defined + returned over the wire; it joins the published schema + the 3-way verify\nwith the rest of the §6.1 mutation surface at L3's CONTRACT_VERSION 0.16.0 bump (`PlanAck` →\n2.1c with `submit_action_plan`).",
+      "properties": {
+        "action_request_id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ActionRequestStatus"
+        }
+      },
+      "required": [
+        "action_request_id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "ActionApprovalRequested": {
+      "additionalProperties": false,
+      "description": "`ActionApprovalRequested` payload (§6.2/§7.1; AG §17.1) — emitted when the policy decision routes\nan action to human approval (2.1b). The action + approval IDENTITY are on the envelope columns\n(`action_request_id`/`approval_id`); the payload echoes `approval_id` so a payload-only consumer\n(the Brain indexer) gets the linkage without joining the envelope.",
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "approval_id"
+      ],
+      "type": "object"
+    },
+    "ActionApproved": {
+      "additionalProperties": false,
+      "description": "`ActionApproved` payload (§6.2/§7.1; AG §17.1) — a human/policy approved the action (2.1b L3).\nIdentity (`action_request_id`/`approval_id`) on the envelope; the payload echoes `approval_id` +\nthe optional `decided_by` (the approver, when known).",
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        },
+        "decided_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "approval_id"
+      ],
+      "type": "object"
+    },
+    "ActionDenied": {
+      "additionalProperties": false,
+      "description": "`ActionDenied` payload (§6.2/§7.1; AG §17.1) — the action was denied (terminal). Carries the\n`approval_id` + the denial `reason` (the audit record of WHY).",
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "approval_id",
+        "reason"
+      ],
+      "type": "object"
+    },
     "ActionDependency": {
       "additionalProperties": false,
       "description": "A step-ordering edge within an [`ActionPlan`] (§6.2 ActionDependency). AG §9.2 references it\nbut never defines its shape — frozen as the minimal step-ordering edge (chosen shape recorded\nfor AG/Appendix-A adoption at Step-9).",
@@ -17,6 +83,32 @@
       "required": [
         "step_id",
         "depends_on_step_ids"
+      ],
+      "type": "object"
+    },
+    "ActionExpired": {
+      "additionalProperties": false,
+      "description": "`ActionExpired` payload (§6.2/§7.1; AG §17.1) — the approval lapsed past `expires_at` before a\ndecision (§17); the action is terminal, never executed. Carries the `approval_id`.",
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "approval_id"
+      ],
+      "type": "object"
+    },
+    "ActionFailed": {
+      "additionalProperties": false,
+      "description": "`ActionFailed` payload (§6.2/§7.1; AG §17.1) — the executor failed (executing→failed). Carries\nthe failure `error` message (the structured ActionError taxonomy → 2.4).",
+      "properties": {
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "error"
       ],
       "type": "object"
     },
@@ -246,6 +338,27 @@
       ],
       "type": "string"
     },
+    "ActionRequested": {
+      "additionalProperties": false,
+      "description": "`ActionRequested` payload (§6.2/§7.1; AG §17.1) — the Action Gateway's FIRST event for a\nsubmitted action (2.1b). The action's IDENTITY (`action_request_id`, `correlation_id`,\n`project_id`, `actor`) lives on the [`crate::event_envelope::EventEnvelope`] typed columns — the\nGateway populates them. This payload carries only the request-classification DELTA: the\n`action_type` (§6.3 catalog, String until 2.2), the requester-supplied `risk_level` (RECORDED\nfor audit but NOT trusted for the decision in 2.1b — the policy stub is risk-blind, require-\napproval-for-all; 2.2 makes risk catalog-authoritative), and the `requester_type` (R-2; the\nenvelope `actor_type` is its mapped audit actor).",
+      "properties": {
+        "action_type": {
+          "type": "string"
+        },
+        "requester_type": {
+          "$ref": "#/$defs/RequesterType"
+        },
+        "risk_level": {
+          "$ref": "#/$defs/RiskLevel"
+        }
+      },
+      "required": [
+        "action_type",
+        "risk_level",
+        "requester_type"
+      ],
+      "type": "object"
+    },
     "ActionResult": {
       "additionalProperties": false,
       "description": "The outcome of an executed action (§6.2 ActionResult; binding = Appendix A). `emitted_events`\nare typed [`EventId`]s (uniform with the ID discipline). `error` is a message (the structured\nActionError taxonomy is DEFERRED → 2.4).",
@@ -303,6 +416,16 @@
         "cancelled"
       ],
       "type": "string"
+    },
+    "ActionStarted": {
+      "additionalProperties": false,
+      "description": "`ActionStarted` payload (§6.2/§7.1; AG §17.1) — the executor began running the approved action\n(queued→executing). Identity on the envelope; no delta beyond the event itself.",
+      "type": "object"
+    },
+    "ActionSucceeded": {
+      "additionalProperties": false,
+      "description": "`ActionSucceeded` payload (§6.2/§7.1; AG §17.1) — the executor completed the action successfully\n(executing→succeeded). Identity on the envelope; the created/changed resources land in the\n`ActionResult` surface (2.3). No payload delta in 2.1b.",
+      "type": "object"
     },
     "ActorRefBody": {
       "additionalProperties": false,
@@ -1490,8 +1613,26 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Bundles every frozen contract type so one `schema_for!` captures all value\nsets under `$defs`. Never instantiated — it exists only to drive schema gen.",
   "properties": {
+    "action_ack": {
+      "$ref": "#/$defs/ActionAck"
+    },
+    "action_approval_requested": {
+      "$ref": "#/$defs/ActionApprovalRequested"
+    },
+    "action_approved": {
+      "$ref": "#/$defs/ActionApproved"
+    },
+    "action_denied": {
+      "$ref": "#/$defs/ActionDenied"
+    },
     "action_dependency": {
       "$ref": "#/$defs/ActionDependency"
+    },
+    "action_expired": {
+      "$ref": "#/$defs/ActionExpired"
+    },
+    "action_failed": {
+      "$ref": "#/$defs/ActionFailed"
     },
     "action_plan": {
       "$ref": "#/$defs/ActionPlan"
@@ -1511,11 +1652,20 @@
     "action_request_model": {
       "$ref": "#/$defs/ActionRequest"
     },
+    "action_requested": {
+      "$ref": "#/$defs/ActionRequested"
+    },
     "action_result": {
       "$ref": "#/$defs/ActionResult"
     },
     "action_result_status": {
       "$ref": "#/$defs/ActionResultStatus"
+    },
+    "action_started": {
+      "$ref": "#/$defs/ActionStarted"
+    },
+    "action_succeeded": {
+      "$ref": "#/$defs/ActionSucceeded"
     },
     "actor_ref_body": {
       "$ref": "#/$defs/ActorRefBody"
@@ -1755,9 +1905,18 @@
     "gateway_object_kind",
     "approval_id",
     "action_plan_id",
-    "timestamp"
+    "timestamp",
+    "action_requested",
+    "action_approval_requested",
+    "action_approved",
+    "action_denied",
+    "action_expired",
+    "action_started",
+    "action_succeeded",
+    "action_failed",
+    "action_ack"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.15.0"
+  "x-contract-version": "0.16.0"
 }

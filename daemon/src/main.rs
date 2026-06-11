@@ -16,6 +16,9 @@ use tokio::sync::watch;
 use nexusopsd::bootstrap::{cold_start, BootstrapConfig, DB_FILENAME};
 use nexusopsd::clock::SystemClock;
 use nexusopsd::eventstore::{JsonlMirror, PrefixRedactor};
+use nexusopsd::gateway::executor::StubExecutor;
+use nexusopsd::gateway::policy::StubPolicy;
+use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
 use nexusopsd::ipc::current_euid;
 use nexusopsd::runtime::{bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor};
@@ -60,7 +63,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // writable store (the sole mutation path). The drainer/reaper loops + (L3) the UDS accept-loop
     // run off the write-actor handle.
     let (_pidlock, store, _version) = ctx.into_parts();
-    let actor = WriteActor::spawn(store, Box::new(SystemClock));
+    // the Action Gateway (the sole mutator) runs its pipeline ON the write-actor thread (forbidden
+    // #2/#3). 2.1b stubs: StubPolicy (require-approval-for-all → 2.2) + StubExecutor (no real side
+    // effect → 2.3).
+    let gateway = Gateway::new(Box::new(StubPolicy), Box::new(StubExecutor));
+    let actor = WriteActor::spawn(store, Box::new(SystemClock), gateway);
     let handle = actor.handle();
     // the post-commit broadcast sender for the accept-loop's per-connection live subscribers (1.6d);
     // captured before `handle` is moved into the reaper below.
@@ -75,7 +82,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         DRAINER_INTERVAL,
         shutdown_rx.clone(),
     );
-    let reaper = spawn_reaper(handle, REAPER_INTERVAL, shutdown_rx.clone());
+    let reaper = spawn_reaper(handle.clone(), REAPER_INTERVAL, shutdown_rx.clone());
 
     // L3 — bind the GatewayPort UDS (reclaiming a stale socket) + spawn the peer-auth'd accept-loop.
     let db_path = base_dir.join(DB_FILENAME);
@@ -87,6 +94,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         current_euid(),
         MAX_CONNECTIONS,
         deltas,
+        handle, // the §6.1 mutation path → the Gateway pipeline on the write-actor
         shutdown_rx,
     );
 

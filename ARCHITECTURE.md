@@ -3,6 +3,7 @@
 > **Status:** Binding architecture contract for the MVP. Finalized by `/arch-finalize` (Brain 2, Claude/Opus) from the `/arch-draft` rough draft + planning artifacts + a 14-dimension adversarial gap audit (`docs/gap-audits/`), with load-bearing decisions confirmed by the project owner on 2026-06-07.
 > **Audience:** Project owner; `tasks-gen`; the cc-crew `/tdd` build crew; technical reviewers.
 > **Primary implementation constraint:** Solo build driven largely by AI agents (cc-crew). macOS-only MVP. The owner has chosen a **comprehensive MVP** (both harnesses live, full session survival, full Brain action plans) over a minimal slice — sequence accordingly (§19).
+> **Build posture:** **production-grade** (recorded in `.scaffolding/manifest.json` at the 2026-06-11 scaffolding upgrade, M-0006). The *scope* stays the comprehensive MVP locked at §0.1 — posture governs the *quality bar*: error paths, idempotency, observability, security hardening, and deploy/rollback are first-class tasks ordered early, not deferred polish; the `IMPLEMENTATION_PLAN.md` phase-exit checklist carries the posture-gated dependency-audit / whole-system-security / perf-budget rows.
 > **Architecture sentence:** *A desktop-first, local-runtime cockpit whose detached Rust daemon is the single, audited mutator of all state — every change is a typed, risk-classified, approved Action recorded as an immutable event; the UI reads projections, agents and the Project Brain only propose intents, and the local machine is the trust boundary.*
 > **Build contract:** This file is the source of truth. `tasks-gen` must bind every task to a `§N` anchor here and must not invent architecture; if a task needs architecture absent here, flag it. Companion (non-binding) detail lives in `docs/planning/*` and `docs/gap-audits/*`; the authoritative upstream specs are `docs/product/PRD.md`, `docs/product/PRODUCT_CANON.md`, `docs/architecture/{SHARED_OBJECT_MODEL,EVENT_MODEL_AND_AUDIT_TRAIL,PROJECT_BRAIN_INTERFACE,DESKTOP_FIRST_RUNTIME}.md`, `docs/domains/{ACTION_GATEWAY,WORKFLOW_PACKS,CC_CREW_WORKFLOW_PACK}.md`, `docs/ux/{UX_INFORMATION_ARCHITECTURE,UI_COMPONENT_INVENTORY}.md`.
 > **Anchor stability:** `§N` anchors are **stable IDs** — never reused or reordered (LESSONS-style). New sections append; they are not inserted mid-document. `tasks-gen` and the area `CLAUDE.md` cross-doc-invariants table bind to these + to Appendix A.
@@ -87,6 +88,54 @@ The MVP proves the full thesis via the **PRD §25 demo** (§19.1) and is deliber
 ## §2 — Product definition & scope
 
 Authoritative: `PRD §1-7`, `PRODUCT_CANON §2-16` (not restated). Load-bearing framings the architecture honors: five responsibilities (Dispatch · Supervise · Review · Deliver · Remember/Reason); six product layers + two cross-cutting systems (Brain, Workflow Packs); 20 screens (§11); MVP/P1/P2 tiers (§19).
+
+---
+
+## §2.5 — Subsystem dependency DAG & parallelization seams `[LOCKED — derived 2026-06-11]`
+
+> Added at the production-grade posture migration (2026-06-11). Nodes are the §6 daemon modules plus the three cross-cutting surfaces (`shared/`, `ui/`, packaging); edges = "must exist before / consumes the contract of," cross-checked against the as-built Phase-0/1 code. The `IMPLEMENTATION_PLAN.md` **Parallelization plan (Track map)** is *derived from* this section refined by per-task `Depends on:` edges — this section is the architecture-level authority; the Track map is its plan-level rendering. New §N anchor appended in numbering space; no existing anchor moved.
+
+```
+                 shared/ contracts (§5.0–§5.3, §7.1)   [BUILT 0.5 — the fan-out trigger]
+                       │
+      ┌────────────────┼─────────────────────────────────────────┐
+      ▼                ▼                                         ▼
+  Redactor (§15) ─► eventstore (§7) ─► projections (§7)       ui (§11)  [BUILT P6]
+   [BUILT 1.1/1.7/      │ [BUILT] │       [BUILT 1.2]          mock GatewayPort + fixtures;
+    2.0-SEC]            │         └─► outbox (§7) [BUILT 1.3]  real port ← ipc reads [BUILT];
+                        ▼                                      mutation seam ← gateway [P2]
+                   locks (§5.1/§17)  [BUILT 1.4]
+                        │
+      policy (§15) ─────┤
+        [P2.2]          ▼
+                   gateway (§6 — the INV-SEC-1 chokepoint)  [P2]  ◄── ipc (§6.4)
+                        │                                          reads [BUILT 1.5/1.6] · submit_* [P2]
+   ┌───────────┬────────┼───────────────┬───────────────────┐
+   ▼           ▼        ▼               ▼                   ▼
+ git (§9)  integrations harness (§9.1)  brainclient (§13.1) workflow (§13.2)
+ [P5]      (§9) [P7]    [P3 — claude ∥ codex ∥ Fake]  [P8 — decoupled]  [P9]
+                            │
+                            ▼
+                      terminal (§9, ADR-009 — display-only) [P3]
+ usage (§11/§18) [P3+] ← harness telemetry        notifier (§10) [P10] ← outbox
+                        ▼
+              packaging/signing (§16) + PRD §25 demo (§19.1)  [P10 — all-hands converge]
+```
+
+**Binding edges:** `shared/` before everything (the 0.5 freeze is the fan-out trigger) · Redactor before persist/embed/sync (§15 — all three sinks) · `eventstore` before {`projections`, outbox drain, `locks`, `gateway` audit writes} · `locks` before `gateway` execution (the fencing oracle `locks::validate_held`) and before every executor · {`policy` + `eventstore` + `locks`} before `gateway` · **`gateway` before every mutating executor/adapter** — `git` mutations (§9), `integrations` writes (§9), `harness` intercept→intent (§9.1), Brain proposals (§13.1), `workflow.command.invoke` (§13.2) — this is INV-SEC-1 expressed as a build edge · `ipc` depends on the GatewayPort **trait** + `shared/` wire types, not on gateway internals (transport ∥ pipeline — ADR-004/§4.3) · `terminal` is display-only, parallel to status derivation, never a state source (§9.1) · `brainclient` is decoupled — the core loop never blocks on Brain (§13.1) · packaging/signing precedes production keychain guarantees (§16, THREAT_MODEL T-13).
+
+**Parallelization seams (load-bearing):**
+- **S1 — frozen contracts** (`shared/` → all): lets independent tracks build against frozen enums/IDs/schemas, mocking the other side — validated in practice by the ui track building Phase 6 entirely on `shared/` 0.5 + `MockGatewayPort`.
+- **S2 — GatewayPort trait** (§6.1): transport (`ipc`) ∥ pipeline (`gateway`) ∥ callers (ui, future RemoteClient).
+- **S3 — HarnessAdapter trait** (§9.1): Claude adapter ∥ Codex adapter ∥ `FakeHarness` (tests).
+- **S4 — executor-adapter interface** (§12, AG §15.3): `git`/`integrations` edges build against the frozen Gateway interface (mocked until P2 lands).
+- **S5 — Brain decoupling** (§13.1): the Brain arm parallelizes freely; only its Gateway-intent seam is shared.
+- **S6 — display-only terminal** (§9.1): terminal host ∥ adapter status pipelines.
+- **S7 — ui vs daemon** (§14): mock GatewayPort + fixture projections; the ui's mutation/intent seam unblocks only at the gateway mutation-method freeze (P2).
+
+**Forced-serial spine (the critical path):** `shared/` freeze → `eventstore` → **`gateway`** → `harness` intercept → survival (P4) → demo (P10). The bottleneck is the **gateway**: every mutating feature queues behind its mutation-method + `ActionRequest`/`ActionPlan` + §6.3-catalog freeze.
+
+**§2.5-seam shared-contract models** (the brief-template schema-snapshot rule keys off this list — an invariant touching one of these on a crossed edge requires the snapshot test): EventEnvelope + enums (§7.1) · the 22 IDs (§5.2) · the 10 status machines (§5.1) · GatewayPort wire surface (§6.1/§6.4) · ActionRequest/ActionPlan/Approval/ActionResult (§6.2) · ActionTypeCatalog (§6.3) · HarnessAdapter normalized types (§9.1) · EventTypeRegistry (§7.1) · BrainEventMapping (§13.1).
 
 ---
 
@@ -428,6 +477,8 @@ The event-write and drawer budgets bound the central performance bet of the proj
 | Documented single-writer ceiling | p95 < 100 ms holds through ≥ N=100 | sweep, not saturated at 5× target |
 
 WAL config confirmed: `synchronous=NORMAL`, `fullfsync=OFF` (ADR-003). **Phase-1 (1.1) implementation note:** the p99/max tail is the inline `wal_autocheckpoint` (not lock contention) — consider a background-checkpoint thread (`wal_autocheckpoint=0` + periodic manual `PASSIVE` checkpoint off the hot path) to flatten it; not a blocker. Caveat: macOS `fsync()` ≠ `F_FULLFSYNC`, so power-loss could lose the last WAL frames since the previous checkpoint (durable against app/OS crash; hash-chain tamper-evidence is post-MVP).
+
+**Unbudgeted hot paths — no budgets, deliberate deferral (owner-recorded 2026-06-11, production-posture migration):** two architecture-named hot paths carry **no numeric budget by explicit decision**, not omission: **(a) Terminal Channel throughput/backpressure** (§6.4/§9 — design constraints exist: ~30fps batching, xterm.js 5–35 MB/s ceiling, watermark flow control; numbers are committed with real throughput data when the Phase-3 Terminal-Channel benchmark task lands) and **(b) daemon-restart recovery latency** (resume-or-replay time-to-recovered-sessions, §8/§17 — committed when the Phase-4 survival benchmark task lands). Until then the phase-exit perf row ticks `n/a — no budgets (deliberate deferral recorded)` for these two; every other §18 row keeps its committed budget + CI guard.
 
 ---
 

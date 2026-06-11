@@ -89,3 +89,39 @@ impl SensitiveOutputRedacted {
     /// projector (the new type adds no bare string-literal to the dup set).
     pub const EVENT_TYPE: &'static str = "SensitiveOutputRedacted";
 }
+
+/// `ActionRequested` payload (§6.2/§7.1; AG §17.1) — the Action Gateway's FIRST event for a
+/// submitted action (2.1b). The action's IDENTITY (`action_request_id`, `correlation_id`,
+/// `project_id`, `actor`) lives on the [`crate::event_envelope::EventEnvelope`] typed columns — the
+/// Gateway populates them. This payload carries only the request-classification DELTA: the
+/// `action_type` (§6.3 catalog, String until 2.2), the requester-supplied `risk_level` (RECORDED
+/// for audit but NOT trusted for the decision in 2.1b — the policy stub is risk-blind, require-
+/// approval-for-all; 2.2 makes risk catalog-authoritative), and the `requester_type` (R-2; the
+/// envelope `actor_type` is its mapped audit actor).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionRequested {
+    pub action_type: String,
+    pub risk_level: crate::actions::RiskLevel,
+    pub requester_type: crate::actions::RequesterType,
+}
+
+impl ActionRequested {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit/queue projectors).
+    pub const EVENT_TYPE: &'static str = "ActionRequested";
+}
+
+/// `ActionApprovalRequested` payload (§6.2/§7.1; AG §17.1) — emitted when the policy decision routes
+/// an action to human approval (2.1b). The action + approval IDENTITY are on the envelope columns
+/// (`action_request_id`/`approval_id`); the payload echoes `approval_id` so a payload-only consumer
+/// (the Brain indexer) gets the linkage without joining the envelope.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionApprovalRequested {
+    pub approval_id: String,
+}
+
+impl ActionApprovalRequested {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the approval-queue projector).
+    pub const EVENT_TYPE: &'static str = "ActionApprovalRequested";
+}

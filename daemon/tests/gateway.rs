@@ -197,8 +197,8 @@ fn test_action_request_transition_guard_legal_and_illegal() {
             "illegal edge {from:?}→{to:?} must be rejected"
         );
     }
-    // Denied is a sink in the guard (no legal outgoing) — pins the §5.1-terminal reconcile
-    // (status.rs doesn't mark Denied terminal; the guard treats it as one — Step-9 flag).
+    // Denied is a sink in the guard (no legal outgoing) — consistent with status.rs `is_terminal()`,
+    // which now marks Denied terminal (2.1b Option-A reconcile: terminal-by-nature, never executes).
     for to in [
         AR::Approved,
         AR::Queued,
@@ -254,4 +254,258 @@ fn test_approval_transition_guard() {
     ] {
         assert!(!t(from, to), "illegal approval edge {from:?}→{to:?}");
     }
+}
+
+// =============================================================================================
+// L2 — submit_action + the staged pipeline + the ActionExecution event family + INV-SEC-1.
+// The chokepoint: every transition's {durable-row write + authoritative event via the §15 gate}
+// is one atomic txn on the single write-actor → fail-closed.
+// =============================================================================================
+
+use nexusops_shared::actions::{ActionRequest, RequesterType, RiskLevel};
+use nexusops_shared::event_envelope::RedactionStatus;
+use nexusops_shared::ids::ActionRequestId;
+use nexusops_shared::status::ActionRequestStatus;
+use nexusops_shared::time::Timestamp;
+use nexusopsd::eventstore::{RedactionOutcome, Redactor};
+use nexusopsd::gateway::{Gateway, GatewayError};
+
+/// a test Redactor that refuses to redact — drives the §15 fail-closed gate (RED #6).
+struct NeverRedacts;
+impl Redactor for NeverRedacts {
+    fn redact(&self, payload_json: &str) -> RedactionOutcome {
+        RedactionOutcome {
+            status: RedactionStatus::Unredacted,
+            payload_json: payload_json.to_string(),
+            engine_version: "never".to_string(),
+            quarantine: None,
+        }
+    }
+}
+
+fn open_with(path: &std::path::Path, redactor: Box<dyn Redactor>) -> EventStore {
+    EventStore::open(
+        path,
+        Box::new(UlidGen),
+        Box::new(FixedClock::new("2026-06-11T00:00:00Z")),
+        redactor,
+    )
+    .expect("open event store")
+}
+
+/// the staged-pipeline default: a stub-policy Gateway (require-approval for all, until 2.2).
+fn stub_gateway() -> Gateway {
+    Gateway::new(Box::new(nexusopsd::gateway::policy::StubPolicy))
+}
+
+fn sample_request(action_type: &str, risk: RiskLevel) -> ActionRequest {
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id: None,
+        action_type: action_type.to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs: vec![],
+        inputs: serde_json::json!({ "k": "v" }),
+        risk_level: risk,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse("2026-06-11T00:00:00Z").unwrap(),
+    }
+}
+
+/// COUNT(*) of a table over a read-only connection (sees committed rows).
+fn count(path: &std::path::Path, table: &str) -> i64 {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+        .expect("count")
+}
+
+/// the `status` of the single action_requests row, over a read-only connection.
+fn action_status(path: &std::path::Path) -> Option<String> {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row("SELECT status FROM action_requests", [], |r| r.get(0))
+        .ok()
+}
+
+/// the `status` of the single approvals row, over a read-only connection.
+fn approval_status(path: &std::path::Path) -> Option<String> {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row("SELECT status FROM approvals", [], |r| r.get(0))
+        .ok()
+}
+
+// ---- L2 RED #4 — submit persists the row + emits ActionRequested -----------------------------
+
+#[test]
+fn test_submit_action_emits_action_requested_and_persists_row() {
+    // spec(§6.1/§6.2/AG8.2) — submit_action runs the staged pipeline to awaiting_approval (the
+    // stub policy require-approval), persists the action_requests row, and emits ActionRequested.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    let req = sample_request("git.create_worktree", RiskLevel::Level2);
+    let req_id = req.action_request_id.clone();
+
+    let ack = gw.submit_action(&mut store, req).expect("submit");
+    assert_eq!(
+        ack.action_request_id,
+        req_id.as_str(),
+        "ack carries the act_ id"
+    );
+    assert_eq!(
+        ack.status,
+        ActionRequestStatus::AwaitingApproval,
+        "stub policy → awaiting_approval"
+    );
+
+    // the durable row exists at awaiting_approval; an approvals row was opened at awaiting_approval
+    assert_eq!(count(&path, "action_requests"), 1);
+    assert_eq!(action_status(&path), Some("awaiting_approval".to_string()));
+    assert_eq!(count(&path, "approvals"), 1, "an approval was requested");
+    assert_eq!(
+        approval_status(&path),
+        Some("awaiting_approval".to_string()),
+        "the approval row is opened awaiting the human"
+    );
+
+    // an ActionRequested event exists, correlated to the action_request_id, on the FK column
+    let events = store.read_all().unwrap();
+    let requested: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == "ActionRequested")
+        .collect();
+    assert_eq!(requested.len(), 1, "exactly one ActionRequested");
+    assert_eq!(
+        requested[0].action_request_id.as_ref().map(|x| x.as_str()),
+        Some(req_id.as_str()),
+        "ActionRequested carries the action_request_id envelope FK"
+    );
+
+    // ActionApprovalRequested carries BOTH FK envelope columns (action_request_id + approval_id)
+    let approval_req = events
+        .iter()
+        .find(|e| e.event_type == "ActionApprovalRequested")
+        .expect("exactly one ActionApprovalRequested");
+    assert_eq!(
+        approval_req.action_request_id.as_ref().map(|x| x.as_str()),
+        Some(req_id.as_str()),
+        "ActionApprovalRequested correlated to the action"
+    );
+    assert!(
+        approval_req
+            .approval_id
+            .as_deref()
+            .is_some_and(|a| a.starts_with("appr_")),
+        "ActionApprovalRequested carries the appr_ approval_id envelope FK"
+    );
+}
+
+// ---- L2 RED #5 — INV-SEC-1: every transition has an event; submit does NOT auto-execute -------
+
+#[test]
+fn test_every_mutation_has_an_event_row_and_no_auto_execute() {
+    // spec(§15 INV-SEC-1 / §14) — every Gateway state change is recorded as an event via the §15
+    // gate (no `unredacted` persists); and submit alone NEVER reaches execution — the approval
+    // gate holds, so no executor runs (no ActionStarted/ActionSucceeded) without an approve.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    let req = sample_request("project.rescan", RiskLevel::Level1);
+    let req_id = req.action_request_id.clone();
+    gw.submit_action(&mut store, req).expect("submit");
+
+    let events = store.read_all().unwrap();
+    let family: Vec<&str> = events
+        .iter()
+        .filter(|e| e.event_type.starts_with("Action"))
+        .map(|e| e.event_type.as_str())
+        .collect();
+    // exactly the submit-path milestone events — NO execution events (the gate holds)
+    assert!(
+        family.contains(&"ActionRequested"),
+        "ActionRequested emitted"
+    );
+    assert!(
+        family.contains(&"ActionApprovalRequested"),
+        "ActionApprovalRequested emitted"
+    );
+    for forbidden in ["ActionStarted", "ActionSucceeded", "ActionApproved"] {
+        assert!(
+            !family.contains(&forbidden),
+            "submit must NOT {forbidden} — nothing executes without approval (INV-SEC-1)"
+        );
+    }
+    // every Gateway event is correlated to the action + passed the §15 gate (audited path)
+    for e in events.iter().filter(|e| e.event_type.starts_with("Action")) {
+        assert_eq!(
+            e.action_request_id.as_ref().map(|x| x.as_str()),
+            Some(req_id.as_str()),
+            "{} correlated to the action_request_id",
+            e.event_type
+        );
+        assert_eq!(
+            e.redaction_status,
+            RedactionStatus::Redacted,
+            "{} persisted only via the §15 redaction gate",
+            e.event_type
+        );
+    }
+    // the action rests at awaiting_approval (not executing/succeeded)
+    assert_eq!(action_status(&path), Some("awaiting_approval".to_string()));
+}
+
+// ---- L2 RED #6 — fail-closed on audit-write -------------------------------------------------
+
+#[test]
+fn test_fail_closed_on_audit_write() {
+    // spec(§15/§17 fail-closed) — if the authoritative event can't be written (the Redactor refuses
+    // → the §15 gate blocks the append), submit aborts with a typed GatewayError and NOTHING
+    // persists: no action_requests row, no approvals row, no event (the txn rolled back).
+    let (_d, path) = temp_db();
+    let mut store = open_with(&path, Box::new(NeverRedacts));
+    let gw = stub_gateway();
+    let req = sample_request("github.create_pr", RiskLevel::Level3);
+
+    let err = gw
+        .submit_action(&mut store, req)
+        .expect_err("must fail closed");
+    assert!(
+        matches!(err, GatewayError::AuditWriteFailed(_)),
+        "fail-closed → AuditWriteFailed, got {err:?}"
+    );
+    // nothing acknowledged, nothing persisted (atomic rollback)
+    assert_eq!(count(&path, "action_requests"), 0, "no row persisted");
+    assert_eq!(count(&path, "approvals"), 0, "no approval persisted");
+    assert_eq!(
+        store.read_all().unwrap().len(),
+        0,
+        "no event persisted (the gate blocked the append)"
+    );
+}
+
+// ---- L2 RED #7 — the ActionRequested payload passes the §15 redaction gate -------------------
+
+#[test]
+fn test_action_requested_payload_redacted() {
+    // spec(§15 redaction-before-persist) — the Gateway emits through the same append path, so the
+    // event carries redaction_status=redacted + a redaction engine version (never `unredacted`).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    gw.submit_action(&mut store, sample_request("brain.ask", RiskLevel::Level0))
+        .expect("submit");
+
+    let events = store.read_all().unwrap();
+    let requested = events
+        .iter()
+        .find(|e| e.event_type == "ActionRequested")
+        .expect("ActionRequested");
+    assert_eq!(requested.redaction_status, RedactionStatus::Redacted);
+    assert!(
+        requested.redaction_engine_version.is_some(),
+        "the redaction engine version is recorded (provenance)"
+    );
 }

@@ -157,6 +157,19 @@ pub struct RpcResponse {
     pub error: Option<WireError>,
 }
 
+/// `submit_action` result (§6.1) — the ack the ui/Brain intent seam receives: the minted
+/// `action_request_id` (so the client can `preview_action`/track it) + the action's current
+/// `status` (§5.1 ActionRequest(15); in 2.1b the stub policy lands it at `awaiting_approval`).
+/// 2.1b L2: defined + returned over the wire; it joins the published schema + the 3-way verify
+/// with the rest of the §6.1 mutation surface at L3's CONTRACT_VERSION 0.16.0 bump (`PlanAck` →
+/// 2.1c with `submit_action_plan`).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionAck {
+    pub action_request_id: String,
+    pub status: crate::status::ActionRequestStatus,
+}
+
 /// `get_projection` params (§6.1). `page` (pagination) is provisional and omitted for MVP.
 ///
 /// **MVP NOTE:** `scope` is **accepted but NOT YET enforced** — the daemon returns the full

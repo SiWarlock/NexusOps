@@ -3,9 +3,131 @@
 //! Every state mutation flows through here as a typed, risk-classified, approved `ActionRequest`
 //! recorded as an immutable event (forbidden #2). The foundation (L1) is the durable registry
 //! schema (`action_requests`/`approvals`, MIGRATION_7) + the **R-9 transition guards** for the
-//! frozen §5.1 ActionRequest(15)/Approval(10) machines — an illegal edge is a typed error, never
-//! silently applied. The `submit_action`/`approve`/`deny`/`preview_action` pipeline + the
-//! `ActionExecution*` event family + the write-actor integration build on it (L2/L3).
+//! frozen §5.1 ActionRequest(15)/Approval(10) machines. **L2 (the chokepoint):** `submit_action`
+//! runs the staged pipeline (normalize → resolve → policy-STUB → preview-STUB → approval) — each
+//! transition's `{durable-row write + authoritative ActionExecution* event}` is ONE atomic txn on
+//! the single write-actor (via [`crate::eventstore::EventStore::gateway_txn`]), through the §15
+//! redaction gate; **fail-closed** (a failed event-write rolls back the row → no ack, no side
+//! effect). The Gateway emits events ONLY via the gateway-txn append path (forbidden #2/#3) —
+//! never writes the DB directly. `approve`/`deny`/`preview` + execution → L3.
 
 pub mod approval;
+pub mod pipeline;
+pub mod policy;
 pub mod request;
+
+use serde::Serialize;
+
+use nexusops_shared::actions::ActionRequest;
+use nexusops_shared::event_envelope::{Sensitivity, SourceType, Visibility};
+use nexusops_shared::ids::WorkspaceId;
+
+use crate::eventstore::{AppendIntent, EventStoreError};
+
+/// Typed Gateway-pipeline failures (Q5 — daemon-internal; the IPC layer maps these to the §6.4
+/// `IpcErrorCode` set). `AuditWriteFailed` wraps any [`EventStoreError`] from the gateway txn (a
+/// failed authoritative-event append OR a registry-row write) — the fail-closed signal: the audited
+/// mutation could not durably + validly persist, so nothing is acknowledged.
+#[derive(Debug, thiserror::Error)]
+pub enum GatewayError {
+    #[error("illegal {machine} transition: {from} → {to}")]
+    IllegalTransition {
+        machine: &'static str,
+        from: String,
+        to: String,
+    },
+    #[error("audit-write failed (§15/§17 fail-closed): {0}")]
+    AuditWriteFailed(#[from] EventStoreError),
+    #[error("approval expired")]
+    ApprovalExpired,
+    #[error("not found: {0}")]
+    NotFound(String),
+    #[error("policy denied the action")]
+    PolicyDenied,
+    /// the policy returned a decision 2.1b does not route yet (the stub is require-approval-for-all;
+    /// the allow→queue/execute, deny, downgrade, needs-more-context routing is 2.2). Fail-closed —
+    /// distinct from `PolicyDenied` (which means the policy actively denied), and never a panic in
+    /// the write-actor.
+    #[error("policy decision not supported until 2.2: {0}")]
+    UnsupportedPolicyDecision(String),
+    #[error("gateway serialization failed: {0}")]
+    Serialize(String),
+}
+
+/// Map a registry-row rusqlite error → fail-closed `AuditWriteFailed` (a failed row write in the
+/// gateway txn means the audited mutation didn't persist → roll back).
+pub(crate) fn db_err(e: rusqlite::Error) -> GatewayError {
+    GatewayError::AuditWriteFailed(EventStoreError::Write(e))
+}
+
+/// A closed contract enum → its exact snake_case wire string (for a `TEXT` registry column). A
+/// serde failure preserves its context (vs collapsing to a generic message).
+pub(crate) fn enum_wire<T: Serialize>(v: &T) -> Result<String, GatewayError> {
+    let j = serde_json::to_value(v).map_err(|e| GatewayError::Serialize(e.to_string()))?;
+    j.as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| GatewayError::Serialize("enum did not render to a wire string".to_string()))
+}
+
+/// `RiskLevel` (and any integer-wire newtype) → its integer (for the `risk_level` column).
+pub(crate) fn enum_int<T: Serialize>(v: &T) -> Result<i64, GatewayError> {
+    let j = serde_json::to_value(v).map_err(|e| GatewayError::Serialize(e.to_string()))?;
+    j.as_i64()
+        .ok_or_else(|| GatewayError::Serialize("value did not render to an integer".to_string()))
+}
+
+/// Build an `ActionExecution*` [`AppendIntent`] for `req`: identity on the envelope columns (§7.1)
+/// — `correlation_id == action_request_id` (ties the event family), the requester's **mapped audit
+/// actor** (R-2 `requester_type → actor_type`), `source = action_gateway`. The payload carries only
+/// the event-specific delta. `workspace_id` uses the system sentinel in 2.1b (project→workspace
+/// resolution lands with Phase-5 projects — Step-9 flag). Events go ONLY through the gateway-txn
+/// `.append()` so this passes the §15 redaction gate (forbidden #2/#3).
+pub(crate) fn gateway_event_intent(
+    req: &ActionRequest,
+    event_type: &str,
+    payload_json: String,
+    occurred_at: &str,
+    approval_id: Option<String>,
+) -> AppendIntent {
+    AppendIntent {
+        event_type: event_type.to_string(),
+        event_version: 1,
+        occurred_at: occurred_at.to_string(),
+        // 2.1b: the action's true workspace (project→workspace) resolves with Phase-5 projects;
+        // until then gateway events scope to the reserved system workspace (Step-9 flag).
+        workspace_id: WorkspaceId::system(),
+        actor_type: req.requester_type.to_actor_type(),
+        actor_id: req.requester_id.clone(),
+        source_type: SourceType::ActionGateway,
+        source_id: "action_gateway".to_string(),
+        correlation_id: req.action_request_id.as_str().to_string(),
+        sensitivity: Sensitivity::Internal,
+        payload_json,
+        schema_version: "event-envelope-v1".to_string(),
+        idempotency_key: None,
+        project_id: req.project_id.clone(),
+        session_id: None,
+        agent_team_id: None,
+        visibility: Some(Visibility::Project),
+        action_request_id: Some(req.action_request_id.clone()),
+        approval_id,
+        causation_id: None,
+    }
+}
+
+/// The Action Gateway — holds the injected policy engine (and, at L3, the executor). The pipeline
+/// methods (`submit_action`, …) live in [`pipeline`].
+pub struct Gateway {
+    policy: Box<dyn policy::PolicyEngine>,
+}
+
+impl Gateway {
+    pub fn new(policy: Box<dyn policy::PolicyEngine>) -> Self {
+        Self { policy }
+    }
+
+    /// the injected policy engine (the pipeline submodule consults it).
+    pub(crate) fn policy(&self) -> &dyn policy::PolicyEngine {
+        self.policy.as_ref()
+    }
+}

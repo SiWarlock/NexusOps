@@ -46,6 +46,9 @@ fn intent(occurred_at: &str, payload: &str) -> AppendIntent {
         session_id: None,
         agent_team_id: None,
         visibility: None,
+        action_request_id: None,
+        approval_id: None,
+        causation_id: None,
     }
 }
 
@@ -285,6 +288,9 @@ fn test_golden_log_deterministic_replay() {
             session_id: None,
             agent_team_id: None,
             visibility: None,
+            action_request_id: None,
+            approval_id: None,
+            causation_id: None,
         }
     }
     let golden = |path: &std::path::Path| -> Vec<EventEnvelope> {

@@ -127,7 +127,11 @@ status_machine! {
         Queued, Executing, Succeeded, Failed, PartiallySucceeded, RolledBack,
         RollbackFailed, Cancelled, Expired,
     }
-    terminal { Succeeded, Failed, PartiallySucceeded, RolledBack, RollbackFailed, Cancelled, Expired }
+    // `Denied` is terminal-by-nature: a denied request never executes (INV-SEC-1) and has no
+    // legitimate forward edge — matches the gateway guard's Denied-sink + the Approval machine's
+    // terminal `Denied` (2.1b Option-A reconcile; the 0.5 freeze omitting it was an oversight).
+    // is_terminal() is a Rust method, not serialized → zero wire/CONTRACT impact.
+    terminal { Denied, Succeeded, Failed, PartiallySucceeded, RolledBack, RollbackFailed, Cancelled, Expired }
 }
 
 status_machine! {

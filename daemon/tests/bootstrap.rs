@@ -59,6 +59,9 @@ fn test_intent() -> AppendIntent {
         session_id: None,
         agent_team_id: None,
         visibility: None,
+        action_request_id: None,
+        approval_id: None,
+        causation_id: None,
     }
 }
 

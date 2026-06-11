@@ -338,6 +338,9 @@ fn intent(event_type: &str, payload: &str) -> AppendIntent {
         session_id: None,
         agent_team_id: None,
         visibility: None,
+        action_request_id: None,
+        approval_id: None,
+        causation_id: None,
     }
 }
 
@@ -441,6 +444,9 @@ fn test_divert_preserves_routing_reclassifies_and_namespaces_key() {
         session_id: None,
         agent_team_id: None,
         visibility: None,
+        action_request_id: None,
+        approval_id: None,
+        causation_id: None,
     };
     store.append(original).unwrap();
 

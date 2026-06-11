@@ -244,6 +244,7 @@ fn test_terminal_states_marked() {
     check_terminal!(
         ActionRequestStatus,
         [
+            "denied", // 2.1b Option-A reconcile — terminal-by-nature (no forward edge, never executes)
             "succeeded",
             "failed",
             "partially_succeeded",

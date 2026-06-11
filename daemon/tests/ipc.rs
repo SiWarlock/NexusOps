@@ -320,6 +320,9 @@ fn seed_session(path: &Path) {
             session_id: Some(SessionId::new()),
             agent_team_id: None,
             visibility: None,
+            action_request_id: None,
+            approval_id: None,
+            causation_id: None,
         })
         .unwrap();
 }

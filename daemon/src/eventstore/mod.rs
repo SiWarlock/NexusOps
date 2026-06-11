@@ -110,6 +110,15 @@ pub struct AppendIntent {
     pub agent_team_id: Option<AgentTeamId>,
     /// §7.1 visibility; `None` persists the DDL default `project`.
     pub visibility: Option<Visibility>,
+    // --- 2.1b gateway FK columns (the events table has held these since MIGRATION_1; the Action
+    // Gateway is the first emitter to populate them so its `ActionExecution*` family is correlatable
+    // to the action/approval, §6.2/§7.1). Typed `Option`/newtypes; `None` persists NULL. ---
+    /// the action this event belongs to (the Gateway sets `correlation_id == action_request_id` too)
+    pub action_request_id: Option<ActionRequestId>,
+    /// the approval this event belongs to (`appr_` id; String — the envelope column is untyped)
+    pub approval_id: Option<String>,
+    /// the immediate prior event in the causal chain (§7.1; typed as the frozen `EventId`)
+    pub causation_id: Option<EventId>,
 }
 
 /// A read result that degrades instead of crashing on a malformed row (§17).
@@ -192,158 +201,57 @@ impl EventStore {
         crate::projections::rebuild(&mut self.conn).map_err(projection_to_store_err)
     }
 
-    /// Append one event. Assigns `seq` (canonical monotonic order), `event_id`,
-    /// `recorded_at`. Fails closed on a write/constraint failure (§15/§17).
+    /// Append one event. Assigns `seq` (canonical monotonic order), `event_id`, `recorded_at`.
+    /// Fails closed on a write/constraint failure (§15/§17). A thin wrapper that opens its own
+    /// IMMEDIATE txn over [`append_in_txn`] — the gateway pipeline shares that same primitive WITHIN
+    /// its own txn so a `{durable-row write + authoritative event}` commits atomically (2.1b).
     pub fn append(&mut self, i: AppendIntent) -> Result<EventId, EventStoreError> {
-        // fail-closed: serialize the enum audit fields up front — an enum that
-        // can't render to its wire string is an error, never an empty column.
-        let actor = enum_wire(&i.actor_type)?;
-        let source = enum_wire(&i.source_type)?;
-        let sensitivity = enum_wire(&i.sensitivity)?;
-        // `None` → the DDL default `project` (the column is NOT NULL); an explicit
-        // value persists verbatim. Fail-closed if a Visibility can't render.
-        let visibility = match &i.visibility {
-            Some(v) => enum_wire(v)?,
-            None => "project".to_string(),
-        };
-
-        // §15 redaction-before-persist GATE: route the payload through the Redactor
-        // and REFUSE to persist anything not `redacted` (fail-closed).
-        let outcome = self.redactor.redact(&i.payload_json);
-        // §15 quarantine-DIVERT: the Redactor flagged a high-confidence secret it CANNOT safely
-        // redact in place → do NOT persist the original; record a content-free
-        // `SensitiveOutputRedacted` in its place. Guard against recursion: a quarantine signal on
-        // a `SensitiveOutputRedacted` event itself is fail-closed (we can't even redact our own
-        // audit record) — never divert a divert.
-        if let Some(q) = outcome.quarantine {
-            if i.event_type == SensitiveOutputRedacted::EVENT_TYPE {
-                return Err(EventStoreError::RedactionRequired);
-            }
-            return self.divert_quarantined(&i, q);
-        }
-        if outcome.status != RedactionStatus::Redacted {
-            return Err(EventStoreError::RedactionRequired);
-        }
-        let redaction_status = enum_wire(&outcome.status)?;
-
-        let event_id = self.idgen.new_event_id();
-        let recorded_at = self.clock.now_rfc3339();
-
-        // seq assignment + INSERT in ONE IMMEDIATE transaction so the canonical
-        // `seq` (§7.1) is atomic at the DB level, not merely by the &mut writer.
-        let tx = self
-            .conn
+        // seq assignment + INSERT in ONE IMMEDIATE transaction so the canonical `seq` (§7.1) is
+        // atomic at the DB level. Disjoint field borrows (vs `&self`) so the txn can co-exist with
+        // the redactor/idgen/clock refs `append_in_txn` needs.
+        let Self {
+            conn,
+            idgen,
+            clock,
+            redactor,
+        } = self;
+        let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(EventStoreError::Write)?;
-        let seq: i64 = tx
-            .query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM events", [], |r| {
-                r.get(0)
-            })
-            .map_err(EventStoreError::Write)?;
-        let res = tx.execute(
-            "INSERT INTO events \
-             (event_id, seq, event_type, event_version, occurred_at, recorded_at, \
-              workspace_id, project_id, actor_type, actor_id, source_type, source_id, \
-              correlation_id, session_id, agent_team_id, idempotency_key, sensitivity, \
-              visibility, payload_json, schema_version, redaction_status, redaction_engine_version) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
-            rusqlite::params![
-                event_id.as_str(),
-                seq,
-                i.event_type,
-                i.event_version,
-                i.occurred_at,
-                recorded_at,
-                i.workspace_id.as_str(),
-                i.project_id.as_ref().map(|x| x.as_str()),
-                actor,
-                i.actor_id,
-                source,
-                i.source_id,
-                i.correlation_id,
-                i.session_id.as_ref().map(|x| x.as_str()),
-                i.agent_team_id.as_ref().map(|x| x.as_str()),
-                i.idempotency_key,
-                sensitivity,
-                visibility,
-                outcome.payload_json, // the REDACTED payload (§15)
-                i.schema_version,
-                redaction_status,
-                outcome.engine_version,
-            ],
-        );
-        match res {
-            Ok(_) => {
-                // §7 in-band fan-out: fold the just-appended event into the read
-                // models WITHIN this txn, on the already-redacted payload (the §15
-                // gate ran above). A reader never sees an event whose projections
-                // haven't applied; a projector failure degrades (never aborts) the
-                // raw event (§7.2). Reading the row back (vs reusing the in-memory
-                // intent) means append + rebuild fold byte-identical envelopes.
-                let env = read_envelope_by_seq(&tx, seq)?;
-                crate::projections::apply_all(&tx, &env).map_err(projection_to_store_err)?;
-                // §7 transactional-outbox: delivery intents join the SAME txn, after
-                // the projections, on the already-redacted event (§15 sync sink). A
-                // failure here rolls the whole append back (recorded-iff-intended).
-                outbox::write_for_event(&tx, &env, self.idgen.as_ref(), self.clock.as_ref())?;
-                tx.commit().map_err(EventStoreError::Write)?;
-                Ok(event_id)
-            }
-            // tx drops → rollback on either error path (fail-closed; nothing persists)
-            Err(e) if is_idempotency_violation(&e) => Err(EventStoreError::DuplicateIdempotencyKey),
-            Err(e) => Err(EventStoreError::Write(e)),
-        }
+        let id = append_in_txn(&tx, &i, redactor.as_ref(), idgen.as_ref(), clock.as_ref())?;
+        tx.commit().map_err(EventStoreError::Write)?;
+        Ok(id)
     }
 
-    /// §15 quarantine divert: append a content-free [`SensitiveOutputRedacted`] in place of an
-    /// event the Redactor could not safely redact. Preserves the diverted event's routing /
-    /// identity envelope fields for forensics (workspace/project/actor/source/session/…) but
-    /// NOT its payload — the SOR carries only `{original_event_type, reason, detector}` (no secret
-    /// byte). Flows through the normal `append`: the §15 gate + projector fold run on the
-    /// content-free payload (→ Redacted → persists); the recursion guard in `append` stops a
-    /// divert-of-a-divert. The original payload never touches `events`.
-    fn divert_quarantined(
-        &mut self,
-        original: &AppendIntent,
-        q: QuarantineSignal,
-    ) -> Result<EventId, EventStoreError> {
-        let payload = serde_json::to_string(&SensitiveOutputRedacted {
-            original_event_type: original.event_type.clone(),
-            reason: q.reason,
-            detector: q.detector,
-        })
-        .map_err(|e| EventStoreError::Reconstruct(e.to_string()))?;
-        let sor = AppendIntent {
-            event_type: SensitiveOutputRedacted::EVENT_TYPE.to_string(),
-            event_version: 1,
-            payload_json: payload,
-            // preserve the diverted event's routing/identity for forensics; drop its payload.
-            occurred_at: original.occurred_at.clone(),
-            workspace_id: original.workspace_id.clone(),
-            actor_type: original.actor_type,
-            actor_id: original.actor_id.clone(),
-            source_type: original.source_type,
-            source_id: original.source_id.clone(),
-            correlation_id: original.correlation_id.clone(),
-            // a content-free audit record — classify it by the record's OWN sensitivity
-            // (Internal), NOT the diverted event's (which may be Restricted/Secret); inheriting
-            // would over-classify a payload-free row + skew downstream access control (mirrors the
-            // 1.6c AuditIntegrityViolation, which is Internal).
-            sensitivity: Sensitivity::Internal,
-            schema_version: original.schema_version.clone(),
-            // namespace the dedup key (mirrors the AIV `audit-integrity-{seq}` idiom): a retry of
-            // the same diverted event dedups to the ONE SOR, while never COLLIDING with an
-            // unrelated event that legitimately holds the original key. `None` stays `None`.
-            idempotency_key: original
-                .idempotency_key
-                .as_ref()
-                .map(|k| format!("divert-{k}")),
-            project_id: original.project_id.clone(),
-            session_id: original.session_id.clone(),
-            agent_team_id: original.agent_team_id.clone(),
-            visibility: original.visibility,
+    /// Run a Gateway transaction (2.1b): open ONE IMMEDIATE txn, hand the closure a [`GatewayTxn`]
+    /// (its registry-row writes via `.tx()`, its authoritative events via `.append()` — the SAME
+    /// §15 gate + seq + in-band projection fold + outbox as [`EventStore::append`]), then commit on
+    /// `Ok` / roll back on `Err` (the tx drops). This makes `{action_requests/approvals row +
+    /// ActionExecution* event}` atomic per transition — fail-closed (INV-SEC-1, §15/§17). The conn
+    /// stays private; only the Action Gateway (the sole mutator, forbidden #2) drives this.
+    pub fn gateway_txn<T, E>(&mut self, f: impl FnOnce(&GatewayTxn) -> Result<T, E>) -> Result<T, E>
+    where
+        E: From<EventStoreError>,
+    {
+        let Self {
+            conn,
+            idgen,
+            clock,
+            redactor,
+        } = self;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| E::from(EventStoreError::Write(e)))?;
+        let gtx = GatewayTxn {
+            tx: &tx,
+            redactor: redactor.as_ref(),
+            idgen: idgen.as_ref(),
+            clock: clock.as_ref(),
         };
-        self.append(sor)
+        let result = f(&gtx)?;
+        tx.commit()
+            .map_err(|e| E::from(EventStoreError::Write(e)))?;
+        Ok(result)
     }
 
     /// All events in canonical `seq` order. Strict — a malformed row is an error
@@ -459,6 +367,10 @@ impl EventStore {
                 session_id: None,
                 agent_team_id: None,
                 visibility: Some(Visibility::System),
+                // the §17 integrity record is a System event, not a gateway action — no FK edges.
+                action_request_id: None,
+                approval_id: None,
+                causation_id: None,
             };
             // crash-safe dedup: a duplicate (re-detected) emission hits the UNIQUE idempotency_key
             // → DuplicateIdempotencyKey, which we treat as already-emitted (still mark the flag).
@@ -610,9 +522,192 @@ fn row_to_envelope(row: &rusqlite::Row) -> Result<EventEnvelope, EventStoreError
     row_to_envelope_offset(row, 0)
 }
 
-/// Reconstruct the canonical envelope of the row at `seq`, inside `tx` — so the
-/// in-band projection fold sees exactly what a later rebuild reconstructs (§7.2
-/// rebuild-equivalence). `object_refs` is empty here (projectors derive it).
+/// A Gateway-scoped handle to one open write transaction (2.1b). Bundles the txn + the redaction/
+/// id/clock injectables so the Action Gateway composes `{durable-row write + authoritative event}`
+/// in ONE atomic txn. `.append()` is the SAME §15-gated append path as [`EventStore::append`];
+/// `.tx()` is for the gateway's OWN registry tables (`action_requests`/`approvals`) — events go
+/// ONLY through `.append()` (forbidden #2/#3: the single audited event-emit path).
+pub struct GatewayTxn<'a> {
+    tx: &'a rusqlite::Transaction<'a>,
+    redactor: &'a dyn Redactor,
+    idgen: &'a dyn IdGen,
+    clock: &'a dyn Clock,
+}
+
+impl GatewayTxn<'_> {
+    /// Append an authoritative event through the §15 gate + seq + in-band projections + outbox,
+    /// WITHIN this gateway txn (fail-closed: a redaction/write failure aborts the whole txn → the
+    /// caller's row writes roll back too).
+    pub fn append(&self, i: &AppendIntent) -> Result<EventId, EventStoreError> {
+        append_in_txn(self.tx, i, self.redactor, self.idgen, self.clock)
+    }
+
+    /// The open transaction — for the gateway's OWN registry-row writes (`action_requests`/
+    /// `approvals`). NEVER write `events` through this directly — use [`GatewayTxn::append`].
+    pub fn tx(&self) -> &rusqlite::Transaction<'_> {
+        self.tx
+    }
+
+    /// `now` as an RFC3339 `Z` string (the injected clock — deterministic in tests).
+    pub fn now_rfc3339(&self) -> String {
+        self.clock.now_rfc3339()
+    }
+}
+
+/// Append one event into the caller's transaction: the §15 redaction GATE (strictly BEFORE the
+/// INSERT) → quarantine-divert / reject-unredacted → `seq` assignment → INSERT → the 1.2 in-band
+/// projection fold → the 1.3 outbox write. NO commit (the caller owns the txn boundary). Extracted
+/// from `append` (2.1b) so the Gateway shares the EXACT same gate + fold within its own atomic txn
+/// — the ordering (gate-before-INSERT, fold + outbox after) is preserved byte-for-byte.
+pub(crate) fn append_in_txn(
+    tx: &rusqlite::Transaction,
+    i: &AppendIntent,
+    redactor: &dyn Redactor,
+    idgen: &dyn IdGen,
+    clock: &dyn Clock,
+) -> Result<EventId, EventStoreError> {
+    // fail-closed: serialize the enum audit fields up front — an enum that can't render to its wire
+    // string is an error, never an empty column.
+    let actor = enum_wire(&i.actor_type)?;
+    let source = enum_wire(&i.source_type)?;
+    let sensitivity = enum_wire(&i.sensitivity)?;
+    let visibility = match &i.visibility {
+        Some(v) => enum_wire(v)?,
+        None => "project".to_string(),
+    };
+
+    // §15 redaction-before-persist GATE: route the payload through the Redactor and REFUSE to
+    // persist anything not `redacted` (fail-closed) — strictly BEFORE the INSERT below.
+    let outcome = redactor.redact(&i.payload_json);
+    if let Some(q) = outcome.quarantine {
+        // never divert a divert (we can't redact our own audit record) — fail closed.
+        if i.event_type == SensitiveOutputRedacted::EVENT_TYPE {
+            return Err(EventStoreError::RedactionRequired);
+        }
+        return divert_in_txn(tx, i, q, redactor, idgen, clock);
+    }
+    if outcome.status != RedactionStatus::Redacted {
+        return Err(EventStoreError::RedactionRequired);
+    }
+    let redaction_status = enum_wire(&outcome.status)?;
+
+    let event_id = idgen.new_event_id();
+    let recorded_at = clock.now_rfc3339();
+
+    let seq: i64 = tx
+        .query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM events", [], |r| {
+            r.get(0)
+        })
+        .map_err(EventStoreError::Write)?;
+    let res = tx.execute(
+        "INSERT INTO events \
+         (event_id, seq, event_type, event_version, occurred_at, recorded_at, \
+          workspace_id, project_id, actor_type, actor_id, source_type, source_id, \
+          correlation_id, causation_id, action_request_id, approval_id, session_id, \
+          agent_team_id, idempotency_key, sensitivity, visibility, payload_json, \
+          schema_version, redaction_status, redaction_engine_version) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)",
+        rusqlite::params![
+            event_id.as_str(),
+            seq,
+            i.event_type,
+            i.event_version,
+            i.occurred_at,
+            recorded_at,
+            i.workspace_id.as_str(),
+            i.project_id.as_ref().map(|x| x.as_str()),
+            actor,
+            i.actor_id,
+            source,
+            i.source_id,
+            i.correlation_id,
+            i.causation_id.as_ref().map(|x| x.as_str()),
+            i.action_request_id.as_ref().map(|x| x.as_str()),
+            i.approval_id,
+            i.session_id.as_ref().map(|x| x.as_str()),
+            i.agent_team_id.as_ref().map(|x| x.as_str()),
+            i.idempotency_key,
+            sensitivity,
+            visibility,
+            outcome.payload_json, // the REDACTED payload (§15)
+            i.schema_version,
+            redaction_status,
+            outcome.engine_version,
+        ],
+    );
+    match res {
+        Ok(_) => {
+            // §7 in-band fan-out: fold the just-appended event into the read models WITHIN this txn,
+            // on the already-redacted payload (the §15 gate ran above). Read the row back (vs the
+            // in-memory intent) so append + rebuild fold byte-identical envelopes.
+            let env = read_envelope_by_seq(tx, seq)?;
+            crate::projections::apply_all(tx, &env).map_err(projection_to_store_err)?;
+            // §7 transactional-outbox: delivery intents join the SAME txn, after the projections, on
+            // the already-redacted event (§15 sync sink). A failure here rolls the append back.
+            outbox::write_for_event(tx, &env, idgen, clock)?;
+            Ok(event_id)
+        }
+        // the caller's tx drops → rollback on either error path (fail-closed; nothing persists)
+        Err(e) if is_idempotency_violation(&e) => Err(EventStoreError::DuplicateIdempotencyKey),
+        Err(e) => Err(EventStoreError::Write(e)),
+    }
+}
+
+/// §15 quarantine-divert WITHIN the caller's txn: build a content-free `SensitiveOutputRedacted`
+/// (preserves routing/identity envelope fields for forensics, drops the payload) and append it via
+/// [`append_in_txn`] (whose recursion guard stops a divert-of-a-divert). The original payload never
+/// touches `events`.
+fn divert_in_txn(
+    tx: &rusqlite::Transaction,
+    original: &AppendIntent,
+    q: QuarantineSignal,
+    redactor: &dyn Redactor,
+    idgen: &dyn IdGen,
+    clock: &dyn Clock,
+) -> Result<EventId, EventStoreError> {
+    let payload = serde_json::to_string(&SensitiveOutputRedacted {
+        original_event_type: original.event_type.clone(),
+        reason: q.reason,
+        detector: q.detector,
+    })
+    .map_err(|e| EventStoreError::Reconstruct(e.to_string()))?;
+    let sor = AppendIntent {
+        event_type: SensitiveOutputRedacted::EVENT_TYPE.to_string(),
+        event_version: 1,
+        payload_json: payload,
+        occurred_at: original.occurred_at.clone(),
+        workspace_id: original.workspace_id.clone(),
+        actor_type: original.actor_type,
+        actor_id: original.actor_id.clone(),
+        source_type: original.source_type,
+        source_id: original.source_id.clone(),
+        correlation_id: original.correlation_id.clone(),
+        // content-free record → classify by its OWN sensitivity (Internal), NOT the diverted
+        // event's (which may be Restricted/Secret) — inheriting would over-classify a payload-free
+        // row (mirrors the 1.6c AuditIntegrityViolation, which is Internal).
+        sensitivity: Sensitivity::Internal,
+        schema_version: original.schema_version.clone(),
+        // namespace the dedup key so a retry dedups to the ONE SOR without colliding with an
+        // unrelated event that legitimately holds the original key. `None` stays `None`.
+        idempotency_key: original
+            .idempotency_key
+            .as_ref()
+            .map(|k| format!("divert-{k}")),
+        project_id: original.project_id.clone(),
+        session_id: original.session_id.clone(),
+        agent_team_id: original.agent_team_id.clone(),
+        visibility: original.visibility,
+        // preserve the diverted event's gateway FKs for forensics — only its PAYLOAD is dropped.
+        action_request_id: original.action_request_id.clone(),
+        approval_id: original.approval_id.clone(),
+        causation_id: original.causation_id.clone(),
+    };
+    append_in_txn(tx, &sor, redactor, idgen, clock)
+}
+
+/// Reconstruct the canonical envelope of the row at `seq`, inside `tx` — so the in-band projection
+/// fold sees exactly what a later rebuild reconstructs (§7.2 rebuild-equivalence). `object_refs` is
+/// empty here (projectors derive it).
 fn read_envelope_by_seq(
     tx: &rusqlite::Transaction,
     seq: i64,

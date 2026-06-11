@@ -256,6 +256,9 @@ fn test_healthy_log_replays_unchanged() {
                 session_id: Some(session_id.clone()),
                 agent_team_id: None,
                 visibility: Some(Visibility::Project),
+                action_request_id: None,
+                approval_id: None,
+                causation_id: None,
             })
             .expect("append a healthy SessionStarted");
         // rebuild over the degradable path — must reproduce the read model with no quarantine.

@@ -252,5 +252,9 @@ fn system_intent(
         session_id: None,
         agent_team_id: None,
         visibility: Some(Visibility::System),
+        // bootstrap System events are not gateway actions (the Gateway is Phase 2) — no FK edges.
+        action_request_id: None,
+        approval_id: None,
+        causation_id: None,
     }
 }

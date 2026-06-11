@@ -3,7 +3,7 @@
 **Date:** 2026-06-11
 **Track:** daemon
 **Predecessor handoff:** `001-2026-06-08-phase1-eod.md`
-**Successor handoff:** _(filled in when the next /team-end runs)_
+**Successor handoff:** `003-2026-06-11-phase2-2.0sec-done-scaffolding-upgrade.md`
 **Round-seal commit at handoff:** `cf2b3f9` (on origin/main)
 
 ## Why this handoff exists

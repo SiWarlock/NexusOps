@@ -6,7 +6,7 @@
 | **Phase** | Phase 1 (daemon foundation) — task 1.7 (OQ-SEC-2) → **Phase 1's last acceptance blocker** |
 | **Track / role** | `daemon` / daemon-implementer |
 | **Predecessor** | [007](007-2026-06-10-degradable-replay-and-subscribe-serve.md) |
-| **Successor** | _(TBD — pending the §15 recall-envelope human ruling; a (B) hardening sub-slice or Phase 2 Action Gateway)_ |
+| **Successor** | [009](009-2026-06-11-redactor-recall-hardening.md) — Phase 2.0-SEC §15 recall-envelope measured + owned (the human ruled Option B) |
 | **Commits** | **L1:** `c795668` (Shannon-entropy fallback — `KEY=value` + bare-run masking; daemon-internal, no contract bump). **L2:** `f807913` (quarantine→`SensitiveOutputRedacted` divert; CONTRACT 0.13.0→0.14.0). _(This `docs(sessions)` commit seals the session.)_ |
 | **Base** | `804fa31` (Phase 1.6 sealed; CONTRACT_VERSION 0.13.0) |
 | **Contract** | `CONTRACT_VERSION` **0.13.0→0.14.0** (L2 adds the `SensitiveOutputRedacted` event payload); L1 is daemon-internal (engine `prefix-v1`→`prefix-entropy-v2`, no bump) |

@@ -5,6 +5,7 @@ use nexusops_shared::actions::{
     ActionPlan, ActionPreview, ActionRequest, ApprovalMode, PolicyDecisionStatus, RequiredApprover,
     RiskLevel,
 };
+use nexusops_shared::catalog;
 use nexusops_shared::gateway_ids::ApprovalId;
 use nexusops_shared::ipc::{
     ActionAck, DeltaKind, PlanAck, PlanStepAck, ProjectionDelta, ProjectionName,
@@ -44,15 +45,15 @@ pub(crate) fn approval_queue_delta(approval_id: &str) -> ProjectionDelta {
 }
 
 impl Gateway {
-    /// `submit_action` (§6.1/AG §8) — run the staged single-action pipeline to `awaiting_approval`.
-    /// ONE atomic gateway txn (fail-closed): persist the `action_requests` row at `Submitted` +
-    /// emit `ActionRequested`; consult the policy stub (require-approval); advance
-    /// Submitted→PolicyDecided→AwaitingApproval (R-9 guarded); open an `approvals` row + emit
-    /// `ActionApprovalRequested`. Any event-write / row-write failure rolls the whole txn back — no
-    /// row, no approval, no ack, no event (INV-SEC-1 / §15 / §17). **The requester-supplied
-    /// `risk_level` is RECORDED for audit but NOT trusted for the decision in 2.1b** — the stub is
-    /// risk-blind (require-approval-for-all), so an under-claimed risk cannot bypass the gate; 2.2
-    /// makes risk catalog-authoritative.
+    /// `submit_action` (§6.1/AG §8) — run the staged single-action pipeline. ONE atomic gateway txn
+    /// (fail-closed): persist the `action_requests` row at `Submitted` + emit `ActionRequested`;
+    /// consult the catalog-driven policy (2.2); advance Submitted→PolicyDecided→AwaitingApproval
+    /// (R-9 guarded) + open an `approvals` row + emit `ActionApprovalRequested` for a
+    /// require_approval / require_step_approval decision. Any event-write / row-write failure rolls
+    /// the whole txn back — no row, no approval, no ack, no event (INV-SEC-1 / §15 / §17). **The
+    /// requester-supplied `risk_level` is RECORDED for audit but NOT trusted** — it is reconciled to
+    /// the §6.3 catalog risk before persist (so an under-claimed risk can never lower scrutiny). The
+    /// risk-0 `allow` auto-execute path (no approval) is L3; an uncatalogued type fails closed (deny).
     pub fn submit_action(
         &self,
         store: &mut EventStore,
@@ -69,19 +70,28 @@ impl Gateway {
     pub(crate) fn submit_action_collecting(
         &self,
         store: &mut EventStore,
-        req: ActionRequest,
+        mut req: ActionRequest,
         deltas: &mut Vec<ProjectionDelta>,
     ) -> Result<ActionAck, GatewayError> {
+        // 2.2 Q5 — reconcile the recorded risk to the AUTHORITATIVE §6.3 catalog risk BEFORE the row
+        // + the ActionRequested event persist, so the audit trail records the TRUE risk, not the
+        // proposer's claim (§15 recorded-not-trusted). Policy-independent (the catalog is the risk
+        // authority regardless of the injected engine). An uncatalogued type has no catalog risk → it
+        // keeps its claim and is DENIED by the policy below (nothing persists — the txn rolls back).
+        if let Some(entry) = catalog::lookup(&req.action_type) {
+            req.risk_level = entry.locked_risk;
+        }
+
         store.gateway_txn(|gtx| {
             let now = gtx.now_rfc3339();
             let act_id = req.action_request_id.as_str().to_string();
 
-            // 1. persist the intent at Submitted (inputs §15-redacted at rest) + emit ActionRequested.
-            //    plan_id = None — a single action is not part of a bundled plan (2.1c).
+            // 1. persist the intent at Submitted (inputs §15-redacted at rest) + emit ActionRequested
+            //    (carrying the reconciled authoritative risk). plan_id = None — single action (2.1c).
             request::insert(gtx, &req, ARStatus::Submitted, None, &now)?;
             gtx.append(&request::action_requested_intent(&req, &now)?)?;
 
-            // 2. policy decision (2.1b stub: always require_approval — risk-blind).
+            // 2. the catalog-driven policy decision (2.2): risk resolved from the §6.3 catalog.
             let decision = self.policy().decide(&req);
             match decision.status {
                 PolicyDecisionStatus::RequireApproval
@@ -109,7 +119,7 @@ impl Gateway {
                         None, // a single action has no parent plan (2.1c)
                         ApprovalStatus::AwaitingApproval,
                         &RequiredApprover::current_user(),
-                        None, // no expiry on the stub submit; the expiry path is exercised at L3
+                        None, // no expiry on submit; the expiry path is exercised via approve (2.1c)
                         &now,
                     )?;
                     gtx.append(&approval::approval_requested_intent(&req, &appr_id, &now)?)?;
@@ -121,10 +131,14 @@ impl Gateway {
                         status: ARStatus::AwaitingApproval,
                     })
                 }
-                // 2.2 implements the allow→queue/execute + deny→denied + downgrade routing; the
-                // 2.1b stub is require-approval-for-all, so this arm is unreached today. Fail CLOSED
-                // with an honest error (NOT a misleading `PolicyDenied`, NOT a write-actor panic) —
-                // a future policy that returns an unrouted decision is rejected, never mis-routed.
+                // a policy `deny` is now a ROUTED outcome (an uncatalogued type → fail-closed deny):
+                // surface the honest PolicyDenied (→ §6.4 policy_denied), never the misleading
+                // UnsupportedPolicyDecision ("not supported until 2.2"). Terminal — nothing executes.
+                PolicyDecisionStatus::Deny => Err(GatewayError::PolicyDenied),
+                // the risk-0 `allow` auto-execute path is L3 (the INV-SEC-1 safety layer — its OWN
+                // commit; the auto-execute path is never bundled with the L2 engine). Until L3 wires
+                // it, a risk-0 `allow` is fail-closed (never silently auto-queued). `downgrade` /
+                // `needs_more_context` have no MVP trigger → genuinely unrouted (a later policy slice).
                 other => Err(GatewayError::UnsupportedPolicyDecision(format!(
                     "{other:?}"
                 ))),

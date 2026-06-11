@@ -17,7 +17,7 @@ use nexusopsd::bootstrap::{cold_start, BootstrapConfig, DB_FILENAME};
 use nexusopsd::clock::SystemClock;
 use nexusopsd::eventstore::{JsonlMirror, PrefixRedactor};
 use nexusopsd::gateway::executor::StubExecutor;
-use nexusopsd::gateway::policy::StubPolicy;
+use nexusopsd::gateway::policy::CatalogPolicy;
 use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
 use nexusopsd::ipc::current_euid;
@@ -64,9 +64,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // run off the write-actor handle.
     let (_pidlock, store, _version) = ctx.into_parts();
     // the Action Gateway (the sole mutator) runs its pipeline ON the write-actor thread (forbidden
-    // #2/#3). 2.1b stubs: StubPolicy (require-approval-for-all → 2.2) + StubExecutor (no real side
-    // effect → 2.3).
-    let gateway = Gateway::new(Box::new(StubPolicy), Box::new(StubExecutor));
+    // #2/#3). 2.2: CatalogPolicy (the §6.3 catalog-authoritative risk engine — risk-0 auto-allows,
+    // 1-3 require approval, 4 require step-approval, uncatalogued fail-closed deny) + StubExecutor
+    // (no real side effect → 2.3).
+    let gateway = Gateway::new(Box::new(CatalogPolicy), Box::new(StubExecutor));
     let actor = WriteActor::spawn(store, Box::new(SystemClock), gateway);
     let handle = actor.handle();
     // the post-commit broadcast sender for the accept-loop's per-connection live subscribers (1.6d);

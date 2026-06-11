@@ -1,7 +1,232 @@
 {
   "$defs": {
+    "ActionDependency": {
+      "additionalProperties": false,
+      "description": "A step-ordering edge within an [`ActionPlan`] (§6.2 ActionDependency). AG §9.2 references it\nbut never defines its shape — frozen as the minimal step-ordering edge (chosen shape recorded\nfor AG/Appendix-A adoption at Step-9).",
+      "properties": {
+        "depends_on_step_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "step_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_id",
+        "depends_on_step_ids"
+      ],
+      "type": "object"
+    },
+    "ActionPlan": {
+      "additionalProperties": false,
+      "description": "A bundled multi-step plan (§6.2 ActionPlan; O-3). `rollback_plan` (whose RollbackPlan shape\nAG never pins) is DEFERRED → 2.4; `summary`/`created_at`/`evidence_refs` are additive-later\n(the 2.1b `action_plans` table can carry `created_at` as a column without the model).",
+      "properties": {
+        "approval_mode": {
+          "$ref": "#/$defs/ApprovalMode"
+        },
+        "dependencies": {
+          "items": {
+            "$ref": "#/$defs/ActionDependency"
+          },
+          "type": "array"
+        },
+        "overall_risk": {
+          "$ref": "#/$defs/RiskLevel"
+        },
+        "plan_id": {
+          "$ref": "#/$defs/ActionPlanId"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/ActionPlanStep"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan_id",
+        "title",
+        "steps",
+        "dependencies",
+        "overall_risk",
+        "approval_mode"
+      ],
+      "type": "object"
+    },
+    "ActionPlanId": {
+      "description": "`aplan_<ULID>` — an [`crate::actions::ActionPlan`] (§6.2; a bundled multi-step plan, O-3).",
+      "type": "string"
+    },
+    "ActionPlanStep": {
+      "additionalProperties": false,
+      "description": "One step of a bundled [`ActionPlan`] (§6.2 ActionPlanStep; AG §9.3). Wraps a full\n[`ActionRequest`]; `status` is the step's own §5.1 [`ActionRequestStatus`] within the plan.",
+      "properties": {
+        "action_request": {
+          "$ref": "#/$defs/ActionRequest"
+        },
+        "can_skip": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "rollback_action_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/ActionRequestStatus"
+        },
+        "step_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_id",
+        "label",
+        "action_request",
+        "required",
+        "can_skip",
+        "status"
+      ],
+      "type": "object"
+    },
+    "ActionPreview": {
+      "additionalProperties": false,
+      "description": "A dry-run preview of an action (§6.2 ActionPreview envelope; AG §9.4). The 6 typed per-class\npreviews (command/diff/api/session/workflow/rollback) are **2.3**'s deliverable. DEFERRED → 2.3.",
+      "properties": {
+        "action_request_id": {
+          "type": "string"
+        },
+        "cannot_preview_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "changed_resources": {
+          "items": {
+            "$ref": "#/$defs/ResourceRef"
+          },
+          "type": "array"
+        },
+        "generated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "risk_level": {
+          "$ref": "#/$defs/RiskLevel"
+        },
+        "risk_reasons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action_request_id",
+        "generated_at",
+        "risk_level",
+        "risk_reasons",
+        "summary",
+        "changed_resources"
+      ],
+      "type": "object"
+    },
     "ActionRequest": {
-      "description": "ActionRequest (15, R-5, NEW) — the execution-lifecycle axis.",
+      "additionalProperties": false,
+      "description": "A single typed intent submitted to the Gateway (§6.2 ActionRequest; binding = Appendix A +\nDATA_MODEL §2.9). `inputs` is the open per-action-type payload (`params`; the §6.3 catalog\npins per-type schemas in 2.2 — `action_type` is a `String` here). `status` binds the frozen\n§5.1 [`ActionRequestStatus`] (15). NO daemon behavior here — the pipeline that constructs +\npersists these is 2.1b.",
+      "properties": {
+        "action_request_id": {
+          "type": "string"
+        },
+        "action_type": {
+          "type": "string"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "fencing_token": {
+          "description": "the lease fencing token this execution must present (§17 / §2.6 — bound at execute in 2.4)",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inputs": {
+          "description": "the open per-action-type input payload (`params`); the §6.3 catalog pins per-type\nschemas in 2.2 (free JSON object here, reject-unknown does not apply to its contents)"
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionPreview"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "project_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requester_id": {
+          "type": "string"
+        },
+        "requester_type": {
+          "$ref": "#/$defs/RequesterType"
+        },
+        "resource_refs": {
+          "items": {
+            "$ref": "#/$defs/ResourceRef"
+          },
+          "type": "array"
+        },
+        "risk_level": {
+          "$ref": "#/$defs/RiskLevel"
+        },
+        "status": {
+          "$ref": "#/$defs/ActionRequestStatus"
+        }
+      },
+      "required": [
+        "action_request_id",
+        "action_type",
+        "requester_type",
+        "requester_id",
+        "resource_refs",
+        "inputs",
+        "risk_level",
+        "status",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "ActionRequestStatus": {
+      "description": "ActionRequest (15, R-5, NEW) — the execution-lifecycle axis.\nSchema name = `ActionRequestStatus` (its Rust alias) so the §6.2 `actions::ActionRequest`\nMODEL takes the canonical bare `ActionRequest` $def (2.1a Option-B rename; value-set\nunchanged).",
       "enum": [
         "submitted",
         "previewed",
@@ -20,6 +245,81 @@
         "expired"
       ],
       "type": "string"
+    },
+    "ActionResult": {
+      "additionalProperties": false,
+      "description": "The outcome of an executed action (§6.2 ActionResult; binding = Appendix A). `emitted_events`\nare typed [`EventId`]s (uniform with the ID discipline). `error` is a message (the structured\nActionError taxonomy is DEFERRED → 2.4).",
+      "properties": {
+        "action_request_id": {
+          "type": "string"
+        },
+        "changed_resources": {
+          "items": {
+            "$ref": "#/$defs/ResourceRef"
+          },
+          "type": "array"
+        },
+        "created_resources": {
+          "items": {
+            "$ref": "#/$defs/ResourceRef"
+          },
+          "type": "array"
+        },
+        "emitted_events": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rollback_available": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/ActionResultStatus"
+        }
+      },
+      "required": [
+        "action_request_id",
+        "status",
+        "created_resources",
+        "changed_resources",
+        "emitted_events",
+        "rollback_available"
+      ],
+      "type": "object"
+    },
+    "ActionResultStatus": {
+      "description": "Terminal outcome of an executed action (§6.2 ActionResult).",
+      "enum": [
+        "succeeded",
+        "failed",
+        "partially_succeeded",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "ActorRefBody": {
+      "additionalProperties": false,
+      "description": "A specific approving actor (§6.2 Approval; the `actor` of a [`RequiredApprover`]).",
+      "properties": {
+        "actor_id": {
+          "type": "string"
+        },
+        "actor_type": {
+          "$ref": "#/$defs/RequesterType"
+        }
+      },
+      "required": [
+        "actor_type",
+        "actor_id"
+      ],
+      "type": "object"
     },
     "ActorType": {
       "description": "The 10 canonical audit actors (R-2). Serialized as snake_case `TEXT`.",
@@ -53,7 +353,101 @@
       "type": "string"
     },
     "Approval": {
-      "description": "Approval (10, R-5) — split from ActionRequest; the human/policy decision axis.",
+      "additionalProperties": false,
+      "description": "A human/policy decision over an action or plan (§6.2/§5.1 Approval; binding = Appendix A).\n`status` binds the frozen §5.1 [`ApprovalStatus`] (10). `constraints` (unpinned\nApprovalConstraint shape) is DEFERRED → 2.2.",
+      "properties": {
+        "action_request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approval_id": {
+          "$ref": "#/$defs/ApprovalId"
+        },
+        "decided_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "decided_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionPlanId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required_approver": {
+          "$ref": "#/$defs/RequiredApprover"
+        },
+        "risk_level": {
+          "$ref": "#/$defs/RiskLevel"
+        },
+        "scope": {
+          "$ref": "#/$defs/ApprovalScope"
+        },
+        "status": {
+          "$ref": "#/$defs/ApprovalStatus"
+        }
+      },
+      "required": [
+        "approval_id",
+        "required_approver",
+        "status",
+        "risk_level",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "ApprovalId": {
+      "description": "`appr_<ULID>` — an [`crate::actions::Approval`] (§6.2; the human/policy decision object).",
+      "type": "string"
+    },
+    "ApprovalMode": {
+      "description": "How a bundled [`ActionPlan`] is approved (§6.2, O-3).",
+      "enum": [
+        "approve_all",
+        "step_by_step",
+        "mixed",
+        "blocked"
+      ],
+      "type": "string"
+    },
+    "ApprovalScope": {
+      "description": "The approval's authority scope (§6.2 Approval).",
+      "enum": [
+        "single_action",
+        "plan",
+        "policy_grant"
+      ],
+      "type": "string"
+    },
+    "ApprovalStatus": {
+      "description": "Approval (10, R-5) — split from ActionRequest; the human/policy decision axis.\nSchema name = `ApprovalStatus` (its Rust alias) so the §6.2 `actions::Approval` MODEL\ntakes the canonical bare `Approval` $def (2.1a Option-B rename; value-set unchanged).",
       "enum": [
         "requested",
         "previewed",
@@ -302,6 +696,72 @@
       ],
       "type": "object"
     },
+    "EvidenceConfidence": {
+      "description": "Evidence-link confidence (§6.2 EvidenceRef; AG §9.9).",
+      "enum": [
+        "exact",
+        "likely",
+        "loose",
+        "unverified"
+      ],
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "description": "A reference to evidence backing an action/plan (§6.2 EvidenceRef; AG §9.9). `label` is the\nrequester-supplied natural-language evidence text (required; not reconstructable from\n`{type,id}` — the Brain/PR-review evidence surface depends on it, TWEAK 2026-06-11).",
+      "properties": {
+        "confidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EvidenceConfidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/EvidenceType"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "EvidenceType": {
+      "description": "The kind of evidence backing an action/plan (§6.2 EvidenceRef; AG §9.9's 11 values).",
+      "enum": [
+        "project_brain_evidence_item",
+        "file_anchor",
+        "architecture_anchor",
+        "plan_task",
+        "session_episode",
+        "commit",
+        "pr_check",
+        "terminal_event",
+        "ticket",
+        "workflow_manifest",
+        "user_instruction"
+      ],
+      "type": "string"
+    },
+    "GatewayObjectKind": {
+      "description": "The 2 Gateway-addendum object kinds (§6.2). Serialized snake_case.",
+      "enum": [
+        "approval",
+        "action_plan"
+      ],
+      "type": "string"
+    },
     "GetProjectionParams": {
       "additionalProperties": false,
       "description": "`get_projection` params (§6.1). `page` (pagination) is provisional and omitted for MVP.\n\n**MVP NOTE:** `scope` is **accepted but NOT YET enforced** — the daemon returns the full\nprojection table regardless of `scope.project_id` (the local same-uid peer has no tenancy\nboundary in MVP). Do not build client filtering that assumes the daemon honors `scope`;\nscope filtering (and the `ProjectId` newtype on the field) land when multi-project scoping does.",
@@ -447,6 +907,38 @@
       ],
       "type": "object"
     },
+    "PolicyDecision": {
+      "additionalProperties": false,
+      "description": "The policy engine's decision (§6.2 / AG §12.2). Frozen as the stable core `{status, reasons}`\n— `required_approvals` / `constraints` / `safer_alt` (which reference the unpinned\nApprovalRequirement/ApprovalConstraint shapes + the safer-alt union) are the **2.2** policy-\nengine deliverable, added additively. DEFERRED → 2.2.",
+      "properties": {
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/PolicyDecisionStatus"
+        }
+      },
+      "required": [
+        "status",
+        "reasons"
+      ],
+      "type": "object"
+    },
+    "PolicyDecisionStatus": {
+      "description": "The policy engine's decision (§6.2 / AG §12.2). The full decision payload\n(required_approvals / constraints / safer_alt) is the 2.2 policy-engine deliverable.",
+      "enum": [
+        "allow",
+        "require_approval",
+        "require_step_approval",
+        "deny",
+        "downgrade",
+        "needs_more_context"
+      ],
+      "type": "string"
+    },
     "ProjectBrain": {
       "description": "ProjectBrain (10) — daemon-cached last-reported sidecar status (§7.2).",
       "enum": [
@@ -541,6 +1033,104 @@
         "redacted"
       ],
       "type": "string"
+    },
+    "RequesterType": {
+      "description": "Request-time requester identity (§6.2 / R-2). The AG §9.7 `ActorRef` variants +\n`remote_client` (§6). Mapped to the audit [`ActorType`] via [`RequesterType::to_actor_type`].",
+      "enum": [
+        "user",
+        "project_brain",
+        "agent_session",
+        "workflow_pack",
+        "system_policy",
+        "remote_client"
+      ],
+      "type": "string"
+    },
+    "RequiredApprover": {
+      "additionalProperties": false,
+      "description": "Who must approve (§6.2 Approval; AG §9.5). `kind` selects the approver class; `actor` carries\nthe specific actor IFF `kind == actor` (the Gateway enforces that pairing at 2.1b). Modeled as\na `{kind, actor?}` object (not a data-carrying enum) so the wire stays uniform + 3-way\nverifiable (the §5.0 cross-language equality gate).",
+      "properties": {
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActorRefBody"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/RequiredApproverKind"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "RequiredApproverKind": {
+      "description": "Which class of approver a §6.2 [`Approval`] requires (AG §9.5 `ActorRef | 'current_user' |\n'project_owner'`). A flat closed enum → a clean top-level schema `enum`, reflected\nuniformly by the §5.0 Zod/Pydantic generators (a data-carrying tagged enum's *inline*\nvalue-set is lifted inconsistently across the 3-way verify — so the discriminant is a\nnamed enum, and the specific actor lives in [`RequiredApprover::actor`]).",
+      "enum": [
+        "current_user",
+        "project_owner",
+        "actor"
+      ],
+      "type": "string"
+    },
+    "ResourceRef": {
+      "additionalProperties": false,
+      "description": "A reference to a resource an action reads/mutates (§6.2 ResourceRef; AG §9.8). The leaner\nbinding set `{type, id, uri?}` — AG's `displayName?` is resolvable from `id` (DEFERRED;\nadditive-later if a consumer needs it).",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/ResourceType"
+        },
+        "uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ],
+      "type": "object"
+    },
+    "ResourceType": {
+      "description": "The kind of resource an action touches (§6.2 ResourceRef; AG §9.8's 20 values VERBATIM).\n(§6.2/Appendix-A say \"21 types\"; the 20-vs-21 gap is a tracked cross-doc note — the 21st\nis NOT invented here.)",
+      "enum": [
+        "project",
+        "repo",
+        "worktree",
+        "branch",
+        "file",
+        "diff",
+        "session",
+        "agent_team",
+        "plan_task",
+        "implementation_plan",
+        "workflow_pack",
+        "workflow_instance",
+        "workflow_command",
+        "linear_issue",
+        "github_issue",
+        "pull_request",
+        "execution_profile",
+        "memory_source",
+        "decision",
+        "artifact"
+      ],
+      "type": "string"
+    },
+    "RiskLevel": {
+      "maximum": 4,
+      "minimum": 0,
+      "type": "integer"
     },
     "RpcRequest": {
       "additionalProperties": false,
@@ -800,6 +1390,10 @@
       ],
       "type": "string"
     },
+    "Timestamp": {
+      "format": "date-time",
+      "type": "string"
+    },
     "VersionSkewError": {
       "additionalProperties": false,
       "description": "daemon→client handshake failure on version skew (§6.4): the daemon's supported range + the\nclient's offered version, so the ui can render \"update required\" (its `update_required` path).",
@@ -896,8 +1490,35 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Bundles every frozen contract type so one `schema_for!` captures all value\nsets under `$defs`. Never instantiated — it exists only to drive schema gen.",
   "properties": {
+    "action_dependency": {
+      "$ref": "#/$defs/ActionDependency"
+    },
+    "action_plan": {
+      "$ref": "#/$defs/ActionPlan"
+    },
+    "action_plan_id": {
+      "$ref": "#/$defs/ActionPlanId"
+    },
+    "action_plan_step": {
+      "$ref": "#/$defs/ActionPlanStep"
+    },
+    "action_preview": {
+      "$ref": "#/$defs/ActionPreview"
+    },
     "action_request": {
+      "$ref": "#/$defs/ActionRequestStatus"
+    },
+    "action_request_model": {
       "$ref": "#/$defs/ActionRequest"
+    },
+    "action_result": {
+      "$ref": "#/$defs/ActionResult"
+    },
+    "action_result_status": {
+      "$ref": "#/$defs/ActionResultStatus"
+    },
+    "actor_ref_body": {
+      "$ref": "#/$defs/ActorRefBody"
     },
     "actor_type": {
       "$ref": "#/$defs/ActorType"
@@ -906,7 +1527,19 @@
       "$ref": "#/$defs/AgentTeam"
     },
     "approval": {
+      "$ref": "#/$defs/ApprovalStatus"
+    },
+    "approval_id": {
+      "$ref": "#/$defs/ApprovalId"
+    },
+    "approval_mode": {
+      "$ref": "#/$defs/ApprovalMode"
+    },
+    "approval_model": {
       "$ref": "#/$defs/Approval"
+    },
+    "approval_scope": {
+      "$ref": "#/$defs/ApprovalScope"
     },
     "audit_integrity_violation": {
       "$ref": "#/$defs/AuditIntegrityViolation"
@@ -929,6 +1562,18 @@
     "event_envelope": {
       "$ref": "#/$defs/EventEnvelope"
     },
+    "evidence_confidence": {
+      "$ref": "#/$defs/EvidenceConfidence"
+    },
+    "evidence_ref": {
+      "$ref": "#/$defs/EvidenceRef"
+    },
+    "evidence_type": {
+      "$ref": "#/$defs/EvidenceType"
+    },
+    "gateway_object_kind": {
+      "$ref": "#/$defs/GatewayObjectKind"
+    },
     "get_projection_params": {
       "$ref": "#/$defs/GetProjectionParams"
     },
@@ -950,6 +1595,12 @@
     "local_runner_registered": {
       "$ref": "#/$defs/LocalRunnerRegistered"
     },
+    "policy_decision": {
+      "$ref": "#/$defs/PolicyDecision"
+    },
+    "policy_decision_status": {
+      "$ref": "#/$defs/PolicyDecisionStatus"
+    },
     "project_brain": {
       "$ref": "#/$defs/ProjectBrain"
     },
@@ -967,6 +1618,24 @@
     },
     "redaction_status": {
       "$ref": "#/$defs/RedactionStatus"
+    },
+    "requester_type": {
+      "$ref": "#/$defs/RequesterType"
+    },
+    "required_approver": {
+      "$ref": "#/$defs/RequiredApprover"
+    },
+    "required_approver_kind": {
+      "$ref": "#/$defs/RequiredApproverKind"
+    },
+    "resource_ref": {
+      "$ref": "#/$defs/ResourceRef"
+    },
+    "resource_type": {
+      "$ref": "#/$defs/ResourceType"
+    },
+    "risk_level": {
+      "$ref": "#/$defs/RiskLevel"
     },
     "rpc_request": {
       "$ref": "#/$defs/RpcRequest"
@@ -997,6 +1666,9 @@
     },
     "task": {
       "$ref": "#/$defs/Task"
+    },
+    "timestamp": {
+      "$ref": "#/$defs/Timestamp"
     },
     "version_skew_error": {
       "$ref": "#/$defs/VersionSkewError"
@@ -1057,9 +1729,35 @@
     "server_frame",
     "projection_delta",
     "delta_kind",
-    "subscribe_params"
+    "subscribe_params",
+    "action_request_model",
+    "action_plan",
+    "action_plan_step",
+    "action_dependency",
+    "action_preview",
+    "approval_model",
+    "action_result",
+    "resource_ref",
+    "evidence_ref",
+    "policy_decision",
+    "required_approver",
+    "required_approver_kind",
+    "actor_ref_body",
+    "requester_type",
+    "risk_level",
+    "approval_scope",
+    "approval_mode",
+    "policy_decision_status",
+    "action_result_status",
+    "resource_type",
+    "evidence_type",
+    "evidence_confidence",
+    "gateway_object_kind",
+    "approval_id",
+    "action_plan_id",
+    "timestamp"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.14.0"
+  "x-contract-version": "0.15.0"
 }

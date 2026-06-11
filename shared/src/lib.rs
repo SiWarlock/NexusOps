@@ -5,14 +5,17 @@
 //! desktop-addendum objects (§5.3). `schemars` emits the versioned JSON Schema
 //! consumed (generated) by the TS UI (Zod) and the Python Brain (Pydantic).
 
+pub mod actions;
 pub mod actor;
 pub mod event_envelope;
 pub mod events;
+pub mod gateway_ids;
 pub mod ids;
 pub mod ipc;
 pub mod objects;
 pub mod schema;
 pub mod status;
+pub mod time;
 
 /// The frozen-contract version, stamped into the emitted JSON Schema and asserted
 /// to agree across Rust / schema / Zod / Pydantic (the §5.0 propagation contract).
@@ -29,7 +32,13 @@ pub mod status;
 /// the loud, consumer-visible record emitted when startup replay quarantines a row).
 /// 0.14.0 (1.7 L2) adds the §15 SensitiveOutputRedacted event payload — the
 /// redaction "can't safely redact → divert the event + record this instead" net.
-pub const CONTRACT_VERSION: &str = "0.14.0";
+/// 0.15.0 (2.1a) freezes the §6.2 Gateway core data model (`shared/src/actions.rs`): the 10
+/// ActionRequest/ActionPlan/Approval/ActionResult-family models + 9 new enums (RequesterType,
+/// RiskLevel[bounded-int], ApprovalScope/Mode, PolicyDecisionStatus, ActionResultStatus,
+/// ResourceType/EvidenceType/EvidenceConfidence) + the non-cross-product gateway IDs
+/// (ApprovalId/ActionPlanId, off GatewayObjectKind) + the Timestamp newtype — additive, no
+/// frozen type reshaped. Pure contract freeze; the Gateway pipeline/rows/events are 2.1b.
+pub const CONTRACT_VERSION: &str = "0.15.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

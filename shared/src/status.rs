@@ -18,9 +18,11 @@ macro_rules! status_machine {
         $name:ident { $($variant:ident),+ $(,)? }
         terminal { $($term:ident),* $(,)? }
     ) => {
-        $(#[$meta])*
         #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, JsonSchema)]
         #[serde(rename_all = "snake_case")]
+        // meta (doc comments + any `#[schemars(...)]` helper, e.g. a schema rename) emitted AFTER
+        // the derive so a `schemars` helper attribute is introduced before use (rustc #79202).
+        $(#[$meta])*
         pub enum $name { $($variant),+ }
 
         impl $name {
@@ -104,6 +106,9 @@ status_machine! {
 
 status_machine! {
     /// Approval (10, R-5) — split from ActionRequest; the human/policy decision axis.
+    /// Schema name = `ApprovalStatus` (its Rust alias) so the §6.2 `actions::Approval` MODEL
+    /// takes the canonical bare `Approval` $def (2.1a Option-B rename; value-set unchanged).
+    #[schemars(rename = "ApprovalStatus")]
     Approval {
         Requested, Previewed, AwaitingApproval, Approved, Denied, Edited,
         AutoApprovedByPolicy, Expired, Cancelled, Escalated,
@@ -113,6 +118,10 @@ status_machine! {
 
 status_machine! {
     /// ActionRequest (15, R-5, NEW) — the execution-lifecycle axis.
+    /// Schema name = `ActionRequestStatus` (its Rust alias) so the §6.2 `actions::ActionRequest`
+    /// MODEL takes the canonical bare `ActionRequest` $def (2.1a Option-B rename; value-set
+    /// unchanged).
+    #[schemars(rename = "ActionRequestStatus")]
     ActionRequest {
         Submitted, Previewed, PolicyDecided, AwaitingApproval, Approved, Denied,
         Queued, Executing, Succeeded, Failed, PartiallySucceeded, RolledBack,

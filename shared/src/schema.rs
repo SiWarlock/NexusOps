@@ -8,12 +8,20 @@
 
 use schemars::JsonSchema;
 
+use crate::actions::{
+    ActionDependency, ActionPlan, ActionPlanStep, ActionPreview,
+    ActionRequest as ActionRequestModel, ActionResult, ActionResultStatus, ActorRefBody,
+    Approval as ApprovalModel, ApprovalMode, ApprovalScope, EvidenceConfidence, EvidenceRef,
+    EvidenceType, PolicyDecision, PolicyDecisionStatus, RequesterType, RequiredApprover,
+    RequiredApproverKind, ResourceRef, ResourceType, RiskLevel,
+};
 use crate::actor::ActorType;
 use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility};
 use crate::events::{
     AuditIntegrityViolation, DeviceRegistered, LocalRunnerRegistered, SensitiveOutputRedacted,
     SessionStarted,
 };
+use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::ids::IdKind;
 use crate::ipc::{
     Capabilities, DeltaKind, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode,
@@ -25,6 +33,7 @@ use crate::status::{
     ActionRequest, AgentTeam, Approval, ProjectBrain, PullRequest, Session, Task, WorkflowInstance,
     WorktreeGit, WorktreeOverlay,
 };
+use crate::time::Timestamp;
 use crate::CONTRACT_VERSION;
 
 /// Bundles every frozen contract type so one `schema_for!` captures all value
@@ -80,6 +89,35 @@ struct ContractBundle {
     projection_delta: ProjectionDelta,
     delta_kind: DeltaKind,
     subscribe_params: SubscribeParams,
+    // 2.1a — the §6.2 Gateway core data model freeze (shared/src/actions.rs): the 10 models +
+    // 9 enums + RequiredApprover + the gateway IDs + Timestamp. RiskLevel/Timestamp emit as a
+    // bounded integer / string-format (NOT enum arrays) so the §5.0 3-way verify stays exact.
+    action_request_model: ActionRequestModel,
+    action_plan: ActionPlan,
+    action_plan_step: ActionPlanStep,
+    action_dependency: ActionDependency,
+    action_preview: ActionPreview,
+    approval_model: ApprovalModel,
+    action_result: ActionResult,
+    resource_ref: ResourceRef,
+    evidence_ref: EvidenceRef,
+    policy_decision: PolicyDecision,
+    required_approver: RequiredApprover,
+    required_approver_kind: RequiredApproverKind,
+    actor_ref_body: ActorRefBody,
+    requester_type: RequesterType,
+    risk_level: RiskLevel,
+    approval_scope: ApprovalScope,
+    approval_mode: ApprovalMode,
+    policy_decision_status: PolicyDecisionStatus,
+    action_result_status: ActionResultStatus,
+    resource_type: ResourceType,
+    evidence_type: EvidenceType,
+    evidence_confidence: EvidenceConfidence,
+    gateway_object_kind: GatewayObjectKind,
+    approval_id: ApprovalId,
+    action_plan_id: ActionPlanId,
+    timestamp: Timestamp,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

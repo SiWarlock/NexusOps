@@ -713,6 +713,618 @@ fn test_sensitive_output_redacted_wire_contract() {
 
 #[test]
 fn test_contract_version_bumped_for_sensitive_output_redacted() {
-    // the new event type accretes the EventTypeRegistry → minor CONTRACT_VERSION bump (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.14.0");
+    // re-pointed at the 2.1a action-contract freeze (0.14.0 → 0.15.0): the §6.2 action models +
+    // 9 enums + gateway IDs + Timestamp accrete the contract surface → minor additive bump (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.15.0");
+}
+
+// =====================================================================================
+// Phase 2.1a — §6.2 action-contract freeze (NEW: shared/src/{actions,time,gateway_ids}.rs)
+// The §6.2 Gateway core data model + its enums + the gateway platform IDs + Timestamp.
+// Binding field sets: ARCHITECTURE.md Appendix A (rows ActionRequest/ActionPlan/Approval/
+// ActionResult/ResourceRef·EvidenceRef·PolicyDecision) + DATA_MODEL §2.9 DDL. AG §9.x is
+// ORIGIN/RATIONALE (richer) — frozen to the reconciled binding set (drops flagged Step-9).
+// =====================================================================================
+
+// the wire field-name set (top-level keys) of a serialized model
+fn field_names<T: Serialize>(v: &T) -> BTreeSet<String> {
+    serde_json::to_value(v)
+        .unwrap()
+        .as_object()
+        .expect("a contract model must serialize to a JSON object")
+        .keys()
+        .cloned()
+        .collect()
+}
+
+fn expect_fields<T: Serialize>(v: &T, expected: &[&str]) {
+    let got = field_names(v);
+    let exp: BTreeSet<String> = expected.iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        got, exp,
+        "model field-name set drifted from the frozen snapshot"
+    );
+}
+
+// ---- sample constructors (fully populated; Options = Some so the snapshot sees every key) --
+
+fn sample_resource_ref() -> nexusops_shared::actions::ResourceRef {
+    use nexusops_shared::actions::{ResourceRef, ResourceType};
+    ResourceRef {
+        resource_type: ResourceType::Repo,
+        id: "repo_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        uri: Some("file:///Users/x/repo".to_string()),
+    }
+}
+
+fn sample_evidence_ref() -> nexusops_shared::actions::EvidenceRef {
+    use nexusops_shared::actions::{EvidenceConfidence, EvidenceRef, EvidenceType};
+    EvidenceRef {
+        evidence_type: EvidenceType::ArchitectureAnchor,
+        id: "§6.2".to_string(),
+        label: "ARCHITECTURE §6.2 pins the Gateway core data model".to_string(),
+        confidence: Some(EvidenceConfidence::Exact),
+    }
+}
+
+fn sample_action_preview() -> nexusops_shared::actions::ActionPreview {
+    use nexusops_shared::actions::{ActionPreview, RiskLevel};
+    use nexusops_shared::ids::ActionRequestId;
+    use nexusops_shared::time::Timestamp;
+    ActionPreview {
+        action_request_id: ActionRequestId::new(),
+        generated_at: Timestamp::parse("2026-06-11T08:59:53.972Z").unwrap(),
+        risk_level: RiskLevel::Level2,
+        risk_reasons: vec!["writes to the working tree".to_string()],
+        summary: "create a worktree".to_string(),
+        changed_resources: vec![sample_resource_ref()],
+        cannot_preview_reason: Some("n/a".to_string()),
+    }
+}
+
+fn sample_action_request() -> nexusops_shared::actions::ActionRequest {
+    use nexusops_shared::actions::{ActionRequest, RequesterType, RiskLevel};
+    use nexusops_shared::ids::{ActionRequestId, ProjectId};
+    use nexusops_shared::status::ActionRequestStatus;
+    use nexusops_shared::time::Timestamp;
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id: Some(ProjectId::new()),
+        action_type: "git.create_worktree".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs: vec![sample_resource_ref()],
+        inputs: serde_json::json!({ "branch": "feature/x" }),
+        risk_level: RiskLevel::Level2,
+        idempotency_key: Some("k-1".to_string()),
+        fencing_token: Some(7),
+        status: ActionRequestStatus::Submitted,
+        preview: Some(sample_action_preview()),
+        created_at: Timestamp::parse("2026-06-11T08:59:53.972Z").unwrap(),
+    }
+}
+
+fn sample_action_dependency() -> nexusops_shared::actions::ActionDependency {
+    use nexusops_shared::actions::ActionDependency;
+    ActionDependency {
+        step_id: "step-2".to_string(),
+        depends_on_step_ids: vec!["step-1".to_string()],
+    }
+}
+
+fn sample_action_plan_step() -> nexusops_shared::actions::ActionPlanStep {
+    use nexusops_shared::actions::ActionPlanStep;
+    use nexusops_shared::status::ActionRequestStatus;
+    ActionPlanStep {
+        step_id: "step-1".to_string(),
+        label: "create the worktree".to_string(),
+        action_request: sample_action_request(),
+        required: true,
+        can_skip: false,
+        rollback_action_type: Some("git.delete_worktree".to_string()),
+        status: ActionRequestStatus::Submitted,
+    }
+}
+
+fn sample_action_plan() -> nexusops_shared::actions::ActionPlan {
+    use nexusops_shared::actions::{ActionPlan, ApprovalMode, RiskLevel};
+    use nexusops_shared::gateway_ids::ActionPlanId;
+    ActionPlan {
+        plan_id: ActionPlanId::new(),
+        title: "set up the feature branch".to_string(),
+        steps: vec![sample_action_plan_step()],
+        dependencies: vec![sample_action_dependency()],
+        overall_risk: RiskLevel::Level2,
+        approval_mode: ApprovalMode::StepByStep,
+    }
+}
+
+fn sample_approval() -> nexusops_shared::actions::Approval {
+    use nexusops_shared::actions::{Approval, ApprovalScope, RequiredApprover, RiskLevel};
+    use nexusops_shared::gateway_ids::{ActionPlanId, ApprovalId};
+    use nexusops_shared::ids::ActionRequestId;
+    use nexusops_shared::status::ApprovalStatus;
+    use nexusops_shared::time::Timestamp;
+    Approval {
+        approval_id: ApprovalId::new(),
+        action_request_id: Some(ActionRequestId::new()),
+        plan_id: Some(ActionPlanId::new()),
+        required_approver: RequiredApprover::current_user(),
+        status: ApprovalStatus::Requested,
+        risk_level: RiskLevel::Level2,
+        scope: ApprovalScope::SingleAction,
+        decided_by: Some("u_local".to_string()),
+        decided_at: Some(Timestamp::parse("2026-06-11T09:00:00Z").unwrap()),
+        expires_at: Some(Timestamp::parse("2026-06-11T10:00:00Z").unwrap()),
+    }
+}
+
+fn sample_action_result() -> nexusops_shared::actions::ActionResult {
+    use nexusops_shared::actions::{ActionResult, ActionResultStatus};
+    use nexusops_shared::ids::{ActionRequestId, EventId};
+    // a coherent fully-populated sample: a partial success DOES carry an error detail (so every
+    // optional is Some → the field-name snapshot is robust regardless of skip behavior).
+    ActionResult {
+        action_request_id: ActionRequestId::new(),
+        status: ActionResultStatus::PartiallySucceeded,
+        created_resources: vec![sample_resource_ref()],
+        changed_resources: vec![sample_resource_ref()],
+        emitted_events: vec![EventId::new()],
+        error: Some("worktree created; branch push failed".to_string()),
+        rollback_available: true,
+    }
+}
+
+fn sample_policy_decision() -> nexusops_shared::actions::PolicyDecision {
+    use nexusops_shared::actions::{PolicyDecision, PolicyDecisionStatus};
+    PolicyDecision {
+        status: PolicyDecisionStatus::RequireApproval,
+        reasons: vec!["risk >= 2 requires approval".to_string()],
+    }
+}
+
+// ---- RED #1 — the §2.5-seam schema-snapshot guard (field-name set == checked-in) ----------
+
+#[test]
+fn test_action_model_field_names_snapshot() {
+    // spec(§6.2) — §2.5-seam freeze guard: a field added/removed/renamed on any of the 10
+    // §6.2 models fails this snapshot. The expected sets ARE the checked-in freeze.
+    expect_fields(
+        &sample_action_request(),
+        &[
+            "action_request_id",
+            "project_id",
+            "action_type",
+            "requester_type",
+            "requester_id",
+            "resource_refs",
+            "inputs",
+            "risk_level",
+            "idempotency_key",
+            "fencing_token",
+            "status",
+            "preview",
+            "created_at",
+        ],
+    );
+    expect_fields(
+        &sample_action_plan(),
+        &[
+            "plan_id",
+            "title",
+            "steps",
+            "dependencies",
+            "overall_risk",
+            "approval_mode",
+        ],
+    );
+    expect_fields(
+        &sample_action_plan_step(),
+        &[
+            "step_id",
+            "label",
+            "action_request",
+            "required",
+            "can_skip",
+            "rollback_action_type",
+            "status",
+        ],
+    );
+    expect_fields(
+        &sample_action_dependency(),
+        &["step_id", "depends_on_step_ids"],
+    );
+    expect_fields(
+        &sample_action_preview(),
+        &[
+            "action_request_id",
+            "generated_at",
+            "risk_level",
+            "risk_reasons",
+            "summary",
+            "changed_resources",
+            "cannot_preview_reason",
+        ],
+    );
+    expect_fields(
+        &sample_approval(),
+        &[
+            "approval_id",
+            "action_request_id",
+            "plan_id",
+            "required_approver",
+            "status",
+            "risk_level",
+            "scope",
+            "decided_by",
+            "decided_at",
+            "expires_at",
+        ],
+    );
+    expect_fields(
+        &sample_action_result(),
+        &[
+            "action_request_id",
+            "status",
+            "created_resources",
+            "changed_resources",
+            "emitted_events",
+            "error",
+            "rollback_available",
+        ],
+    );
+    expect_fields(&sample_resource_ref(), &["type", "id", "uri"]);
+    expect_fields(
+        &sample_evidence_ref(),
+        &["type", "id", "label", "confidence"],
+    );
+    expect_fields(&sample_policy_decision(), &["status", "reasons"]);
+}
+
+// ---- RED #2 — RequesterType wire values (§6.2 / R-2 / §15) --------------------------------
+
+#[test]
+fn test_requester_type_values() {
+    use nexusops_shared::actions::RequesterType;
+    check_values(
+        RequesterType::ALL,
+        &[
+            "user",
+            "project_brain",
+            "agent_session",
+            "workflow_pack",
+            "system_policy",
+            "remote_client",
+        ],
+    );
+    // reject-unknown at the parse boundary (§15 fail-closed)
+    assert!(serde_json::from_value::<RequesterType>(serde_json::json!("nope")).is_err());
+}
+
+// ---- RED #3 — RequesterType → ActorType binding map (Appendix A / R-2) --------------------
+
+#[test]
+fn test_requester_type_maps_to_actor_type() {
+    use nexusops_shared::actions::RequesterType;
+    use nexusops_shared::actor::ActorType;
+    // the 3 aliases (request-time → audit actor)
+    assert_eq!(
+        RequesterType::AgentSession.to_actor_type(),
+        ActorType::SessionAdapter
+    );
+    assert_eq!(
+        RequesterType::WorkflowPack.to_actor_type(),
+        ActorType::WorkflowRuntime
+    );
+    assert_eq!(
+        RequesterType::SystemPolicy.to_actor_type(),
+        ActorType::AutomationPolicy
+    );
+    // the 3 straight-throughs
+    assert_eq!(RequesterType::User.to_actor_type(), ActorType::User);
+    assert_eq!(
+        RequesterType::ProjectBrain.to_actor_type(),
+        ActorType::ProjectBrain
+    );
+    assert_eq!(
+        RequesterType::RemoteClient.to_actor_type(),
+        ActorType::RemoteClient
+    );
+}
+
+// ---- RED #4 — RiskLevel is integer 0..=4 (§6.2 / AG §7) -----------------------------------
+
+#[test]
+fn test_risk_level_wire_is_0_to_4() {
+    use nexusops_shared::actions::RiskLevel;
+    // exactly 5 variants, declaration order == ascending integer
+    assert_eq!(RiskLevel::ALL.len(), 5);
+    for (i, level) in RiskLevel::ALL.iter().enumerate() {
+        assert_eq!(
+            serde_json::to_value(level).unwrap(),
+            serde_json::json!(i as i64),
+            "RiskLevel serializes to its integer rank"
+        );
+    }
+    // Ord (for the §6.3 risk-range comparisons, e.g. >= 1, == 4)
+    assert!(RiskLevel::Level0 < RiskLevel::Level4);
+    // out-of-range integers are rejected at the parse boundary (§15 fail-closed)
+    assert!(serde_json::from_value::<RiskLevel>(serde_json::json!(5)).is_err());
+    assert!(serde_json::from_value::<RiskLevel>(serde_json::json!(-1)).is_err());
+    assert!(serde_json::from_value::<RiskLevel>(serde_json::json!("2")).is_err());
+}
+
+// ---- RED #5 — the 4 closed approval/policy/result enums (§6.2 / Appendix A) ---------------
+
+#[test]
+fn test_closed_enum_wire_values() {
+    use nexusops_shared::actions::{
+        ActionResultStatus, ApprovalMode, ApprovalScope, PolicyDecisionStatus,
+    };
+    check_values(
+        ApprovalScope::ALL,
+        &["single_action", "plan", "policy_grant"],
+    );
+    check_values(
+        ApprovalMode::ALL,
+        &["approve_all", "step_by_step", "mixed", "blocked"],
+    );
+    check_values(
+        PolicyDecisionStatus::ALL,
+        &[
+            "allow",
+            "require_approval",
+            "require_step_approval",
+            "deny",
+            "downgrade",
+            "needs_more_context",
+        ],
+    );
+    check_values(
+        ActionResultStatus::ALL,
+        &["succeeded", "failed", "partially_succeeded", "cancelled"],
+    );
+    // reject-unknown on each (§15)
+    assert!(serde_json::from_value::<ApprovalScope>(serde_json::json!("x")).is_err());
+    assert!(serde_json::from_value::<ApprovalMode>(serde_json::json!("x")).is_err());
+    assert!(serde_json::from_value::<PolicyDecisionStatus>(serde_json::json!("x")).is_err());
+    assert!(serde_json::from_value::<ActionResultStatus>(serde_json::json!("x")).is_err());
+}
+
+// ---- RED #6 — ResourceType(20) + EvidenceType(11) + EvidenceConfidence(4) (§6.2) ----------
+
+#[test]
+fn test_resource_and_evidence_enum_values() {
+    use nexusops_shared::actions::{EvidenceConfidence, EvidenceType, ResourceType};
+    // ResourceType — the AG §9.8 set, frozen VERBATIM (20 values; the §6.2/Appendix-A "21"
+    // discrepancy is a Step-9 cross-doc note, NOT a 21st invented value).
+    check_values(
+        ResourceType::ALL,
+        &[
+            "project",
+            "repo",
+            "worktree",
+            "branch",
+            "file",
+            "diff",
+            "session",
+            "agent_team",
+            "plan_task",
+            "implementation_plan",
+            "workflow_pack",
+            "workflow_instance",
+            "workflow_command",
+            "linear_issue",
+            "github_issue",
+            "pull_request",
+            "execution_profile",
+            "memory_source",
+            "decision",
+            "artifact",
+        ],
+    );
+    check_values(
+        EvidenceType::ALL,
+        &[
+            "project_brain_evidence_item",
+            "file_anchor",
+            "architecture_anchor",
+            "plan_task",
+            "session_episode",
+            "commit",
+            "pr_check",
+            "terminal_event",
+            "ticket",
+            "workflow_manifest",
+            "user_instruction",
+        ],
+    );
+    check_values(
+        EvidenceConfidence::ALL,
+        &["exact", "likely", "loose", "unverified"],
+    );
+}
+
+// ---- RED #7 — the new gateway platform IDs (RULED Option A; IdKind stays 22) --------------
+
+#[test]
+fn test_gateway_minted_id_newtypes() {
+    use nexusops_shared::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
+    // ApprovalId mints `appr_<ULID>`, round-trips, single-truth KIND/PREFIX (the
+    // `desktop_minted_id!` sibling — RULED Option A, non-cross-product Gateway objects).
+    let appr = ApprovalId::new();
+    assert!(
+        appr.as_str().starts_with("appr_"),
+        "ApprovalId carries appr_"
+    );
+    assert_eq!(ApprovalId::parse(appr.as_str()).unwrap(), appr);
+    assert_eq!(ApprovalId::KIND, GatewayObjectKind::Approval);
+    assert_eq!(ApprovalId::PREFIX, "appr_");
+    assert_eq!(ApprovalId::KIND.id_prefix(), ApprovalId::PREFIX);
+
+    let plan = ActionPlanId::new();
+    assert!(
+        plan.as_str().starts_with("aplan_"),
+        "ActionPlanId carries aplan_"
+    );
+    assert_eq!(ActionPlanId::parse(plan.as_str()).unwrap(), plan);
+    assert_eq!(ActionPlanId::KIND, GatewayObjectKind::ActionPlan);
+    assert_eq!(ActionPlanId::PREFIX, "aplan_");
+
+    // fail-closed: wrong prefix / malformed ULID body (§15)
+    assert!(ApprovalId::parse("aplan_01ARZ3NDEKTSV4RRFFQ69G5FAV").is_err());
+    assert!(ApprovalId::parse("appr_not-a-ulid").is_err());
+
+    // GatewayObjectKind catalog
+    assert_eq!(GatewayObjectKind::ALL.len(), 2);
+    assert_eq!(GatewayObjectKind::Approval.id_prefix(), "appr_");
+    assert_eq!(GatewayObjectKind::ActionPlan.id_prefix(), "aplan_");
+}
+
+#[test]
+fn test_idkind_still_22() {
+    use nexusops_shared::ids::IdKind;
+    // RULED Option A — the gateway ids key off GatewayObjectKind, NOT new IdKind variants;
+    // the frozen 22-ID cross-product set stays EXACTLY 22 and owns neither new prefix.
+    assert_eq!(
+        IdKind::ALL.len(),
+        22,
+        "the 22-ID set is NOT expanded by 2.1a"
+    );
+    assert_eq!(IdKind::from_prefix("appr_"), None);
+    assert_eq!(IdKind::from_prefix("aplan_"), None);
+}
+
+#[test]
+fn test_gateway_prefixes_dont_collide() {
+    use nexusops_shared::gateway_ids::GatewayObjectKind;
+    use nexusops_shared::ids::IdKind;
+    use nexusops_shared::objects::DesktopObjectKind;
+    // appr_/aplan_ collide with none of the 16 IdKind prefixes nor the 4 desktop prefixes.
+    let mut taken: BTreeSet<String> = BTreeSet::new();
+    for k in IdKind::ALL {
+        if let Some(p) = k.prefix() {
+            taken.insert(p.to_string());
+        }
+    }
+    for k in DesktopObjectKind::ALL {
+        taken.insert(k.id_prefix().to_string());
+    }
+    for k in GatewayObjectKind::ALL {
+        assert!(
+            !taken.contains(k.id_prefix()),
+            "gateway prefix {} collides with an existing id prefix",
+            k.id_prefix()
+        );
+    }
+}
+
+// ---- RED #8 — Timestamp newtype: transparent string + RFC3339 + format date-time ---------
+
+#[test]
+fn test_timestamp_newtype_format_and_rfc3339() {
+    use nexusops_shared::time::Timestamp;
+    // a valid RFC3339 parses + serializes transparently (the wire value is the bare string)
+    let ts = Timestamp::parse("2026-06-11T08:59:53.972Z").unwrap();
+    assert_eq!(ts.as_str(), "2026-06-11T08:59:53.972Z");
+    assert_eq!(
+        serde_json::to_value(&ts).unwrap(),
+        serde_json::json!("2026-06-11T08:59:53.972Z"),
+        "Timestamp serializes transparently (a bare string, not a wrapper object)"
+    );
+    // offset form (non-Z) also valid
+    assert!(Timestamp::parse("2026-06-11T08:59:53+02:00").is_ok());
+    // garbage is rejected (fail-closed parse, §15)
+    assert!(Timestamp::parse("not-a-timestamp").is_err());
+    assert!(Timestamp::parse("2026-13-40T99:99:99Z").is_err());
+    assert!(Timestamp::parse("2026-06-11").is_err()); // date only, no time
+                                                      // the offset is MANDATORY (RFC3339): the common naive ISO-8601 / SQL-CURRENT_TIMESTAMP form
+                                                      // with no Z/±hh:mm is rejected — pins the UTC-explicitness boundary (Lessons §2/§5).
+    assert!(Timestamp::parse("2026-06-11T12:00:00").is_err());
+    // schemars emits string + format: date-time (so generated Zod/Pydantic carry the format)
+    let schema = serde_json::to_value(schemars::schema_for!(Timestamp)).unwrap();
+    assert_eq!(schema.get("type").and_then(|t| t.as_str()), Some("string"));
+    assert_eq!(
+        schema.get("format").and_then(|f| f.as_str()),
+        Some("date-time")
+    );
+}
+
+// ---- RED #9 — ActionRequest round-trips (required + all-optional-None) + reject-unknown ---
+
+#[test]
+fn test_action_request_round_trips_with_required_and_optional_fields() {
+    use nexusops_shared::actions::{ActionRequest, RequesterType, RiskLevel};
+    use nexusops_shared::status::ActionRequestStatus;
+    use nexusops_shared::time::Timestamp;
+    // full sample round-trips
+    let full = sample_action_request();
+    let j = serde_json::to_value(&full).unwrap();
+    assert_eq!(
+        serde_json::from_value::<ActionRequest>(j.clone()).unwrap(),
+        full,
+        "full ActionRequest round-trips"
+    );
+    // every optional = None round-trips
+    let minimal = ActionRequest {
+        action_request_id: nexusops_shared::ids::ActionRequestId::new(),
+        project_id: None,
+        action_type: "project.rescan".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs: vec![],
+        inputs: serde_json::json!({}),
+        risk_level: RiskLevel::Level1,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse("2026-06-11T08:59:53Z").unwrap(),
+    };
+    let jm = serde_json::to_value(&minimal).unwrap();
+    assert_eq!(
+        serde_json::from_value::<ActionRequest>(jm).unwrap(),
+        minimal,
+        "all-optional-None ActionRequest round-trips"
+    );
+    // deny_unknown_fields — an extra key fails closed (reject-unknown, §5.0/§15)
+    let mut rogue = j.as_object().unwrap().clone();
+    rogue.insert("rogue".to_string(), serde_json::json!(1));
+    assert!(
+        serde_json::from_value::<ActionRequest>(serde_json::Value::Object(rogue)).is_err(),
+        "unknown field rejected (deny_unknown_fields)"
+    );
+}
+
+// ---- deny_unknown_fields holds on the NESTED structs too (§5.0/§15 reject-unknown surface) ----
+
+/// each type round-trips its own sample, and fails closed when an unknown key is injected.
+macro_rules! assert_rejects_unknown {
+    ($ty:ty, $sample:expr) => {{
+        let v = serde_json::to_value(&$sample).unwrap();
+        // clean round-trip without the rogue key
+        assert!(
+            serde_json::from_value::<$ty>(v.clone()).is_ok(),
+            concat!(stringify!($ty), " round-trips its own sample")
+        );
+        let mut rogue = v.as_object().unwrap().clone();
+        rogue.insert("rogue".to_string(), serde_json::json!(true));
+        assert!(
+            serde_json::from_value::<$ty>(serde_json::Value::Object(rogue)).is_err(),
+            concat!(
+                stringify!($ty),
+                " rejects an unknown field (deny_unknown_fields, §5.0/§15)"
+            )
+        );
+    }};
+}
+
+#[test]
+fn test_nested_structs_reject_unknown_fields() {
+    use nexusops_shared::actions::{ActionResult, EvidenceRef, ResourceRef};
+    // the §15 reject-unknown parse boundary is wired on every model, not just ActionRequest's top
+    // level — pin it on a representative spread (a leaf, a labeled leaf, a result envelope).
+    assert_rejects_unknown!(ResourceRef, sample_resource_ref());
+    assert_rejects_unknown!(EvidenceRef, sample_evidence_ref());
+    assert_rejects_unknown!(ActionResult, sample_action_result());
 }

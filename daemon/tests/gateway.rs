@@ -667,9 +667,11 @@ fn test_expired_approval_not_executed() {
 // ---- L3 RED #11 — preview_action returns a stub preview envelope ----------------------------
 
 #[test]
-fn test_preview_action_returns_stub_preview() {
-    // spec(§6.1/§6.2) — preview_action returns an ActionPreview envelope (stub; the 6 typed
-    // per-class previews → 2.3). It references the action + carries a summary, no cannot_preview.
+fn test_preview_action_returns_catalog_preview() {
+    // spec(§6.1/§6.2/§6.3) — preview_action returns a catalog-class ActionPreview (2.3 L2 — the typed
+    // preview framework, no longer the 2.1b stub). It references the action + carries a class-specific
+    // summary; in 2.3 every preview is structural-only (no real adapter), so cannot_preview_reason is
+    // set (the detailed dispatch/escalation/persist contract is pinned in tests/executor.rs #7-9).
     let (_d, path) = temp_db();
     let mut store = open(&path);
     let gw = stub_gateway();
@@ -685,13 +687,10 @@ fn test_preview_action_returns_stub_preview() {
         ack.action_request_id,
         "preview references the action"
     );
+    assert!(!preview.summary.is_empty(), "the preview carries a summary");
     assert!(
-        !preview.summary.is_empty(),
-        "the stub preview has a summary"
-    );
-    assert!(
-        preview.cannot_preview_reason.is_none(),
-        "the stub can preview"
+        preview.cannot_preview_reason.is_some(),
+        "2.3 has no real adapter → every preview is structural-only (cannot_preview_reason set)"
     );
 }
 

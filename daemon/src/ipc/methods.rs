@@ -192,7 +192,7 @@ fn deny(
     gateway_result(write.deny_blocking(approval_id, reason))
 }
 
-/// `preview_action` — `{action_request_id}` → the stub `ActionPreview`.
+/// `preview_action` — `{action_request_id}` → the catalog-class `ActionPreview` (2.3 L2).
 fn preview_action(
     params: &serde_json::Value,
     write: &WriteHandle,

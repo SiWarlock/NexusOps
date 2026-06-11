@@ -249,6 +249,28 @@ pub(crate) fn find_by_idempotency_key(
     }
 }
 
+/// Persist a generated `ActionPreview` (already serialized + §15-redacted) to the action's
+/// `preview_json` (2.3 L2 — was stub-only / NULL). Conditioned on the row existing (a missing id →
+/// `NotFound`, never a silent no-op). Called inside the preview `gateway_txn`.
+pub(crate) fn update_preview(
+    tx: &Transaction,
+    action_request_id: &str,
+    preview_json: &str,
+) -> Result<(), GatewayError> {
+    let n = tx
+        .execute(
+            "UPDATE action_requests SET preview_json = ?1 WHERE action_request_id = ?2",
+            rusqlite::params![preview_json, action_request_id],
+        )
+        .map_err(db_err)?;
+    if n == 0 {
+        return Err(GatewayError::NotFound(format!(
+            "action_requests {action_request_id} (preview persist)"
+        )));
+    }
+    Ok(())
+}
+
 /// the raw `action_requests` columns (pre-reconstruction).
 struct ActionRow {
     project_id: Option<String>,

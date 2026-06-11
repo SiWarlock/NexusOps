@@ -16,7 +16,7 @@ use nexusops_shared::time::Timestamp;
 use crate::eventstore::{EventStore, GatewayTxn};
 use crate::gateway::executor::ExecutionOutcome;
 use crate::gateway::{
-    approval, db_err, enum_wire, idempotency, plan, request, Gateway, GatewayError,
+    approval, db_err, enum_wire, idempotency, plan, preview, request, Gateway, GatewayError,
 };
 
 /// The routed outcome of `submit_action`'s decision txn (2.2): either a terminal ack (the action
@@ -811,9 +811,12 @@ impl Gateway {
         })
     }
 
-    /// `preview_action` (§6.1) — a dry-run preview of an action (read-only). Returns the stub
-    /// `ActionPreview` envelope (the 6 typed per-class previews → 2.3). Runs through `gateway_txn`
-    /// for uniform row access; it performs no write, so the txn commits a no-op.
+    /// `preview_action` (§6.1) — a dry-run preview of an action (§6.2/§6.3). Renders the typed preview
+    /// by dispatching on the catalog `preview_class` ([`preview::generate_preview`]) and PERSISTS it to
+    /// `action_requests.preview_json` (the §7.2 durable preview source) through the §15 redaction gate
+    /// (rule #3). 2.3 has no real namespace adapter, so every preview is structural-only — it sets
+    /// `cannot_preview_reason` + escalates the PREVIEW risk (envelope-only; the policy risk is
+    /// untouched). Runs in a `gateway_txn` (it now writes `preview_json`).
     pub fn preview_action(
         &self,
         store: &mut EventStore,
@@ -822,9 +825,26 @@ impl Gateway {
         store.gateway_txn(|gtx| -> Result<ActionPreview, GatewayError> {
             let now = gtx.now_rfc3339();
             let req = request::load(gtx.tx(), action_request_id)?;
+            // the §6.3 catalog entry drives the preview class. An existing row is always catalogued
+            // (submit denies uncatalogued) → defensive fail-closed if somehow absent.
+            let entry = catalog::lookup(&req.action_type).ok_or_else(|| {
+                GatewayError::NotFound(format!(
+                    "action_type '{}' is not in the §6.3 catalog (preview)",
+                    req.action_type
+                ))
+            })?;
             let generated_at =
                 Timestamp::parse(&now).map_err(|e| GatewayError::Serialize(e.to_string()))?;
-            Ok(self.executor().preview(&req, generated_at))
+            let preview = preview::generate_preview(&req, &entry, generated_at);
+            // persist preview_json through the §15 redaction gate (rule #3 — every persisted payload
+            // through the Redactor; a no-op today since the preview derives from the already-redacted
+            // row, but uniform defense-in-depth for non-row-derived preview content later).
+            let preview_json = gtx.redact_row(
+                &serde_json::to_string(&preview)
+                    .map_err(|e| GatewayError::Serialize(e.to_string()))?,
+            )?;
+            request::update_preview(gtx.tx(), action_request_id, &preview_json)?;
+            Ok(preview)
         })
     }
 }

@@ -17,6 +17,7 @@ pub mod idempotency;
 pub mod pipeline;
 pub mod plan;
 pub mod policy;
+pub mod preview;
 pub mod request;
 
 use serde::Serialize;

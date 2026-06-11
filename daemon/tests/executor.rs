@@ -10,7 +10,7 @@
 //! secret). L2 = the preview framework; L3 = the executor trait + dispatch.
 
 use nexusops_shared::actions::{
-    ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
+    ActionPreview, ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
 };
 use nexusops_shared::catalog;
 use nexusops_shared::ids::{ActionRequestId, ProjectId};
@@ -21,6 +21,7 @@ use nexusopsd::eventstore::{EventStore, PrefixRedactor};
 use nexusopsd::gateway::executor::StubExecutor;
 use nexusopsd::gateway::idempotency::derive_key;
 use nexusopsd::gateway::policy::CatalogPolicy;
+use nexusopsd::gateway::preview::generate_preview;
 use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
 
@@ -328,5 +329,127 @@ fn idem_key_overrides_requester_supplied() {
         idem_key_of(&path2),
         None,
         "a None-formula action ignores the requester-supplied key → NULL"
+    );
+}
+
+// =================================================================================================
+// L2 — the preview framework: dispatch by the catalog preview_class → a typed ActionPreview rendered
+// into the FROZEN flat envelope; cannot_preview_reason + risk-escalation when the real dry-run
+// capability is absent (2.3 has no namespace adapters); persist preview_json.
+// =================================================================================================
+
+/// the `preview_json` of the single action_requests row (None when NULL).
+fn preview_json_of(path: &std::path::Path) -> Option<String> {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row("SELECT preview_json FROM action_requests", [], |r| {
+        r.get::<_, Option<String>>(0)
+    })
+    .expect("a row")
+}
+
+fn ts() -> Timestamp {
+    Timestamp::parse("2026-06-11T00:00:00Z").unwrap()
+}
+
+// ---- L2 RED #7 — generate_preview dispatches by the catalog preview_class --------------------------
+
+#[test]
+fn preview_dispatches_by_catalog_class() {
+    // spec(§6.2/§6.3) — generate_preview dispatches by the catalog preview_class → a class-specific
+    // summary + changed_resources, NOT the 2.1b stub text. Two different classes → different summaries.
+    let git_entry = catalog::lookup("git.create_worktree").unwrap(); // Git class
+    let diff_entry = catalog::lookup("git.diff").unwrap(); // Diff class
+    let git_req = req_with_refs("git.create_worktree", &["wt_1"]);
+    let diff_req = req_with_refs("git.diff", &["repo_1"]);
+
+    let git_preview = generate_preview(&git_req, &git_entry, ts());
+    let diff_preview = generate_preview(&diff_req, &diff_entry, ts());
+
+    assert!(
+        !git_preview.summary.to_lowercase().contains("stub"),
+        "the rendered summary is class-specific, not the 2.1b stub text"
+    );
+    assert_ne!(
+        git_preview.summary, diff_preview.summary,
+        "dispatch by class → distinct class-specific summaries"
+    );
+    assert!(
+        diff_preview.summary.to_lowercase().contains("diff"),
+        "the Diff-class summary reflects its class"
+    );
+    assert!(
+        git_preview.summary.to_lowercase().contains("git"),
+        "the Git-class summary reflects its class"
+    );
+    assert_eq!(
+        diff_preview.changed_resources, diff_req.resource_refs,
+        "changed_resources are populated from the action's resource_refs"
+    );
+}
+
+// ---- L2 RED #8 — an impossible preview sets cannot_preview_reason + escalates the preview risk -----
+
+#[test]
+fn preview_impossible_sets_reason_and_escalates_risk() {
+    // spec(§6.2 "preview-impossible escalates risk + sets cannotPreviewReason") — a preview whose real
+    // dry-run capability is absent in 2.3 (no namespace adapter) sets cannot_preview_reason, escalates
+    // the PREVIEW risk_level ABOVE the catalog-authoritative risk, and records a risk_reasons entry.
+    // The escalation is on the preview envelope ONLY (it never lowers the policy risk).
+    //
+    // FORWARD-NOTE: in 2.3 EVERY preview is impossible (no adapter) — a 2.3 transient. When a phase
+    // lands its real adapter (Phase 3/5/7/8), git.create_worktree becomes genuinely previewable;
+    // RE-TARGET this test to a still-unpreviewable class then (do NOT delete the impossible-preview
+    // contract — it must hold for any genuinely-unpreviewable action).
+    let entry = catalog::lookup("git.create_worktree").unwrap(); // catalog risk-2
+    let req = req_with_refs("git.create_worktree", &["wt_1"]);
+    let preview = generate_preview(&req, &entry, ts());
+
+    assert!(
+        preview.cannot_preview_reason.is_some(),
+        "a preview the 2.3 framework cannot dry-run sets cannot_preview_reason"
+    );
+    assert!(
+        !preview.risk_reasons.is_empty(),
+        "a risk_reasons entry explains the escalation"
+    );
+    assert!(
+        preview.risk_level > entry.locked_risk,
+        "the preview risk is escalated ABOVE the catalog-authoritative risk (envelope-only)"
+    );
+}
+
+// ---- L2 RED #9 — preview_action persists the generated preview to the row -------------------------
+
+#[test]
+fn preview_persists_to_row() {
+    // spec(§7.2) — preview_action persists the generated preview to action_requests.preview_json (the
+    // durable preview source) and it round-trips on request::load.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = catalog_gateway();
+    // git.create_worktree is risk-2 → require_approval → rests at awaiting_approval (the previewable
+    // flow: a human previews before approving).
+    let req = req_with_refs("git.create_worktree", &["wt_1"]);
+    let id = req.action_request_id.as_str().to_string();
+    gw.submit_action(&mut store, req).expect("submit");
+
+    let preview = gw.preview_action(&mut store, &id).expect("preview");
+    assert_eq!(
+        preview.action_request_id.as_str(),
+        id,
+        "the preview is for the action"
+    );
+
+    let stored = preview_json_of(&path).expect("preview_json persisted to the row");
+    let parsed: ActionPreview =
+        serde_json::from_str(&stored).expect("preview_json round-trips to ActionPreview");
+    assert_eq!(
+        parsed.action_request_id.as_str(),
+        id,
+        "the persisted preview round-trips with the action id"
+    );
+    assert_eq!(
+        parsed.summary, preview.summary,
+        "the persisted preview matches the returned preview"
     );
 }

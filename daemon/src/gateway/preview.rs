@@ -96,8 +96,9 @@ fn class_label(class: PreviewClass) -> &'static str {
     }
 }
 
-/// the namespace whose real executor adapter renders this class's dry-run.
-fn namespace_label(executor: ExecutorKind) -> &'static str {
+/// the namespace whose real executor adapter renders this class's dry-run. `pub(crate)` so the
+/// executor framework (`CatalogExecutor`) names the same namespace in its stub-outcome detail.
+pub(crate) fn namespace_label(executor: ExecutorKind) -> &'static str {
     match executor {
         ExecutorKind::Brain => "Project Brain",
         ExecutorKind::Project => "project scanner",
@@ -114,8 +115,9 @@ fn namespace_label(executor: ExecutorKind) -> &'static str {
 
 /// the planned owning phase for a namespace's real adapter (per the §2.5 Track map: Phase 3 harness/
 /// git/code/session/workflow, Phase 5 projects/GitHub/plan, Phase 7 PR-review/Linear, Phase 8 Brain).
-/// Indicative — refined as each adapter lands; the label is advisory text on the preview envelope.
-fn owning_phase(executor: ExecutorKind) -> &'static str {
+/// Indicative — refined as each adapter lands; the label is advisory text. `pub(crate)` so the
+/// executor framework names the same owning phase in its stub-outcome detail.
+pub(crate) fn owning_phase(executor: ExecutorKind) -> &'static str {
     match executor {
         ExecutorKind::Git | ExecutorKind::Session | ExecutorKind::Code | ExecutorKind::Workflow => {
             "Phase 3"

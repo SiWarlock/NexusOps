@@ -209,6 +209,9 @@ impl Gateway {
             Routed::Done(ack) => Ok(ack),
             // the risk-0 allow auto-execute path: run the executor + the completion txn (off the
             // decision txn that already committed submitted→policy_decided→queued — LESSON §16).
+            // §7.2 read-source: the executor runs off the IN-MEMORY reconciled `req` (raw inputs) —
+            // NOT a re-read of the §15-redacted row (a redaction FP must not break a legit
+            // execution while the row stays redacted at rest). Pinned by tests/executor.rs #12.
             Routed::Execute(req) => self.execute(store, &req),
         }
     }
@@ -572,6 +575,11 @@ impl Gateway {
         // subscriber is briefly stale until its next reconnect/`get_projection` (the lag-resync
         // policy covers it; the stub executor never fails, so it's unreached in 2.1c). 2.4 reconciles
         // the same two-txn boundary for crash recovery; the missed-nudge folds in there.
+        // §7.2 read-source: `req` here is the DURABLE row (`request::load` in the decision txn above) —
+        // §7.2 deems the row canonical for execution (the in-memory inputs are gone at approve-time,
+        // possibly post-restart). It carries the §15-redacted inputs; the real-input-fidelity concern
+        // (a redaction FP breaking a legit real execution) is owned when real executors land (later
+        // phases). Pinned by tests/executor.rs #13.
         self.execute(store, &req)
     }
 
@@ -708,7 +716,9 @@ impl Gateway {
             request::update_status(gtx.tx(), &act_id, ARStatus::Queued, ARStatus::Executing)?;
             gtx.append(&request::started_intent(req, &now)?)?;
             match outcome {
-                ExecutionOutcome::Succeeded => {
+                // the executor's changed_resources/detail (Q7) are daemon-internal — recorded on the
+                // §6.2 ActionResult in 2.4; the 2.3 ActionSucceeded event payload stays empty.
+                ExecutionOutcome::Succeeded { .. } => {
                     request::update_status(
                         gtx.tx(),
                         &act_id,

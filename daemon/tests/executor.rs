@@ -18,12 +18,13 @@ use nexusops_shared::status::ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{EventStore, PrefixRedactor};
-use nexusopsd::gateway::executor::StubExecutor;
+use nexusopsd::gateway::executor::{ActionExecutor, CatalogExecutor, ExecError, ExecutionOutcome};
 use nexusopsd::gateway::idempotency::derive_key;
 use nexusopsd::gateway::policy::CatalogPolicy;
 use nexusopsd::gateway::preview::generate_preview;
 use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
+use std::sync::{Arc, Mutex};
 
 fn temp_db() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -41,9 +42,9 @@ fn open(path: &std::path::Path) -> EventStore {
     .expect("open event store")
 }
 
-/// the production Gateway (catalog policy + stub executor — real executor framework lands L3).
+/// the production Gateway (catalog policy + the catalog-driven executor framework — L3).
 fn catalog_gateway() -> Gateway {
-    Gateway::new(Box::new(CatalogPolicy), Box::new(StubExecutor))
+    Gateway::new(Box::new(CatalogPolicy), Box::new(CatalogExecutor))
 }
 
 /// an ActionRequest fixture with a given `action_type`, optional `project`, and `inputs`.
@@ -451,5 +452,244 @@ fn preview_persists_to_row() {
     assert_eq!(
         parsed.summary, preview.summary,
         "the persisted preview matches the returned preview"
+    );
+}
+
+// =================================================================================================
+// L3 — the ActionExecutor framework: CatalogExecutor dispatch by ExecutorKind to side-effect-free
+// per-namespace stubs + validate(requires_resource_refs) + the §7.2 read-source split (auto =
+// in-memory reconciled req; approve = durable redacted row). INV-SEC-1-critical.
+// =================================================================================================
+
+/// a 40-char high-entropy `KEY=value` secret the §15 PrefixRedactor masks at rest — used to
+/// distinguish RAW (in-memory) from REDACTED (durable-row) inputs the executor is handed.
+const SECRET: &str = "Zx9Kq2Lm7Wp4Rn1Vc6Bt3Hy8Fd5Gj0Aa2Ss4Dd";
+
+/// the `status` of the single action_requests row.
+fn action_status(path: &std::path::Path) -> Option<String> {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row("SELECT status FROM action_requests", [], |r| r.get(0))
+        .ok()
+}
+
+/// the `Action*` event types in the log.
+fn action_event_types(store: &EventStore) -> Vec<String> {
+    store
+        .read_all()
+        .expect("read all events")
+        .iter()
+        .filter(|e| e.event_type.starts_with("Action"))
+        .map(|e| e.event_type.clone())
+        .collect()
+}
+
+/// the approval_id of the single approvals row.
+fn approval_id_of(path: &std::path::Path) -> String {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row("SELECT approval_id FROM approvals", [], |r| r.get(0))
+        .expect("an approval")
+}
+
+/// a test-double executor that RECORDS the `inputs` of each `req` it executes — so a test can observe
+/// WHICH ActionRequest the §7.2 read-source handed the executor (in-memory raw vs durable redacted).
+struct RecordingExecutor {
+    seen_inputs: Arc<Mutex<Vec<serde_json::Value>>>,
+}
+impl RecordingExecutor {
+    fn new() -> Self {
+        Self {
+            seen_inputs: Arc::new(Mutex::new(vec![])),
+        }
+    }
+    fn inputs_log(&self) -> Arc<Mutex<Vec<serde_json::Value>>> {
+        self.seen_inputs.clone()
+    }
+}
+impl ActionExecutor for RecordingExecutor {
+    fn validate(&self, _req: &ActionRequest) -> Result<(), ExecError> {
+        Ok(())
+    }
+    fn execute(&self, req: &ActionRequest) -> ExecutionOutcome {
+        self.seen_inputs.lock().unwrap().push(req.inputs.clone());
+        ExecutionOutcome::Succeeded {
+            changed_resources: req.resource_refs.clone(),
+            detail: "recorded".to_string(),
+        }
+    }
+    fn preview(&self, req: &ActionRequest, generated_at: Timestamp) -> ActionPreview {
+        ActionPreview {
+            action_request_id: req.action_request_id.clone(),
+            generated_at,
+            risk_level: req.risk_level,
+            risk_reasons: vec![],
+            summary: "recording".to_string(),
+            changed_resources: vec![],
+            cannot_preview_reason: None,
+        }
+    }
+}
+
+// ---- L3 RED #10 — CatalogExecutor dispatches by ExecutorKind to a per-namespace stub --------------
+
+#[test]
+fn catalog_executor_dispatches_by_executor_kind() {
+    // spec(§6.3 ExecutorKind) — CatalogExecutor::execute routes by the catalog ExecutorKind to a
+    // per-namespace stub; the (side-effect-free) Succeeded outcome NAMES the namespace (distinct per
+    // namespace) + carries changed_resources from the req (Q7).
+    let ex = CatalogExecutor;
+    let git = ex.execute(&req_with_refs("git.create_worktree", &["wt_1"])); // ExecutorKind::Git
+    let gh = ex.execute(&req_with_refs("github.create_pr", &["pr_1"])); // ExecutorKind::Github
+    let (git_detail, git_changed) = match git {
+        ExecutionOutcome::Succeeded {
+            detail,
+            changed_resources,
+        } => (detail, changed_resources),
+        ExecutionOutcome::Failed(e) => panic!("the git stub should succeed, got {e}"),
+    };
+    let gh_detail = match gh {
+        ExecutionOutcome::Succeeded { detail, .. } => detail,
+        ExecutionOutcome::Failed(e) => panic!("the github stub should succeed, got {e}"),
+    };
+    assert_ne!(git_detail, gh_detail, "distinct per-namespace dispatch");
+    assert!(
+        git_detail.to_lowercase().contains("git"),
+        "the git stub names its namespace: {git_detail}"
+    );
+    assert!(
+        gh_detail.to_lowercase().contains("github"),
+        "the github stub names its namespace: {gh_detail}"
+    );
+    assert_eq!(
+        git_changed.len(),
+        1,
+        "changed_resources carries the req's resource refs (Q7)"
+    );
+}
+
+// ---- L3 RED #11 — validate rejects a missing required resource_ref → ActionFailed (fail-closed) ----
+
+#[test]
+fn validate_rejects_missing_required_resource_ref() {
+    // spec(§6.3 requires_resource_refs; fail-closed) — an action whose catalog entry is
+    // requires_resource_refs=true but carries NO resource_ref → validate Err → the executor returns
+    // Failed → the Gateway records ActionFailed (never a silent skip, never a panic). No success.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = catalog_gateway(); // CatalogExecutor (validates at execute, Q5)
+                                // git.create_worktree requires_resource_refs=true; submit with NO refs. risk-2 → awaiting.
+    let req = req_with("git.create_worktree", None, serde_json::json!({}));
+    gw.submit_action(&mut store, req).expect("submit");
+    gw.approve(&mut store, &approval_id_of(&path))
+        .expect("approve drives execute");
+
+    assert_eq!(
+        action_status(&path),
+        Some("failed".to_string()),
+        "validate failure → the action FAILS"
+    );
+    let types = action_event_types(&store);
+    assert!(
+        types.contains(&"ActionFailed".to_string()),
+        "an ActionFailed event is recorded (never a silent skip)"
+    );
+    assert!(
+        !types.contains(&"ActionSucceeded".to_string()),
+        "the action does NOT succeed"
+    );
+}
+
+// ---- L3 RED #12 — the risk-0 auto-execute path runs off the IN-MEMORY (raw) req (§7.2) -------------
+
+#[test]
+fn auto_execute_runs_off_in_memory_inputs() {
+    // spec(§7.2 read-source) — the risk-0 auto-execute path hands the executor the IN-MEMORY reconciled
+    // ActionRequest (raw inputs), NOT a re-read of the §15-redacted row. A RecordingExecutor proves the
+    // executor sees the RAW secret (a redacted re-read would show [REDACTED]); the row stays redacted.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let spy = RecordingExecutor::new();
+    let seen = spy.inputs_log();
+    let gw = Gateway::new(Box::new(CatalogPolicy), Box::new(spy));
+    // brain.ask is risk-0 → allow → auto-executes; carry a secret in inputs.
+    let req = req_with(
+        "brain.ask",
+        None,
+        serde_json::json!({ "env": format!("API_SECRET={SECRET}") }),
+    );
+    gw.submit_action(&mut store, req).expect("auto-execute");
+
+    let captured = seen.lock().unwrap();
+    assert_eq!(captured.len(), 1, "the executor ran once (auto-execute)");
+    assert!(
+        captured[0].to_string().contains(SECRET),
+        "the auto-execute path gives the executor the RAW in-memory inputs (not the redacted row)"
+    );
+    // the row at rest is still redacted (the §15 gate held independently of the executor read-source)
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let row_inputs: Option<String> = conn
+        .query_row("SELECT inputs_json FROM action_requests", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        !row_inputs.unwrap().contains(SECRET),
+        "the persisted row is redacted at rest (§15)"
+    );
+}
+
+// ---- L3 RED #13 — the approve path runs off the DURABLE (redacted) row (§7.2 canonical) ------------
+
+#[test]
+fn approve_path_executes_off_durable_row() {
+    // spec(§7.2 "rows canonical for execution") — the approve→execute path loads the action from the
+    // DURABLE row (request::load) and executes off it; the in-memory inputs are gone at approve-time
+    // (possibly post-restart). The RecordingExecutor sees the REDACTED row inputs, not the raw secret.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let spy = RecordingExecutor::new();
+    let seen = spy.inputs_log();
+    let gw = Gateway::new(Box::new(CatalogPolicy), Box::new(spy));
+    // git.create_worktree is risk-2 → require_approval → awaiting; carry a secret in inputs.
+    let req = req_with(
+        "git.create_worktree",
+        None,
+        serde_json::json!({ "env": format!("API_SECRET={SECRET}") }),
+    );
+    gw.submit_action(&mut store, req).expect("submit");
+    gw.approve(&mut store, &approval_id_of(&path))
+        .expect("approve drives execute");
+
+    let captured = seen.lock().unwrap();
+    assert_eq!(captured.len(), 1, "the executor ran once (after approval)");
+    assert!(
+        !captured[0].to_string().contains(SECRET),
+        "the approve path executes off the durable REDACTED row (§7.2 canonical), not the raw inputs"
+    );
+}
+
+// ---- L3 RED #14 — the executor is invoked ONLY via the gated Gateway paths (INV-SEC-1) -------------
+
+#[test]
+fn executor_only_reachable_via_gateway() {
+    // spec(§15 INV-SEC-1) — the executor is invoked ONLY from the gated paths: NOT on submit of a
+    // require-approval action (the gate holds), only AFTER approve. A RecordingExecutor counts calls.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let spy = RecordingExecutor::new();
+    let seen = spy.inputs_log();
+    let gw = Gateway::new(Box::new(CatalogPolicy), Box::new(spy));
+    // git.create_worktree is risk-2 → require_approval → awaiting (the gate holds).
+    let req = req_with_refs("git.create_worktree", &["wt_1"]);
+    gw.submit_action(&mut store, req).expect("submit");
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        0,
+        "submit of a require-approval action does NOT execute (the gate holds)"
+    );
+
+    gw.approve(&mut store, &approval_id_of(&path))
+        .expect("approve");
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        1,
+        "the executor runs exactly once, only after the approval gate"
     );
 }

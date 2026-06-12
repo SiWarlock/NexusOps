@@ -41,6 +41,15 @@ sha2 = "0.10"
 # repos); default-features off (no ssh/https — local read-only introspection only). A normal dep, so
 # it is also visible to the integration tests that build hermetic fixture repos (tests/detect.rs).
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
+# octocrab (P7.1) — GitHub typed REST client (§9). READ-ONLY here: the GitHub PR read client fetches
+# a PR + its reviews + check-runs over an INJECTED Octocrab handle (auth bootstrap deferred — this
+# client never builds the handle/reads the keychain), plumbing octocrab's string fields into edges-008's
+# decoders. octocrab's models derive Deserialize so recorded public-JSON fixtures drive the extraction
+# test-first; the live HTTP round-trip is the fake-covered non-deterministic edge. `cargo audit` runs
+# at the P7.1 /phase-exit. async-trait makes the GithubReadClient trait dyn-compatible (the codebase's
+# trait-object idiom: Arc<dyn ActionExecutor>/dyn Policy) so the gated github executor can inject it.
+octocrab = "0.53"
+async-trait = "0.1"
 # (the `nexusopsd` bin is auto-discovered from src/main.rs — no explicit [[bin]] needed.)
 
 [features]

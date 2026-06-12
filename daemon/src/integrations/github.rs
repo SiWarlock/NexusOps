@@ -1,0 +1,238 @@
+//! P7.1 — the GitHub PR read client (edges-009). The live-GitHub → signals read path, all in-lane:
+//! the `github` executor arm (`ExecutorKind::Github`, R1 seam), the `proj_pull_request` projector,
+//! and the `PullRequestSynced` event stay GATED/deferred.
+//!
+//! Two layers:
+//!   - `extract_pr_signals` — the **pure, deterministic core** (fixture-driven test-first): octocrab's
+//!     typed PR/review/check-run models → `PullRequestSignals`. octocrab 0.53.1 exposes `state`,
+//!     `mergeable_state`, and review `state` as TYPED enums (`IssueState`/`MergeableState`/`ReviewState`,
+//!     all `#[non_exhaustive]`), so the extraction **stringifies** each into edges-008's
+//!     `signals_from_github_response` — keeping edges-008 the SINGLE decode authority (its conservative
+//!     floor degrades octocrab's extra variants, e.g. `MergeableState::HasHooks` → Unknown). octocrab's
+//!     `CheckRun` carries ONLY `conclusion: Option<String>` (no `status` field): completed-ness is
+//!     derived from `conclusion.is_some()` (GitHub sets `conclusion` only once a run completes).
+//!   - `GithubReadClient` (trait) + `FakeGithubReadClient` (the seam the gated projector/executor
+//!     consume in tests) + `OctocrabGithubReadClient` — the **live HTTP round-trip**, the
+//!     non-deterministic edge, covered by the fake (CLAUDE.md: real GitHub calls → fixtures/fakes).
+//!     The real client takes an **injected `octocrab::Octocrab`** — auth bootstrap (reuse `gh auth
+//!     token`, else Device Flow, §9) is deferred; this client never builds the handle / reads the
+//!     keychain. Failures map through edges-003's `classify`, and `GithubReadError` carries the
+//!     `IntegrationOutcomeClass` (NOT the collapsed `DeliveryOutcome`) so the gated `SyncFailed`/
+//!     `auth_expired` path can branch on `AuthFailed` vs `ClientError` (the §17 forward-constraint).
+//!
+//! `ReviewRequired` is NOT produced here — the REST `reviews[]` only yields ChangesRequested/Approved/
+//! None (edges-006 `aggregate_reviews`); the GraphQL `reviewDecision → ReviewRequired` layering is the
+//! next in-lane follow-up (edges-010).
+
+use async_trait::async_trait;
+use octocrab::models::checks::CheckRun;
+use octocrab::models::pulls::{MergeableState, PullRequest, Review, ReviewState};
+use octocrab::models::IssueState;
+
+use super::classifier::{classify, IntegrationOutcomeClass};
+use super::pull_request::{signals_from_github_response, PullRequestSignals};
+
+// ---- the deterministic extraction core (fixture-driven) ----------------------------------------
+
+/// Plumb octocrab's typed PR/review/check-run models into `PullRequestSignals` (pure — no IO/Clock).
+/// Stringifies octocrab's typed enums into edges-008's `signals_from_github_response` (the single
+/// decode authority); `Option`-None fields degrade to the conservative floor (absent state → `open`,
+/// absent mergeable_state → Unknown, absent draft/merged → false); empty review/check lists aggregate
+/// to None/None.
+pub fn extract_pr_signals(
+    pr: &PullRequest,
+    reviews: &[Review],
+    check_runs: &[CheckRun],
+) -> PullRequestSignals {
+    let review_states: Vec<&str> = reviews.iter().map(|r| review_state_str(&r.state)).collect();
+    let check_inputs: Vec<(&str, Option<&str>)> = check_runs
+        .iter()
+        .map(|c| {
+            // octocrab's CheckRun has no `status` field — `conclusion` is set only once the run
+            // completes (GitHub's contract), so `is_some()` IS the completed signal.
+            let status = if c.conclusion.is_some() {
+                "completed"
+            } else {
+                "in_progress"
+            };
+            (status, c.conclusion.as_deref())
+        })
+        .collect();
+    signals_from_github_response(
+        issue_state_str(&pr.state),
+        pr.draft.unwrap_or(false),
+        pr.merged.unwrap_or(false),
+        mergeable_state_str(&pr.mergeable_state),
+        &review_states,
+        &check_inputs,
+    )
+}
+
+/// octocrab `IssueState` → the canonical GitHub `state` string for edges-008's `parse_pr_state`.
+/// None or a future `#[non_exhaustive]` variant → `"open"` (the conservative floor — never fabricate
+/// the terminal `closed`).
+fn issue_state_str(state: &Option<IssueState>) -> &'static str {
+    match state {
+        Some(IssueState::Closed) => "closed",
+        _ => "open",
+    }
+}
+
+/// octocrab `MergeableState` → the canonical GitHub `mergeable_state` string. octocrab's extra
+/// variants (`Draft`/`HasHooks`) stringify faithfully and edges-008's `parse_mergeable_state` collapses
+/// them (+ None / future variants → `""`) to the conservative `Unknown`.
+fn mergeable_state_str(state: &Option<MergeableState>) -> &'static str {
+    match state {
+        Some(MergeableState::Clean) => "clean",
+        Some(MergeableState::Dirty) => "dirty",
+        Some(MergeableState::Blocked) => "blocked",
+        Some(MergeableState::Behind) => "behind",
+        Some(MergeableState::Unstable) => "unstable",
+        Some(MergeableState::Draft) => "draft",
+        Some(MergeableState::HasHooks) => "has_hooks",
+        Some(MergeableState::Unknown) => "unknown",
+        _ => "",
+    }
+}
+
+/// octocrab `ReviewState` → the canonical GitHub review `state` wire string (SCREAMING_SNAKE_CASE,
+/// GitHub's actual casing) for edges-008's `parse_review_state`, which case-folds before matching.
+/// octocrab's extra `Open` (+ None / future variants) → a no-decision value (`parse_review_state`
+/// maps the unrecognized form to `Commented`, which carries no review decision).
+fn review_state_str(state: &Option<ReviewState>) -> &'static str {
+    match state {
+        Some(ReviewState::Approved) => "APPROVED",
+        Some(ReviewState::ChangesRequested) => "CHANGES_REQUESTED",
+        Some(ReviewState::Commented) => "COMMENTED",
+        Some(ReviewState::Dismissed) => "DISMISSED",
+        Some(ReviewState::Pending) => "PENDING",
+        Some(ReviewState::Open) => "OPEN",
+        _ => "",
+    }
+}
+
+// ---- the read-client trait + fake + live octocrab impl -----------------------------------------
+
+/// A read-failure carrying the §17 `IntegrationOutcomeClass` (NOT the collapsed `DeliveryOutcome`) so
+/// the gated `SyncFailed`/`auth_expired` path can branch on `AuthFailed` vs a payload `ClientError`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("github read failed [{class:?}]: {message}")]
+pub struct GithubReadError {
+    pub class: IntegrationOutcomeClass,
+    pub message: String,
+}
+
+/// Read a PR's `PullRequestSignals` from GitHub. `async` + dyn-compatible (via `async_trait`) so the
+/// gated `github` executor can inject an `Arc<dyn GithubReadClient>` (the codebase's `dyn`-handler idiom).
+#[async_trait]
+pub trait GithubReadClient: Send + Sync {
+    async fn fetch_pr_signals(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<PullRequestSignals, GithubReadError>;
+}
+
+/// Test double — returns a canned `Ok(signals)` / `Err(GithubReadError)`. The seam the gated
+/// `proj_pull_request` projector + `github` executor consume in tests (the live HTTP edge is
+/// non-deterministic — fake-covered per CLAUDE.md).
+pub struct FakeGithubReadClient {
+    result: Result<PullRequestSignals, GithubReadError>,
+}
+
+impl FakeGithubReadClient {
+    pub fn new(result: Result<PullRequestSignals, GithubReadError>) -> Self {
+        Self { result }
+    }
+}
+
+#[async_trait]
+impl GithubReadClient for FakeGithubReadClient {
+    async fn fetch_pr_signals(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _pr_number: u64,
+    ) -> Result<PullRequestSignals, GithubReadError> {
+        self.result.clone()
+    }
+}
+
+/// The live client over an **injected** `octocrab::Octocrab` (auth bootstrap deferred — never builds
+/// the handle/reads the keychain). Fetches the PR + its reviews + its head-ref check-runs, then runs
+/// the deterministic `extract_pr_signals`. The HTTP round-trip is the fake-covered non-deterministic
+/// edge — no unit test (Step 7.5: only the test module + `FakeGithubReadClient` reference the trait).
+pub struct OctocrabGithubReadClient {
+    octocrab: octocrab::Octocrab,
+}
+
+impl OctocrabGithubReadClient {
+    pub fn new(octocrab: octocrab::Octocrab) -> Self {
+        Self { octocrab }
+    }
+}
+
+#[async_trait]
+impl GithubReadClient for OctocrabGithubReadClient {
+    async fn fetch_pr_signals(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<PullRequestSignals, GithubReadError> {
+        let pr = self
+            .octocrab
+            .pulls(owner, repo)
+            .get(pr_number)
+            .await
+            .map_err(|e| to_read_error(&e))?;
+        let reviews = self
+            .octocrab
+            .pulls(owner, repo)
+            .list_reviews(pr_number)
+            .send()
+            .await
+            .map_err(|e| to_read_error(&e))?;
+        // §7.2: check-runs are keyed on the PR head SHA (the checks SoT). No head, or an empty head
+        // SHA (GitHub's "no commits yet" signal — an empty ref would 422/404) → no checks.
+        let check_runs = match pr.head.as_ref() {
+            Some(head) if !head.sha.is_empty() => {
+                self.octocrab
+                    .checks(owner, repo)
+                    .list_check_runs_for_git_ref(head.sha.clone().into())
+                    .send()
+                    .await
+                    .map_err(|e| to_read_error(&e))?
+                    .check_runs
+            }
+            _ => Vec::new(),
+        };
+        Ok(extract_pr_signals(&pr, &reviews.items, &check_runs))
+    }
+}
+
+/// Map an `octocrab::Error` → `GithubReadError`, classifying via edges-003's `classify` (§17).
+fn to_read_error(err: &octocrab::Error) -> GithubReadError {
+    GithubReadError {
+        class: classify_octocrab_error(err),
+        message: err.to_string(),
+    }
+}
+
+/// `octocrab::Error` → `IntegrationOutcomeClass` via edges-003's `classify`. The HTTP-status variant
+/// carries the GitHub status; hyper/service variants are transport failures. `octocrab::Error` is
+/// `#[non_exhaustive]` (not externally constructible → unit-tested via `classify` itself, edges-003);
+/// the remaining variants (serde/uri/...) conservatively classify as a transient `ServerError` (retry,
+/// never dead-letter). `retry_after` is unreachable from the typed error (no raw headers) → `None`.
+fn classify_octocrab_error(err: &octocrab::Error) -> IntegrationOutcomeClass {
+    match err {
+        octocrab::Error::GitHub { source, .. } => {
+            classify(Some(source.status_code.as_u16()), None, false)
+        }
+        octocrab::Error::Hyper { .. } | octocrab::Error::Service { .. } => {
+            classify(None, None, true)
+        }
+        _ => classify(None, None, false),
+    }
+}

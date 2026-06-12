@@ -1,0 +1,142 @@
+name: CI
+
+# §14 merge-gate tiers (ARCHITECTURE.md §14) + the §5.0 cross-language contract gates.
+# CI ≡ the local `/preflight` gate for daemon + ui, extended with the contract verification that
+# can't run offline. Fires on every PR + on pushes to main; jobs run in parallel.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege — read-only; no secrets. The repo token (GITHUB_TOKEN) is read-scoped.
+permissions:
+  contents: read
+
+# One in-flight run per ref; a new push cancels the superseded run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # --- daemon tier (Unit · Contract-with-fixtures · Integration-with-fakes · Security) -----------
+  # The exact local `/preflight` daemon-mode commands. `cargo test --workspace` covers the `shared`
+  # + `daemon` crates — including the §5.0 schema-diff (test-9, emit_schema vs the checked-in
+  # artifact) and the §14 fault-injection tier (auto-enabled for test targets via the dev-dep
+  # self-ref in daemon/Cargo.toml). The harness=false perf bench is NOT run here (→ nightly).
+  daemon:
+    name: daemon (fmt · clippy · test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt --check
+        run: cargo fmt --all --check
+      - name: clippy -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test --workspace
+        run: cargo test --workspace
+
+  # --- ui / Frontend tier -----------------------------------------------------------------------
+  # The exact local `/preflight` ui-mode commands. pnpm 9 (matches ui/pnpm-lock.yaml
+  # lockfileVersion 9.0); the committed ui/.npmrc (verify-deps-before-run=false) is honored.
+  # `pnpm test:run` includes the §5.0 ui TS drift test (ui/src/contracts/generated.test.ts).
+  #
+  # ADVISORY (continue-on-error) for now: the ui track is PAUSED at an older contract
+  # (generated.ts CONTRACT_VERSION 0.12.0) while the daemon advanced shared/ to 0.19.0 across
+  # Phase 2, so the §5.0 ui-Zod drift sentinel fires EXPECTEDLY (a known cross-track gap, not a
+  # regression). Promotes to a hard gate at the ui-track resume — the generated.ts regen that
+  # clears the drift is the resume's first step (tracked in the Carry-forward).
+  ui:
+    name: ui (typecheck · oxlint · vitest)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: install pnpm@9
+        run: npm i -g pnpm@9
+      - name: install deps
+        run: pnpm install --frozen-lockfile
+      - name: typecheck (tsc --noEmit)
+        run: pnpm typecheck
+      - name: oxlint
+        run: pnpm oxlint
+      - name: vitest run
+        run: pnpm test:run
+
+  # --- contract 3-way verify (§5.0 test-8) ------------------------------------------------------
+  # Wires the existing standalone harness `shared/contracts/verify/run.sh` (NOT re-authored):
+  # regenerate the schema from the Rust authority (emit_schema) → codegen Pydantic via
+  # `uvx datamodel-codegen` + Zod via `npx json-schema-to-zod` → assert the 3 enum value-sets
+  # agree + `x-contract-version` is present. Needs Rust + Node + Python + uv; the codegen tools
+  # download on first use (GitHub runners have network — this is the only gate the LOCAL offline
+  # case can't run). A REAL merge gate (not continue-on-error).
+  contract-3way:
+    name: contract 3-way verify (§5.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v3
+      - name: 3-way contract verify
+        run: bash shared/contracts/verify/run.sh
+
+  # --- dependency audit (supply-chain posture, §16) ---------------------------------------------
+  # Gate = `cargo audit` exits 0 (no advisories outside the accepted ignore-list) + `pnpm audit
+  # --prod` clean. To ACCEPT an advisory: add `--ignore RUSTSEC-xxxx` here + record it in the
+  # tracker's Decisions-tabled (the docs/audits/ baseline is the human-readable record). No
+  # diff-against-snapshot parser — the ignore-list IS the baseline mechanism.
+  dep-audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      - name: cargo audit
+        run: cargo audit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: install pnpm@9
+        run: npm i -g pnpm@9
+      - name: pnpm install
+        working-directory: ui
+        run: pnpm install --frozen-lockfile
+      - name: pnpm audit --prod
+        working-directory: ui
+        run: pnpm audit --prod
+
+  # --- spec-lint (ADVISORY) ---------------------------------------------------------------------
+  # `tests <phase>` checks the active phase's tasks carry their spec anchors. It's a phase-exit
+  # check, not a per-commit invariant, so it runs ADVISORY (continue-on-error) — real signal in the
+  # log without blocking a PR. Promote to a hard gate when /phase-exit is CI-automated. ACTIVE_PHASE
+  # is overridable via a repo variable (Settings → Variables); defaults to the current phase.
+  spec-lint:
+    name: spec-lint (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      ACTIVE_PHASE: ${{ vars.ACTIVE_PHASE || '2' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: spec-lint tests
+        run: bash scripts/spec-lint.sh tests "${ACTIVE_PHASE}"

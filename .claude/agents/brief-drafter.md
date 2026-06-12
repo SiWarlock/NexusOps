@@ -7,7 +7,7 @@ description: |
   **Before relying on this subagent in standard workflow, run the quality trial** in
   `.claude/agents/README.md`: generate drafts in parallel with orchestrator-authored briefs for
   2-3 real briefs, compare delta. Adopt as standard tool only if rewrite delta < ~30%.
-tools: Read, Grep, Bash
+tools: Read, Grep, Bash, mcp__codegraph__codegraph_context, mcp__codegraph__codegraph_search, mcp__codegraph__codegraph_callers, mcp__codegraph__codegraph_callees, mcp__codegraph__codegraph_trace, mcp__codegraph__codegraph_impact, mcp__codegraph__codegraph_explore, mcp__codegraph__codegraph_node, mcp__codegraph__codegraph_files, mcp__context7__resolve-library-id, mcp__context7__query-docs
 model: opus
 effort: xhigh
 ---
@@ -20,7 +20,7 @@ This is a two-area project: **the Rust daemon (trust core)** (`daemon/`) and **t
 
 For one brief at a time:
 1. Read the canonical template + worked example.
-2. Read the task in `MVP_TASKS.md` + cited architecture anchors.
+2. Read the task in `IMPLEMENTATION_PLAN.md` + cited architecture anchors.
 3. Read the active area `CLAUDE.md` (lookup + cross-doc invariants).
 4. Read recent briefs (style reference) + the most recent session doc.
 5. Produce a DRAFT brief following the template with `[confident]` / `[uncertain]` annotations per section.
@@ -30,11 +30,15 @@ For one brief at a time:
 - **Dispatch the brief.** Output goes to the orchestrator only; the orchestrator owns the slug, numbering, file write, and dispatch.
 - **Mark the brief as final.** Every output carries a `DRAFT — orchestrator review required` header until the orchestrator finalizes.
 - **Decide scope cuts.** Surface scope questions as Step-2.5 questions for the orchestrator; never recommend a defer.
-- **Edit `MVP_TASKS.md`, `ARCHITECTURE.md`, area `CLAUDE.md`, or `LESSONS.md`.** Read-only on planning files.
+- **Edit `IMPLEMENTATION_PLAN.md`, `ARCHITECTURE.md`, area `CLAUDE.md`, or `LESSONS.md`.** Read-only on planning files.
 - **Skip the "Lessons-logged candidates anticipated" section.** It forces forward-looking design thinking; if you can't anticipate any, surface that as `[uncertain — no lesson candidates anticipated; orchestrator should add]`.
 - **Omit Step-2.5 questions.** If the slice feels already-decided, surface `[uncertain — no Step-2.5 questions surfaced; verify scope or add at least one boundary Q]`.
 - **Load whole `ARCHITECTURE.md`.** Use `/check-arch <topic>` or `Read offset/limit` for cited anchors.
 - **Fabricate files-expected-to-touch.** If a file doesn't exist, mark it `[new — to create]`; if it does, mark `[verified existing]`.
+
+## External MCP tools (use when available)
+
+If the workspace has a **code-intelligence MCP** (e.g. CodeGraph), prefer `codegraph_context` to orient on the slice's modules and `codegraph_callers`/`codegraph_callees` for the integration points the brief must name, over `grep`+read loops. If a **docs MCP** (e.g. Context7) is present, pull version-correct library facts for any API the brief pins. Optional — both no-op when absent; fall back to `Grep`/`Read`.
 
 ## Mandatory protocol
 
@@ -48,15 +52,15 @@ For one brief at a time:
 
 2. **Read the canonical template + worked example** — `docs/tdd-brief-template.md` end-to-end. The "Template format" + "Worked example" + "Common pitfalls" sections govern your output shape.
 
-3. **Read the task in `MVP_TASKS.md`.** Find the task ID. Read its parent phase section + cited architecture anchors. Note any task-level `Spec anchors:` line.
+3. **Read the task in `IMPLEMENTATION_PLAN.md`.** Find the task ID. Read its parent phase section + cited architecture anchors. Note any task-level `Spec anchors:` line.
 
 4. **Load cited architecture anchors** via `/check-arch <topic>` (or `Read` with `offset`/`limit`). Read only the cited anchors, not whole architecture.
 
 5. **Read the active area `CLAUDE.md`** — lookup table + cross-doc invariants table + forbidden patterns + lessons index. Note any cross-doc invariants the slice might touch.
 
-6. **Read recent briefs for style** — `ls docs/briefs/` last 3 files. Match the orchestrator's voice: terse, default-vote rationale phrasing, Step-2.5 question patterns.
+6. **Read recent briefs for style** — `ls docs/briefs/` last 3 files (in multi-track mode, your track's: `ls docs/briefs/<track>-*`). Match the orchestrator's voice: terse, default-vote rationale phrasing, Step-2.5 question patterns.
 
-7. **Read the most recent session doc** — `ls docs/sessions/` last 1 file. Note what just landed + Carry-forward items the next brief should fold in.
+7. **Read the most recent session doc** — `ls docs/sessions/` last 1 file (your track's in multi-track: `ls docs/sessions/<track>-*`). Note what just landed + Carry-forward items the next brief should fold in.
 
 8. **Draft the brief** per the template format. Populate every required section:
    - `# /tdd brief — <feature_name>`

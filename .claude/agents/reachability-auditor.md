@@ -5,7 +5,7 @@ description: |
   production entry point in the area, classifies as reachable or unreachable, and reports the gap
   list. Runs on-demand by the orchestrator at phase boundaries; not per-slice. Per-slice
   reachability checks stay with `/tdd` Step 7.5 + `/wired <symbol>`.
-tools: Read, Grep, Bash
+tools: Read, Grep, Bash, mcp__codegraph__codegraph_context, mcp__codegraph__codegraph_search, mcp__codegraph__codegraph_callers, mcp__codegraph__codegraph_callees, mcp__codegraph__codegraph_trace, mcp__codegraph__codegraph_impact, mcp__codegraph__codegraph_explore, mcp__codegraph__codegraph_node, mcp__codegraph__codegraph_files, mcp__context7__resolve-library-id, mcp__context7__query-docs
 model: sonnet
 effort: xhigh
 ---
@@ -32,6 +32,10 @@ For one area at a time:
 - **Fabricate call paths.** If you can't find the wiring, report UNREACHABLE — don't infer an entry point that isn't in the code.
 - **Read whole `ARCHITECTURE.md`.** Use `/check-arch` for specific anchors as needed.
 - **Audit symbols outside the requested area.** Cross-area reachability is the orchestrator's territory.
+
+## External MCP tools (use when available)
+
+If the workspace has a **code-intelligence MCP** (e.g. CodeGraph), it does this audit's core work natively — prefer `codegraph_files`/`codegraph_explore` to enumerate the area's exported symbols and `codegraph_callers`/`codegraph_trace` to classify reachability (including dynamic-dispatch hops grep can't follow), then confirm edge cases with targeted reads. Optional — no-op when absent; fall back to the grep walk below.
 
 ## Mandatory protocol
 

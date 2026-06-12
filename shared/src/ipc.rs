@@ -67,6 +67,12 @@ pub struct Capabilities {
 /// The §6.4 structured wire error codes (closed set; reject-unknown). snake_case wire values.
 /// `protocol_error` (a bad-first-frame / handshake-required / malformed-frame violation, distinct
 /// from `unknown_method`) was added in 1.5 per the lead-ratified §6.4 gap resolution (Option B).
+/// `fencing_conflict` + `internal_error` were added in 2.4 L1 (lead-ruled Option A, away-authority):
+/// the §17 failure modes need honest codes that drive the THREE distinct §11.5 safety cards with
+/// DIFFERENT resolution semantics — `fencing_conflict` → the **never-auto-resolved** hard-conflict
+/// card (rule #6); `precondition_stale` → the **re-approvable** stale card; `internal_error` → the
+/// **fail-closed** integrity alert (`AuditWriteFailed`/`UnknownOutcome`). Collapsing them to
+/// `precondition_stale` would render a fencing conflict as re-approvable → break rule #6 at the UI.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum IpcErrorCode {
@@ -76,7 +82,9 @@ pub enum IpcErrorCode {
     UnauthorizedPeer,
     PolicyDenied,
     PreconditionStale,
+    FencingConflict,
     ProtocolError,
+    InternalError,
 }
 
 impl IpcErrorCode {
@@ -88,7 +96,9 @@ impl IpcErrorCode {
         Self::UnauthorizedPeer,
         Self::PolicyDenied,
         Self::PreconditionStale,
+        Self::FencingConflict,
         Self::ProtocolError,
+        Self::InternalError,
     ];
 }
 
@@ -155,6 +165,40 @@ pub struct RpcResponse {
     pub result: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<WireError>,
+}
+
+/// `submit_action` result (§6.1) — the ack the ui/Brain intent seam receives: the minted
+/// `action_request_id` (so the client can `preview_action`/track it) + the action's current
+/// `status` (§5.1 ActionRequest(15); in 2.1b the stub policy lands it at `awaiting_approval`).
+/// 2.1b L2: defined + returned over the wire; it joins the published schema + the 3-way verify
+/// with the rest of the §6.1 mutation surface at L3's CONTRACT_VERSION 0.16.0 bump (`PlanAck` →
+/// 2.1c with `submit_action_plan`).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionAck {
+    pub action_request_id: String,
+    pub status: crate::status::ActionRequestStatus,
+}
+
+/// `submit_action_plan` result (§6.1, O-3) — the bundled-plan ack: the minted `plan_id` + a
+/// per-step ack (mirrors [`ActionAck`]) so the client can `preview_action`/track each step + hold
+/// the plan handle. Richer fields (`approval_ids`/`overall_status`) are additive-later (2.1c L2,
+/// Q1 default). Reject-unknown; optionals (none today) would serialize as `null`.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct PlanAck {
+    pub plan_id: String,
+    pub steps: Vec<PlanStepAck>,
+}
+
+/// One step's ack inside a [`PlanAck`] (§6.1, O-3): the step's plan-local `step_id` + the minted
+/// `action_request_id` (so the client can `preview_action`/track it) + its current `status`.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct PlanStepAck {
+    pub step_id: String,
+    pub action_request_id: String,
+    pub status: crate::status::ActionRequestStatus,
 }
 
 /// `get_projection` params (§6.1). `page` (pagination) is provisional and omitted for MVP.

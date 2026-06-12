@@ -1,6 +1,6 @@
 ---
 description: Orchestrator-only close-out — verify hot routing, reconcile the task tracker, prep next session.
-allowed-tools: Read, Edit, Write, Bash, Grep
+allowed-tools: Read, Edit, Write, Bash, Grep, SendMessage
 argument-hint: ""
 ---
 
@@ -28,13 +28,17 @@ You routed each Step-9 item hot during the session, per the **canonical matrix i
 
 Anything that slipped — write the fix now (escalate only if it's a deferment or safety finding).
 
-## Step 3 — Reconcile `MVP_TASKS.md` checkbox state
+## Step 3 — Reconcile `IMPLEMENTATION_PLAN.md` checkbox state
 
 The "Completed work → ticked checkbox" row is the most-likely-to-slip routing. Walk the implementer's session doc "What was built" + "Decisions made" sections. Every completed task should have a `[x]`. Tick any missed ones now (conservative — only `[x]` if work is *complete and verified*, not "mostly done").
 
 If a slice landed partial work, leave the box `[ ]` and add a parenthetical note: `(partial: <what landed; what's still missing>; deferred to <slice or phase>)`.
 
-## Step 4 — Append a Log entry to `MVP_TASKS.md`
+**Phase ticks are gated.** A phase-level checkbox is ticked complete only after a **CLEAR `/phase-exit` verdict** for that phase (or rows explicitly waived by the human, recorded on the row). Task-level ticks are this step's normal work; phase-level ticks are not.
+
+**New-task anchor rule (HEADING-level only).** Any `### <phase-id>.N` heading added this round (Step-9 routing, Step-5.5 INLINE-TARGET) must carry `(implements §X; origin: <slice>)` — or `(ops — no contract anchor)` for purely operational tasks — and §X must be covered by its phase's `Spec anchors:` line. No covering anchor ⇒ that's a **contract gap**: route an Architecture-doc note + escalate as a Finding; never a silent task add. The `- [ ]` field lines under a task are never individually checked.
+
+## Step 4 — Append a Log entry to `IMPLEMENTATION_PLAN.md`
 
 The implementer's session doc is the technical narrative. The Log entry is the **orchestrator's framing** — what landed at the planning level, decisions made, scope shifts, what's now unblocked or blocked. **Keep the Log bounded** (per the tracker's Log policy): once more than ~10 rounds have accumulated inline, roll the oldest into `docs/archive/TASKS-LOG.md` with a one-line pointer.
 
@@ -82,14 +86,14 @@ This step runs BEFORE the round commit (Step 7) so triage outcomes land in the s
 
 Decision criterion: did substantial *orchestrator-side* work land this round? Substantial = scaffolding refactor, deploy ops, infrastructure changes, big planning shifts, or a session that ran orchestrator-only with no `/tdd` cycles.
 
-If YES → create `docs/sessions/<NNN>-<date>-<topic>.md` (next sequential NNN, shared sequence with implementer docs). Update the predecessor session doc's Successor link.
+If YES → create `docs/sessions/<NNN>-<date>-<topic>.md` (next sequential NNN, shared sequence with implementer docs; **track-prefixed `<track>-<NNN>-…` in multi-track mode**, same track as your implementer's docs — root `CLAUDE.md` "Naming + cross-bleed prevention"). Update the predecessor session doc's Successor link.
 
 If NO → no orchestrator-side doc needed.
 
 ## Step 7 — Commit the round + push
 
 After reconciliation, the orchestrator-side working tree has:
-- `MVP_TASKS.md` updates (Log entry, box ticks, Carry-forward additions + Step-5.5 triage relocations, "Currently in progress" refresh, Decisions tabled changes)
+- `IMPLEMENTATION_PLAN.md` updates (Log entry, box ticks, Carry-forward additions + Step-5.5 triage relocations, "Currently in progress" refresh, Decisions tabled changes)
 - Any hot-routed `daemon/LESSONS.md` + `daemon/CLAUDE.md` (or `ui/LESSONS.md` + `ui/CLAUDE.md`) index additions that haven't ridden a slice commit yet
 - Any hot-routed `ARCHITECTURE.md` prose edits that haven't ridden a slice commit yet
 - Any `/tdd` brief file(s) authored this round in `docs/briefs/<NNN>-<task-id>-<topic>.md` (incl. in-place refreshes of a stale brief)
@@ -98,7 +102,7 @@ After reconciliation, the orchestrator-side working tree has:
 Stage these explicitly (do NOT use `git add -A`):
 
 ```bash
-git add MVP_TASKS.md \
+git add IMPLEMENTATION_PLAN.md \
         daemon/LESSONS.md \
         daemon/CLAUDE.md \
         ARCHITECTURE.md \
@@ -129,25 +133,31 @@ Then **push to origin (git@github.com:SiWarlock/NexusOps.git) only**:
 git push <remote> <branch>
 ```
 
-This is the round's terminal commit. Confirm with the user that the push landed before declaring the round closed.
+This is the round's terminal commit. **Verify the push mechanically** — the `git push` exit status plus `git status -sb` showing the branch is no longer ahead. Never block the close-out waiting for a human to confirm a push the shell already confirmed; who you REPORT to depends on mode (Step 8).
 
-## Step 8 — Confirm with user + prep next /tdd brief
+## Step 8 — Close the round (mode- and trigger-aware)
 
-Summarize the close-out:
+Assemble the close-out summary:
 - What was reconciled (boxes ticked, Log entry appended, Carry-forward additions)
 - Step-5.5 triage outcomes + threshold-warning state
 - Anything that slipped through hot routing (and the fix that landed)
 - Whether an orchestrator-side session doc was created
-- Round commit hash + push confirmation
-- Suggested next slice — reference `MVP_TASKS.md` "Currently in progress" + "Carry-forward" (now triaged)
+- Round commit hash + mechanical push verification
+- Suggested next slice — reference `IMPLEMENTATION_PLAN.md` "Currently in progress" + "Carry-forward" (now triaged)
+- _(production-grade, optional)_ a report-only `cargo audit && (cd ui && pnpm audit --prod)` one-liner (new-vs-baseline) if run this round — the blocking run stays at `/phase-exit`
 
-Once the user confirms, author the next `/tdd` brief per `docs/tdd-brief-template.md` (saved as `docs/briefs/NNN-<task-id>-<topic>.md`) if the user wants to continue. Otherwise, the round closes here.
+Then route it three ways (this is the **canonical close-out spec** — root `CLAUDE.md` "Close-out gating" points here):
+
+- **(a) Single-operator** — present the summary to the user and confirm. Once the user confirms, author the next `/tdd` brief per `docs/tdd-brief-template.md` (saved as `docs/briefs/NNN-<task-id>-<topic>.md`) if the user wants to continue. Otherwise the round closes here.
+- **(b) Team, user-on-demand close-out** — ack the **LEAD** via `SendMessage`: one terse send (round-seal hash + "round closed"; the lead relays to the user — you never report to the user directly). Then **idle**. Author the next brief only on lead-relayed direction, never on your own initiative after a close-out.
+- **(c) Team, auto-cycle (context-triggered)** — ack the lead with the same one-liner (include the verbatim `/context-check --brief` tier line when the cycle is for your own context). **Author NO next brief** — your successor authors it after `/orchestrate-start` reads the reconciled tracker. Expect a `shutdown_request` from the lead; approve it once the round commit is in and your working tree is clean. **Nothing in this branch waits on a human reply** — the mechanical trigger already carried the authorization (root `CLAUDE.md` "Close-out gating").
 
 ## Forbidden in this command
 
 - **Re-aggregating Step 9 items.** They were already routed hot. This command verifies, doesn't re-route.
 - **Pushing to the wrong remote.** Push to origin (git@github.com:SiWarlock/NexusOps.git) only.
-- **Authoring the next /tdd brief before the user confirms close-out is clean.** Reconciliation must complete first.
+- **Authoring the next /tdd brief before the round is sealed** (commit + mechanically-verified push). In single-operator mode, also wait for the user's confirm; in a team auto-cycle, never author it at all — the successor does (Step 8c).
+- **Blocking the close-out on a human reply in team mode.** Push verification is mechanical (exit status); the ack goes to the lead via `SendMessage`. A context-triggered cycle that waits on a user confirmation deadlocks the team at exactly the moment context is scarcest.
 - **Skipping Step 2 or Step 3 verification.** The whole point of this command is catching what slipped through hot routing.
 - **Skipping Step 5.5 triage.** If the Carry-forward section is never drained, it accumulates monotonically and stops being useful.
 - **Deferring without escalating.** A DEFER (scope cut) is a deferment approval — escalate to the human; never cut scope agent-only.

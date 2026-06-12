@@ -34,7 +34,7 @@ NexusOps/
 │   ├── sessions/                       # Numbered chronological session docs
 │   └── runbooks/                       # Operational procedures
 ├── CLAUDE.md                           # Root — project conventions + shared comm rules
-├── MVP_TASKS.md                        # Task tracker
+├── IMPLEMENTATION_PLAN.md                        # Task tracker
 └── ARCHITECTURE.md                     # Architecture / design contract
 
 # User-global (~/.claude/) — populated at /team-start by spawn prompts (team mode only):
@@ -91,7 +91,7 @@ Orchestrator ↔ implementer communicate **directly** (`SendMessage` for checkpo
 
 ## Slash commands
 
-The full command list + descriptions is **canonical in root `CLAUDE.md` "Slash commands available."** Pairs: lead `/team-start`+`/team-end`; orchestrator `/orchestrate-start`+`/orchestrate-end`; implementer `/session-start`+`/session-end`; plus `/tdd`, `/wired`, `/context-check`, `/preflight`, `/run-tests`, `/check-arch` (+ optional `/eval`, `/trace`). _(Single-operator: no `/team-start`/`/team-end`.)_
+Command descriptions are injected by the harness per command; root `CLAUDE.md` "Slash commands" keeps only the role pairing. Pairs: lead `/team-start`+`/team-end`; orchestrator `/orchestrate-start`+`/orchestrate-end`; implementer `/session-start`+`/session-end`; plus `/tdd`, `/wired`, `/context-check`, `/preflight`, `/run-tests`, `/check-arch` (+ optional `/eval`, `/trace`). _(Single-operator: no `/team-start`/`/team-end`.)_
 
 ---
 
@@ -114,7 +114,7 @@ The full command list + descriptions is **canonical in root `CLAUDE.md` "Slash c
 
 ### Context monitoring + auto-cycle (team mode only)
 
-Status lines write per-session heartbeats (gated on a `~/.claude/team-registry/` entry, so solo sessions are silent). The orchestrator runs `/context-check <team>` **locally each slice** but pings the lead **only on a tier crossing** (≥ WARN) — OK slices produce no ping; the lead's free idle-notifications + the task list cover progress. Tiers (WARN 70 / ACTION 75 / HARD-STOP 80, env-overridable via `CLAUDE_TEAM_CTX_*`) and the full auto-cycle flow are **canonical in root `CLAUDE.md` "Context monitoring" + `docs/team-protocol.md` "Context monitoring + auto-cycle."**
+Status lines write per-session heartbeats (gated on a `~/.claude/team-registry/` entry, so solo sessions are silent). The orchestrator runs `/context-check <team>` **locally each slice** but pings the lead **only on a tier crossing** (≥ WARN) — OK slices produce no ping; the lead's free idle-notifications + the task list cover progress. The tier ladder (WARN/ACTION/HARD-STOP) and the full auto-cycle flow are **canonical in `docs/team-protocol.md` "Context monitoring + auto-cycle"** (numbers = the script's env defaults, `CLAUDE_TEAM_CTX_*`).
 
 ### Step-9 routing matrix
 
@@ -146,7 +146,7 @@ N slice commits + 1 session-doc commit + 1 round commit = **N + 2** per round. P
 - **Forbidden patterns:** see `daemon/CLAUDE.md` (Rust core) and `ui/CLAUDE.md` (Tauri/TS host).
 - **Key safety rules:** see root `CLAUDE.md` "Key safety rules."
 - **Cross-doc invariants:** the `daemon/CLAUDE.md` table tracks typed Action/event models mirroring `ARCHITECTURE.md` sections; the `ui/CLAUDE.md` table tracks the Zod-validated projection contracts the UI reads. Field changes require atomic doc edits paired with the model change in the same slice.
-- **Phase plan:** `MVP_TASKS.md` drives state via Phase <N> (tasks <N>.<M>, e.g. Phase 1 / task 1.1); `ARCHITECTURE.md` is the binding design contract every brief anchors to.
+- **Phase plan:** `IMPLEMENTATION_PLAN.md` drives state via Phase <N> (tasks <N>.<M>, e.g. Phase 1 / task 1.1); `ARCHITECTURE.md` is the binding design contract every brief anchors to.
 
 <!-- ▲ END EXAMPLE BLOCK [id=instance-conventions] ▲ -->
 
@@ -157,9 +157,9 @@ N slice commits + 1 session-doc commit + 1 round commit = **N + 2** per round. P
 | Concern | Source of truth | Loaded by |
 |---|---|---|
 | Team topology + escalation rules | Root `CLAUDE.md` "Team coordination" + `docs/team-protocol.md` | `/team-start` (lead-specific) |
-| Current state, "what's done, what's next" | `MVP_TASKS.md` | `/orchestrate-start` + `/session-start` |
+| Current state, "what's done, what's next" | `IMPLEMENTATION_PLAN.md` | `/orchestrate-start` + `/session-start` |
 | Technical narrative of just-landed work | Most recent `docs/sessions/<NNN>-*.md` | `/orchestrate-start` |
-| Round ledger (thin pointer-lines) | `MVP_TASKS.md` "Log" | `/orchestrate-start` |
+| Round ledger (thin pointer-lines) | `IMPLEMENTATION_PLAN.md` "Log" | `/orchestrate-start` |
 | Per-slice design audit trail | `docs/briefs/<NNN>-<task-id>-<topic>.md` | On-demand; latest at `/orchestrate-start` |
 | Team-pause handoff state | Most recent `docs/team-handoffs/<NNN>-*.md` | `/team-start` (when resuming) |
 | Conventions / patterns | `daemon/LESSONS.md` + `ui/LESSONS.md` (prose) + each area's `CLAUDE.md` (index) | On-demand |
@@ -181,7 +181,7 @@ The principle: **single source of truth per concern.** Drift between sources is 
 - **New cross-doc invariant** → row in the area's `CLAUDE.md` table + atomic `ARCHITECTURE.md` edit.
 - **New escalation category** → root `CLAUDE.md` "Escalation taxonomy" + `docs/team-protocol.md` "What the lead does NOT do" cross-reference.
 
-**Don't** add project *state* to scaffolding files — state lives in `MVP_TASKS.md`. **Don't** rename the cross-referenced files (`MVP_TASKS.md`, the `CLAUDE.md` files, `daemon/LESSONS.md` + `ui/LESSONS.md`, `docs/team-protocol.md`, `docs/orchestrator-briefing.md`, `docs/tdd-brief-template.md`) casually — they're named inside slash command bodies; renaming is a multi-file ripple.
+**Don't** add project *state* to scaffolding files — state lives in `IMPLEMENTATION_PLAN.md`. **Don't** rename the cross-referenced files (`IMPLEMENTATION_PLAN.md`, the `CLAUDE.md` files, `daemon/LESSONS.md` + `ui/LESSONS.md`, `docs/team-protocol.md`, `docs/orchestrator-briefing.md`, `docs/tdd-brief-template.md`) casually — they're named inside slash command bodies; renaming is a multi-file ripple.
 
 ---
 

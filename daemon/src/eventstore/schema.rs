@@ -310,3 +310,135 @@ CREATE TABLE leases (
 );
 CREATE INDEX ix_leases_expiry ON leases(expires_at);
 ";
+
+/// Migration 6 (1.6c §17 degradable replay) — the `quarantine` table (USER-RULED Option C).
+/// When startup replay (`catch_up_replay`/`rebuild`) hits a corrupt or unredacted event row it
+/// QUARANTINES it: the raw `events` row is preserved UNTOUCHED (§17 — the spine is never mutated),
+/// the gap is recorded here (forensics + dedup), the projector offset is marked degraded, and
+/// replay CONTINUES (the daemon STARTS). `audit_emitted` dedups the L2 audit-integrity event
+/// across re-detection (a catch-up re-read of a trailing row + a full rebuild both re-detect the
+/// same seq → ON CONFLICT(seq) DO NOTHING preserves this flag, so the event emits once per seq).
+/// **Daemon-internal** — NOT a `shared/` contract (the UI/Brain never read `quarantine`),
+/// analogous to the 1.3 outbox / 1.4 leases: no CONTRACT_VERSION bump.
+pub const MIGRATION_6_QUARANTINE: &str = "\
+CREATE TABLE quarantine (
+  seq           INTEGER PRIMARY KEY,
+  reason        TEXT NOT NULL,
+  detected_at   TEXT NOT NULL,
+  audit_emitted INTEGER NOT NULL DEFAULT 0
+);
+";
+
+/// Migration 7 (P2.1b Action Gateway) — the durable registry rows the Gateway pipeline operates
+/// on (DATA_MODEL §2.9, binding): `action_requests` (the submitted intents, `act_` PK) and
+/// `approvals` (the human/policy decisions, `appr_` PK). These persist the frozen §6.2 models (the
+/// contract is the `shared/` types; these tables materialize the current state — status columns
+/// bind the §5.1 ActionRequest(15)/Approval(10) enums). The Gateway writes them ONLY through the
+/// single write-actor, in the same txn as the authoritative `ActionExecution*` event (INV-SEC-1 /
+/// §15 fail-closed). `ux_action_idem` dedups by idempotency key (partial — NULL keys are
+/// unconstrained). Daemon-internal tables — not a new `shared/` surface.
+pub const MIGRATION_7_GATEWAY: &str = "\
+CREATE TABLE action_requests (
+  action_request_id  TEXT PRIMARY KEY,   -- 'act_' + ULID (§5.2)
+  project_id         TEXT,               -- NULL for project-less actions (global/system scope)
+  action_type        TEXT NOT NULL,      -- §6.3 catalog (String until 2.2)
+  requester_type     TEXT NOT NULL,      -- §6.2 RequesterType
+  requester_id       TEXT NOT NULL,
+  resource_refs_json TEXT NOT NULL,      -- §6.2 ResourceRef[]
+  inputs_json        TEXT,               -- the open per-action-type payload
+  risk_level         INTEGER NOT NULL,   -- §6.2 RiskLevel 0-4 (recorded; 2.2 makes it authoritative)
+  idempotency_key    TEXT,
+  fencing_token      INTEGER,            -- the lease token execution must present (§17; bound 2.4)
+  status             TEXT NOT NULL,      -- §5.1 ActionRequest (15)
+  preview_json       TEXT,               -- §6.2 ActionPreview (stub until 2.3)
+  created_at         TEXT NOT NULL
+);
+CREATE UNIQUE INDEX ux_action_idem ON action_requests(idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+CREATE TABLE approvals (
+  approval_id       TEXT PRIMARY KEY,    -- 'appr_' + ULID (§5.2)
+  action_request_id TEXT NOT NULL REFERENCES action_requests(action_request_id),
+  status            TEXT NOT NULL,       -- §5.1 Approval (10)
+  required_approver TEXT,                -- §6.2 RequiredApprover
+  decided_by        TEXT,
+  decided_at        TEXT,
+  expires_at        TEXT,
+  created_at        TEXT NOT NULL
+);
+CREATE INDEX ix_approvals_action ON approvals(action_request_id);
+";
+
+/// Migration 8 (P2.1c bundled plans, O-3) — the **plan dimension** over the 2.1b single-action
+/// registry (DATA_MODEL §2.9 ADDITION, binding). A bundled `ActionPlan` is a durable GROUPING over
+/// `action_requests` (each step is a full `ActionRequest` with `plan_id` set, emitting its own
+/// `Action*` events), NOT a new event type (Q7). `action_plans` is the thin grouping metadata +
+/// the plan-submit immutable context (`project_id`/`requester_*`) so the `proj_approval_queue`
+/// projector can populate a plan-level approval row rebuild-safely without cross-joining steps
+/// (Step-2.5 Flag 2). `approvals`/`proj_approval_queue` are GENERALIZED so a plan-level approve-all
+/// approval persists (`action_request_id` NULL, `plan_id` set, `scope=Plan` per the frozen §6.2
+/// `Approval` whose `action_request_id` was already `Option` since 2.1a). SQLite can't drop a
+/// `NOT NULL` via `ALTER`, so `approvals` is rebuilt (rows preserved); `proj_approval_queue` is a
+/// rebuildable projection → DROP+CREATE the new shape + RESET its offset so startup catch-up
+/// re-folds the existing approvals into it. Daemon-internal tables — no `shared/` type (the contract
+/// surface is the additive `PlanAck` wire type only).
+pub const MIGRATION_8_PLANS: &str = "\
+CREATE TABLE action_plans (
+  plan_id        TEXT PRIMARY KEY,     -- 'aplan_' + ULID (§5.2/§6.2)
+  project_id     TEXT,                 -- NULL for project-less plans (mirrors action_requests)
+  requester_type TEXT NOT NULL,        -- §6.2 RequesterType (the plan submitter)
+  requester_id   TEXT NOT NULL,
+  title          TEXT NOT NULL,
+  overall_risk   INTEGER NOT NULL,     -- §6.2 RiskLevel 0-4
+  approval_mode  TEXT NOT NULL,        -- §6.2 ApprovalMode
+  created_at     TEXT NOT NULL
+);
+
+-- a step's parent plan (NULL = a single action); FK → action_plans.
+ALTER TABLE action_requests ADD COLUMN plan_id TEXT REFERENCES action_plans(plan_id);
+
+-- approvals: generalize to support a plan-level approve-all approval (action_request_id NULL,
+-- plan_id set). SQLite can't drop NOT NULL via ALTER → rebuild, preserving the existing rows.
+CREATE TABLE approvals_new (
+  approval_id       TEXT PRIMARY KEY,
+  action_request_id TEXT REFERENCES action_requests(action_request_id),  -- NULLABLE now (plan-level)
+  plan_id           TEXT REFERENCES action_plans(plan_id),               -- set for a plan-scoped approval
+  status            TEXT NOT NULL,
+  required_approver TEXT,
+  decided_by        TEXT,
+  decided_at        TEXT,
+  expires_at        TEXT,
+  created_at        TEXT NOT NULL
+);
+INSERT INTO approvals_new
+  (approval_id, action_request_id, plan_id, status, required_approver, decided_by, decided_at, expires_at, created_at)
+  SELECT approval_id, action_request_id, NULL, status, required_approver, decided_by, decided_at, expires_at, created_at
+  FROM approvals;
+DROP TABLE approvals;
+ALTER TABLE approvals_new RENAME TO approvals;
+CREATE INDEX ix_approvals_action ON approvals(action_request_id);
+CREATE INDEX ix_approvals_plan   ON approvals(plan_id);
+
+-- proj_approval_queue: a plan-level approval has NULL action_request_id → make it nullable + add
+-- plan_id. A rebuildable projection → DROP+CREATE the new shape + RESET its offset so startup
+-- catch-up re-folds the existing approvals into it (§7.2 — the projector is idempotent).
+DROP TABLE proj_approval_queue;
+CREATE TABLE proj_approval_queue (
+  approval_id       TEXT PRIMARY KEY,
+  action_request_id TEXT,              -- NULLABLE now (a plan-level approve-all approval)
+  plan_id           TEXT,              -- set for a plan-scoped approval
+  project_id        TEXT,
+  session_id        TEXT,
+  agent_team_id     TEXT,
+  risk_level        INTEGER NOT NULL,
+  status            TEXT NOT NULL,     -- §5.1 Approval (10)
+  requester_type    TEXT NOT NULL,
+  requester_id      TEXT NOT NULL,
+  preview_summary   TEXT,
+  requested_at      TEXT NOT NULL,
+  expires_at        TEXT,
+  sort_key          TEXT,
+  updated_at_seq    INTEGER NOT NULL
+);
+CREATE INDEX ix_approval_queue_open ON proj_approval_queue(status, risk_level, requested_at);
+DELETE FROM projection_offsets WHERE projection_name = 'approval_queue';
+";

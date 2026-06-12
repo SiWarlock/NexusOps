@@ -1,6 +1,6 @@
 ---
 description: Trace a feature's call path from a production entry point; report reachable or unreachable. Usage: /wired <feature>
-allowed-tools: Read, Grep, Bash
+allowed-tools: Read, Grep, Bash, mcp__codegraph__codegraph_context, mcp__codegraph__codegraph_search, mcp__codegraph__codegraph_callers, mcp__codegraph__codegraph_callees, mcp__codegraph__codegraph_trace, mcp__codegraph__codegraph_impact, mcp__codegraph__codegraph_explore, mcp__codegraph__codegraph_node, mcp__codegraph__codegraph_files, mcp__context7__resolve-library-id, mcp__context7__query-docs
 argument-hint: "<feature / symbol / file>"
 ---
 
@@ -24,7 +24,7 @@ Argument: `$ARGUMENTS` — the feature, symbol, function, or file to check.
 
    Use only the kinds that exist in this project.
 
-3. **Trace the call chain** from each entry point toward the symbol. Walk the wiring with `grep`:
+3. **Trace the call chain** from each entry point toward the symbol. If a **code-intelligence MCP** (e.g. CodeGraph) is available, `codegraph_trace` answers this in one call (entry point → symbol, including dynamic-dispatch hops grep can't follow) — prefer it, then confirm with targeted reads; no-op when absent. Otherwise walk the wiring with `grep`:
    - The import / `export` of the symbol (is it even exported from its module?).
    - Its registration (route table, job registry, command map, DI container, event binding, ABI).
    - The chain of callers from the entry point down to it.

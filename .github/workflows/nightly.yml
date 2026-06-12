@@ -1,0 +1,39 @@
+name: Nightly
+
+# The heavier, NON-merge-gating runs (ARCHITECTURE.md §14 non-merge tiers): the §18 performance
+# benchmark + its N=100 sweep. A regression here is a FINDING surfaced at nightly / `/phase-exit`,
+# NOT a per-PR block — so the job is intentionally allowed to fail loudly (a red nightly = the
+# Finding signal to investigate), and it never fires on a PR.
+on:
+  schedule:
+    - cron: '0 7 * * *' # 07:00 UTC daily
+  workflow_dispatch: # manual trigger (e.g. before /phase-exit)
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # --- §18 Performance tier (Performance-vs-§18) ------------------------------------------------
+  # Runs P2.5's runner with the N=100 ceiling sweep enabled. The bench HARD-ASSERTS the §18 CI
+  # guards re-baselined to the realistic non-saturating operating point (USER-RULED Option A):
+  # write p95 < 25 ms · sustained throughput >= 1,000 events/s · reader p95 < 10 ms. The numbers
+  # were measured on dev hardware; a shared GitHub runner is slower + noisier, so a breach here is
+  # a Finding to review (runner variance vs a real regression), not a merge block.
+  perf:
+    name: §18 perf benchmark (non-gating)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: event-write benchmark (+ N=100 ceiling sweep)
+        run: BENCH_CEILING=1 cargo bench --bench event_write
+
+  # --- Placeholders → Phase 3 (the real adapters don't exist yet) -------------------------------
+  # live-agent-smoke:   real Claude/Codex CLI smoke run (the §14 non-merge "Live-agent smoke" tier)
+  #                     — joins when the P3 HarnessAdapter lands.
+  # codex-schema-regen: the Codex app-server schema-regen gate (OQ-HARN-SPIKE-4) — joins at P3 with
+  #                     the harness-adapter contract.

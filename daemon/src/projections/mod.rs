@@ -12,6 +12,7 @@
 //! `apply_all` + the projector bodies, recovery in L3.
 
 mod activity;
+mod approval_queue;
 mod audit;
 mod graph;
 mod object_refs;
@@ -22,6 +23,8 @@ use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde::Serialize;
 
 use nexusops_shared::event_envelope::EventEnvelope;
+
+use crate::eventstore::DegradableEvent;
 
 /// Typed projection failure. A `Decode` (a payload/enum that won't bind to its
 /// frozen §5.1 shape) degrades the offending projector (§7.2); a `Db` is an
@@ -58,9 +61,11 @@ pub trait Projector {
 
 /// The registered projectors, in apply order. **`object_refs` is first**: the graph
 /// projector folds from the `object_refs` rows it writes (same txn). 1.2 ships the
-/// Phase-1-feedable bodies; the later-phase projectors (ApprovalQueue, Worktree,
-/// PullRequest, PlanProgress, AgentTeam, UsageLedger) get their bodies with the
+/// Phase-1-feedable bodies; the later-phase projectors get their bodies with the
 /// phase that emits their feeding events (their tables already exist, migration 3).
+/// **`approval_queue` (2.1c)** folds the Gateway's approval events (the Human Input
+/// Queue read model) — order-independent of the others (it sibling-reads the
+/// `action_requests`/`approvals` registry tables, not another projection).
 fn projectors() -> Vec<Box<dyn Projector>> {
     vec![
         Box::new(object_refs::ObjectRefsProjector),
@@ -68,6 +73,7 @@ fn projectors() -> Vec<Box<dyn Projector>> {
         Box::new(graph::GraphProjector),
         Box::new(audit::AuditProjector),
         Box::new(activity::ActivityProjector),
+        Box::new(approval_queue::ApprovalQueueProjector),
     ]
 }
 
@@ -220,15 +226,45 @@ fn replay(conn: &mut Connection, full_rebuild: bool) -> Result<(), ProjectionErr
     // each projector replays its OWN pending tail independently. `object_refs` is first,
     // so by the time `graph` replays, the rows it folds from are all present — identical
     // to the in-band interleave (graph reads only the current event's refs, never others').
+    // §17 (Option C): the tail is read DEGRADABLY — a healthy row folds; a Degraded (unknown
+    // version) row marks the projector degraded + continues; a Quarantined (corrupt/unredacted)
+    // row marks degraded AND records the quarantine (→ L2 audit-integrity event) + continues.
+    // A skipped row never advances the offset (a later healthy row advances past it; a trailing
+    // skipped row is re-read+re-recorded idempotently). `open` never aborts on a bad row.
     for p in &registry {
         ensure_offset_row(&tx, p.name())?;
         let from = offset_last_seq(&tx, p.name())?;
-        let pending = crate::eventstore::read_events_after(&tx, from).map_err(replay_read_err)?;
-        for env in &pending {
-            apply_one(&tx, p.as_ref(), env)?;
+        let pending =
+            crate::eventstore::read_events_after_degradable(&tx, from).map_err(replay_read_err)?;
+        for de in &pending {
+            match de {
+                DegradableEvent::Ok(env) => apply_one(&tx, p.as_ref(), env)?,
+                // unknown version → degrade quietly (no integrity violation, no quarantine).
+                DegradableEvent::Degraded { .. } => mark_degraded(&tx, p.name())?,
+                // corrupt/unredacted → degrade AND record the quarantine (the loud §17 gap).
+                DegradableEvent::Quarantined { seq, reason } => {
+                    mark_degraded(&tx, p.name())?;
+                    record_quarantine(&tx, *seq, reason)?;
+                }
+            }
         }
     }
     tx.commit()?;
+    Ok(())
+}
+
+/// Record a quarantined row (§17 Option C) — preserve + mark the gap for forensics + the L2
+/// audit-integrity emission. **`ON CONFLICT(seq) DO NOTHING`** (never REPLACE): re-detection (a
+/// catch-up re-read of a trailing row, or a full `rebuild` whose offsets reset) must NOT reset
+/// `audit_emitted`, so the L2 event emits exactly once per seq. `detected_at` is a DB-side
+/// timestamp — forensic only; `quarantine` is daemon-internal and not replay-deterministic.
+fn record_quarantine(tx: &Transaction, seq: i64, reason: &str) -> Result<(), ProjectionError> {
+    tx.execute(
+        "INSERT INTO quarantine (seq, reason, detected_at) \
+         VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) \
+         ON CONFLICT(seq) DO NOTHING",
+        params![seq, reason],
+    )?;
     Ok(())
 }
 

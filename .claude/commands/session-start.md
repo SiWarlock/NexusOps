@@ -10,7 +10,7 @@ The user is starting a new working session. Get oriented before doing any work.
 
 Procedure:
 
-1. Read `MVP_TASKS.md` (repo root) **by section, not whole** — `grep -n "^##" MVP_TASKS.md` for offsets, then `Read` offset/limit just:
+1. Read `IMPLEMENTATION_PLAN.md` (repo root) **by section, not whole** — `grep -n "^##" IMPLEMENTATION_PLAN.md` for offsets, then `Read` offset/limit just:
    - **"Currently in progress"** (top)
    - the last ~2 **Log** entries (tail)
    - **"Decisions tabled"**
@@ -26,7 +26,7 @@ Procedure:
 
 5. Match the user's answer to the task list:
    - If the named feature appears in a phase's checklist, point at the specific task(s).
-   - If it doesn't appear, flag it: *"this isn't currently represented in `MVP_TASKS.md` — should we add it before starting, or is this an out-of-band exploration?"*
+   - If it doesn't appear, flag it: *"this isn't currently represented in `IMPLEMENTATION_PLAN.md` — should we add it before starting, or is this an out-of-band exploration?"*
 
 6. If the session is a continuation of an in-progress task, briefly verify the prior session's commits are present:
    - `git log --oneline -5`

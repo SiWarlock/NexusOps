@@ -55,6 +55,9 @@ fn session_intent(payload: &str) -> AppendIntent {
         session_id: Some(SessionId::new()),
         agent_team_id: None,
         visibility: None,
+        action_request_id: None,
+        approval_id: None,
+        causation_id: None,
     }
 }
 
@@ -86,6 +89,7 @@ impl Redactor for NeverRedacts {
             status: RedactionStatus::Unredacted,
             payload_json: payload_json.to_string(),
             engine_version: "never".to_string(),
+            quarantine: None,
         }
     }
 }

@@ -151,11 +151,11 @@ fn test_migration_5_creates_leases() {
     // a fresh open migrates to 5 + creates the lease table + its expiry index
     let (_d, path) = temp_db();
     let store = open(&path);
-    // exact pin (this is M5's own migration test); relax to `>= 5` when M6 lands.
-    assert_eq!(
-        store.user_version().unwrap(),
-        5,
-        "open migrates to user_version 5"
+    // M5's own migration test: the leases table proves M5 applied; the floor is now `>= 5`
+    // (M6 `quarantine` landed in 1.6c, raising user_version to 6 — relaxed per the prior note).
+    assert!(
+        store.user_version().unwrap() >= 5,
+        "open migrates to at least user_version 5 (M5 applied; later migrations may raise it)"
     );
     let t = tables(&path);
     assert!(t.contains("leases"), "migration 5 creates the leases table");

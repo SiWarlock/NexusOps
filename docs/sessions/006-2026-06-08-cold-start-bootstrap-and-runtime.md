@@ -6,7 +6,7 @@
 | **Phase** | Phase 1 (daemon foundation) — tasks 1.6a (L1+L2) + 1.6b |
 | **Track / role** | `daemon` / daemon-implementer |
 | **Predecessor** | [005](005-2026-06-08-uds-gatewayport-transport.md) |
-| **Successor** | _(TBD — next cycle resumes the queue: 1.6a-L3 registration · 1.6c §17 replay · 1.6d subscribe-serve · 1.7 redactor)_ |
+| **Successor** | [007](007-2026-06-10-degradable-replay-and-subscribe-serve.md) — 1.6c §17 degradable replay + 1.6d subscribe-SERVE (1.6a-L3 landed between, folded into the round Log) |
 | **Commits** | **1.6a:** `48b7a2c` (L1 typed user_version + non-swallowed RestoreFailed) · `f1de088` (L2 cold_start + DaemonContext). **1.6b:** `26898a8` (L1 write-actor + main.rs) · `9448035` (L2 drainer/reaper loops + bounded drain) · `8d06ed7` (L3 UDS bind + accept-loop + cap) · `f9c31b1` (L4 broadcast publish-after-commit) · `39f756e` (review fixes) |
 | **Base** | `25fe66d` (Phase 1.5 round seal) |
 | **Contract** | `CONTRACT_VERSION` unchanged at **0.11.0** (all of 1.6a-L1/L2 + 1.6b is daemon-internal — no `shared/` surface) |

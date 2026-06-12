@@ -8,20 +8,35 @@
 
 use schemars::JsonSchema;
 
+use crate::actions::{
+    ActionDependency, ActionError, ActionPlan, ActionPlanStep, ActionPreview,
+    ActionRequest as ActionRequestModel, ActionResult, ActionResultStatus, ActorRefBody,
+    Approval as ApprovalModel, ApprovalMode, ApprovalScope, EvidenceConfidence, EvidenceRef,
+    EvidenceType, PolicyDecision, PolicyDecisionStatus, RequesterType, RequiredApprover,
+    RequiredApproverKind, ResourceRef, ResourceType, RiskLevel,
+};
 use crate::actor::ActorType;
+use crate::catalog::{ActionTypeCatalogEntry, ExecutorKind, IdempotencyFormula, PreviewClass};
 use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceType, Visibility};
-use crate::events::{DeviceRegistered, LocalRunnerRegistered, SessionStarted};
+use crate::events::{
+    ActionApprovalRequested, ActionApproved, ActionDenied, ActionExpired, ActionFailed,
+    ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
+    AuditIntegrityViolation, DeviceRegistered, LocalRunnerRegistered, SensitiveOutputRedacted,
+    SessionStarted,
+};
+use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::ids::IdKind;
 use crate::ipc::{
-    Capabilities, DeltaKind, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode,
-    ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, RpcResponse, ServerFrame,
-    SubscribeParams, VersionSkewError, WireError,
+    ActionAck, Capabilities, DeltaKind, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode,
+    PlanAck, PlanStepAck, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest,
+    RpcResponse, ServerFrame, SubscribeParams, VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
 use crate::status::{
     ActionRequest, AgentTeam, Approval, ProjectBrain, PullRequest, Session, Task, WorkflowInstance,
     WorktreeGit, WorktreeOverlay,
 };
+use crate::time::Timestamp;
 use crate::CONTRACT_VERSION;
 
 /// Bundles every frozen contract type so one `schema_for!` captures all value
@@ -55,6 +70,10 @@ struct ContractBundle {
     local_runner_registered: LocalRunnerRegistered,
     device_id: DeviceId,
     local_runner_id: LocalRunnerId,
+    // 1.6c L2 — the §17 audit-integrity event payload (Option C "loud record")
+    audit_integrity_violation: AuditIntegrityViolation,
+    // 1.7 L2 — the §15 quarantine-divert event payload (can't-safely-redact → divert)
+    sensitive_output_redacted: SensitiveOutputRedacted,
     // 1.5 L2 — the IPC GatewayPort wire contract (§6.4) + the §6.1 projection-name enum
     hello_frame: HelloFrame,
     hello_ack: HelloAck,
@@ -73,6 +92,59 @@ struct ContractBundle {
     projection_delta: ProjectionDelta,
     delta_kind: DeltaKind,
     subscribe_params: SubscribeParams,
+    // 2.1a — the §6.2 Gateway core data model freeze (shared/src/actions.rs): the 10 models +
+    // 9 enums + RequiredApprover + the gateway IDs + Timestamp. RiskLevel/Timestamp emit as a
+    // bounded integer / string-format (NOT enum arrays) so the §5.0 3-way verify stays exact.
+    action_request_model: ActionRequestModel,
+    action_plan: ActionPlan,
+    action_plan_step: ActionPlanStep,
+    action_dependency: ActionDependency,
+    action_preview: ActionPreview,
+    approval_model: ApprovalModel,
+    action_result: ActionResult,
+    resource_ref: ResourceRef,
+    evidence_ref: EvidenceRef,
+    policy_decision: PolicyDecision,
+    required_approver: RequiredApprover,
+    required_approver_kind: RequiredApproverKind,
+    actor_ref_body: ActorRefBody,
+    requester_type: RequesterType,
+    risk_level: RiskLevel,
+    approval_scope: ApprovalScope,
+    approval_mode: ApprovalMode,
+    policy_decision_status: PolicyDecisionStatus,
+    action_result_status: ActionResultStatus,
+    resource_type: ResourceType,
+    evidence_type: EvidenceType,
+    evidence_confidence: EvidenceConfidence,
+    gateway_object_kind: GatewayObjectKind,
+    approval_id: ApprovalId,
+    action_plan_id: ActionPlanId,
+    timestamp: Timestamp,
+    // 2.1b — the Gateway ActionExecution* EventTypeRegistry payloads (§7.1/AG§17.1) + the §6.1
+    // submit-result ActionAck. Additive event family for the INV-SEC-1 chokepoint.
+    action_requested: ActionRequested,
+    action_approval_requested: ActionApprovalRequested,
+    action_approved: ActionApproved,
+    action_denied: ActionDenied,
+    action_expired: ActionExpired,
+    action_started: ActionStarted,
+    action_succeeded: ActionSucceeded,
+    action_failed: ActionFailed,
+    // 2.4 L1 — the §17 failure-mode additions: the side-effect-applied-but-event-unwritable event +
+    // the structured ActionError taxonomy now carried on ActionFailed. Additive (CONTRACT 0.19.0).
+    action_partially_succeeded: ActionPartiallySucceeded,
+    action_error: ActionError,
+    action_ack: ActionAck,
+    // 2.1c — the §6.1 `submit_action_plan` result wire type (O-3 bundled plans). Additive.
+    plan_ack: PlanAck,
+    plan_step_ack: PlanStepAck,
+    // 2.2 — the §6.3 ActionTypeCatalog contract (the per-type entry + its enums). The catalog DATA
+    // (the per-type table) lives in `catalog::lookup`; the schema captures the entry TYPE. Additive.
+    action_type_catalog_entry: ActionTypeCatalogEntry,
+    preview_class: PreviewClass,
+    executor_kind: ExecutorKind,
+    idempotency_formula: IdempotencyFormula,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

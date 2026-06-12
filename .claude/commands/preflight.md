@@ -87,6 +87,22 @@ pnpm tauri build
 
 ---
 
+## Final step (both modes) — forbidden-pattern warn-grep (NON-BLOCKING)
+
+The area's `CLAUDE.md` `[id=forbidden-patterns]` region may carry a ` ```forbidden-patterns ` fenced block (one bare `grep -E` pattern per line; `#` lines are comments — the machine-readable side of banked lessons). Grep the **staged diff's added lines** against it:
+
+```bash
+pats=$(awk '/^```forbidden-patterns/{f=1;next} /^```/{f=0} f' <area>/CLAUDE.md | grep -vE '^[[:space:]]*(#|$)' || true)
+if [ -n "$pats" ]; then
+  git diff --staged -U0 | grep '^+' | grep -nE -f <(printf '%s\n' "$pats") || true
+fi
+```
+
+- **No block / no pattern lines ⇒ silent skip** (the template ships comments only).
+- **Any hit ⇒ a WARN line in the output — never a failure.** Name the matched pattern + the forbidden-pattern rule it enforces; the implementer fixes it or flags it at Step 9 with justification. This step exists so a banked lesson bites mechanically even in a session that never loaded its prose.
+
+---
+
 ## Output
 
 **Success:**

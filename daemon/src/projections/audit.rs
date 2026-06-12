@@ -12,6 +12,7 @@
 use rusqlite::{params, Transaction};
 
 use nexusops_shared::event_envelope::EventEnvelope;
+use nexusops_shared::events::{AuditIntegrityViolation, SensitiveOutputRedacted};
 
 use super::{wire_value, ProjectionError, Projector};
 
@@ -65,6 +66,9 @@ fn headline_for(event_type: &str) -> String {
         "SessionStarted" => "Session started".to_string(),
         "DeviceRegistered" => "Device registered".to_string(),
         "LocalRunnerRegistered" => "Local runner registered".to_string(),
+        // the new type's name has ONE home (the const) — the existing literals consolidate later.
+        t if t == AuditIntegrityViolation::EVENT_TYPE => "Audit-integrity violation".to_string(),
+        t if t == SensitiveOutputRedacted::EVENT_TYPE => "Sensitive output redacted".to_string(),
         other => other.to_string(),
     }
 }

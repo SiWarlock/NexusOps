@@ -13,11 +13,13 @@ use std::thread::JoinHandle;
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 
+use nexusops_shared::actions::{ActionPlan, ActionPreview, ActionRequest};
 use nexusops_shared::ids::EventId;
-use nexusops_shared::ipc::{DeltaKind, ProjectionDelta, ProjectionName};
+use nexusops_shared::ipc::{ActionAck, DeltaKind, PlanAck, ProjectionDelta, ProjectionName};
 
 use crate::clock::Clock;
 use crate::eventstore::{AppendIntent, Destination, DrainSummary, EventStore, EventStoreError};
+use crate::gateway::{Gateway, GatewayError};
 use crate::locks::{LeaseError, LeaseKind, ResourceId};
 
 /// the bounded command-channel depth — backpressures a flood of mutation requests onto the
@@ -59,6 +61,30 @@ enum Command {
     ReapLeases {
         reply: oneshot::Sender<Result<Vec<(ResourceId, LeaseKind)>, LeaseError>>,
     },
+    // --- 2.1b Action Gateway mutation commands: the pipeline runs ON the write-actor (the single
+    // writer, forbidden #3) so each transition's {row + authoritative event} is one atomic txn. ---
+    GatewaySubmit {
+        req: Box<ActionRequest>,
+        reply: oneshot::Sender<Result<ActionAck, GatewayError>>,
+    },
+    // 2.1c: bundled-plan submission (O-3). Boxed — ActionPlan is large (clippy large_enum_variant).
+    GatewayPlanSubmit {
+        plan: Box<ActionPlan>,
+        reply: oneshot::Sender<Result<PlanAck, GatewayError>>,
+    },
+    GatewayApprove {
+        approval_id: String,
+        reply: oneshot::Sender<Result<ActionAck, GatewayError>>,
+    },
+    GatewayDeny {
+        approval_id: String,
+        reason: String,
+        reply: oneshot::Sender<Result<ActionAck, GatewayError>>,
+    },
+    GatewayPreview {
+        action_request_id: String,
+        reply: oneshot::Sender<Result<ActionPreview, GatewayError>>,
+    },
     Shutdown,
 }
 
@@ -74,11 +100,29 @@ pub struct WriteHandle {
 }
 
 impl WriteHandle {
+    /// A handle whose write-actor is NOT running — every mutation/append returns
+    /// [`RuntimeError::ActorGone`]. For the post-shutdown edge + tests of the read/handshake path
+    /// (which never reach the actor). Production handles come from [`WriteActor::handle`].
+    /// `#[doc(hidden)]`: a footgun outside that narrow use — it silently swallows every mutation.
+    #[doc(hidden)]
+    pub fn disconnected() -> Self {
+        let (tx, _rx) = mpsc::channel(1); // _rx dropped → every send fails (ActorGone)
+        let (deltas, _) = broadcast::channel(1);
+        Self { tx, deltas }
+    }
+
     /// Subscribe to the live `ProjectionDelta` stream (§6.1 subscribe). The returned receiver gets
     /// every delta the writer publishes AFTER it commits; a receiver that lags > `BROADCAST_CAPACITY`
     /// is dropped (`Lagged`) and must resync — it NEVER back-pressures the writer (forbidden #3).
     pub fn subscribe(&self) -> broadcast::Receiver<ProjectionDelta> {
         self.deltas.subscribe()
+    }
+
+    /// A clone of the post-commit broadcast SENDER — handed to the GatewayPort accept-loop so each
+    /// served connection can mint its own subscriber receiver (`.subscribe()`) per `subscribe`
+    /// request, without coupling the `ipc` serve layer to `WriteHandle` (1.6d subscribe-SERVE).
+    pub fn delta_sender(&self) -> broadcast::Sender<ProjectionDelta> {
+        self.deltas.clone()
     }
 
     /// Append an event through the single writer (the §15 redaction gate + in-band projections +
@@ -123,6 +167,88 @@ impl WriteHandle {
             .map_err(|_| RuntimeError::ActorGone)?
             .map_err(RuntimeError::from)
     }
+
+    // --- 2.1b Action Gateway mutation methods (BLOCKING) -------------------------------------
+    // The synchronous `serve_connection` (a `spawn_blocking` task) cannot `.await`, so the IPC
+    // mutation dispatch uses `blocking_send`/`blocking_recv`. The outer `RuntimeError` is the infra
+    // failure (the write-actor is gone → the connection disconnects); the inner `Result` is the
+    // typed gateway outcome (which the IPC layer maps to an `IpcErrorCode` structured response).
+
+    /// `submit_action` through the single writer (the §6.1 mutation path; runs the gateway pipeline
+    /// on the write-actor). The inputs blob is §15-redacted at rest inside the pipeline.
+    pub fn submit_action_blocking(
+        &self,
+        req: ActionRequest,
+    ) -> Result<Result<ActionAck, GatewayError>, RuntimeError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .blocking_send(Command::GatewaySubmit {
+                req: Box::new(req),
+                reply,
+            })
+            .map_err(|_| RuntimeError::ActorGone)?;
+        rx.blocking_recv().map_err(|_| RuntimeError::ActorGone)
+    }
+
+    /// `submit_action_plan` through the single writer (the §6.1 O-3 mutation path; the plan pipeline
+    /// runs on the write-actor). Each step's inputs blob is §15-redacted at rest inside the pipeline.
+    pub fn submit_action_plan_blocking(
+        &self,
+        plan: ActionPlan,
+    ) -> Result<Result<PlanAck, GatewayError>, RuntimeError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .blocking_send(Command::GatewayPlanSubmit {
+                plan: Box::new(plan),
+                reply,
+            })
+            .map_err(|_| RuntimeError::ActorGone)?;
+        rx.blocking_recv().map_err(|_| RuntimeError::ActorGone)
+    }
+
+    /// `approve` an awaiting approval through the single writer.
+    pub fn approve_blocking(
+        &self,
+        approval_id: String,
+    ) -> Result<Result<ActionAck, GatewayError>, RuntimeError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .blocking_send(Command::GatewayApprove { approval_id, reply })
+            .map_err(|_| RuntimeError::ActorGone)?;
+        rx.blocking_recv().map_err(|_| RuntimeError::ActorGone)
+    }
+
+    /// `deny` an awaiting approval through the single writer.
+    pub fn deny_blocking(
+        &self,
+        approval_id: String,
+        reason: String,
+    ) -> Result<Result<ActionAck, GatewayError>, RuntimeError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .blocking_send(Command::GatewayDeny {
+                approval_id,
+                reason,
+                reply,
+            })
+            .map_err(|_| RuntimeError::ActorGone)?;
+        rx.blocking_recv().map_err(|_| RuntimeError::ActorGone)
+    }
+
+    /// `preview_action` (read-only dry-run) through the single writer.
+    pub fn preview_action_blocking(
+        &self,
+        action_request_id: String,
+    ) -> Result<Result<ActionPreview, GatewayError>, RuntimeError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .blocking_send(Command::GatewayPreview {
+                action_request_id,
+                reply,
+            })
+            .map_err(|_| RuntimeError::ActorGone)?;
+        rx.blocking_recv().map_err(|_| RuntimeError::ActorGone)
+    }
 }
 
 /// Owns the write-actor thread. Hand its [`WriteHandle`] to every async task that must mutate;
@@ -133,9 +259,10 @@ pub struct WriteActor {
 }
 
 impl WriteActor {
-    /// Spawn the dedicated writer thread owning `store` (+ a `clock` for the timing of
-    /// `drain_once`/`reap_leases`). The thread blocks on the command channel; reads never reach it.
-    pub fn spawn(store: EventStore, clock: Box<dyn Clock>) -> Self {
+    /// Spawn the dedicated writer thread owning `store` (with a `clock` for `drain_once`/
+    /// `reap_leases` and the `gateway` whose mutation pipeline runs ON this single-writer thread).
+    /// The thread blocks on the command channel; reads never reach it.
+    pub fn spawn(store: EventStore, clock: Box<dyn Clock>, gateway: Gateway) -> Self {
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_DEPTH);
         // the broadcast sender lives in the actor thread (it publishes post-commit); the handle
         // keeps a clone so `subscribe()` can mint receivers without touching the writer. The
@@ -145,7 +272,7 @@ impl WriteActor {
         let actor_deltas = deltas.clone();
         let join = std::thread::Builder::new()
             .name("nexusops-write-actor".to_string())
-            .spawn(move || run_actor(store, clock, rx, actor_deltas))
+            .spawn(move || run_actor(store, clock, gateway, rx, actor_deltas))
             // a daemon that cannot spawn its sole writer cannot run — fail loud at startup.
             .expect("spawn the write-actor thread");
         Self {
@@ -192,6 +319,7 @@ impl Drop for WriteActor {
 fn run_actor(
     mut store: EventStore,
     clock: Box<dyn Clock>,
+    gateway: Gateway,
     mut rx: mpsc::Receiver<Command>,
     deltas: broadcast::Sender<ProjectionDelta>,
 ) {
@@ -218,7 +346,66 @@ fn run_actor(
             Command::ReapLeases { reply } => {
                 let _ = reply.send(store.reap_leases(clock.as_ref()));
             }
+            // 2.1b Action Gateway mutations run the pipeline against the single writable store
+            // (each transition's row+event is its own atomic txn inside the method). The gateway's
+            // events fold into projections in-band; 2.1c (Q6) accumulates the `proj_approval_queue`
+            // subscribe-deltas the pipeline touched + PUBLISHES them AFTER the txn commits (an
+            // Err/rolled-back op publishes nothing; broadcast::send never back-pressures the writer,
+            // forbidden #3) — mirroring the `Command::Append` publish-after-commit above.
+            Command::GatewaySubmit { req, reply } => {
+                let mut queue_deltas = Vec::new();
+                let result = gateway.submit_action_collecting(&mut store, *req, &mut queue_deltas);
+                publish_after_commit(&deltas, &result, queue_deltas);
+                let _ = reply.send(result);
+            }
+            Command::GatewayPlanSubmit { plan, reply } => {
+                let mut queue_deltas = Vec::new();
+                let result =
+                    gateway.submit_action_plan_collecting(&mut store, *plan, &mut queue_deltas);
+                publish_after_commit(&deltas, &result, queue_deltas);
+                let _ = reply.send(result);
+            }
+            Command::GatewayApprove { approval_id, reply } => {
+                let mut queue_deltas = Vec::new();
+                let result =
+                    gateway.approve_collecting(&mut store, &approval_id, &mut queue_deltas);
+                publish_after_commit(&deltas, &result, queue_deltas);
+                let _ = reply.send(result);
+            }
+            Command::GatewayDeny {
+                approval_id,
+                reason,
+                reply,
+            } => {
+                let mut queue_deltas = Vec::new();
+                let result =
+                    gateway.deny_collecting(&mut store, &approval_id, &reason, &mut queue_deltas);
+                publish_after_commit(&deltas, &result, queue_deltas);
+                let _ = reply.send(result);
+            }
+            Command::GatewayPreview {
+                action_request_id,
+                reply,
+            } => {
+                let _ = reply.send(gateway.preview_action(&mut store, &action_request_id));
+            }
             Command::Shutdown => break,
+        }
+    }
+}
+
+/// Publish the gateway pipeline's accumulated `proj_approval_queue` deltas — but ONLY if the
+/// operation committed (`result.is_ok()`); a rolled-back / errored op publishes nothing (Q6 /
+/// publish-after-commit). `broadcast::send` never blocks — a lagging subscriber is dropped, never
+/// back-pressures this writer (forbidden #3). `Err = no subscribers`, not an error here.
+fn publish_after_commit<T>(
+    deltas: &broadcast::Sender<ProjectionDelta>,
+    result: &Result<T, GatewayError>,
+    pending: Vec<ProjectionDelta>,
+) {
+    if result.is_ok() {
+        for delta in pending {
+            let _ = deltas.send(delta);
         }
     }
 }

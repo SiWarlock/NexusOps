@@ -1,124 +1,445 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "scaffoldingRepo": "git@github.com:SiWarlock/claude-code-tdd-agent-crew-scaffold.git",
   "generatedFromSha": "fada9b940469a982401c1db7453dfdf207551637",
   "generatedFromRef": "main",
   "generatorModel": "claude-opus-4-8 (ultracode)",
   "generatedAt": "2026-06-07T07:43:30Z",
-  "lastUpgradedFromSha": null,
-  "lastUpgradedAt": null,
-
+  "lastUpgradedFromSha": "491dfb02132f912c0c442e912ad4aa6b7d08dcf2",
+  "lastUpgradedAt": "2026-06-11T07:43:59Z",
   "mode": "team",
   "track": "daemon",
-  "tracks": ["daemon", "ui"],
-  "optionalCommands": ["trace"],
-  "optionalSubagents": ["code-quality-reviewer", "security-reviewer", "reachability-auditor", "brief-drafter"],
-
+  "tracks": [
+    "daemon",
+    "ui",
+    "edges"
+  ],
+  "optionalCommands": [
+    "trace"
+  ],
+  "optionalSubagents": [
+    "code-quality-reviewer",
+    "security-reviewer",
+    "reachability-auditor",
+    "brief-drafter",
+    "arch-drift-auditor"
+  ],
   "placeholders": {
     "PROJECT_NAME": "NexusOps",
-    "PROJECT_TAGLINE": "Air-traffic control for AI coding agents — a desktop-first, local-runtime control plane for supervising Claude Code + Codex across local projects.",
-    "ARCHITECTURE_SENTENCE": "A desktop-first cockpit whose detached Rust daemon is the single, audited mutator of all state — every change is a typed, risk-classified, approved Action recorded as an immutable event; the UI reads projections, agents and the Project Brain only propose intents, and the local machine is the trust boundary.",
+    "PROJECT_TAGLINE": "Air-traffic control for AI coding agents \u2014 a desktop-first, local-runtime control plane for supervising Claude Code + Codex across local projects.",
+    "ARCHITECTURE_SENTENCE": "A desktop-first cockpit whose detached Rust daemon is the single, audited mutator of all state \u2014 every change is a typed, risk-classified, approved Action recorded as an immutable event; the UI reads projections, agents and the Project Brain only propose intents, and the local machine is the trust boundary.",
     "REPO_DIRNAME": "NexusOps",
     "GIT_REMOTE": "origin (git@github.com:SiWarlock/NexusOps.git)",
     "AI_TRAILER": "Assisted-by: Claude Code",
-    "TASK_TRACKER": "MVP_TASKS.md",
+    "TASK_TRACKER": "IMPLEMENTATION_PLAN.md",
     "ARCH_DOC": "ARCHITECTURE.md",
     "PHASE_IDS": "Phase <N> (tasks <N>.<M>)",
     "SECURITY_REVIEW_POLICY": "invariant",
     "CODE_QUALITY_REVIEW_POLICY": "every-slice",
-    "TRACK_NAME": "daemon"
+    "TRACK_NAME": "daemon",
+    "AUDIT_CMD": "cargo audit && (cd ui && pnpm audit --prod)",
+    "POSTURE_GATE_ROWS": {
+      "dependency-audit": true,
+      "whole-system-security": true,
+      "perf-budgets": true
+    }
   },
-
   "codeAreas": [
     {
-      "CODE_AREA": "daemon/", "CODE_AREA_NAME": "the Rust daemon (trust core)", "CODE_AREA_BASENAME": "daemon",
-      "RUNTIME": "Rust (stable, edition 2021)", "PKG_MANAGER": "cargo",
+      "CODE_AREA": "daemon/",
+      "CODE_AREA_NAME": "the Rust daemon (trust core)",
+      "CODE_AREA_BASENAME": "daemon",
+      "RUNTIME": "Rust (stable, edition 2021)",
+      "PKG_MANAGER": "cargo",
       "FRAMEWORK": "Tokio async runtime (rusqlite, portable-pty, git2, octocrab, keyring, rmcp)",
-      "VALIDATION_LIB": "serde + serde_json (schemars for JSON-RPC schemas)", "LINT": "clippy",
-      "TYPECHECKER": "rustc via cargo check", "TEST_RUNNER": "cargo test",
-      "INSTALL_CMD": "cargo fetch", "DEV_CMD": "cargo run -p nexusopsd",
-      "TEST_CMD": "cargo test", "TEST_CMD_SINGLE_FILE": "cargo test <name> -- --nocapture",
-      "TEST_CMD_UNIT": "cargo test --lib", "TEST_CMD_INTEGRATION": "cargo test --test '*'", "TEST_CMD_ALL": "cargo test",
-      "LINT_CMD": "cargo clippy --all-targets -- -D warnings", "FORMAT_CHECK_CMD": "cargo fmt --check",
-      "TYPECHECK_CMD": "cargo check --all-targets", "BUILD_CMD": "cargo build --release", "TEST_CLASSES": "unit|integration|all"
+      "VALIDATION_LIB": "serde + serde_json (schemars for JSON-RPC schemas)",
+      "LINT": "clippy",
+      "TYPECHECKER": "rustc via cargo check",
+      "TEST_RUNNER": "cargo test",
+      "INSTALL_CMD": "cargo fetch",
+      "DEV_CMD": "cargo run -p nexusopsd",
+      "TEST_CMD": "cargo test",
+      "TEST_CMD_SINGLE_FILE": "cargo test <name> -- --nocapture",
+      "TEST_CMD_UNIT": "cargo test --lib",
+      "TEST_CMD_INTEGRATION": "cargo test --test '*'",
+      "TEST_CMD_ALL": "cargo test",
+      "LINT_CMD": "cargo clippy --all-targets -- -D warnings",
+      "FORMAT_CHECK_CMD": "cargo fmt --check",
+      "TYPECHECK_CMD": "cargo check --all-targets",
+      "BUILD_CMD": "cargo build --release",
+      "TEST_CLASSES": "unit|integration|all"
     },
     {
-      "CODE_AREA": "ui/", "CODE_AREA_NAME": "the Tauri desktop UI (TS frontend + thin Rust host)", "CODE_AREA_BASENAME": "ui",
-      "RUNTIME": "Node 22 LTS + Rust (Tauri host)", "PKG_MANAGER": "pnpm",
-      "FRAMEWORK": "React 19 + Vite + Tauri 2.x", "VALIDATION_LIB": "Zod", "LINT": "oxlint",
-      "TYPECHECKER": "tsc --noEmit", "TEST_RUNNER": "Vitest (+ Tauri-driver e2e)",
-      "INSTALL_CMD": "pnpm install", "DEV_CMD": "pnpm tauri dev",
-      "TEST_CMD": "pnpm test:run", "TEST_CMD_SINGLE_FILE": "pnpm vitest run <path>",
-      "TEST_CMD_UNIT": "pnpm vitest run", "TEST_CMD_INTEGRATION": "pnpm test:integration", "TEST_CMD_ALL": "pnpm test:all",
-      "LINT_CMD": "pnpm oxlint", "FORMAT_CHECK_CMD": "pnpm prettier --check .",
-      "TYPECHECK_CMD": "pnpm typecheck", "BUILD_CMD": "pnpm tauri build", "TEST_CLASSES": "unit|integration|e2e|all"
+      "CODE_AREA": "ui/",
+      "CODE_AREA_NAME": "the Tauri desktop UI (TS frontend + thin Rust host)",
+      "CODE_AREA_BASENAME": "ui",
+      "RUNTIME": "Node 22 LTS + Rust (Tauri host)",
+      "PKG_MANAGER": "pnpm",
+      "FRAMEWORK": "React 19 + Vite + Tauri 2.x",
+      "VALIDATION_LIB": "Zod",
+      "LINT": "oxlint",
+      "TYPECHECKER": "tsc --noEmit",
+      "TEST_RUNNER": "Vitest (+ Tauri-driver e2e)",
+      "INSTALL_CMD": "pnpm install",
+      "DEV_CMD": "pnpm tauri dev",
+      "TEST_CMD": "pnpm test:run",
+      "TEST_CMD_SINGLE_FILE": "pnpm vitest run <path>",
+      "TEST_CMD_UNIT": "pnpm vitest run",
+      "TEST_CMD_INTEGRATION": "pnpm test:integration",
+      "TEST_CMD_ALL": "pnpm test:all",
+      "LINT_CMD": "pnpm oxlint",
+      "FORMAT_CHECK_CMD": "pnpm prettier --check .",
+      "TYPECHECK_CMD": "pnpm typecheck",
+      "BUILD_CMD": "pnpm tauri build",
+      "TEST_CLASSES": "unit|integration|e2e|all"
     }
   ],
-
   "generatedFiles": [
-    { "dest": "CLAUDE.md", "template": "templates/CLAUDE.md", "kind": "mixed" },
-    { "dest": "daemon/CLAUDE.md", "template": "templates/area-CLAUDE.md", "kind": "mixed", "area": "daemon/" },
-    { "dest": "daemon/LESSONS.md", "template": "templates/area-LESSONS.md", "kind": "accreted", "area": "daemon/" },
-    { "dest": "ui/CLAUDE.md", "template": "templates/area-CLAUDE.md", "kind": "mixed", "area": "ui/" },
-    { "dest": "ui/LESSONS.md", "template": "templates/area-LESSONS.md", "kind": "accreted", "area": "ui/" },
-    { "dest": "MVP_TASKS.md", "template": "templates/MVP_TASKS.md", "kind": "accreted" },
-    { "dest": "ARCHITECTURE.md", "template": "templates/ARCHITECTURE.md", "kind": "user-canonical" },
-    { "dest": "docs/orchestrator-briefing.md", "template": "templates/docs/orchestrator-briefing.md", "kind": "mixed" },
-    { "dest": "docs/team-protocol.md", "template": "templates/docs/team-protocol.md", "kind": "mixed" },
-    { "dest": "docs/tdd-brief-template.md", "template": "templates/docs/tdd-brief-template.md", "kind": "mixed" },
-    { "dest": "docs/scaffolding-reference.md", "template": "templates/docs/scaffolding-reference.md", "kind": "mixed" },
-    { "dest": ".claude/commands/team-start.md", "template": "templates/.claude/commands/team-start.md", "kind": "placeholder-only" },
-    { "dest": ".claude/commands/team-end.md", "template": "templates/.claude/commands/team-end.md", "kind": "placeholder-only" },
-    { "dest": ".claude/commands/orchestrate-start.md", "template": "templates/.claude/commands/orchestrate-start.md", "kind": "placeholder-only" },
-    { "dest": ".claude/commands/orchestrate-end.md", "template": "templates/.claude/commands/orchestrate-end.md", "kind": "placeholder-only" },
-    { "dest": ".claude/commands/session-start.md", "template": "templates/.claude/commands/session-start.md", "kind": "placeholder-only" },
-    { "dest": ".claude/commands/session-end.md", "template": "templates/.claude/commands/session-end.md", "kind": "placeholder-only" },
-    { "dest": ".claude/commands/tdd.md", "template": "templates/.claude/commands/tdd.md", "kind": "placeholder-only" },
-    { "dest": ".claude/commands/preflight.md", "template": "templates/.claude/commands/preflight.md", "kind": "placeholder-only" },
-    { "dest": ".claude/commands/run-tests.md", "template": "templates/.claude/commands/run-tests.md", "kind": "mixed" },
-    { "dest": ".claude/commands/check-arch.md", "template": "templates/.claude/commands/check-arch.md", "kind": "placeholder-only" },
-    { "dest": ".claude/commands/wired.md", "template": "templates/.claude/commands/wired.md", "kind": "placeholder-only" },
-    { "dest": ".claude/commands/context-check.md", "template": "templates/.claude/commands/context-check.md", "kind": "placeholder-only" },
-    { "dest": ".claude/commands/trace.md", "template": "templates/.claude/commands/trace.md", "kind": "mixed" },
-    { "dest": ".claude/agents/README.md", "template": "templates/.claude/agents/README.md", "kind": "mixed" },
-    { "dest": ".claude/agents/code-quality-reviewer.md", "template": "templates/.claude/agents/code-quality-reviewer.md", "kind": "placeholder-only" },
-    { "dest": ".claude/agents/security-reviewer.md", "template": "templates/.claude/agents/security-reviewer.md", "kind": "mixed" },
-    { "dest": ".claude/agents/reachability-auditor.md", "template": "templates/.claude/agents/reachability-auditor.md", "kind": "placeholder-only" },
-    { "dest": ".claude/agents/brief-drafter.md", "template": "templates/.claude/agents/brief-drafter.md", "kind": "placeholder-only" },
-    { "dest": ".scaffolding/README.md", "template": "templates/.scaffolding/README.md", "kind": "verbatim" }
+    {
+      "dest": "CLAUDE.md",
+      "template": "templates/CLAUDE.md",
+      "kind": "mixed"
+    },
+    {
+      "dest": "daemon/CLAUDE.md",
+      "template": "templates/area-CLAUDE.md",
+      "kind": "mixed",
+      "area": "daemon/"
+    },
+    {
+      "dest": "daemon/LESSONS.md",
+      "template": "templates/area-LESSONS.md",
+      "kind": "accreted",
+      "area": "daemon/"
+    },
+    {
+      "dest": "ui/CLAUDE.md",
+      "template": "templates/area-CLAUDE.md",
+      "kind": "mixed",
+      "area": "ui/"
+    },
+    {
+      "dest": "ui/LESSONS.md",
+      "template": "templates/area-LESSONS.md",
+      "kind": "accreted",
+      "area": "ui/"
+    },
+    {
+      "dest": "IMPLEMENTATION_PLAN.md",
+      "template": "templates/IMPLEMENTATION_PLAN.md",
+      "kind": "accreted"
+    },
+    {
+      "dest": "ARCHITECTURE.md",
+      "template": "templates/ARCHITECTURE.md",
+      "kind": "user-canonical"
+    },
+    {
+      "dest": "docs/orchestrator-briefing.md",
+      "template": "templates/docs/orchestrator-briefing.md",
+      "kind": "mixed"
+    },
+    {
+      "dest": "docs/team-protocol.md",
+      "template": "templates/docs/team-protocol.md",
+      "kind": "mixed"
+    },
+    {
+      "dest": "docs/tdd-brief-template.md",
+      "template": "templates/docs/tdd-brief-template.md",
+      "kind": "mixed"
+    },
+    {
+      "dest": "docs/scaffolding-reference.md",
+      "template": "templates/docs/scaffolding-reference.md",
+      "kind": "mixed"
+    },
+    {
+      "dest": ".claude/commands/team-start.md",
+      "template": "templates/.claude/commands/team-start.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/commands/team-end.md",
+      "template": "templates/.claude/commands/team-end.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/commands/orchestrate-start.md",
+      "template": "templates/.claude/commands/orchestrate-start.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/commands/orchestrate-end.md",
+      "template": "templates/.claude/commands/orchestrate-end.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/commands/session-start.md",
+      "template": "templates/.claude/commands/session-start.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/commands/session-end.md",
+      "template": "templates/.claude/commands/session-end.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/commands/tdd.md",
+      "template": "templates/.claude/commands/tdd.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/commands/preflight.md",
+      "template": "templates/.claude/commands/preflight.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/commands/run-tests.md",
+      "template": "templates/.claude/commands/run-tests.md",
+      "kind": "mixed"
+    },
+    {
+      "dest": ".claude/commands/check-arch.md",
+      "template": "templates/.claude/commands/check-arch.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/commands/wired.md",
+      "template": "templates/.claude/commands/wired.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/commands/context-check.md",
+      "template": "templates/.claude/commands/context-check.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/commands/trace.md",
+      "template": "templates/.claude/commands/trace.md",
+      "kind": "mixed"
+    },
+    {
+      "dest": ".claude/agents/README.md",
+      "template": "templates/.claude/agents/README.md",
+      "kind": "mixed"
+    },
+    {
+      "dest": ".claude/agents/code-quality-reviewer.md",
+      "template": "templates/.claude/agents/code-quality-reviewer.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/agents/security-reviewer.md",
+      "template": "templates/.claude/agents/security-reviewer.md",
+      "kind": "mixed"
+    },
+    {
+      "dest": ".claude/agents/reachability-auditor.md",
+      "template": "templates/.claude/agents/reachability-auditor.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/agents/brief-drafter.md",
+      "template": "templates/.claude/agents/brief-drafter.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".scaffolding/README.md",
+      "template": "templates/.scaffolding/README.md",
+      "kind": "verbatim"
+    },
+    {
+      "dest": "scripts/spec-lint.sh",
+      "template": "templates/scripts/spec-lint.sh",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/settings.json",
+      "template": "templates/.claude/settings.json",
+      "kind": "verbatim"
+    },
+    {
+      "dest": "scripts/guards/git-guard.sh",
+      "template": "templates/scripts/guards/git-guard.sh",
+      "kind": "verbatim"
+    },
+    {
+      "dest": "scripts/guards/secrets-guard.sh",
+      "template": "templates/scripts/guards/secrets-guard.sh",
+      "kind": "verbatim"
+    },
+    {
+      "dest": "scripts/guards/territory-guard.sh",
+      "template": "templates/scripts/guards/territory-guard.sh",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/commands/phase-exit.md",
+      "template": "templates/.claude/commands/phase-exit.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".claude/agents/arch-drift-auditor.md",
+      "template": "templates/.claude/agents/arch-drift-auditor.md",
+      "kind": "placeholder-only"
+    },
+    {
+      "dest": ".gitleaksignore",
+      "template": "templates/.gitleaksignore",
+      "kind": "verbatim"
+    }
   ],
-
   "exampleBlocks": [
-    { "file": "CLAUDE.md", "id": "project-structure", "status": "customized" },
-    { "file": "CLAUDE.md", "id": "tech-stack", "status": "customized" },
-    { "file": "CLAUDE.md", "id": "strict-typing-posture", "status": "customized" },
-    { "file": "CLAUDE.md", "id": "tdd-scope", "status": "customized" },
-    { "file": "CLAUDE.md", "id": "key-safety-rules", "status": "customized" },
-    { "file": "daemon/CLAUDE.md", "id": "area-stack", "status": "customized" },
-    { "file": "daemon/CLAUDE.md", "id": "forbidden-patterns", "status": "customized" },
-    { "file": "daemon/CLAUDE.md", "id": "module-layout", "status": "customized" },
-    { "file": "daemon/CLAUDE.md", "id": "area-subagent-candidates", "status": "illustrative" },
-    { "file": "ui/CLAUDE.md", "id": "area-stack", "status": "customized" },
-    { "file": "ui/CLAUDE.md", "id": "forbidden-patterns", "status": "customized" },
-    { "file": "ui/CLAUDE.md", "id": "module-layout", "status": "customized" },
-    { "file": "ui/CLAUDE.md", "id": "area-subagent-candidates", "status": "illustrative" },
-    { "file": "docs/orchestrator-briefing.md", "id": "who-the-user-is", "status": "customized" },
-    { "file": "docs/orchestrator-briefing.md", "id": "project-context", "status": "customized" },
-    { "file": "docs/orchestrator-briefing.md", "id": "project-conventions", "status": "customized" },
-    { "file": "docs/team-protocol.md", "id": "code-areas", "status": "customized" },
-    { "file": "docs/tdd-brief-template.md", "id": "tdd-brief-worked-example", "status": "illustrative" },
-    { "file": "docs/tdd-brief-template.md", "id": "project-specific-pitfalls", "status": "illustrative" },
-    { "file": "docs/scaffolding-reference.md", "id": "inventory-extension", "status": "customized" },
-    { "file": "docs/scaffolding-reference.md", "id": "instance-conventions", "status": "customized" },
-    { "file": ".claude/commands/run-tests.md", "id": "test-class-discipline-notes", "status": "customized" },
-    { "file": ".claude/commands/trace.md", "id": "trace-body", "status": "customized" },
-    { "file": ".claude/agents/README.md", "id": "starter-subagent-inventory", "status": "customized" },
-    { "file": ".claude/agents/security-reviewer.md", "id": "safety-invariant-cross-checks", "status": "customized" }
+    {
+      "file": "CLAUDE.md",
+      "id": "project-structure",
+      "status": "customized"
+    },
+    {
+      "file": "CLAUDE.md",
+      "id": "tech-stack",
+      "status": "customized"
+    },
+    {
+      "file": "CLAUDE.md",
+      "id": "strict-typing-posture",
+      "status": "customized"
+    },
+    {
+      "file": "CLAUDE.md",
+      "id": "tdd-scope",
+      "status": "customized"
+    },
+    {
+      "file": "CLAUDE.md",
+      "id": "key-safety-rules",
+      "status": "customized"
+    },
+    {
+      "file": "daemon/CLAUDE.md",
+      "id": "area-stack",
+      "status": "customized"
+    },
+    {
+      "file": "daemon/CLAUDE.md",
+      "id": "forbidden-patterns",
+      "status": "customized"
+    },
+    {
+      "file": "daemon/CLAUDE.md",
+      "id": "module-layout",
+      "status": "customized"
+    },
+    {
+      "file": "daemon/CLAUDE.md",
+      "id": "area-subagent-candidates",
+      "status": "illustrative"
+    },
+    {
+      "file": "ui/CLAUDE.md",
+      "id": "area-stack",
+      "status": "customized"
+    },
+    {
+      "file": "ui/CLAUDE.md",
+      "id": "forbidden-patterns",
+      "status": "customized"
+    },
+    {
+      "file": "ui/CLAUDE.md",
+      "id": "module-layout",
+      "status": "customized"
+    },
+    {
+      "file": "ui/CLAUDE.md",
+      "id": "area-subagent-candidates",
+      "status": "illustrative"
+    },
+    {
+      "file": "docs/orchestrator-briefing.md",
+      "id": "who-the-user-is",
+      "status": "customized"
+    },
+    {
+      "file": "docs/orchestrator-briefing.md",
+      "id": "project-context",
+      "status": "customized"
+    },
+    {
+      "file": "docs/orchestrator-briefing.md",
+      "id": "project-conventions",
+      "status": "customized"
+    },
+    {
+      "file": "docs/team-protocol.md",
+      "id": "code-areas",
+      "status": "customized"
+    },
+    {
+      "file": "docs/tdd-brief-template.md",
+      "id": "tdd-brief-worked-example",
+      "status": "illustrative"
+    },
+    {
+      "file": "docs/tdd-brief-template.md",
+      "id": "project-specific-pitfalls",
+      "status": "illustrative"
+    },
+    {
+      "file": "docs/scaffolding-reference.md",
+      "id": "inventory-extension",
+      "status": "customized"
+    },
+    {
+      "file": "docs/scaffolding-reference.md",
+      "id": "instance-conventions",
+      "status": "customized"
+    },
+    {
+      "file": ".claude/commands/run-tests.md",
+      "id": "test-class-discipline-notes",
+      "status": "customized"
+    },
+    {
+      "file": ".claude/commands/trace.md",
+      "id": "trace-body",
+      "status": "customized"
+    },
+    {
+      "file": ".claude/agents/README.md",
+      "id": "starter-subagent-inventory",
+      "status": "customized"
+    },
+    {
+      "file": ".claude/agents/security-reviewer.md",
+      "id": "safety-invariant-cross-checks",
+      "status": "customized"
+    },
+    {
+      "file": "IMPLEMENTATION_PLAN.md",
+      "id": "deliverable-map",
+      "status": "customized"
+    },
+    {
+      "file": "IMPLEMENTATION_PLAN.md",
+      "id": "parallelization-plan",
+      "status": "customized"
+    }
   ],
-
   "userGlobalScripts": [
-    { "dest": "~/.claude/scripts/team-register.sh", "action": "installed-fresh" },
-    { "dest": "~/.claude/scripts/check-team-context.sh", "action": "updated-262-to-294 (backup at .bak)" },
-    { "dest": "~/.claude/statusline-command.sh", "action": "untouched (heartbeat block already current)" }
-  ]
+    {
+      "dest": "~/.claude/scripts/team-register.sh",
+      "action": "installed-fresh"
+    },
+    {
+      "dest": "~/.claude/scripts/check-team-context.sh",
+      "action": "updated-262-to-294 (backup at .bak)"
+    },
+    {
+      "dest": "~/.claude/statusline-command.sh",
+      "action": "untouched (heartbeat block already current)"
+    }
+  ],
+  "posture": "production-grade"
 }

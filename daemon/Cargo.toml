@@ -29,13 +29,37 @@ libc = "0.2"
 # surface (1.6b): the write-actor command channel + drainer/reaper interval loops + the UDS
 # accept-loop + the subscribe broadcast fanout. `net` = UnixListener; `signal` = SIGTERM/SIGINT.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "net"] }
+# SHA-256 for the §6.3 idempotency-key derivation (2.3 L1): a ONE-WAY hash of the RAW action
+# inputs — a fingerprint, not the secret (lead-ruled §15 Option A 2026-06-11; the keychain_ref
+# convention keeps real secrets out of `inputs`, so the persisted hash reveals nothing recoverable).
+# RustCrypto, audited; `cargo audit` runs at /phase-exit. Dep beyond the brief's list — flag at Step-9.
+sha2 = "0.10"
 # (the `nexusopsd` bin is auto-discovered from src/main.rs — no explicit [[bin]] needed.)
+
+[features]
+# §14 deterministic fault-injection (2.4) — arms checkpoints (TerminalEventWrite / BeforeTerminalTxn)
+# that the gateway/eventstore consult to exercise the §17 fail-closed + crash-reconcile paths WITHOUT
+# a real SIGKILL. Compiled OUT of `cargo build`/`cargo run`/release (no production fault surface); the
+# self-dev-dependency below enables it ONLY for the daemon's own test/bench targets.
+fault-injection = []
 
 [dev-dependencies]
 tempfile = "3"
+# enable the `fault-injection` feature for the daemon's OWN integration tests (which link the lib as a
+# normal dependency, WITHOUT cfg(test)). Standard self-dev-dependency idiom: ON for test targets, OFF
+# for `cargo build`/release. Lets daemon/tests/recovery.rs arm §14 faults; the hook stays out of prod.
+nexusopsd = { path = ".", features = ["fault-injection"] }
 # integration tests inject corrupt/future-version rows directly to exercise the
 # read-path degrade/quarantine (§17) without a pub test-backdoor in the API.
 rusqlite = { version = "0.34", features = ["bundled"] }
 # the runtime tests drive the write-actor + accept-loop + subscribe over a tokio runtime
 # (#[tokio::test]) + a real ephemeral UnixListener client.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+
+# P2.5 — the §18 event-write/reader perf benchmark. `harness = false`: a plain `fn main()` (NOT the
+# libtest harness), so it is INVISIBLE to `cargo test --workspace` (the per-slice RED/GREEN loop) and
+# its timing assertions never flake there. Runs ONLY at its own cadence: `cargo bench --bench
+# event_write` (the /phase-exit perf-budgets runner + 2.6's nightly CI job).
+[[bench]]
+name = "event_write"
+harness = false

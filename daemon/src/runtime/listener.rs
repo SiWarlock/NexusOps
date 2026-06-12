@@ -16,8 +16,9 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use nexusops_shared::ipc::ProjectionDelta;
 use tokio::net::UnixListener;
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{broadcast, watch, Semaphore};
 use tokio::task::JoinHandle;
 
 use crate::ipc::{peer_uid, serve_connection};
@@ -44,11 +45,16 @@ pub fn bind(socket_path: &Path) -> std::io::Result<UnixListener> {
 /// a blocking task (`serve_connection` runs the rule-#7 gate first, then the §6.4 handshake +
 /// §6.1 read methods). The permit is released when the connection's serve task finishes. The
 /// `shutdown` watch breaking to `true` stops the loop.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_accept_loop(
     listener: UnixListener,
     db_path: PathBuf,
     daemon_uid: u32,
     max_connections: usize,
+    deltas: broadcast::Sender<ProjectionDelta>,
+    // the write-actor handle each served connection uses for §6.1 mutation methods (2.1b); cloned
+    // per connection into its blocking serve task (the handle is cheap to clone — an mpsc sender).
+    write: super::WriteHandle,
     mut shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     let permits = Arc::new(Semaphore::new(max_connections));
@@ -73,6 +79,11 @@ pub fn spawn_accept_loop(
                         Err(_) => continue, // at cap → the stream drops here (refused)
                     };
                     let db_path = db_path.clone();
+                    // a per-connection clone of the broadcast sender — each served connection mints
+                    // its own subscriber receiver from it per `subscribe` request (1.6d).
+                    let deltas = deltas.clone();
+                    // a per-connection clone of the write-actor handle (the §6.1 mutation path).
+                    let write = write.clone();
                     tokio::task::spawn_blocking(move || {
                         // the permit is held for the connection's lifetime; it RELEASES when this
                         // closure ends (connection closed) — no leak / self-DoS.
@@ -100,7 +111,9 @@ pub fn spawn_accept_loop(
                             }
                         };
                         // a disconnect / version-skew / unauthorized-peer is a normal close, logged.
-                        if let Err(e) = serve_connection(std_stream, uid, daemon_uid, &db_path) {
+                        if let Err(e) =
+                            serve_connection(std_stream, uid, daemon_uid, &db_path, deltas, &write)
+                        {
                             eprintln!("nexusopsd: connection closed: {e}");
                         }
                     });

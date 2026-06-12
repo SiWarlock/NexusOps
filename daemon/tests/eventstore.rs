@@ -21,6 +21,7 @@ impl Redactor for NeverRedacts {
             status: RedactionStatus::Unredacted,
             payload_json: payload_json.to_string(),
             engine_version: "never".to_string(),
+            quarantine: None,
         }
     }
 }
@@ -45,6 +46,9 @@ fn intent(occurred_at: &str, payload: &str) -> AppendIntent {
         session_id: None,
         agent_team_id: None,
         visibility: None,
+        action_request_id: None,
+        approval_id: None,
+        causation_id: None,
     }
 }
 
@@ -284,6 +288,9 @@ fn test_golden_log_deterministic_replay() {
             session_id: None,
             agent_team_id: None,
             visibility: None,
+            action_request_id: None,
+            approval_id: None,
+            causation_id: None,
         }
     }
     let golden = |path: &std::path::Path| -> Vec<EventEnvelope> {
@@ -385,7 +392,7 @@ fn test_secret_token_redacted_before_persist() {
     assert!(p.contains("[REDACTED]"), "redaction marker present");
     assert_eq!(
         events[0].redaction_engine_version.as_deref(),
-        Some("prefix-v1")
+        Some("prefix-entropy-v3") // 2.0-SEC L3 — JSON-value detection bumped the engine (was v2 @ 1.7)
     );
 }
 

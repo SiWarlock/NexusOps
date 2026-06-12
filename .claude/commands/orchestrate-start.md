@@ -16,9 +16,9 @@ Read `docs/orchestrator-briefing.md` end-to-end. It covers: who the user is, pro
 
 You'll read `docs/tdd-brief-template.md` **when you actually author a brief** (Step 8 / `/orchestrate-end` next-brief), not at orient — it isn't needed to summarize state. Deferring it keeps the session-start load lean.
 
-## Step 3 — Read focused sections of `MVP_TASKS.md`
+## Step 3 — Read focused sections of `IMPLEMENTATION_PLAN.md`
 
-**Don't read the whole file** — `grep -n "^##" MVP_TASKS.md` for section offsets, then `Read` with `offset`/`limit` just:
+**Don't read the whole file** — `grep -n "^##" IMPLEMENTATION_PLAN.md` for section offsets, then `Read` with `offset`/`limit` just:
 - **"Currently in progress"** (top)
 - **"Carry-forward to upcoming briefs"** (your working set)
 - the **active phase section**
@@ -34,12 +34,12 @@ Read only its **"What was built", "Decisions made", "Decisions explicitly NOT ma
 
 ## Step 4.5 — Pre-load architecture anchors cited by the active task(s)
 
-`MVP_TASKS.md` cites `ARCHITECTURE.md` anchors per phase + per task. Pre-load **only** the anchors cited by "Currently in progress" + "Next session target" — not the whole architecture.
+`IMPLEMENTATION_PLAN.md` cites `ARCHITECTURE.md` anchors per phase + per task. Pre-load **only** the anchors cited by "Currently in progress" + "Next session target" — not the whole architecture.
 
 ```bash
-grep -oE '#[a-z0-9-]+' MVP_TASKS.md | sort -u    # all anchors in the tracker
+grep -oE '#[a-z0-9-]+' IMPLEMENTATION_PLAN.md | sort -u    # all anchors in the tracker
 # Then for the specific Currently-in-progress task(s):
-grep -B 2 -A 20 "Currently in progress" MVP_TASKS.md | grep -oE '#[a-z0-9-]+' | sort -u
+grep -B 2 -A 20 "Currently in progress" IMPLEMENTATION_PLAN.md | grep -oE '#[a-z0-9-]+' | sort -u
 ```
 
 For each anchor cited by the active task(s), use `/check-arch <topic>` (or targeted `Read` with `offset`/`limit`) to load just that section. **Skip when** the active task has no architecture-anchor citations.
@@ -78,7 +78,7 @@ When triggered, read end-to-end:
 
 Report in 8–15 lines:
 
-1. **Where the project is** — current `MVP_TASKS.md` state, last commit hash + suite count (if applicable), deployment status if relevant.
+1. **Where the project is** — current `IMPLEMENTATION_PLAN.md` state, last commit hash + suite count (if applicable), deployment status if relevant.
 2. **What's queued up** — "Currently in progress" anchor + "Next session target" pointer.
 3. **Carry-forward items** the next brief must fold in.
 4. **Most recent session doc summary** — what just landed in the prior round.
@@ -88,7 +88,7 @@ Report in 8–15 lines:
 
 ## Step 8 — Align on direction before acting
 
-**Don't take action yet.** Report your summary up the chain — at team start, the team lead relays it to the human, who confirms the first action, redirects, or asks for clarification. Mid-project, the proposed first action defaults to `MVP_TASKS.md` "Next session target"; proceed once that's confirmed (a redirect or a critical/safety question escalates; routine continuation does not).
+**Don't take action yet.** Report your summary up the chain — at team start, the team lead relays it to the human, who confirms the first action, redirects, or asks for clarification. Mid-project, the proposed first action defaults to `IMPLEMENTATION_PLAN.md` "Next session target"; proceed once that's confirmed (a redirect or a critical/safety question escalates; routine continuation does not).
 
 ## When to invoke
 

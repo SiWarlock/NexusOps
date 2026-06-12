@@ -25,7 +25,16 @@ Argument: `$ARGUMENTS` — the feature description.
 
 ### Step 0 — Restate
 
-Restate the feature in 1–2 sentences in your own words. **Team mode:** self-check only, NOT a send — if it doesn't match the brief's Feature line you misread the brief; fix it. **Single-operator:** confirm with the user before writing code.
+Restate the feature in 1–2 sentences in your own words.
+**Team mode:** self-check only, NOT a send — if it doesn't match the brief's Feature line you misread the brief; fix it.
+
+**Brief lint (conditional — one bash check, silent when clean).** The orchestrator already ran `scripts/spec-lint.sh brief <brief>` pre-dispatch; the dispatch line carries its stamp (`@<hash8>`). Re-lint ONLY if the file changed since:
+
+```bash
+[ "$(shasum <brief-path> | cut -c1-8)" = "<hash8 from the dispatch line>" ] || scripts/spec-lint.sh brief <brief-path>
+```
+
+On a re-lint FAIL, stop and send the failure lines to the orchestrator (the brief is its territory) — don't patch the brief yourself.
 
 ### Step 1 — Identify files
 
@@ -35,12 +44,15 @@ Name the production file(s) + test file(s); create an empty test file if needed.
 
 Write the test before any implementation. Be specific about input/output, reference the not-yet-existing behavior, use the project's test-class marker.
 
+**Spec tags:** each RED test carries a `spec(§X)` tag (in the test name or an adjacent comment) for the anchor its brief "Why" line cites — `scripts/spec-lint.sh tests <phase>` greps these at the phase-exit gate, so an untagged test doesn't count toward spec coverage. LESSONS-pinned tests need no tag.
+
 ### Step 2.5 — PAUSE for test review (the orchestrator reviews)
 
 After writing the test(s) and BEFORE running them, send the orchestrator a **tight** write-up — one line per `test_*` function (parametrization is one entry, not per-case):
 
 - **`test_<name>` — Asserts:** `<the invariant / contract it pins>` (`ARCHITECTURE.md §X` or a `LESSONS.md` ref).
 - **Out of scope:** only when a reader wouldn't guess it.
+- **Coverage map (closing line):** each brief **acceptance bullet → the covering test**, or an explicit `not-tested-because: <reason>` (e.g. covered by an integration slice, non-deterministic). One compact line per bullet — this is what makes a silently-dropped acceptance behavior visible at review instead of at phase exit.
 
 Don't narrate fixture setup or paste test code — it's in the file; the orchestrator opens the file only if an assertion looks off. This write-up is the review surface: it makes the *asserted invariant* reviewable, which is exactly what catches a conceptually-wrong test that would still pass green.
 
@@ -50,7 +62,7 @@ Send it via `SendMessage` (root `CLAUDE.md` "Inter-teammate messaging"), then **
 - **`TWEAK:`** → revise, re-send only the changed lines, re-pause.
 - **`ADD:`** → add the test, re-send, re-pause.
 
-This pause is a designed safeguard — a "work without stopping" instruction does NOT license skipping it (it scopes to clarifying questions, not protocol checkpoints; surface the conflict instead). Same applies to the Step 9 → Step 10 handoff. **Single-operator:** the user is the reviewer.
+This pause is a designed safeguard — a "work without stopping" instruction does NOT license skipping it (it scopes to clarifying questions, not protocol checkpoints; surface the conflict instead). Same applies to the Step 9 → Step 10 handoff.
 
 ### Step 3 — Confirm RED
 

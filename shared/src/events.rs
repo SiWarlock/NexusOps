@@ -49,3 +49,176 @@ pub struct DeviceRegistered {
 pub struct LocalRunnerRegistered {
     pub local_runner_id: LocalRunnerId,
 }
+
+/// `AuditIntegrityViolation` payload (§17 Option C). Emitted when startup replay QUARANTINES a
+/// corrupt / unredacted event row — the LOUD, consumer-visible record that the audit history has
+/// a gap (the core of why Option C beats a silent skip). Carries the affected `seq` + a
+/// redaction-safe **structural** `reason` — NEVER the corrupt payload or any row content (§15).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct AuditIntegrityViolation {
+    pub seq: i64,
+    pub reason: String,
+}
+
+impl AuditIntegrityViolation {
+    /// The EventTypeRegistry name — ONE home, referenced by the daemon emit path + the audit
+    /// projector (so the NEW type adds no bare string-literal to the dup set; the existing
+    /// SessionStarted/Device/LocalRunner literals consolidate in a later non-safety slice).
+    pub const EVENT_TYPE: &'static str = "AuditIntegrityViolation";
+}
+
+/// `SensitiveOutputRedacted` payload (§15 redaction-before-persist). Emitted when the Redactor
+/// detects a high-confidence secret it CANNOT safely redact in place — the original event is
+/// **diverted (NOT persisted)** and this record is appended in its place (`event_envelope.rs`
+/// RedactionStatus doc). Carries forensic metadata ONLY: the diverted event's `event_type`, a
+/// redaction-safe **structural** `reason`, and the `detector` that fired — NEVER the secret or
+/// any byte of the diverted payload (§15; mirrors the 1.6c AuditIntegrityViolation content-free
+/// record). In MVP the prefix+entropy Redactor masks in place and never triggers this; it is
+/// the §15 "can't safely redact → divert" safety net for an alternate/future Redactor.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct SensitiveOutputRedacted {
+    pub original_event_type: String,
+    pub reason: String,
+    pub detector: String,
+}
+
+impl SensitiveOutputRedacted {
+    /// The EventTypeRegistry name — ONE home, referenced by the daemon divert path + the audit
+    /// projector (the new type adds no bare string-literal to the dup set).
+    pub const EVENT_TYPE: &'static str = "SensitiveOutputRedacted";
+}
+
+/// `ActionRequested` payload (§6.2/§7.1; AG §17.1) — the Action Gateway's FIRST event for a
+/// submitted action (2.1b). The action's IDENTITY (`action_request_id`, `correlation_id`,
+/// `project_id`, `actor`) lives on the [`crate::event_envelope::EventEnvelope`] typed columns — the
+/// Gateway populates them. This payload carries only the request-classification DELTA: the
+/// `action_type` (§6.3 catalog, String until 2.2), the requester-supplied `risk_level` (RECORDED
+/// for audit but NOT trusted for the decision in 2.1b — the policy stub is risk-blind, require-
+/// approval-for-all; 2.2 makes risk catalog-authoritative), and the `requester_type` (R-2; the
+/// envelope `actor_type` is its mapped audit actor).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionRequested {
+    pub action_type: String,
+    pub risk_level: crate::actions::RiskLevel,
+    pub requester_type: crate::actions::RequesterType,
+}
+
+impl ActionRequested {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit/queue projectors).
+    pub const EVENT_TYPE: &'static str = "ActionRequested";
+}
+
+/// `ActionApprovalRequested` payload (§6.2/§7.1; AG §17.1) — emitted when the policy decision routes
+/// an action to human approval (2.1b). The action + approval IDENTITY are on the envelope columns
+/// (`action_request_id`/`approval_id`); the payload echoes `approval_id` so a payload-only consumer
+/// (the Brain indexer) gets the linkage without joining the envelope.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionApprovalRequested {
+    pub approval_id: String,
+}
+
+impl ActionApprovalRequested {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the approval-queue projector).
+    pub const EVENT_TYPE: &'static str = "ActionApprovalRequested";
+}
+
+/// `ActionApproved` payload (§6.2/§7.1; AG §17.1) — a human/policy approved the action (2.1b L3).
+/// Identity (`action_request_id`/`approval_id`) on the envelope; the payload echoes `approval_id` +
+/// the optional `decided_by` (the approver, when known).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionApproved {
+    pub approval_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+}
+
+impl ActionApproved {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit/queue projectors).
+    pub const EVENT_TYPE: &'static str = "ActionApproved";
+}
+
+/// `ActionDenied` payload (§6.2/§7.1; AG §17.1) — the action was denied (terminal). Carries the
+/// `approval_id` + the denial `reason` (the audit record of WHY).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionDenied {
+    pub approval_id: String,
+    pub reason: String,
+}
+
+impl ActionDenied {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
+    pub const EVENT_TYPE: &'static str = "ActionDenied";
+}
+
+/// `ActionExpired` payload (§6.2/§7.1; AG §17.1) — the approval lapsed past `expires_at` before a
+/// decision (§17); the action is terminal, never executed. Carries the `approval_id`.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionExpired {
+    pub approval_id: String,
+}
+
+impl ActionExpired {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
+    pub const EVENT_TYPE: &'static str = "ActionExpired";
+}
+
+/// `ActionStarted` payload (§6.2/§7.1; AG §17.1) — the executor began running the approved action
+/// (queued→executing). Identity on the envelope; no delta beyond the event itself.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionStarted {}
+
+impl ActionStarted {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
+    pub const EVENT_TYPE: &'static str = "ActionStarted";
+}
+
+/// `ActionSucceeded` payload (§6.2/§7.1; AG §17.1) — the executor completed the action successfully
+/// (executing→succeeded). Identity on the envelope; the created/changed resources land in the
+/// `ActionResult` surface (2.3). No payload delta in 2.1b.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionSucceeded {}
+
+impl ActionSucceeded {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
+    pub const EVENT_TYPE: &'static str = "ActionSucceeded";
+}
+
+/// `ActionFailed` payload (§6.2/§7.1; AG §17.1) — the executor failed (executing→failed). Carries
+/// the structured [`crate::actions::ActionError`] taxonomy (2.4 — replaced the 2.1b free-string `error`): the §17
+/// failure modes (`audit_write_failed`/`stale_precondition`/`fencing_conflict`/`unknown_outcome`)
+/// + `executor_error{message}` (the home the prior free string maps into).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionFailed {
+    pub error: crate::actions::ActionError,
+}
+
+impl ActionFailed {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
+    pub const EVENT_TYPE: &'static str = "ActionFailed";
+}
+
+/// `ActionPartiallySucceeded` payload (§7.1; AG §17) — the §17 "side effect APPLIED but its terminal
+/// event could NOT be written" record (executing→partially_succeeded). Emitted best-effort when a
+/// real executor reported a side effect but the `ActionSucceeded` write failed (the fail-closed
+/// audit-write path, L2). Carries a redaction-safe **structural** `reason` ONLY — never row/payload
+/// content (§15; mirrors [`AuditIntegrityViolation`]). A loud, consumer-visible audit-integrity record.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ActionPartiallySucceeded {
+    pub reason: String,
+}
+
+impl ActionPartiallySucceeded {
+    /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
+    pub const EVENT_TYPE: &'static str = "ActionPartiallySucceeded";
+}

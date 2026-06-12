@@ -34,6 +34,12 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
+/// throwaway broadcast sender for `spawn_accept_loop`'s `deltas` param on accept-loop tests that
+/// don't exercise the live subscribe push (1.6d; the serve-layer push is covered by tests/ipc.rs).
+fn no_deltas() -> tokio::sync::broadcast::Sender<nexusops_shared::ipc::ProjectionDelta> {
+    tokio::sync::broadcast::channel(1).0
+}
+
 fn temp_db() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nexusops.db");
@@ -69,6 +75,9 @@ fn test_intent() -> AppendIntent {
         session_id: None,
         agent_team_id: None,
         visibility: None,
+        action_request_id: None,
+        approval_id: None,
+        causation_id: None,
     }
 }
 
@@ -90,8 +99,18 @@ impl Redactor for NeverRedacts {
             status: RedactionStatus::Unredacted,
             payload_json: payload_json.to_string(),
             engine_version: "never".to_string(),
+            quarantine: None,
         }
     }
+}
+
+/// a 2.1b stub Action Gateway (require-approval-for-all policy + no-side-effect executor) for the
+/// write-actor in runtime tests.
+fn stub_gateway() -> nexusopsd::gateway::Gateway {
+    nexusopsd::gateway::Gateway::new(
+        Box::new(nexusopsd::gateway::policy::StubPolicy),
+        Box::new(nexusopsd::gateway::executor::StubExecutor),
+    )
 }
 
 #[tokio::test]
@@ -103,6 +122,7 @@ async fn test_write_actor_is_sole_writer() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
 
@@ -149,6 +169,7 @@ async fn test_graceful_shutdown_stops_loops_clean() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
     handle
@@ -176,6 +197,7 @@ async fn test_bounded_drain_pass_respects_limit() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
 
@@ -209,6 +231,7 @@ async fn test_drain_loop_survives_a_failed_pass() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
     actor.shutdown().await; // now every handle.drain_once → Err(ActorGone)
@@ -239,6 +262,7 @@ async fn test_reaper_loop_survives_a_failed_pass() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
     actor.shutdown().await; // every handle.reap_leases → Err(ActorGone)
@@ -274,7 +298,11 @@ async fn test_reaper_loop_invokes_reap_once() {
         .unwrap();
 
     // the actor's clock is an hour later → the lease is expired from the reaper's view.
-    let actor = WriteActor::spawn(store, Box::new(FixedClock::new("2026-06-08T01:00:00Z")));
+    let actor = WriteActor::spawn(
+        store,
+        Box::new(FixedClock::new("2026-06-08T01:00:00Z")),
+        stub_gateway(),
+    );
     let handle = actor.handle();
 
     let (sd_tx, sd_rx) = watch::channel(false);
@@ -381,7 +409,15 @@ async fn test_foreign_peer_rejected_in_accept_path() {
     let listener = bind(&sock).unwrap();
     let (sd_tx, sd_rx) = watch::channel(false);
     let wrong_daemon_uid = current_euid().wrapping_add(1); // ≠ our real peer uid
-    let accept = spawn_accept_loop(listener, path.clone(), wrong_daemon_uid, 8, sd_rx);
+    let accept = spawn_accept_loop(
+        listener,
+        path.clone(),
+        wrong_daemon_uid,
+        8,
+        no_deltas(),
+        nexusopsd::runtime::WriteHandle::disconnected(),
+        sd_rx,
+    );
 
     let sock2 = sock.clone();
     let rejected = tokio::task::spawn_blocking(move || client_rejected(&sock2))
@@ -407,7 +443,15 @@ async fn test_connection_cap_enforced() {
     let listener = bind(&sock).unwrap();
     let (sd_tx, sd_rx) = watch::channel(false);
     let uid = current_euid();
-    let accept = spawn_accept_loop(listener, path.clone(), uid, 1, sd_rx); // cap = 1
+    let accept = spawn_accept_loop(
+        listener,
+        path.clone(),
+        uid,
+        1,
+        no_deltas(),
+        nexusopsd::runtime::WriteHandle::disconnected(),
+        sd_rx,
+    ); // cap = 1
 
     let sock_a = sock.clone();
     // A handshakes + keeps the connection open → holds the single permit (acquired before its ack).
@@ -441,7 +485,15 @@ async fn test_connection_permit_released_on_close() {
     let listener = bind(&sock).unwrap();
     let (sd_tx, sd_rx) = watch::channel(false);
     let uid = current_euid();
-    let accept = spawn_accept_loop(listener, path.clone(), uid, 1, sd_rx); // cap = 1
+    let accept = spawn_accept_loop(
+        listener,
+        path.clone(),
+        uid,
+        1,
+        no_deltas(),
+        nexusopsd::runtime::WriteHandle::disconnected(),
+        sd_rx,
+    ); // cap = 1
 
     let sock_a = sock.clone();
     let _resp = tokio::task::spawn_blocking(move || {
@@ -476,7 +528,15 @@ async fn test_read_projection_over_real_socket() {
     let listener = bind(&sock).unwrap();
     let (sd_tx, sd_rx) = watch::channel(false);
     let uid = current_euid();
-    let accept = spawn_accept_loop(listener, path.clone(), uid, 8, sd_rx);
+    let accept = spawn_accept_loop(
+        listener,
+        path.clone(),
+        uid,
+        8,
+        no_deltas(),
+        nexusopsd::runtime::WriteHandle::disconnected(),
+        sd_rx,
+    );
 
     let sock2 = sock.clone();
     let resp =
@@ -503,6 +563,7 @@ async fn test_append_publishes_delta_after_commit() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
     let mut rx = handle.subscribe();
@@ -530,7 +591,11 @@ async fn test_append_publishes_delta_after_commit() {
         Box::new(NeverRedacts),
     )
     .unwrap();
-    let actor2 = WriteActor::spawn(store2, Box::new(FixedClock::new("2026-06-08T00:00:00Z")));
+    let actor2 = WriteActor::spawn(
+        store2,
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
     let handle2 = actor2.handle();
     let mut rx2 = handle2.subscribe();
     let refused = handle2
@@ -540,6 +605,130 @@ async fn test_append_publishes_delta_after_commit() {
     assert!(
         rx2.try_recv().is_err(),
         "a rolled-back append publishes no delta"
+    );
+    actor2.shutdown().await;
+}
+
+// ---- P2.1c L1 — a committed gateway approval publishes an ApprovalQueue delta -----------------
+
+/// a minimal §6.2 ActionRequest at risk `level` (the gateway delta-source input).
+fn sample_action_request(
+    risk: nexusops_shared::actions::RiskLevel,
+) -> nexusops_shared::actions::ActionRequest {
+    use nexusops_shared::actions::{ActionRequest, RequesterType};
+    use nexusops_shared::ids::ActionRequestId;
+    use nexusops_shared::status::ActionRequestStatus;
+    use nexusops_shared::time::Timestamp;
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id: None,
+        action_type: "git.create_worktree".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs: vec![],
+        inputs: serde_json::json!({ "branch": "feature/x" }),
+        risk_level: risk,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn test_gateway_approval_publishes_queue_delta() {
+    // spec(§6.1 subscribe / forbidden #3) — a COMMITTED submit_action publishes an ApprovalQueue
+    // Upsert delta (the approval row it opened) on the write-actor broadcast, publish-after-commit;
+    // a ROLLED-BACK submit (the §15 gate refuses) publishes NOTHING. Closes the 2.1b flag (b).
+    use nexusops_shared::actions::RiskLevel;
+
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+
+    // committed submit → an ApprovalQueue Upsert delta keyed by the appr_ approval_id (Q6).
+    let h = handle.clone();
+    let ack = tokio::task::spawn_blocking(move || {
+        h.submit_action_blocking(sample_action_request(RiskLevel::Level2))
+    })
+    .await
+    .unwrap()
+    .expect("write-actor reachable")
+    .expect("submit");
+    assert!(ack.action_request_id.starts_with("act_"));
+    let delta = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("a queue delta was published within 2s")
+        .expect("a committed gateway submit published a queue delta");
+    assert_eq!(delta.projection, ProjectionName::ApprovalQueue);
+    assert!(matches!(delta.kind, DeltaKind::Upsert));
+    let appr_id = delta
+        .id
+        .clone()
+        .expect("the delta is keyed by the approval_id");
+    assert!(
+        appr_id.starts_with("appr_"),
+        "keyed by the appr_ approval_id"
+    );
+
+    // a committed approve ALSO publishes a queue delta (the row status advances) — exercises the
+    // GatewayApprove → approve_collecting → publish_after_commit wiring, not just submit.
+    let h = handle.clone();
+    let appr = appr_id.clone();
+    tokio::task::spawn_blocking(move || h.approve_blocking(appr))
+        .await
+        .unwrap()
+        .expect("write-actor reachable")
+        .expect("approve");
+    let approve_delta = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("a queue delta was published within 2s")
+        .expect("a committed gateway approve published a queue delta");
+    assert_eq!(approve_delta.projection, ProjectionName::ApprovalQueue);
+    assert_eq!(
+        approve_delta.id.as_deref(),
+        Some(appr_id.as_str()),
+        "the approve delta is keyed by the same approval_id"
+    );
+    actor.shutdown().await;
+
+    // rolled-back submit (NeverRedacts refuses the §15 gate) → no delta published.
+    let (_d2, path2) = temp_db();
+    let store2 = EventStore::open(
+        &path2,
+        Box::new(UlidGen),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        Box::new(NeverRedacts),
+    )
+    .unwrap();
+    let actor2 = WriteActor::spawn(
+        store2,
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle2 = actor2.handle();
+    let mut rx2 = handle2.subscribe();
+    let h2 = handle2.clone();
+    let refused = tokio::task::spawn_blocking(move || {
+        h2.submit_action_blocking(sample_action_request(RiskLevel::Level3))
+    })
+    .await
+    .unwrap()
+    .expect("write-actor reachable");
+    assert!(refused.is_err(), "the §15 gate refused the gateway submit");
+    // precise: Empty (nothing sent) — NOT Lagged (a dropped delta would also be `is_err`).
+    assert!(
+        matches!(
+            rx2.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "a rolled-back gateway submit publishes no delta (Empty, not Lagged)"
     );
     actor2.shutdown().await;
 }
@@ -555,6 +744,7 @@ async fn test_lagging_subscriber_never_stalls_writer() {
     let actor = WriteActor::spawn(
         open_store(&path),
         Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
     );
     let handle = actor.handle();
     let mut rx = handle.subscribe(); // a subscriber that NEVER drains (lags)

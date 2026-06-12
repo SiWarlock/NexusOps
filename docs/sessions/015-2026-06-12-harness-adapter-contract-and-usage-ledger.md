@@ -3,7 +3,7 @@
 - **Date:** 2026-06-12
 - **Phase:** Phase 3.1 (harness adapters & embedded terminal — the first slice: the §9.1 contract freeze + the re-homed usage projector). First Phase-3 slice; the critical-path successor to Phase 2.
 - **Predecessor:** [014 — §18 perf benchmark + §14 CI merge gates (Phase-2 close-out)](014-2026-06-12-perf-benchmark-and-ci-gates.md)
-- **Successor:** _(next session — Phase 3.2 Claude adapter ∥ 3.3 Codex adapter ∥ 3.4 terminal)_
+- **Successor:** [016 — P3.4 Terminal Channel + P3.2-part-1 Claude adapter observe path](016-2026-06-12-terminal-channel-and-claude-adapter-observe.md)
 
 ## Why this session existed
 Phase 2 (the Action Gateway) sealed; Phase 3 (harness adapters + embedded terminal) is the critical-path successor (P4 survival depends on adapters existing). **3.1** is the foundation slice: freeze the one `HarnessAdapter` contract both the Claude (3.2) and Codex (3.3) adapters implement — its normalized return types, capabilities, and the per-harness mutation-coverage matrix — as the next §2.5-seam shared-contract freeze, and land the `proj_usage_ledger` projector (re-homed from P1.2 to its producing phase). Brief `040` (spec-lint PASS @3c8ffad5). Two layers, two commits.

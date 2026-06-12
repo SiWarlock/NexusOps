@@ -1492,6 +1492,169 @@ fn test_catalog_and_policy_decision_field_snapshot() {
 }
 
 // =====================================================================================
+// Phase 3.2-part-2 (brief 043) L1 — the §6.3 agent-mutation catalog family + the
+// adjudication-only outcome class (freeze; CONTRACT 0.21.0 → 0.22.0; §2.5-seam):
+//   • a new `ExecutorKind::Adjudication` — the adjudication-only marker: an agent-mutation
+//     ActionRequest TERMINATES at the verdict, NO daemon executor runs (the agent runs the
+//     tool; the daemon adjudicates + audits). INV-SEC-1 (the harness mutation chokepoint).
+//   • the 4 `agent.*` action types routed through the EXISTING catalog `lookup` (Option A —
+//     one chokepoint), each `executor == Adjudication`, with the Q2-conservative base risk:
+//     read-only `agent.file_read` = risk-0 (auto-allow — read-only ≠ mutation); the mutating
+//     `agent.bash`/`agent.file_edit`/`agent.mcp_tool` = risk-2 (→ require_approval by default).
+// BINDING: ARCHITECTURE §6.3 (ActionTypeCatalog) + §9.1 (the Claude adapter interception) + §15
+// (INV-SEC-1 #1/#5/#10). The MVP set stays 22 (the agent family is a SEPARATE machine-internal
+// const, AGENT_MUTATION_ACTION_TYPES); the params-sensitive deny-rules live in the policy (L4),
+// NOT the static catalog risk.
+// =====================================================================================
+
+// ---- 043 L1 RED #1 — the agent-mutation catalog family + the conservative base risk ----
+
+#[test]
+fn test_agent_mutation_catalog_family() {
+    // spec(§6.3) — the 4 agent-mutation action types are catalogued (routed through the existing
+    // closed `lookup`, Option A), each `executor == Adjudication` (adjudication-only). The
+    // Q2-conservative base risk: read-only = risk-0 (auto-allow — read-only ≠ mutation); every
+    // MUTATING tool = risk-2 (→ require_approval by default, BEFORE the L4 params-sensitive deny-rules).
+    use nexusops_shared::actions::RiskLevel;
+    use nexusops_shared::catalog::{lookup, ExecutorKind, AGENT_MUTATION_ACTION_TYPES};
+
+    // the family is exactly the 4 named tools (the §9.1 matrix's interceptable Claude channels).
+    assert_eq!(
+        AGENT_MUTATION_ACTION_TYPES,
+        &[
+            "agent.bash",
+            "agent.file_edit",
+            "agent.file_read",
+            "agent.mcp_tool",
+        ],
+        "the agent-mutation family is the 4 §9.1 interceptable tool categories"
+    );
+
+    // every family member is catalogued + adjudication-only (NOT a real-executor namespace).
+    for at in AGENT_MUTATION_ACTION_TYPES {
+        let e =
+            lookup(at).unwrap_or_else(|| panic!("catalog missing the agent-mutation type {at}"));
+        assert_eq!(
+            e.executor,
+            ExecutorKind::Adjudication,
+            "{at} is adjudication-only (the daemon decides; no executor runs the tool)"
+        );
+    }
+
+    // the Q2-conservative base risk (read-only ≠ mutation): the read tool auto-allows (risk-0);
+    // every mutating tool requires approval by default (risk-2 — the deny-rules raise, never lower).
+    assert_eq!(
+        lookup("agent.file_read").unwrap().locked_risk,
+        RiskLevel::Level0,
+        "agent.file_read is read-only → risk-0 auto-allow (read-only ≠ mutation)"
+    );
+    for mutating in ["agent.bash", "agent.file_edit", "agent.mcp_tool"] {
+        assert_eq!(
+            lookup(mutating).unwrap().locked_risk,
+            RiskLevel::Level2,
+            "{mutating} mutates → risk-2 (require_approval by default; the L4 deny-rules raise/deny)"
+        );
+    }
+}
+
+// ---- 043 L1 RED #2 — the Adjudication outcome class (a distinct ExecutorKind; no executor binding) ----
+
+#[test]
+fn test_adjudication_outcome_class() {
+    // spec(§6.3) — `ExecutorKind::Adjudication` is a distinct, frozen catalog value (wire =
+    // `adjudication`). It marks the adjudication-only family: the ActionRequest terminates at the
+    // verdict, no daemon executor runs (pinned BEHAVIORALLY in L3 `tests/claude_intercept.rs` —
+    // no `queued`→`executing` for an Adjudication action). Here we pin the value exists + round-trips
+    // + is NOT one of the real-executor namespaces (Git/Github/Session/… run side effects; this does not).
+    use nexusops_shared::catalog::ExecutorKind;
+
+    assert!(
+        ExecutorKind::ALL.contains(&ExecutorKind::Adjudication),
+        "Adjudication is a frozen ExecutorKind value"
+    );
+    // wire value is the contract (LESSON §2): the snake_case `adjudication`.
+    assert_eq!(
+        serde_json::to_value(ExecutorKind::Adjudication).unwrap(),
+        serde_json::json!("adjudication"),
+        "ExecutorKind::Adjudication wire value = `adjudication`"
+    );
+    assert_eq!(
+        serde_json::from_value::<ExecutorKind>(serde_json::json!("adjudication")).unwrap(),
+        ExecutorKind::Adjudication,
+        "round-trips from the wire value"
+    );
+    // distinct from every real-executor namespace (those run side effects; adjudication never does).
+    for real in [
+        ExecutorKind::Brain,
+        ExecutorKind::Project,
+        ExecutorKind::Workflow,
+        ExecutorKind::Plan,
+        ExecutorKind::Session,
+        ExecutorKind::Git,
+        ExecutorKind::Github,
+        ExecutorKind::Linear,
+        ExecutorKind::Code,
+        ExecutorKind::Review,
+    ] {
+        assert_ne!(
+            real,
+            ExecutorKind::Adjudication,
+            "Adjudication is its own class, not a real-executor namespace"
+        );
+    }
+}
+
+// ---- 043 L1 RED #3 — the agent-mutation family snapshot (§2.5-seam: the catalog is line-138) ----
+
+#[test]
+fn test_agent_mutation_family_snapshot_spec_6_3() {
+    // spec(§6.3) — the §2.5-seam freeze guard for the agent-mutation extension. The agent family
+    // const + the per-type {executor, risk, params_schema_present} ARE the freeze; a drift fails here.
+    // The MVP set stays 22 (the agent family is a SEPARATE const — it never inflates the human-facing
+    // MVP catalog count, which other invariants pin). `params_schema_present=true` (the tool_input is
+    // a structured payload — NOT the §6.3/OQ-WP-5 null-schema floor).
+    use nexusops_shared::catalog::{lookup, AGENT_MUTATION_ACTION_TYPES, MVP_ACTION_TYPES};
+
+    assert_eq!(
+        MVP_ACTION_TYPES.len(),
+        22,
+        "the human-facing §6.3 MVP set stays 22 — the agent family is a separate machine-internal const"
+    );
+    assert_eq!(
+        AGENT_MUTATION_ACTION_TYPES.len(),
+        4,
+        "the agent-mutation family is the 4 §9.1 interceptable Claude tool categories"
+    );
+    // the agent family is DISJOINT from the MVP set (no name collision — distinct namespaces).
+    for at in AGENT_MUTATION_ACTION_TYPES {
+        assert!(
+            !MVP_ACTION_TYPES.contains(at),
+            "the agent-mutation type {at} is its own namespace, never in the human MVP set"
+        );
+        assert!(
+            lookup(at).unwrap().params_schema_present,
+            "{at} carries a structured tool_input schema (not the null-schema OQ-WP-5 floor)"
+        );
+    }
+    // §15 fail-closed for the agent namespace: an un-listed `agent.*` tool (a stray `lookup` arm
+    // with NO const entry, or a brand-new Claude tool the daemon hasn't classified) resolves to
+    // None → the policy DENIES it (never default-allows). Pins the closed domain in BOTH directions:
+    // the loop above checks every const member IS catalogued; this checks NON-members are NOT.
+    for unlisted in [
+        "agent.network",
+        "agent.write_file",
+        "agent.kill",
+        "agent.",
+        "agent.unknown",
+    ] {
+        assert!(
+            lookup(unlisted).is_none(),
+            "an un-listed agent tool `{unlisted}` must fail closed (None) — never a stray catalog entry"
+        );
+    }
+}
+
+// =====================================================================================
 // Phase 2.4 L1 — §17 failure-mode CONTRACT additions (freeze; CONTRACT 0.18.0 → 0.19.0):
 //   • a NEW `ActionPartiallySucceeded` event in the §7.1 ActionExecution* family
 //     (the §17 "side effect applied but the terminal event could not be written" record);
@@ -2044,14 +2207,14 @@ fn test_terminal_process_exited_wire_contract() {
     assert_eq!(TerminalProcessExited::EVENT_TYPE, "TerminalProcessExited");
 }
 
-// ---- 3.4 L1 RED #5 — CONTRACT_VERSION bumped to 0.21.0 (the additive §6.4 Terminal freeze) ----
+// ---- 043 L1 RED #4 — CONTRACT_VERSION bumped to 0.22.0 (the additive §6.3 agent-mutation freeze) ----
 
 #[test]
-fn test_contract_version_bumped_0_21_0() {
+fn test_contract_version_bumped_0_22_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.21.0 =
-    // the 3.4 §6.4 Terminal Channel freeze (the 3 terminal frames + TerminalControlKind + the
-    // ServerFrame::TerminalOutput variant + the TerminalProcessExited event) — additive, the reserved
-    // ServerFrame slot filled, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.21.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.22.0 =
+    // the 3.2-part-2 (brief 043) §6.3 agent-mutation freeze (the `ExecutorKind::Adjudication` value +
+    // the 4 `agent.*` catalog entries) — ADDITIVE (a new enum value + a separate action-type const;
+    // no frozen type reshaped, the MVP-22 set untouched, §5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.22.0");
 }

@@ -1004,7 +1004,7 @@
       "type": "string"
     },
     "ExecutorKind": {
-      "description": "Which executor adapter handles an action (§6.3). A NAME binding — the real per-namespace\nadapters (git CLI / octocrab / session host / …) land in 2.3.",
+      "description": "Which executor adapter handles an action (§6.3). A NAME binding — the real per-namespace\nadapters (git CLI / octocrab / session host / …) land in 2.3. **`Adjudication` (3.2-part-2,\nbrief 043) is the ODD ONE OUT**: it marks the agent-mutation family as **adjudication-only** —\nthe `ActionRequest` TERMINATES at the policy/approval verdict and **no daemon executor runs the\ntool** (the agent executes the allowed tool itself; the daemon only adjudicates + audits, the\nINV-SEC-1 chokepoint). It is NOT a real-executor namespace and never reaches the executor seam.",
       "enum": [
         "brain",
         "project",
@@ -1015,7 +1015,8 @@
         "github",
         "linear",
         "code",
-        "review"
+        "review",
+        "adjudication"
       ],
       "type": "string"
     },
@@ -2499,5 +2500,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.21.0"
+  "x-contract-version": "0.22.0"
 }

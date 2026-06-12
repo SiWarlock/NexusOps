@@ -39,8 +39,12 @@ catalog_enum! {
 
 catalog_enum! {
     /// Which executor adapter handles an action (§6.3). A NAME binding — the real per-namespace
-    /// adapters (git CLI / octocrab / session host / …) land in 2.3.
-    ExecutorKind { Brain, Project, Workflow, Plan, Session, Git, Github, Linear, Code, Review }
+    /// adapters (git CLI / octocrab / session host / …) land in 2.3. **`Adjudication` (3.2-part-2,
+    /// brief 043) is the ODD ONE OUT**: it marks the agent-mutation family as **adjudication-only** —
+    /// the `ActionRequest` TERMINATES at the policy/approval verdict and **no daemon executor runs the
+    /// tool** (the agent executes the allowed tool itself; the daemon only adjudicates + audits, the
+    /// INV-SEC-1 chokepoint). It is NOT a real-executor namespace and never reaches the executor seam.
+    ExecutorKind { Brain, Project, Workflow, Plan, Session, Git, Github, Linear, Code, Review, Adjudication }
 }
 
 catalog_enum! {
@@ -98,6 +102,21 @@ pub const MVP_ACTION_TYPES: &[&str] = &[
     "review.request_agent_fix",
 ];
 
+/// The **agent-mutation** action-type family (3.2-part-2, brief 043) — the §9.1 Claude/Codex tool
+/// categories the harness adapter intercepts and routes through the EXISTING Gateway as
+/// **adjudication-only** `ActionRequest`s (`ExecutorKind::Adjudication`; Option A — one chokepoint).
+/// SEPARATE from [`MVP_ACTION_TYPES`]: these are machine-internal (minted by the hook-receiver from a
+/// `PreToolUse` payload), not human/Brain-submitted MVP actions — so they DON'T inflate the locked
+/// MVP-22 count. Still fully catalogued ([`lookup`] resolves them) so they ride the same risk/policy/
+/// audit pipeline. The `tool_name → agent.*` mapping + the params-sensitive deny-rules live in the
+/// daemon (`harness::claude::intercept`); the catalog pins only the base risk + the adjudication class.
+pub const AGENT_MUTATION_ACTION_TYPES: &[&str] = &[
+    "agent.bash",
+    "agent.file_edit",
+    "agent.file_read",
+    "agent.mcp_tool",
+];
+
 fn entry(
     locked_risk: RiskLevel,
     preview_class: PreviewClass,
@@ -116,9 +135,11 @@ fn entry(
     }
 }
 
-/// The CLOSED catalog lookup (§6.3) — the binding per-type contract. An `action_type` not in the
-/// MVP set returns `None` (fail-closed, §15 — the policy denies it, never default-allows; deferred
-/// high-risk types like `git.force_push`/`merge`/`delete_worktree`, AG §28.3, are simply absent).
+/// The CLOSED catalog lookup (§6.3) — the binding per-type contract over BOTH catalog families:
+/// the human/Brain-facing [`MVP_ACTION_TYPES`] AND the machine-internal [`AGENT_MUTATION_ACTION_TYPES`]
+/// (3.2-part-2). An `action_type` in NEITHER family returns `None` (fail-closed, §15 — the policy
+/// denies it, never default-allows; deferred high-risk types like `git.force_push`/`merge`/
+/// `delete_worktree`, AG §28.3, are simply absent — as is any un-mapped agent tool).
 pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
     use ExecutorKind as X;
     use IdempotencyFormula as I;
@@ -216,6 +237,20 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
             false,
             false,
         ),
+        // ---- the agent-mutation family (3.2-part-2 / brief 043) — adjudication-only -------------
+        // Each routes through the existing pipeline as an `ExecutorKind::Adjudication` action: the
+        // verdict is the outcome (the agent runs the tool, the daemon adjudicates + audits) — NO
+        // executor runs, so `preview_class` is moot (a placeholder; never rendered) and
+        // `idempotency_formula = None` (every tool call is a distinct adjudication — never deduped).
+        // `requires_resource_refs = false` (the params ARE the tool_input, not a §6.2 resource_ref).
+        // `params_schema_present = true` (the tool_input is a structured payload, NOT the OQ-WP-5
+        // null-schema floor). The Q2-CONSERVATIVE base risk: read-only ≠ mutation → risk-0 auto-allow;
+        // every MUTATING tool = risk-2 → require_approval by DEFAULT (the L4 params deny-rules raise
+        // to a deny; they NEVER lower below this floor).
+        "agent.file_read" => entry(R::Level0, P::Command, I::None, X::Adjudication, false, true),
+        "agent.bash" => entry(R::Level2, P::Command, I::None, X::Adjudication, false, true),
+        "agent.file_edit" => entry(R::Level2, P::Diff, I::None, X::Adjudication, false, true),
+        "agent.mcp_tool" => entry(R::Level2, P::Api, I::None, X::Adjudication, false, true),
         _ => return None,
     })
 }

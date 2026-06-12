@@ -110,6 +110,10 @@ pub(crate) fn namespace_label(executor: ExecutorKind) -> &'static str {
         ExecutorKind::Linear => "Linear",
         ExecutorKind::Code => "code",
         ExecutorKind::Review => "review",
+        // adjudication-only (3.2-part-2): no executor adapter — the agent runs the tool, the daemon
+        // only adjudicates (INV-SEC-1). DEFENSIVE: an adjudication action terminates at the verdict
+        // and never reaches the executor/preview path, so this arm is unreachable in practice.
+        ExecutorKind::Adjudication => "adjudication-only (no executor — the agent runs the tool)",
     }
 }
 
@@ -125,6 +129,10 @@ pub(crate) fn owning_phase(executor: ExecutorKind) -> &'static str {
         ExecutorKind::Github | ExecutorKind::Plan | ExecutorKind::Project => "Phase 5",
         ExecutorKind::Linear | ExecutorKind::Review => "Phase 7",
         ExecutorKind::Brain => "Phase 8",
+        // adjudication-only (3.2-part-2): no real executor adapter, no owning phase — the agent runs
+        // the tool, the daemon only adjudicates (INV-SEC-1). DEFENSIVE: never reached (the action
+        // terminates at the verdict, never enters the executor/preview path).
+        ExecutorKind::Adjudication => "— (adjudication-only: no executor)",
     }
 }
 

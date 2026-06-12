@@ -68,7 +68,14 @@ pub mod time;
 /// a deferred 3.5 decision (additive — a future variant + bump, not a reshape). Additive, no frozen
 /// type reshaped (§5.0). `terminal_id` = an opaque daemon runtime handle (`String` wire), NOT a 23rd
 /// `IdKind`; the PTY host + backpressure pump are DAEMON-INTERNAL (`daemon/src/terminal/`).
-pub const CONTRACT_VERSION: &str = "0.21.0";
+/// 0.22.0 (3.2-part-2 / brief 043) extends the §6.3 ActionTypeCatalog for the Claude
+/// `MutationIntercept`→Gateway interception (INV-SEC-1): a new `ExecutorKind::Adjudication` value (the
+/// adjudication-only marker — the ActionRequest terminates at the verdict; no daemon executor runs the
+/// tool) + the 4 `agent.*` catalog entries (`AGENT_MUTATION_ACTION_TYPES`, a SEPARATE machine-internal
+/// const — the locked MVP-22 set is UNTOUCHED). Additive (a new enum value + a new action-type const;
+/// no frozen type reshaped, §5.0). The `tool_name → agent.*` mapping + the params deny-rules + the
+/// adjudication verdict are DAEMON-INTERNAL (`daemon/src/harness/claude/intercept.rs`).
+pub const CONTRACT_VERSION: &str = "0.22.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

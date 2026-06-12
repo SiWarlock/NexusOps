@@ -1,0 +1,320 @@
+//! The Claude Code `HarnessAdapter` (ARCHITECTURE §9.1, LOCKED ADR-006; 3.2 — **PTY-primary**).
+//!
+//! Drive via an **interactive PTY** (the 3.4 `PortablePtyHost`, spawned through the injected
+//! `PtySpawner`) + `PreToolUse` hooks + a statusLine heartbeat — NEVER `-p`/SDK-drive (the cat-4
+//! ruling = PTY-primary, Branch A). **Safety #10 / O-13:** `launch()` builds a spec that is
+//! `default` permission mode ONLY (never acceptEdits/bypass/plan), no background subagents, no
+//! `--dangerously-*` — the spec IS the enforcement surface. **Safety #9:** status derives from
+//! STRUCTURED signals (hook events + transcript + the 3.4 exit event), NEVER from PTY output bytes.
+//!
+//! **This is part 1 — the OBSERVE path** (launch / status / transcript). The safety-critical
+//! `MutationIntercept`→Gateway (INV-SEC-1) routing + the daemon hook-receiver ingress + telemetry
+//! emission are **brief 043**; `resume()` (survival) is **Phase 4**. Each is a named stub here.
+//! The production caller of `launch()`/`stream_status()` is the **Phase-4** session-lifecycle drive
+//! loop; this module is built + fixture/FakePty-tested now.
+
+use std::path::{Path, PathBuf};
+
+use nexusops_shared::harness::{
+    HarnessCapabilities, NormalizedStatus, TelemetrySample, TranscriptRef,
+};
+use nexusops_shared::status::Session;
+
+use crate::harness::{HarnessAdapter, MutationIntercept, ResumeResult};
+use crate::terminal::{Pty, PtySpawner};
+
+// ---- the 10 Claude HarnessCapabilities (Q1, lead-confirmed) -------------------------------------
+
+/// The Claude Code capability matrix (§9.1 / PRD HARN-5; drives §11.4 per-capability UI degradation).
+/// The 7 clear-true + the 3 Q1-confirmed: `command_injection=true` (the PTY accepts stdin — the
+/// daemon CAN inject; the §6.4 injection-*action* wiring is separate/later), `subagents=true` (Task
+/// subagents EXIST; the `MUTATION_COVERAGE_MATRIX` governs interception *reliability*, a separate
+/// axis), `cloud_tasks=false` (not in the local MVP).
+pub const CLAUDE_CAPABILITIES: HarnessCapabilities = HarnessCapabilities {
+    supports_terminal: true,
+    supports_resume: true,
+    supports_transcript_read: true,
+    supports_tool_call_parsing: true,
+    supports_usage_metadata: true,
+    supports_context_metadata: true,
+    supports_command_injection: true,
+    supports_subagents: true,
+    supports_hooks: true,
+    supports_cloud_tasks: false,
+};
+
+// ---- ClaudeSettings — the generated per-session hooks + statusLine (Q4: NEVER the user's global) -
+
+/// The generated per-session Claude `settings.json` content — the `PreToolUse`/`PostToolUse`/
+/// `SessionStart`/`Notification`/`Stop` hooks + the statusLine, all wired to the daemon's hook
+/// receiver. **Q4 (lead-confirmed):** this is a per-session file passed via `--settings`; the daemon
+/// NEVER mutates the user's `~/.claude/settings.json`. The receiver ENDPOINT itself is **brief 043**;
+/// 042 only wires the spec to point at it.
+pub struct ClaudeSettings {
+    json: serde_json::Value,
+}
+
+impl ClaudeSettings {
+    fn build(hook_receiver: &str) -> Self {
+        // each hook invokes the daemon receiver, tagged with its event (the receiver also sees
+        // `hook_event_name` on stdin; the arg is belt-and-suspenders for the receiver's dispatch).
+        let cmd = |event: &str| serde_json::json!({ "type": "command", "command": format!("{hook_receiver} {event}") });
+        let json = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{ "matcher": "startup|resume", "hooks": [cmd("SessionStart")] }],
+                "PreToolUse":   [{ "matcher": "*",              "hooks": [cmd("PreToolUse")] }],
+                "PostToolUse":  [{ "matcher": "*",              "hooks": [cmd("PostToolUse")] }],
+                "Notification": [{ "hooks": [cmd("Notification")] }],
+                "Stop":         [{ "hooks": [cmd("Stop")] }],
+            },
+            "statusLine": { "type": "command", "command": format!("{hook_receiver} statusline") },
+        });
+        Self { json }
+    }
+
+    /// Whether a hook is wired for the given event.
+    pub fn has_hook(&self, event: &str) -> bool {
+        self.json.get("hooks").and_then(|h| h.get(event)).is_some()
+    }
+
+    /// Whether the statusLine is wired.
+    pub fn has_status_line(&self) -> bool {
+        self.json.get("statusLine").is_some()
+    }
+
+    /// Whether the generated settings reference the given daemon-receiver as the PROGRAM of a hook /
+    /// statusLine command — an exact first-token match (`<receiver>` or `<receiver> …`), NOT a loose
+    /// substring, so `/x/hook` does not falsely match `/x/hook-evil`.
+    pub fn references_receiver(&self, receiver: &str) -> bool {
+        let prefix = format!("{receiver} ");
+        self.command_strings()
+            .iter()
+            .any(|c| c == receiver || c.starts_with(&prefix))
+    }
+
+    /// Every hook + statusLine `command` string in the settings (walks the structure).
+    fn command_strings(&self) -> Vec<String> {
+        let mut cmds = Vec::new();
+        if let Some(hooks) = self.json.get("hooks").and_then(|h| h.as_object()) {
+            for groups in hooks.values() {
+                for group in groups.as_array().into_iter().flatten() {
+                    for hook in group
+                        .get("hooks")
+                        .and_then(|h| h.as_array())
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(c) = hook.get("command").and_then(|c| c.as_str()) {
+                            cmds.push(c.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(c) = self
+            .json
+            .get("statusLine")
+            .and_then(|s| s.get("command"))
+            .and_then(|c| c.as_str())
+        {
+            cmds.push(c.to_string());
+        }
+        cmds
+    }
+
+    /// The settings JSON serialized for the `--settings` file. **Fallible** so a (latent) serialize
+    /// failure fails CLOSED — `launch()` maps it to `Failed` rather than writing an empty, hook-less
+    /// settings file (a hook-less session would silently skip the 043 INV-SEC-1 interception ingress).
+    pub fn to_json_string(&self) -> serde_json::Result<String> {
+        serde_json::to_string_pretty(&self.json)
+    }
+}
+
+// ---- ClaudeLaunchSpec — the O-13 enforcement surface (safety #10; PURE construction) ------------
+
+/// The O-13-compliant `claude` launch spec: the argv + the generated per-session settings. **Pure**
+/// (no I/O — `launch()` does the settings-file write + the spawn). Constructed so a non-`default`
+/// permission mode / `-p` / `--dangerously-*` / background-subagent enablement is impossible by
+/// construction (safety #10 — the spec is the enforcement surface).
+pub struct ClaudeLaunchSpec {
+    program: String,
+    args: Vec<String>,
+    cwd: PathBuf,
+    settings: ClaudeSettings,
+    settings_path: PathBuf,
+}
+
+impl ClaudeLaunchSpec {
+    /// Build the O-13 spec for a session. PTY-primary: explicit `--permission-mode default`, the
+    /// generated `--settings` file, and NOTHING that drives via the SDK (`-p`) or escalates
+    /// permissions (`--dangerously-*` / acceptEdits / bypass / plan).
+    pub fn build(cwd: &Path, session_id: &str, hook_receiver: &str) -> Self {
+        let settings = ClaudeSettings::build(hook_receiver);
+        // a generated per-session settings file (Q4) — under the system temp dir for 042; the
+        // production per-session settings dir (the daemon app-support dir) wires at the P4 drive loop.
+        let settings_path =
+            std::env::temp_dir().join(format!("nexusops-claude-settings-{session_id}.json"));
+        let args = vec![
+            "--permission-mode".to_string(),
+            "default".to_string(),
+            "--settings".to_string(),
+            settings_path.to_string_lossy().into_owned(),
+        ];
+        Self {
+            program: "claude".to_string(),
+            args,
+            cwd: cwd.to_path_buf(),
+            settings,
+            settings_path,
+        }
+    }
+
+    pub fn program(&self) -> &str {
+        &self.program
+    }
+
+    pub fn args(&self) -> &[String] {
+        &self.args
+    }
+
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
+    pub fn settings(&self) -> &ClaudeSettings {
+        &self.settings
+    }
+
+    pub fn settings_path(&self) -> &Path {
+        &self.settings_path
+    }
+
+    /// The locked permission mode — always `default` (O-13; never escalated).
+    pub fn permission_mode(&self) -> &str {
+        "default"
+    }
+
+    /// The full argv (program + args).
+    pub fn argv(&self) -> Vec<String> {
+        let mut v = Vec::with_capacity(self.args.len() + 1);
+        v.push(self.program.clone());
+        v.extend(self.args.iter().cloned());
+        v
+    }
+
+    /// Write the generated per-session settings file (the I/O part of `launch`). NEVER touches the
+    /// user's `~/.claude/settings.json` (Q4). Fails CLOSED on a serialize error (no empty/hook-less
+    /// file). Written **0600** (not world-readable) — defense-in-depth; the move to the daemon
+    /// app-support dir + `O_EXCL` against the predictable temp name is the 043/P4 hardening (Finding).
+    pub fn write_settings(&self) -> std::io::Result<()> {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let json = self
+            .settings
+            .to_json_string()
+            .map_err(|e| std::io::Error::other(format!("settings serialize: {e}")))?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&self.settings_path)?;
+        f.write_all(json.as_bytes())
+    }
+}
+
+// ---- ClaudeAdapter — the §9.1 adapter (observe path) --------------------------------------------
+
+/// The default PTY size for a launched session (the real size comes from the client at the P4 drive loop).
+const DEFAULT_ROWS: u16 = 24;
+const DEFAULT_COLS: u16 = 80;
+
+/// The Claude Code `HarnessAdapter` (PTY-primary). Owns the spawned `Box<dyn Pty>` (the 3.4 seam) +
+/// the derived status state machine. **Send, not Sync** — owned by ONE drive-loop thread.
+pub struct ClaudeAdapter {
+    spawner: Box<dyn PtySpawner>,
+    cwd: PathBuf,
+    session_id: String,
+    hook_receiver: String,
+    /// the live PTY child, set on `launch()` (the daemon owns it; display-only, safety #9).
+    pty: Option<Box<dyn Pty>>,
+    /// the current derived status (L2 `derive_status` advances it via `push_signal`).
+    status: Session,
+}
+
+impl ClaudeAdapter {
+    pub fn new(
+        spawner: Box<dyn PtySpawner>,
+        cwd: PathBuf,
+        session_id: String,
+        hook_receiver: String,
+    ) -> Self {
+        Self {
+            spawner,
+            cwd,
+            session_id,
+            hook_receiver,
+            pty: None,
+            // pre-launch: the daemon-created session state (`Creating` is a daemon-lifecycle state,
+            // not adapter-derived — `launch()` transitions it to `Starting`).
+            status: Session::Creating,
+        }
+    }
+}
+
+impl HarnessAdapter for ClaudeAdapter {
+    fn capabilities(&self) -> HarnessCapabilities {
+        CLAUDE_CAPABILITIES
+    }
+
+    fn launch(&mut self) -> NormalizedStatus {
+        let spec = ClaudeLaunchSpec::build(&self.cwd, &self.session_id, &self.hook_receiver);
+        // write the generated per-session settings (Q4 — never the user's global config). A write
+        // failure leaves the session un-launched → Failed (the richer launch-error handling lands
+        // with the P4 drive loop).
+        if spec.write_settings().is_err() {
+            self.status = Session::Failed;
+            return self.status;
+        }
+        match self.spawner.spawn(
+            spec.program(),
+            spec.args(),
+            &self.cwd,
+            DEFAULT_ROWS,
+            DEFAULT_COLS,
+        ) {
+            Ok(pty) => {
+                self.pty = Some(pty);
+                self.status = Session::Starting;
+            }
+            Err(_) => self.status = Session::Failed,
+        }
+        self.status
+    }
+
+    fn stream_status(&self) -> NormalizedStatus {
+        // the current derived status (advanced by the L2 `push_signal` over structured signals,
+        // NEVER from PTY bytes — safety #9). L1 returns the stored state.
+        self.status
+    }
+
+    fn intercept_mutation(&self) -> Option<MutationIntercept> {
+        None // → 043 (the PreToolUse→Gateway INV-SEC-1 routing; named, not silent)
+    }
+
+    fn read_transcript(&self) -> Option<TranscriptRef> {
+        None // L3 implements (locate the session JSONL)
+    }
+
+    fn telemetry_heartbeat(&self) -> Option<TelemetrySample> {
+        None // → 043 (the ResultMessage/statusLine/transcript merge + TelemetrySampled emission)
+    }
+
+    fn resume(&self) -> ResumeResult {
+        // → Phase 4 (survival §8/§17). A minimal "did not re-attach live" stub for now.
+        ResumeResult {
+            resumed_live: false,
+            replayed_event_count: 0,
+        }
+    }
+}

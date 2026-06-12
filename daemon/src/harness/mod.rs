@@ -17,6 +17,8 @@
 //! 3.1 ships the trait + types + the matrix + a `FakeHarness` test double (proving the trait is
 //! satisfiable + object-safe); the real adapters + their async drive loop land in 3.2/3.3.
 
+pub mod claude;
+
 use nexusops_shared::harness::{
     HarnessCapabilities, MetricQuality, NormalizedStatus, TelemetrySample, TranscriptRef,
 };
@@ -165,17 +167,23 @@ pub struct ResumeResult {
 // ---- the HarnessAdapter trait (DAEMON-INTERNAL + UNFROZEN — only the data types are §2.5-seam) -
 
 /// The one adapter contract both the Claude (3.2) and Codex (3.3) harnesses implement, over the
-/// frozen `shared/` normalized types. **Object-safe + `Send + Sync`** (so `Box<dyn HarnessAdapter>`),
+/// frozen `shared/` normalized types. **Object-safe + `Send`** (so `Box<dyn HarnessAdapter>`),
 /// **synchronous** — mirroring the established `ActionExecutor`/`PolicyEngine`/`PreconditionOracle`
 /// `Box<dyn>` seams (the async drive I/O lives in the runtime/tasks, LESSON §9; no speculative
 /// async-trait dep). The trait + signatures are daemon-internal + UNFROZEN — 3.2/3.3 reshape the
-/// drive loop freely; only the normalized DATA types are the §2.5-seam freeze. **Safety #9** —
-/// `stream_status` returns the structured `NormalizedStatus`, NEVER PTY-scraped (PTY is display-only).
-pub trait HarnessAdapter: Send + Sync {
+/// drive loop freely; only the normalized DATA types are the §2.5-seam freeze.
+///
+/// **3.2 reshape (the unfrozen-trait mandate):** the bound dropped from `Send + Sync` to **`Send`** —
+/// the real `ClaudeAdapter` owns a `Box<dyn Pty>` (Send-only) + a mutable status state machine, so it
+/// is `Send` but NOT `Sync` (it is owned by ONE drive-loop thread, not shared); the 3.1 `Sync` was
+/// speculative. **`launch` takes `&mut self`** — a real launch spawns the child + stores the live
+/// `Pty` handle + sets the initial status (mutation). The remaining observe methods stay `&self`.
+/// **Safety #9** — `stream_status` returns the structured `NormalizedStatus`, NEVER PTY-scraped.
+pub trait HarnessAdapter: Send {
     /// The harness's capability matrix (drives per-capability UI degradation, §9.1/§11.4).
     fn capabilities(&self) -> HarnessCapabilities;
-    /// Launch the agent process/session → its initial normalized status.
-    fn launch(&self) -> NormalizedStatus;
+    /// Launch the agent process/session → its initial normalized status (spawns + stores the live Pty).
+    fn launch(&mut self) -> NormalizedStatus;
     /// The current normalized status, derived from the SDK/app-server stream (safety #9).
     fn stream_status(&self) -> NormalizedStatus;
     /// A pending mutation interception (the can_use_tool / app-server approval surface), if any.
@@ -208,7 +216,7 @@ impl HarnessAdapter for FakeHarness {
         self.caps.clone()
     }
 
-    fn launch(&self) -> NormalizedStatus {
+    fn launch(&mut self) -> NormalizedStatus {
         NormalizedStatus::Starting
     }
 
@@ -328,7 +336,7 @@ mod tests {
     fn test_fake_harness_satisfies_trait() {
         // spec(§9.1) — the trait must be object-safe (`Box<dyn HarnessAdapter>`) and satisfiable; each
         // method returns its normalized type. The real adapters (3.2/3.3) bind to this same surface.
-        let adapter: Box<dyn HarnessAdapter> = Box::new(FakeHarness::new(full_caps()));
+        let mut adapter: Box<dyn HarnessAdapter> = Box::new(FakeHarness::new(full_caps()));
 
         // capabilities() → the frozen HarnessCapabilities
         assert!(adapter.capabilities().supports_terminal);

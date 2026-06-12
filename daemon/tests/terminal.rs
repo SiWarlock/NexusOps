@@ -527,3 +527,50 @@ fn test_terminal_pump_does_not_backpressure_write_actor() {
         "the ONLY sink call is the exit event (the output backpressure is independent of it)"
     );
 }
+
+// ---- 3.4 L3 RED #15 — EOF flushes trailing pending BEFORE the exit event (no dropped bytes) ----
+
+#[test]
+fn test_eof_flushes_trailing_pending() {
+    // the EOF read_step flushes any un-flushed buffered output into a final frame BEFORE emitting the
+    // exit event — so trailing bytes are NEVER dropped, even when the caller reads (accumulating)
+    // without flushing and then stops after is_exited() (the split read_step/flush drive-loop path).
+    let pty = FakePty::new(
+        vec![
+            PtyRead::Chunk(b"tail1".to_vec()),
+            PtyRead::Chunk(b"tail2".to_vec()),
+            PtyRead::Eof,
+        ],
+        ExitStatus {
+            exit_code: Some(0),
+            signal: None,
+        },
+    );
+    let sink = CollectingSink::default();
+    let mut session = TerminalSession::new(
+        TerminalId::from_raw("term_tail"),
+        Box::new(pty),
+        Box::new(sink.clone()),
+    );
+
+    // read all chunks WITHOUT any flush; the EOF read_step does the trailing flush itself.
+    let mut frames = Vec::new();
+    frames.extend(outputs_of(session.read_step())); // tail1 → pending
+    frames.extend(outputs_of(session.read_step())); // tail2 → pending
+    frames.extend(outputs_of(session.read_step())); // EOF → flush pending → frame, THEN exit event
+    assert!(session.is_exited());
+
+    let mut out = Vec::new();
+    for f in &frames {
+        out.extend(STANDARD.decode(&f.data).unwrap());
+    }
+    assert_eq!(
+        out, b"tail1tail2",
+        "trailing pending flushed on EOF, not dropped (no separate flush needed)"
+    );
+    assert_eq!(
+        sink.exits.lock().unwrap().len(),
+        1,
+        "exactly one exit event"
+    );
+}

@@ -280,10 +280,14 @@ impl TerminalSession {
                 Vec::new()
             }
             Ok(PtyRead::Chunk(_)) => Vec::new(), // an empty chunk = nothing available this step
-            // EOF / a read error → the child/PTY is gone → finish (exit event once).
+            // EOF / a read error → the child/PTY is gone. Flush any trailing buffered output into a
+            // final frame BEFORE the exit event, so (a) the last output precedes the exit signal and
+            // (b) the bytes are NEVER dropped even if the caller stops iterating after `is_exited()`
+            // without a separate flush (the split read_step/flush drive-loop path).
             Ok(PtyRead::Eof) | Err(_) => {
+                let emits = self.drain_pending();
                 self.finish();
-                Vec::new()
+                emits
             }
         }
     }
@@ -296,11 +300,7 @@ impl TerminalSession {
     /// hysteresis GAP only bites once a per-frame size cap / partial flush lands (a 3.5 tuning
     /// concern — the classifier is already forward-compatible: a partial drain resumes only at ≤ low).
     pub fn flush(&mut self) -> Vec<TerminalEmit> {
-        let mut emits = Vec::new();
-        if !self.pending.is_empty() {
-            let bytes = std::mem::take(&mut self.pending);
-            emits.push(TerminalEmit::Output(self.frame(&bytes)));
-        }
+        let mut emits = self.drain_pending();
         if matches!(
             next_terminal_action(self.pending.len(), self.high, self.low, self.paused),
             TerminalAction::Resume
@@ -328,6 +328,16 @@ impl TerminalSession {
             terminal_id: self.terminal_id.as_str().to_string(),
             kind,
         }
+    }
+
+    /// Coalesce ALL currently-buffered output into ONE batched output frame (if any). Shared by
+    /// `flush` (the tick) and the EOF path (the final trailing flush before the exit event).
+    fn drain_pending(&mut self) -> Vec<TerminalEmit> {
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
+        let bytes = std::mem::take(&mut self.pending);
+        vec![TerminalEmit::Output(self.frame(&bytes))]
     }
 
     /// Base64-encode a coalesced output buffer into a seq-numbered [`TerminalOutputFrame`] (one `seq`
@@ -479,6 +489,42 @@ fn map_exit(status: &portable_pty::ExitStatus) -> ExitStatus {
 /// `portable-pty` returns `anyhow::Error`; map to `io::Error` without naming the `anyhow` dep.
 fn to_io(e: impl std::fmt::Display) -> io::Error {
     io::Error::other(e.to_string())
+}
+
+// ---- PtySpawner — the object-safe factory seam (a harness `launch()` injects this) ---------------
+
+/// A factory that spawns a fresh [`Pty`] from a launch spec. Object-safe (it produces a
+/// `Box<dyn Pty>`) — unlike [`PortablePtyHost::spawn`], which returns `Self` and so cannot live on a
+/// `dyn` trait. This is the §14 seam a harness adapter's `launch()` injects: [`PortablePtySpawner`]
+/// in production, a recording / fake spawner in tests (returning a [`FakePty`]).
+pub trait PtySpawner: Send {
+    fn spawn(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &std::path::Path,
+        rows: u16,
+        cols: u16,
+    ) -> io::Result<Box<dyn Pty>>;
+}
+
+/// The production [`PtySpawner`] — spawns a real [`PortablePtyHost`] (a live child).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PortablePtySpawner;
+
+impl PtySpawner for PortablePtySpawner {
+    fn spawn(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &std::path::Path,
+        rows: u16,
+        cols: u16,
+    ) -> io::Result<Box<dyn Pty>> {
+        Ok(Box::new(PortablePtyHost::spawn(
+            program, args, cwd, rows, cols,
+        )?))
+    }
 }
 
 // ---- FakePty — the §14 deterministic test double ------------------------------------------------

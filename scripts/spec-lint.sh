@@ -150,6 +150,7 @@ cmd_tests() {
   # tag search across the test tree (any file with 'test' in its path, outside docs/)
   tag_hits() { # $1 = anchor (§-form or #-form)
     grep -rl --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=docs --exclude-dir=scripts \
+      --exclude-dir=target --exclude-dir=.codegraph \
       -e "spec($1" . 2>/dev/null | grep -i 'test' || true
   }
 
@@ -157,7 +158,7 @@ cmd_tests() {
   for a in $(printf '%s\n' "$pline" | extract_anchors); do
     # named waiver classes, read off the Spec anchors line itself:
     #   §X (non-TDD: <how it's covered instead>)  ·  §X (covered-by: <evidence>)  ·  §X (benchmark)
-    waived=$(printf '%s\n' "$pline" | grep -oE "$(printf '%s' "$a" | sed 's/[.[\*^$]/\\&/g') *\((non-TDD|covered-by|benchmark)[^)]*\)" || true)
+    waived=$(printf '%s\n' "$pline" | grep -oE "$(printf '%s' "$a" | sed 's/[.[\*^$]/\\&/g')\`? *\((non-TDD|covered-by|benchmark)[^)]*\)" || true)
     if [ -n "$waived" ]; then ok "$a waived: $waived"; continue; fi
     # prefix-aware: a tag spec(§4.3) covers the phase anchor §4
     hits=$(tag_hits "$a")
@@ -172,6 +173,7 @@ cmd_tests() {
   local all_tracker_anchors stray t
   all_tracker_anchors=$(grep '\*\*Spec anchors:\*\*' "$TRACKER" | extract_anchors)
   stray=$(grep -rho --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=docs --exclude-dir=scripts \
+            --exclude-dir=target --exclude-dir=.codegraph \
             -e 'spec(§[0-9][0-9.]*' -e 'spec(#[a-z][a-z0-9-]*' . 2>/dev/null | sed 's/^spec(//' | sort -u || true)
   for t in $stray; do
     printf '%s\n' "$all_tracker_anchors" | contained_in_set "$t" \

@@ -34,6 +34,13 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "syn
 # convention keeps real secrets out of `inputs`, so the persisted hash reveals nothing recoverable).
 # RustCrypto, audited; `cargo audit` runs at /phase-exit. Dep beyond the brief's list — flag at Step-9.
 sha2 = "0.10"
+# git2 (libgit2 via git2-rs) — READ-ONLY repo introspection: project detection (P5.1, this slice) +
+# the dual-git read backend (P5.2). Forbidden #6 — git2 is NEVER used for mutations; worktree/branch/
+# commit/merge go through the git CLI as Gateway actions. Pinned 0.21 + `vendored-libgit2` (a known
+# bundled libgit2, matching the OQ-INT-SPIKE-6 spike that proved git2 0.21 reads relative-worktree
+# repos); default-features off (no ssh/https — local read-only introspection only). A normal dep, so
+# it is also visible to the integration tests that build hermetic fixture repos (tests/detect.rs).
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
 # (the `nexusopsd` bin is auto-discovered from src/main.rs — no explicit [[bin]] needed.)
 
 [features]

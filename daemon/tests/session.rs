@@ -20,7 +20,8 @@ use nexusops_shared::ids::SessionId;
 use nexusops_shared::status::Session;
 use nexusopsd::harness::{FakeHarness, HarnessAdapter, MutationIntercept, ResumeResult};
 use nexusopsd::session::{
-    spawn_session_actor, FakeLauncher, PtyLauncher, SessionCommand, SessionLauncher,
+    spawn_session_actor, FakeLauncher, LaunchedSession, PtyLauncher, SessionCommand,
+    SessionLauncher, SessionSupervisor,
 };
 use nexusopsd::terminal::{
     ExitStatus, FakePty, PortablePtySpawner, PtyRead, TerminalEventSink, TerminalId,
@@ -267,5 +268,134 @@ async fn test_launcher_seam_fake_and_pty() {
         drive_to_kill(launched).await,
         Session::Killed,
         "the PtyLauncher seam produced a drivable real-PTY session (benign program)"
+    );
+}
+
+// ---- L3: the SessionSupervisor (tests 2, 3, 6, 7) -----------------------------------------------
+
+/// A `LaunchedSession` over a `ScriptedHarness` (reaches a terminal §5.1 state on its own) — for the
+/// supervisor reap test (built directly; the FakeLauncher's FakeHarness never terminates on its own).
+fn scripted_launched_session(post_launch: Vec<Session>) -> LaunchedSession {
+    let session_id = SessionId::new();
+    let adapter = Box::new(ScriptedHarness::new(post_launch));
+    let (terminal, _exits) = fake_terminal("term_scripted", vec![]);
+    LaunchedSession {
+        session_id,
+        adapter,
+        terminal,
+    }
+}
+
+#[tokio::test]
+async fn test_supervisor_spawns_tracks_routes() {
+    // spec(§10) + LESSON 9 — the supervisor spawns + tracks N actors by session id and routes a
+    // command to ONE addressed actor; the others are untouched.
+    let mut sup = SessionSupervisor::new();
+    let launcher = FakeLauncher::new(full_caps());
+    let (status_tx, _status_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let launched = launcher.launch_session().expect("fake launch");
+        ids.push(sup.spawn_session(launched, status_tx.clone()));
+    }
+    assert_eq!(sup.live_count(), 3, "3 actors tracked by session id");
+
+    // route Kill to the MIDDLE session only (the others are FakeHarness → Active forever).
+    let target = ids[1].clone();
+    assert!(
+        sup.route(&target, SessionCommand::Kill).await,
+        "the addressed actor received the routed command"
+    );
+
+    // only the addressed actor terminates → reap exactly it; the other two stay live + tracked.
+    let (reaped_id, status) = sup.reap_next().await.expect("the Killed actor reaps");
+    assert_eq!(
+        reaped_id, target,
+        "the routed command reached ONLY the addressed actor"
+    );
+    assert_eq!(status, Session::Killed);
+    assert_eq!(
+        sup.live_count(),
+        2,
+        "the other two actors are untouched + still tracked"
+    );
+}
+
+#[tokio::test]
+async fn test_supervisor_reaps_terminal_no_restart() {
+    // spec(deep-dive §8) — an actor reaching a terminal §5.1 state is reaped (handle joined, mailbox
+    // dropped, count decremented); NO auto-restart (restart-on-crash is the 4.2 concern).
+    let mut sup = SessionSupervisor::new();
+    let (status_tx, _status_rx) = tokio::sync::mpsc::unbounded_channel();
+    let launched = scripted_launched_session(vec![Session::Active, Session::Completed]);
+    let id = sup.spawn_session(launched, status_tx);
+    assert_eq!(sup.live_count(), 1);
+
+    let (reaped_id, status) = sup.reap_next().await.expect("the terminal actor reaps");
+    assert_eq!(reaped_id, id);
+    assert_eq!(
+        status,
+        Session::Completed,
+        "reaped at the terminal §5.1 state"
+    );
+    assert_eq!(sup.live_count(), 0, "handle joined + mailbox dropped");
+
+    // NO auto-restart: nothing respawned — the supervisor is empty + idle.
+    assert!(
+        sup.try_reap().is_empty(),
+        "no new actor was spawned (no auto-restart; restart is 4.2)"
+    );
+}
+
+#[test]
+fn test_cat1_boundary_no_emission_no_agent() {
+    // the cat-1 boundary (deep-dive §8) — 4.0a emits NO events + performs NO mutation. Enforced
+    // STRUCTURALLY: the session module imports NO mutation/persistence surface (the write-actor, the
+    // event store, the Gateway), so an append/emit is compile-time impossible. A forbidden-token grep
+    // over src/session/ (the terminal-module "no status-derivation API" precedent). The tokens are
+    // module PATHS (`crate::runtime`/`crate::eventstore`/`crate::gateway`), NOT bare words — the cat-1
+    // doc comments legitimately NAME WriteHandle/the Gateway/the write-actor in prose, so matching
+    // those bare words would false-positive on the very comments documenting the boundary.
+    // Scope (honest): the match is `str::contains` substring-exact on rustfmt'd source (no `crate ::
+    // runtime` aliasing), and `read_dir` is NON-recursive — a future `src/session/<sub>/mod.rs`
+    // submodule must extend this scan to stay a complete cat-1 proof.
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/session");
+    let forbidden = ["crate::runtime", "crate::eventstore", "crate::gateway"];
+    let mut checked = 0;
+    for entry in std::fs::read_dir(dir).expect("src/session/ present") {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "rs") {
+            let src = std::fs::read_to_string(&path).unwrap();
+            for tok in forbidden {
+                assert!(
+                    !src.contains(tok),
+                    "{path:?} must not import `{tok}` — 4.0a emits no events + does no mutation \
+                     (cat-1 boundary; the live launch + interception + Gateway session.create \
+                     executor are 4.0b)"
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked >= 3, "session/{{mod,actor,launcher}}.rs scanned");
+}
+
+#[tokio::test]
+async fn test_supervisor_clean_shutdown() {
+    // spec(LESSON 9) — on shutdown the supervisor stops every actor (Kill) + awaits every handle
+    // (JoinSet drain): no orphan task, no panic. A hang here = an un-awaited (orphaned) actor.
+    let mut sup = SessionSupervisor::new();
+    let launcher = FakeLauncher::new(full_caps());
+    let (status_tx, _status_rx) = tokio::sync::mpsc::unbounded_channel();
+    for _ in 0..3 {
+        let launched = launcher.launch_session().expect("fake launch");
+        sup.spawn_session(launched, status_tx.clone());
+    }
+    assert_eq!(sup.live_count(), 3);
+
+    let drained = sup.shutdown().await;
+    assert_eq!(
+        drained, 3,
+        "every actor was Kill'd + its handle awaited (no orphan task)"
     );
 }

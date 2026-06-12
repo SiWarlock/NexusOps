@@ -48,9 +48,10 @@ impl TerminalEventSink for NullTerminalSink {
     fn emit_process_exited(&self, _event: TerminalProcessExited) {}
 }
 
-/// The daemon runtime terminal handle derived from the session id (`term-<sess_…>`).
+/// The daemon runtime terminal handle derived from the session id (`term_<sess_…>` — matching the
+/// `TerminalId::mint` `term_<ULID>` underscore convention; one terminal per session in 4.0a).
 fn terminal_id_for(session_id: &SessionId) -> TerminalId {
-    TerminalId::from_raw(format!("term-{}", session_id.as_str()))
+    TerminalId::from_raw(format!("term_{}", session_id.as_str()))
 }
 
 /// A [`SessionLauncher`] that yields a [`FakeHarness`] + [`FakePty`] session (deterministic tests).

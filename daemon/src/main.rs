@@ -22,6 +22,7 @@ use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
 use nexusopsd::ipc::current_euid;
 use nexusopsd::runtime::{bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor};
+use nexusopsd::session::spawn_supervisor_task;
 
 /// outbox drain cadence (§12) — deliver due rows a few times a minute.
 const DRAINER_INTERVAL: Duration = Duration::from_secs(5);
@@ -86,6 +87,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     let reaper = spawn_reaper(handle.clone(), REAPER_INTERVAL, shutdown_rx.clone());
 
+    // P4.0a — the §10 opt-3 session supervisor (the live drive-loop spine), spawned like the
+    // drainer/reaper, stopped by the shutdown watch. FakeHarness/FakePty-capable; in 4.0a it holds NO
+    // live sessions — the cat-1 live launch + the INV-SEC-1 interception + the Gateway session.create
+    // executor that DRIVES it are 4.0b. `_supervisor` (the SupervisorHandle) is that 4.0b driver entry
+    // — wired + reachable here, not yet driven (the underscore binds it alive for the daemon lifetime).
+    let (supervisor, _supervisor) = spawn_supervisor_task(shutdown_rx.clone());
+
     // L3 — bind the GatewayPort UDS (reclaiming a stale socket) + spawn the peer-auth'd accept-loop.
     let db_path = base_dir.join(DB_FILENAME);
     let listener = bind(&base_dir.join(SOCKET_FILE))?;
@@ -107,6 +115,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let _ = drainer.await;
     let _ = reaper.await;
     let _ = accept.await;
+    let _ = supervisor.await; // drains its session actors (Kill + await each handle — no orphan task).
     actor.shutdown().await;
     // _pidlock drops here → the single-instance OS lock releases.
     Ok(())

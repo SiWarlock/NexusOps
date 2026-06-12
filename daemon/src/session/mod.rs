@@ -16,3 +16,223 @@ pub mod launcher;
 
 pub use actor::{spawn_session_actor, SessionActorHandle, SessionCommand};
 pub use launcher::{FakeLauncher, LaunchedSession, NullTerminalSink, PtyLauncher, SessionLauncher};
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio::task::{JoinHandle, JoinSet};
+
+use nexusops_shared::ids::SessionId;
+use nexusops_shared::status::Session;
+
+/// The §5.1-status observer an actor publishes each transition to — an **in-memory** feed (the future
+/// projection source; NOT the write-actor, cat-1 boundary).
+pub type StatusObserver = mpsc::UnboundedSender<Session>;
+
+/// The §10 supervisor reap cadence (the background task harvests terminal actors).
+const SUPERVISOR_REAP_INTERVAL: Duration = Duration::from_millis(500);
+/// The supervisor control-mailbox depth (the 4.0b session.create driver's spawn/route requests).
+const SUPERVISOR_CONTROL_CAPACITY: usize = 64;
+
+/// The opt-3 session supervisor: spawns + tracks one [`SessionActor`](actor) per session id, routes
+/// commands to a specific actor, and reaps an actor when it reaches a terminal §5.1 state — **NO
+/// auto-restart** (restart-on-crash is the 4.2 child-death concern). The daemon's own write-actor /
+/// JoinSet idiom (LESSON §9: a task + a mailbox + a command loop; await handles on shutdown) applied
+/// to sessions. An EDGE — it never writes the DB (cat-1: no `WriteHandle` in scope).
+pub struct SessionSupervisor {
+    /// the live actors' mailboxes, keyed by session id (route target + shutdown set).
+    actors: HashMap<SessionId, mpsc::Sender<SessionCommand>>,
+    /// the live actors' terminal outcomes — reaping harvests `(SessionId, terminal Session)`.
+    joinset: JoinSet<(SessionId, Session)>,
+}
+
+impl Default for SessionSupervisor {
+    fn default() -> Self {
+        Self {
+            actors: HashMap::new(),
+            joinset: JoinSet::new(),
+        }
+    }
+}
+
+impl SessionSupervisor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The number of live (tracked, un-reaped) actors.
+    pub fn live_count(&self) -> usize {
+        self.actors.len()
+    }
+
+    /// Spawn + track a [`SessionActor`] for `launched`; its §5.1 transitions publish to `status_tx`
+    /// (the in-memory observer — cat-1: NOT the write-actor). Returns the session id.
+    pub fn spawn_session(
+        &mut self,
+        launched: LaunchedSession,
+        status_tx: StatusObserver,
+    ) -> SessionId {
+        let LaunchedSession {
+            session_id,
+            adapter,
+            terminal,
+        } = launched;
+        let SessionActorHandle { join, commands } =
+            spawn_session_actor(session_id.clone(), adapter, terminal, status_tx);
+        self.actors.insert(session_id.clone(), commands);
+        // the JoinSet owns the actor's terminal outcome; a reap harvests its (id, terminal status). A
+        // panicked / cancelled actor task → a `Failed` terminal outcome CARRYING THE ID, so the reap
+        // path ALWAYS harvests it + drops the mailbox — `live_count` stays exact (never inflated by a
+        // dead actor whose bare `JoinError` would otherwise carry no id to clean up by).
+        let wrapper_id = session_id.clone();
+        self.joinset
+            .spawn(async move { join.await.unwrap_or((wrapper_id, Session::Failed)) });
+        session_id
+    }
+
+    /// Route a command to a specific live actor's mailbox. `false` if no such live actor (already
+    /// reaped / unknown id).
+    pub async fn route(&self, session_id: &SessionId, command: SessionCommand) -> bool {
+        match self.actors.get(session_id) {
+            Some(mailbox) => mailbox.send(command).await.is_ok(),
+            None => false,
+        }
+    }
+
+    /// Reap every actor that has ALREADY reached a terminal §5.1 state (non-blocking): drop its
+    /// mailbox + collect its outcome. **NO restart.** Returns the reaped `(id, status)` pairs.
+    pub fn try_reap(&mut self) -> Vec<(SessionId, Session)> {
+        let mut reaped = Vec::new();
+        while let Some(outcome) = self.joinset.try_join_next() {
+            // the wrapper maps a panicked actor to `(id, Failed)`, so a real reap is always `Ok` (the
+            // mailbox is always cleaned up); the `Err` arm — a runtime-cancelled wrapper task — is
+            // defensive, skip it. NO restart either way (restart-on-crash is the 4.2 concern).
+            if let Ok((id, status)) = outcome {
+                self.actors.remove(&id);
+                reaped.push((id, status));
+            }
+        }
+        reaped
+    }
+
+    /// Await the NEXT actor to reach a terminal state, reap it (drop its mailbox), return its outcome.
+    /// `None` when no live actors remain. (For callers that want to block on a reap.)
+    pub async fn reap_next(&mut self) -> Option<(SessionId, Session)> {
+        match self.joinset.join_next().await {
+            Some(Ok((id, status))) => {
+                self.actors.remove(&id);
+                Some((id, status))
+            }
+            // the wrapper maps a panic to `(id, Failed)` → a real reap is always `Ok`; `Err` (a
+            // cancelled wrapper) / an empty set → nothing to reap.
+            Some(Err(_)) | None => None,
+        }
+    }
+
+    /// Clean shutdown (LESSON §9): Kill every live actor + await every handle (drain the JoinSet) —
+    /// no orphan task. Returns the number of actors drained.
+    pub async fn shutdown(mut self) -> usize {
+        for (_id, mailbox) in self.actors.drain() {
+            let _ = mailbox.send(SessionCommand::Kill).await;
+        }
+        let mut drained = 0;
+        while self.joinset.join_next().await.is_some() {
+            drained += 1;
+        }
+        drained
+    }
+}
+
+/// A control message to the supervisor task — the **4.0b** session.create driver sends these (spawn a
+/// session through the supervisor / route a command). 4.0a wires the channel; the live driver is 4.0b.
+enum SupervisorControl {
+    Spawn {
+        launched: LaunchedSession,
+        status_tx: StatusObserver,
+        reply: oneshot::Sender<SessionId>,
+    },
+    Route {
+        session_id: SessionId,
+        command: SessionCommand,
+    },
+}
+
+/// The handle the **4.0b** session.create driver uses to drive the supervisor task (spawn/route).
+/// Wired + reachable in 4.0a (main.rs holds it), but NOT driven by any production caller yet — the
+/// live `session.create` executor that sends these is the cat-1 4.0b.
+#[derive(Clone)]
+pub struct SupervisorHandle {
+    control: mpsc::Sender<SupervisorControl>,
+}
+
+impl SupervisorHandle {
+    /// Spawn a session through the supervisor task; returns its id (`None` if the task is gone).
+    pub async fn spawn_session(
+        &self,
+        launched: LaunchedSession,
+        status_tx: StatusObserver,
+    ) -> Option<SessionId> {
+        let (reply, rx) = oneshot::channel();
+        self.control
+            .send(SupervisorControl::Spawn {
+                launched,
+                status_tx,
+                reply,
+            })
+            .await
+            .ok()?;
+        rx.await.ok()
+    }
+
+    /// Route a command to a session via the supervisor task. `false` if the task is gone.
+    pub async fn route(&self, session_id: SessionId, command: SessionCommand) -> bool {
+        self.control
+            .send(SupervisorControl::Route {
+                session_id,
+                command,
+            })
+            .await
+            .is_ok()
+    }
+}
+
+/// Spawn the §10 supervisor background task (alongside the drainer/reaper/accept-loop in `main.rs`),
+/// stopped by the shutdown watch (LESSON §9 await-on-shutdown). Returns its `JoinHandle` + the
+/// [`SupervisorHandle`] (the 4.0b session.create driver entry — wired + reachable, not yet driven).
+pub fn spawn_supervisor_task(
+    mut shutdown: watch::Receiver<bool>,
+) -> (JoinHandle<()>, SupervisorHandle) {
+    let (control_tx, mut control_rx) = mpsc::channel(SUPERVISOR_CONTROL_CAPACITY);
+    let join = tokio::spawn(async move {
+        let mut supervisor = SessionSupervisor::new();
+        let mut reaper = tokio::time::interval(SUPERVISOR_REAP_INTERVAL);
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
+                ctrl = control_rx.recv() => match ctrl {
+                    Some(SupervisorControl::Spawn { launched, status_tx, reply }) => {
+                        let id = supervisor.spawn_session(launched, status_tx);
+                        let _ = reply.send(id);
+                    }
+                    Some(SupervisorControl::Route { session_id, command }) => {
+                        let _ = supervisor.route(&session_id, command).await;
+                    }
+                    // every control sender dropped → no further driver; shut down cleanly.
+                    None => break,
+                },
+                _ = reaper.tick() => {
+                    let _ = supervisor.try_reap();
+                }
+            }
+        }
+        supervisor.shutdown().await;
+    });
+    (
+        join,
+        SupervisorHandle {
+            control: control_tx,
+        },
+    )
+}

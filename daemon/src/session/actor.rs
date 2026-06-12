@@ -105,6 +105,13 @@ async fn run(
         }
     });
 
+    // Termination contract: the actor exits ONLY on (a) a `Kill` command → `Killed`, or (b) the
+    // adapter reporting a terminal §5.1 status → that status. Losing the mailbox (all command senders
+    // dropped) does NOT terminate the actor — it keeps driving the lifecycle until the adapter
+    // terminates. A NON-self-terminating adapter (e.g. the bare FakeHarness → Active forever) MUST be
+    // `Kill`'d to stop; the `SessionSupervisor` holds each actor's mailbox until reap + Kills every
+    // actor on shutdown, so a SUPERVISED actor never orphans. (A direct caller that drops all senders
+    // without a Kill on a non-terminating adapter would leave the actor polling — a documented misuse.)
     let mut ticker = tokio::time::interval(STATUS_POLL_INTERVAL);
     let mut mailbox_open = true;
     loop {
@@ -133,9 +140,13 @@ async fn run(
         }
     }
 
-    // stop the pump (a Kill before EOF aborts it; an already-finished pump is a benign no-op) — the
-    // LESSON §9 await-on-shutdown discipline: no orphan blocking task.
-    pump.abort();
+    // await the read-pump's completion (LESSON §9 await-on-shutdown: no orphan task). NOTE:
+    // `spawn_blocking` tasks CANNOT be aborted — `abort()` is a no-op on a started blocking closure —
+    // so we await the pump's NATURAL termination. For 4.0a's benign / EOF-terminating programs
+    // (FakePty, /bin/echo) the pump returns promptly. A live long-running agent needs a
+    // kill-to-unblock-the-blocking-read path (`pty.kill()` to break the pump's blocked `read`) BEFORE
+    // its pump ends on `Kill` — that kill-path is the cat-1 4.0b / 4.2 concern (the live drive loop
+    // owns it). In 4.0a the supervisor holds no live sessions, so daemon shutdown drains an empty set.
     let _ = pump.await;
     (session_id, current)
 }

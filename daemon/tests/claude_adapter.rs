@@ -209,3 +209,193 @@ fn test_launch_spawn_failure_yields_failed() {
         "a spawn failure → Failed (never a phantom Starting)"
     );
 }
+
+// ==== L2 — derive_status: structured signals → the §5.1 Session machine ==========================
+
+// ---- 3.2 L2 RED #4 — the hook → Session mapping table (§5.1 R-4) ----
+
+#[test]
+fn test_derive_status_hook_to_session_mapping() {
+    use nexusopsd::harness::claude::{derive_status, ClaudeSignal, NotificationKind};
+    use Session::*;
+
+    let start = ClaudeSignal::SessionStart {
+        source: "startup".to_string(),
+        model: Some("claude-opus-4-8".to_string()),
+    };
+    assert_eq!(
+        derive_status(Creating, &start),
+        Starting,
+        "SessionStart → Starting"
+    );
+
+    let pre = |tool: &str| ClaudeSignal::PreToolUse {
+        tool: tool.to_string(),
+    };
+    assert_eq!(derive_status(Active, &pre("Bash")), RunningCommand);
+    assert_eq!(derive_status(Active, &pre("Write")), EditingFiles);
+    assert_eq!(derive_status(Active, &pre("Edit")), EditingFiles);
+    assert_eq!(derive_status(Active, &pre("MultiEdit")), EditingFiles);
+    assert_eq!(derive_status(Active, &pre("NotebookEdit")), EditingFiles);
+    assert_eq!(
+        derive_status(Idle, &pre("Read")),
+        Active,
+        "other tool → Active"
+    );
+
+    assert_eq!(
+        derive_status(RunningCommand, &ClaudeSignal::PostToolUse),
+        Active
+    );
+
+    assert_eq!(
+        derive_status(
+            Active,
+            &ClaudeSignal::Notification(NotificationKind::Permission)
+        ),
+        WaitingOnPermission
+    );
+    assert_eq!(
+        derive_status(
+            Active,
+            &ClaudeSignal::Notification(NotificationKind::InputNeeded)
+        ),
+        WaitingOnHumanInput
+    );
+    // an unclassified notification holds the prior state (no spurious transition).
+    assert_eq!(
+        derive_status(
+            RunningCommand,
+            &ClaudeSignal::Notification(NotificationKind::Other)
+        ),
+        RunningCommand
+    );
+
+    assert_eq!(
+        derive_status(Active, &ClaudeSignal::Stop),
+        Idle,
+        "Stop → Idle"
+    );
+}
+
+// ---- 3.2 L2 RED #5 — process exit → the terminal Session states (§17) ----
+
+#[test]
+fn test_derive_status_process_exit_terminal() {
+    use nexusopsd::harness::claude::{derive_status, ClaudeSignal};
+    use Session::*;
+    let exit = |code: Option<i32>, signal: Option<&str>| ClaudeSignal::ProcessExited {
+        exit_code: code,
+        signal: signal.map(|s| s.to_string()),
+    };
+    assert_eq!(
+        derive_status(Active, &exit(Some(0), None)),
+        Completed,
+        "exit 0 → Completed"
+    );
+    assert_eq!(
+        derive_status(Active, &exit(Some(1), None)),
+        Failed,
+        "exit ≠0 → Failed"
+    );
+    assert_eq!(
+        derive_status(RunningCommand, &exit(None, Some("SIGKILL"))),
+        Failed,
+        "signal → Failed"
+    );
+    // the unknown `(None, None)` exit (no code, no signal) is fail-closed → Failed, never a false Completed.
+    assert_eq!(
+        derive_status(Active, &exit(None, None)),
+        Failed,
+        "unknown exit → Failed (fail-closed)"
+    );
+}
+
+// ---- 3.2 L2 RED #6 — an illegal (terminal-sink) transition holds the prior state (R-9) ----
+
+#[test]
+fn test_derive_status_illegal_transition_holds_state() {
+    use nexusopsd::harness::claude::{derive_status, ClaudeSignal};
+    use Session::*;
+    // a terminal state is a SINK — no signal resurrects it (the adapter-level R-9 guard; the full
+    // §5.1 legal-edge set is a §5.1-machine concern, NOT the adapter's). Held, never corrupted.
+    for prev in [Completed, Failed, Archived, Killed] {
+        assert_eq!(
+            derive_status(
+                prev,
+                &ClaudeSignal::PreToolUse {
+                    tool: "Bash".to_string()
+                }
+            ),
+            prev,
+            "{prev:?} is terminal — held, not transitioned"
+        );
+        assert_eq!(
+            derive_status(
+                prev,
+                &ClaudeSignal::ProcessExited {
+                    exit_code: Some(0),
+                    signal: None
+                }
+            ),
+            prev,
+            "{prev:?} is terminal — a second exit does not change it"
+        );
+        assert_eq!(
+            derive_status(prev, &ClaudeSignal::Stop),
+            prev,
+            "{prev:?} is terminal — a Stop signal does not move it (guard precedes every arm)"
+        );
+    }
+}
+
+// ---- 3.2 L2 RED #7 — status derives from STRUCTURED signals, never PTY bytes (#9 / forbidden #4) ----
+
+#[test]
+fn test_status_derivation_takes_structured_signals_not_pty_bytes() {
+    use nexusopsd::harness::claude::{derive_status, ClaudeSignal};
+    // compile-time: derive_status's input is the STRUCTURED `ClaudeSignal` — it has NO access to PTY
+    // output bytes (safety #9); this call proves the signature.
+    let _ = derive_status(Session::Active, &ClaudeSignal::Stop);
+    // structural grep-pin (the 3.4 #9 pattern, applied to the status derivation): the status path
+    // reads NO PTY/TerminalSession output to derive status. Scoped to `claude/status.rs` (the pure
+    // derivation) so the future hook-receiver/transcript-reader I/O (043/P4) in sibling modules can
+    // NOT false-alarm it. (The adapter owns a `Box<dyn Pty>` for launch, but never reads it.)
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/harness/claude/status.rs"
+    ))
+    .unwrap();
+    for tok in [
+        "TerminalSession",
+        "read_step",
+        "PtyRead",
+        ".pump(",
+        "pty.read",
+    ] {
+        assert!(
+            !src.contains(tok),
+            "claude status path must not read PTY output (`{tok}`) — #9 display-only"
+        );
+    }
+}
+
+// ---- 3.2 L2 RED #7b — push_signal advances the adapter's stream_status via derive_status ----
+
+#[test]
+fn test_push_signal_updates_stream_status() {
+    use nexusopsd::harness::claude::ClaudeSignal;
+    let mut adapter = adapter_with(RecordingSpawner::default());
+    assert_eq!(adapter.launch(), Session::Starting);
+    assert_eq!(adapter.stream_status(), Session::Starting);
+    adapter.push_signal(ClaudeSignal::PreToolUse {
+        tool: "Bash".to_string(),
+    });
+    assert_eq!(
+        adapter.stream_status(),
+        Session::RunningCommand,
+        "the pushed signal advanced status"
+    );
+    adapter.push_signal(ClaudeSignal::Stop);
+    assert_eq!(adapter.stream_status(), Session::Idle);
+}

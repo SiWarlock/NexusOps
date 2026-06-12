@@ -23,6 +23,9 @@ use nexusops_shared::status::Session;
 use crate::harness::{HarnessAdapter, MutationIntercept, ResumeResult};
 use crate::terminal::{Pty, PtySpawner};
 
+mod status;
+pub use status::{derive_status, ClaudeSignal, NotificationKind};
+
 // ---- the 10 Claude HarnessCapabilities (Q1, lead-confirmed) -------------------------------------
 
 /// The Claude Code capability matrix (§9.1 / PRD HARN-5; drives §11.4 per-capability UI degradation).
@@ -260,6 +263,14 @@ impl ClaudeAdapter {
             status: Session::Creating,
         }
     }
+
+    /// Feed one structured [`ClaudeSignal`] into the status derivation (the §14 ingestion seam — the
+    /// live hook receiver + transcript tailer + statusLine PUSH these typed signals; the I/O wires
+    /// at 043/P4). Advances [`stream_status`](HarnessAdapter::stream_status) via [`derive_status`] —
+    /// NEVER from PTY output bytes (safety #9).
+    pub fn push_signal(&mut self, signal: ClaudeSignal) {
+        self.status = derive_status(self.status, &signal);
+    }
 }
 
 impl HarnessAdapter for ClaudeAdapter {
@@ -293,8 +304,8 @@ impl HarnessAdapter for ClaudeAdapter {
     }
 
     fn stream_status(&self) -> NormalizedStatus {
-        // the current derived status (advanced by the L2 `push_signal` over structured signals,
-        // NEVER from PTY bytes — safety #9). L1 returns the stored state.
+        // the current derived status — advanced by `push_signal` over structured signals via
+        // `derive_status`, NEVER from PTY output bytes (safety #9).
         self.status
     }
 

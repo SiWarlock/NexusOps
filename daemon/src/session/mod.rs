@@ -12,5 +12,7 @@
 //! are compile-time impossible (the live launch + interception + executor are 4.0b, deep-dive §8).
 
 pub mod actor;
+pub mod launcher;
 
 pub use actor::{spawn_session_actor, SessionActorHandle, SessionCommand};
+pub use launcher::{FakeLauncher, LaunchedSession, NullTerminalSink, PtyLauncher, SessionLauncher};

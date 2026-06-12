@@ -3,7 +3,7 @@
 - **Date:** 2026-06-11
 - **Phase:** Phase 2.4 — fail-closed / stale-precondition re-check / fencing-conflict / crash-reconcile (the LAST + most safety-critical Phase-2 slice)
 - **Predecessor:** [012 — policy engine + executor framework](012-2026-06-11-policy-engine-and-executor-framework.md)
-- **Successor:** _(next session — Phase 2.5 §18 benchmark → 2.6 CI → `/phase-exit 2`)_
+- **Successor:** [014 — §18 perf benchmark + §14 CI merge gates (Phase-2 close-out)](014-2026-06-12-perf-benchmark-and-ci-gates.md)
 
 ## Why this session existed
 

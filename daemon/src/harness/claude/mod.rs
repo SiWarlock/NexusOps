@@ -23,6 +23,7 @@ use nexusops_shared::status::Session;
 use crate::harness::{HarnessAdapter, MutationIntercept, ResumeResult};
 use crate::terminal::{Pty, PtySpawner};
 
+pub mod intercept;
 mod status;
 pub use status::{derive_status, ClaudeSignal, NotificationKind};
 

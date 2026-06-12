@@ -190,9 +190,45 @@ impl Gateway {
                         status: ARStatus::AwaitingApproval,
                     }))
                 }
-                // a policy `deny` is a ROUTED outcome (an uncatalogued type → fail-closed deny):
-                // surface the honest PolicyDenied (→ §6.4 policy_denied), never the misleading
-                // UnsupportedPolicyDecision. Terminal — nothing executes.
+                // a policy `deny` is a ROUTED outcome. **043 L5 / A1 — record-then-deny:** a blocked
+                // AGENT-MUTATION attempt (a deny-rule hit, e.g. `rm -rf /`) is AUDITED, never silently
+                // rolled back (audit-integrity — the forensic record of a blocked dangerous attempt).
+                // It COMMITS Submitted→PolicyDecided→Denied + an `ActionDenied{approval_id: None,
+                // reason}` (no approval object — the policy denied at submit), then the Deny verdict
+                // (the agent is blocked regardless). **GATED via `is_adjudication`, which is the
+                // agent-mutation set** (the `agent.*` family is the ONLY `ExecutorKind::Adjudication`
+                // catalog group — the lead's A1 boundary). A NON-agent / uncatalogued deny keeps the
+                // existing fail-closed `Err(PolicyDenied)`-rollback (no behavior change beyond the agent
+                // path). (If a future non-agent adjudication type is ever catalogued, re-evaluate this
+                // guard — auditing its denial is harmless, but the boundary should stay intentional.)
+                // A denial-audit-write fault rolls the whole txn back → `Err` → Deny (fail-closed).
+                PolicyDecisionStatus::Deny if is_adjudication(&req.action_type) => {
+                    request::update_status(
+                        gtx.tx(),
+                        &act_id,
+                        ARStatus::Submitted,
+                        ARStatus::PolicyDecided,
+                    )?;
+                    request::update_status(
+                        gtx.tx(),
+                        &act_id,
+                        ARStatus::PolicyDecided,
+                        ARStatus::Denied,
+                    )?;
+                    let reason = decision
+                        .reasons
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("policy denied");
+                    gtx.append(&approval::policy_denied_intent(&req, reason, &now)?)?;
+                    Ok(Routed::Done(ActionAck {
+                        action_request_id: act_id,
+                        status: ARStatus::Denied,
+                    }))
+                }
+                // a non-agent / uncatalogued policy `deny`: surface the honest PolicyDenied (→ §6.4
+                // policy_denied), never the misleading UnsupportedPolicyDecision. Terminal — nothing
+                // executes; the txn rolls back (the existing behavior, unchanged).
                 PolicyDecisionStatus::Deny => Err(GatewayError::PolicyDenied),
                 // 2.2 INV-SEC-1 — the FIRST no-human-approval execution path: a risk-0 `allow` action
                 // auto-executes (submitted → policy_decided → queued → … → succeeded) with NO approval

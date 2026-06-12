@@ -144,11 +144,14 @@ impl ActionApproved {
 }
 
 /// `ActionDenied` payload (§6.2/§7.1; AG §17.1) — the action was denied (terminal). Carries the
-/// `approval_id` + the denial `reason` (the audit record of WHY).
+/// denial `reason` (the audit record of WHY) + an **OPTIONAL** `approval_id`. A HUMAN-deny carries
+/// `Some(appr_…)`; a 043/A1 agent deny-rule **policy-deny** (denied at submit, BEFORE any approval
+/// object) carries `None` (the record-then-deny forensic event — there is no approval to reference).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
 pub struct ActionDenied {
-    pub approval_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
     pub reason: String,
 }
 

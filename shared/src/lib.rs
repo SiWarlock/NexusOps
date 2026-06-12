@@ -75,7 +75,13 @@ pub mod time;
 /// const — the locked MVP-22 set is UNTOUCHED). Additive (a new enum value + a new action-type const;
 /// no frozen type reshaped, §5.0). The `tool_name → agent.*` mapping + the params deny-rules + the
 /// adjudication verdict are DAEMON-INTERNAL (`daemon/src/harness/claude/intercept.rs`).
-pub const CONTRACT_VERSION: &str = "0.22.0";
+/// 0.23.0 (043 L5 / A1) relaxes `ActionDenied.approval_id` `String`→`Option<String>` (`skip_serializing_if`):
+/// a HUMAN-deny carries `Some(appr_…)`, an agent deny-rule **policy-deny** (denied at submit, before any
+/// approval) carries `None` — the record-then-deny forensic event for a blocked dangerous agent attempt
+/// (audit-integrity: never silently dropped). Additive-tolerant: a human-deny (`Some`) still serializes
+/// the field identically; a policy-deny (`None`) OMITS it (`skip_serializing_if`), and a reader uses
+/// `#[serde(default)]` to read it back as `None`. Un-consumed by ui today. §5.0.
+pub const CONTRACT_VERSION: &str = "0.23.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

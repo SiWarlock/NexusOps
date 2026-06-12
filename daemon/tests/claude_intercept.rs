@@ -602,3 +602,163 @@ fn test_launch_compensations_present() {
         "the PreToolUse hook timeout is short (≤5s, not the 600s default) — a hung hook fails closed fast; got {t}"
     );
 }
+
+// =================================================================================================
+// L5 — the deny-rule RECORD-THEN-DENY (A1, lead-ruled): a blocked DANGEROUS agent attempt is NEVER
+// silently dropped from the audit log. The agent-mutation policy-deny path COMMITS the denial
+// (Submitted→PolicyDecided→Denied; NO rollback) + an `ActionDenied{approval_id: None, reason}`
+// forensic event — then the Deny verdict (the agent is blocked regardless). GATED to agent
+// mutations: a non-agent / uncatalogued policy-deny keeps the existing Err-rollback (no change).
+// =================================================================================================
+
+/// every `Action*` event type in the log, in insertion order (ascending `seq`).
+fn action_events(store: &EventStore) -> Vec<String> {
+    store
+        .read_all()
+        .unwrap()
+        .iter()
+        .filter(|e| e.event_type.starts_with("Action"))
+        .map(|e| e.event_type.clone())
+        .collect()
+}
+
+/// the (single) `ActionDenied` event's payload.
+fn action_denied_payload(store: &EventStore) -> nexusops_shared::events::ActionDenied {
+    let e = store
+        .read_all()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.event_type == "ActionDenied")
+        .expect("an ActionDenied event");
+    serde_json::from_str(&e.payload_json).expect("ActionDenied payload deserializes")
+}
+
+fn approval_count(path: &Path) -> i64 {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("read-only conn");
+    conn.query_row("SELECT count(*) FROM approvals", [], |r| r.get(0))
+        .unwrap()
+}
+
+// ---- 043 L5 RED — a blocked dangerous agent attempt is AUDITED (record-then-deny) ---------------
+
+#[test]
+fn test_deny_rule_audits_the_blocked_attempt() {
+    // spec(A1 / §15) — a deny-rule denial is AUDITED, not silently rolled back: the action commits at
+    // `denied` with ActionRequested (the attempt) + ActionDenied{approval_id: None, reason} (the
+    // forensic record of WHY). The verdict is still Deny; no approval is ever opened.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = Gateway::new(Box::new(AgentMutationPolicy), Box::new(StubExecutor));
+    let outcome = route_intercept(&gw, &mut store, &bash_payload("rm -rf /"));
+    assert!(
+        matches!(
+            outcome,
+            InterceptOutcome::Resolved(MutationVerdict::Deny { .. })
+        ),
+        "the dangerous attempt is blocked (Deny)"
+    );
+    assert_eq!(
+        action_status(&path).as_deref(),
+        Some("denied"),
+        "the blocked attempt is RECORDED at denied (NOT rolled back)"
+    );
+    // the forensic chain, in order: the attempt (ActionRequested) THEN the denial (ActionDenied).
+    let evs = action_events(&store);
+    let requested = evs.iter().position(|e| e == "ActionRequested");
+    let denied = evs.iter().position(|e| e == "ActionDenied");
+    assert!(
+        requested.is_some(),
+        "the attempt is recorded (ActionRequested)"
+    );
+    assert!(
+        denied.is_some(),
+        "the denial is recorded (ActionDenied — A1 forensics)"
+    );
+    assert!(
+        requested < denied,
+        "the attempt (ActionRequested) precedes the denial (ActionDenied) in the audit chain"
+    );
+    let denied = action_denied_payload(&store);
+    assert_eq!(
+        denied.approval_id, None,
+        "a policy-deny has NO approval object (approval_id is None)"
+    );
+    assert!(
+        denied.reason.contains("deny-rule"),
+        "the denial REASON is recorded (the forensic point of A1): {}",
+        denied.reason
+    );
+    assert_eq!(
+        approval_count(&path),
+        0,
+        "a deny-rule denial NEVER opens an approval (never reaches the human)"
+    );
+}
+
+// ---- 043 L5 RED — a denial-audit-write fault still fails closed (Deny, nothing persists) ---------
+
+#[test]
+fn test_deny_rule_audit_fault_fails_closed() {
+    // spec(§15 #5) — if the record-then-deny's audit-write FAILS, the txn rolls back → Deny, nothing
+    // persists. The agent is blocked even when the forensic record can't be written (no new hole).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = Gateway::new(Box::new(AgentMutationPolicy), Box::new(StubExecutor));
+    // fails the FIRST audit append in the whole submit txn (ActionRequested) — proving that ANY
+    // audit-write failure inside the atomic record-then-deny txn rolls the whole thing back.
+    arm(FaultPoint::AuditEventWrite);
+    let outcome = route_intercept(&gw, &mut store, &bash_payload("rm -rf /"));
+    assert!(
+        matches!(
+            outcome,
+            InterceptOutcome::Resolved(MutationVerdict::Deny { .. })
+        ),
+        "still Deny on an audit-write fault"
+    );
+    assert_eq!(
+        action_status(&path),
+        None,
+        "the txn rolled back — nothing persisted (fail-closed)"
+    );
+}
+
+// ---- 043 L5 RED — the record-then-deny is GATED to agent mutations (non-agent deny unchanged) ----
+
+#[test]
+fn test_non_agent_policy_deny_still_rolls_back() {
+    // spec(A1 boundary) — the record-then-deny applies ONLY to agent mutations. A non-agent
+    // uncatalogued policy-deny keeps the existing Err(PolicyDenied)-rollback (nothing persists) — the
+    // lead's boundary: no behavior change beyond the agent path.
+    use nexusops_shared::actions::{ActionRequest as ARModel, RequesterType, RiskLevel};
+    use nexusops_shared::ids::ActionRequestId;
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = Gateway::new(Box::new(AgentMutationPolicy), Box::new(StubExecutor));
+    let req = ARModel {
+        action_request_id: ActionRequestId::new(),
+        project_id: None,
+        action_type: "not.a.real.action".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs: vec![],
+        inputs: serde_json::json!({}),
+        risk_level: RiskLevel::Level0,
+        idempotency_key: None,
+        fencing_token: None,
+        status: AR::Submitted,
+        preview: None,
+        created_at: Timestamp::parse("2026-06-12T00:00:00Z").unwrap(),
+    };
+    let err = gw
+        .submit_action(&mut store, req)
+        .expect_err("an uncatalogued type → PolicyDenied");
+    assert!(
+        matches!(err, nexusopsd::gateway::GatewayError::PolicyDenied),
+        "a non-agent uncatalogued deny is PolicyDenied: {err:?}"
+    );
+    assert_eq!(
+        action_status(&path),
+        None,
+        "a non-agent deny ROLLS BACK (unchanged) — nothing persists"
+    );
+}

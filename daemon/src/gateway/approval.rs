@@ -244,7 +244,8 @@ pub(crate) fn approved_intent(
     ))
 }
 
-/// Build the `ActionDenied` AppendIntent (terminal; the denial `reason` in the payload).
+/// Build the `ActionDenied` AppendIntent for a HUMAN/policy approval-deny (terminal; the denial
+/// `reason` + the resolved `approval_id` in the payload + on the envelope).
 pub(crate) fn denied_intent(
     ar: &ActionRequestModel,
     approval_id: &str,
@@ -252,7 +253,7 @@ pub(crate) fn denied_intent(
     occurred_at: &str,
 ) -> Result<AppendIntent, GatewayError> {
     let payload = serde_json::to_string(&ActionDenied {
-        approval_id: approval_id.to_string(),
+        approval_id: Some(approval_id.to_string()),
         reason: reason.to_string(),
     })
     .map_err(|e| GatewayError::Serialize(e.to_string()))?;
@@ -262,6 +263,29 @@ pub(crate) fn denied_intent(
         payload,
         occurred_at,
         Some(approval_id.to_string()),
+    ))
+}
+
+/// Build the `ActionDenied` AppendIntent for a 043/A1 agent deny-rule **POLICY-deny** (terminal; the
+/// denial `reason` in the payload, `approval_id = None`) — the record-then-deny forensic event for a
+/// blocked dangerous agent attempt. There is NO approval object (the policy denied at submit, before
+/// approval), so both the payload `approval_id` and the envelope `approval_id` are `None`.
+pub(crate) fn policy_denied_intent(
+    ar: &ActionRequestModel,
+    reason: &str,
+    occurred_at: &str,
+) -> Result<AppendIntent, GatewayError> {
+    let payload = serde_json::to_string(&ActionDenied {
+        approval_id: None,
+        reason: reason.to_string(),
+    })
+    .map_err(|e| GatewayError::Serialize(e.to_string()))?;
+    Ok(gateway_event_intent(
+        ar,
+        ActionDenied::EVENT_TYPE,
+        payload,
+        occurred_at,
+        None, // no approval object → no envelope approval_id FK
     ))
 }
 

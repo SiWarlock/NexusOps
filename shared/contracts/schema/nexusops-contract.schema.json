@@ -51,17 +51,19 @@
     },
     "ActionDenied": {
       "additionalProperties": false,
-      "description": "`ActionDenied` payload (§6.2/§7.1; AG §17.1) — the action was denied (terminal). Carries the\n`approval_id` + the denial `reason` (the audit record of WHY).",
+      "description": "`ActionDenied` payload (§6.2/§7.1; AG §17.1) — the action was denied (terminal). Carries the\ndenial `reason` (the audit record of WHY) + an **OPTIONAL** `approval_id`. A HUMAN-deny carries\n`Some(appr_…)`; a 043/A1 agent deny-rule **policy-deny** (denied at submit, BEFORE any approval\nobject) carries `None` (the record-then-deny forensic event — there is no approval to reference).",
       "properties": {
         "approval_id": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "reason": {
           "type": "string"
         }
       },
       "required": [
-        "approval_id",
         "reason"
       ],
       "type": "object"
@@ -2500,5 +2502,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.22.0"
+  "x-contract-version": "0.23.0"
 }

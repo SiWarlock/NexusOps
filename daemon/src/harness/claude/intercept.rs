@@ -233,11 +233,12 @@ pub fn route_intercept(
             ActionRequestStatus::AwaitingApproval => InterceptOutcome::AwaitingApproval {
                 action_request_id: ack.action_request_id,
             },
-            // UNREACHABLE in normal operation — an adjudication submit yields ONLY PolicyDecided
-            // (risk-0) or AwaitingApproval (both handled above), or an Err. This arm defends against a
-            // Gateway REGRESSION that returned some other status (e.g. Queued/Succeeded — which would
-            // mean an adjudication action wrongly entered execution); it fails CLOSED via the default
-            // verdict (only PolicyDecided/Approved → Allow), never silently allowing.
+            // an adjudication submit yields PolicyDecided (risk-0) or AwaitingApproval (both handled
+            // above), or — since 043 L5 — `Denied` (the deny-rule record-then-deny commits the denied
+            // action, ack'd Denied), or an Err. `Denied` → verdict_for_status → Deny (the agent IS
+            // blocked, the blocked attempt audited). Any OTHER status would be a Gateway REGRESSION
+            // (e.g. Queued/Succeeded = an adjudication action wrongly executed); it fails CLOSED via the
+            // default verdict (only PolicyDecided/Approved → Allow), never silently allowing.
             other => InterceptOutcome::Resolved(verdict_for_status(other)),
         },
         // a Gateway error — an audit-write fault (§15 #5) or a policy-deny — fails CLOSED to Deny.

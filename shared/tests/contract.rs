@@ -2207,14 +2207,61 @@ fn test_terminal_process_exited_wire_contract() {
     assert_eq!(TerminalProcessExited::EVENT_TYPE, "TerminalProcessExited");
 }
 
-// ---- 043 L1 RED #4 — CONTRACT_VERSION bumped to 0.22.0 (the additive §6.3 agent-mutation freeze) ----
+// ---- 043 L5 RED — ActionDenied.approval_id is OPTIONAL (the A1 record-then-deny forensic event) ----
 
 #[test]
-fn test_contract_version_bumped_0_22_0() {
+fn test_action_denied_approval_id_optional() {
+    // spec(§7.1) — 043 L5 / A1: `ActionDenied.approval_id` is OPTIONAL. A HUMAN-deny carries
+    // `Some(appr_…)`; an agent deny-rule POLICY-deny (fired at submit, before any approval) carries
+    // `None`. Both round-trip; `None` OMITS the field (skip_serializing_if); deny_unknown_fields holds.
+    use nexusops_shared::events::ActionDenied;
+    // the policy-deny (no approval object): None omits the field.
+    let policy = ActionDenied {
+        approval_id: None,
+        reason: "agent-mutation deny-rule: rm -rf on a broad path".to_string(),
+    };
+    let j = serde_json::to_value(&policy).unwrap();
+    assert!(
+        j.get("approval_id").is_none(),
+        "a policy-deny (None) omits approval_id (skip_serializing_if)"
+    );
+    assert_eq!(
+        serde_json::from_value::<ActionDenied>(j).unwrap(),
+        policy,
+        "the policy-deny round-trips"
+    );
+    // the human-deny still carries Some(approval_id).
+    let human = ActionDenied {
+        approval_id: Some("appr_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        reason: "operator declined".to_string(),
+    };
+    let j2 = serde_json::to_value(&human).unwrap();
+    assert_eq!(
+        j2.get("approval_id").and_then(|v| v.as_str()),
+        Some("appr_01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+        "a human-deny carries Some(approval_id)"
+    );
+    assert_eq!(
+        serde_json::from_value::<ActionDenied>(j2).unwrap(),
+        human,
+        "the human-deny round-trips"
+    );
+    // reject-unknown holds.
+    assert!(
+        serde_json::from_value::<ActionDenied>(serde_json::json!({ "reason": "x", "extra": true }))
+            .is_err(),
+        "unknown field rejected (deny_unknown_fields, §5.0/§15)"
+    );
+}
+
+// ---- 043 L5 RED — CONTRACT_VERSION bumped to 0.23.0 (the ActionDenied.approval_id relax) ----
+
+#[test]
+fn test_contract_version_bumped_0_23_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
     // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.22.0 =
-    // the 3.2-part-2 (brief 043) §6.3 agent-mutation freeze (the `ExecutorKind::Adjudication` value +
-    // the 4 `agent.*` catalog entries) — ADDITIVE (a new enum value + a separate action-type const;
-    // no frozen type reshaped, the MVP-22 set untouched, §5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.22.0");
+    // the 043 L1 §6.3 agent-mutation freeze; **0.23.0** = the 043 L5 / A1 relax of
+    // `ActionDenied.approval_id` to OPTIONAL (the agent deny-rule policy-deny audit event has no
+    // approval object) — additive-tolerant (the field becomes optional; un-consumed by ui, §5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.23.0");
 }

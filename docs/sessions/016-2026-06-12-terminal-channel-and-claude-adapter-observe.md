@@ -3,7 +3,7 @@
 - **Date:** 2026-06-12
 - **Phase:** Phase 3 (harness adapters & embedded terminal) — two slices: **3.4** (the §6.4 Terminal Channel + PTY host + backpressure) then **3.2 part 1** (the Claude `HarnessAdapter` observe path). PTY-primary per the resolved cat-4.
 - **Predecessor:** [015 — §9.1 HarnessAdapter contract freeze + proj_usage_ledger projector](015-2026-06-12-harness-adapter-contract-and-usage-ledger.md)
-- **Successor:** _(next session — 043 Claude MutationIntercept→Gateway [cat-1 safety] ∥ 3.3 Codex [0.3-schema HITL-gated])_
+- **Successor:** [017 — Claude MutationIntercept→Gateway interception (P3.2 part 2, brief 043)](017-2026-06-12-claude-mutation-intercept-gateway.md)
 
 ## Why this session existed
 

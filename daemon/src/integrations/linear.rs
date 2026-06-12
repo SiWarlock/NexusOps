@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use nexusops_shared::status::Task;
 
-use super::classifier::IntegrationOutcomeClass;
+use super::classifier::{classify, parse_retry_after, IntegrationOutcomeClass};
 
 /// Linear's `WorkflowState.type` — the closed 6-value lifecycle set (confirmed against the Linear
 /// GraphQL API: `state: { type: { eq: "started" } }` etc.). The daemon-internal decode of the raw
@@ -193,5 +193,112 @@ impl FakeLinearReadClient {
 impl LinearReadClient for FakeLinearReadClient {
     async fn fetch_issue(&self, _issue_id: &str) -> Result<LinearIssue, LinearReadError> {
         self.result.clone()
+    }
+}
+
+// ---- the real Linear GraphQL network adapter: L1 pure core (edges-015) ---------------------------
+//
+// L1 = the deterministic core, test-first, NO new dep: `build_issue_query` (typed-variable query body)
+// + `map_linear_response` (the response mapper layering the GraphQL `errors[].extensions.code` OVER
+// edges-003's HTTP-status `classify`). L2 = the reqwest `LinearGraphqlReadClient` IO shell (next commit).
+
+/// The GraphQL query for one issue. The id is a TYPED variable (`$id`) — never interpolated into the
+/// query text (injection-safe, edges-010). The `id` arg accepts the `BLA-123` identifier or the UUID.
+const ISSUE_QUERY: &str = "query Issue($id: String!) { issue(id: $id) { id identifier title url state { type name } assignee { id name } } }";
+
+/// Build the Linear GraphQL request body `{ query, variables: { id } }` for `fetch_issue`. The
+/// `issue_id` is a typed variable (injection-safe — never interpolated into the query, edges-010).
+pub fn build_issue_query(issue_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "query": ISSUE_QUERY,
+        "variables": { "id": issue_id },
+    })
+}
+
+// Private wire structs for the GraphQL error envelope (`{ errors: [{ message, extensions: { code } }] }`).
+// Tolerant reads (serde ignores the `data` key + any unselected fields). `#[serde(default)]` lets a body
+// with no `errors` key deserialize to an empty Vec.
+#[derive(Deserialize)]
+struct GraphqlErrorEnvelope {
+    #[serde(default)]
+    errors: Vec<GraphqlError>,
+}
+
+#[derive(Deserialize)]
+struct GraphqlError {
+    message: Option<String>,
+    extensions: Option<GraphqlErrorExtensions>,
+}
+
+#[derive(Deserialize)]
+struct GraphqlErrorExtensions {
+    code: Option<String>,
+}
+
+/// Map a Linear GraphQL response → `Result<LinearIssue, LinearReadError>` (pure, total). Layers the
+/// GraphQL `errors[].extensions.code` OVER edges-003's HTTP-status `classify`:
+///   1. **`errors[]` present** → ALWAYS an error (even on HTTP 200 — Linear can partial-succeed with
+///      `data` AND `errors`; check `errors[]` first). The primary code drives the class: `RATELIMITED`
+///      → `RateLimited` (retryable — overrides the HTTP-400 Linear returns rate-limits as, which
+///      `classify` alone would call a terminal `ClientError`); `AUTHENTICATION_ERROR`/`FORBIDDEN` (or
+///      an HTTP 401/403 fold) → `AuthFailed`; any other code → the conservative fold (an error body is
+///      NEVER `Success`).
+///   2. **no `errors[]`, HTTP 2xx** → `extract_issue` (edges-014): `Some` → `Ok`; `None` (issue:null /
+///      absent / malformed-on-2xx) → a TERMINAL `ClientError{404}` (the issue isn't there — retrying
+///      won't conjure it).
+///   3. **no `errors[]`, non-2xx** → `classify(status)` (a 401 with no GraphQL body, a 5xx HTML page, …).
+pub fn map_linear_response(
+    http_status: u16,
+    retry_after: Option<&str>,
+    body: &str,
+) -> Result<LinearIssue, LinearReadError> {
+    if let Ok(env) = serde_json::from_str::<GraphqlErrorEnvelope>(body) {
+        if let Some(first) = env.errors.first() {
+            let code = first.extensions.as_ref().and_then(|e| e.code.as_deref());
+            let class = classify_graphql_error_code(code, http_status, retry_after);
+            let message = first
+                .message
+                .clone()
+                .unwrap_or_else(|| "linear graphql error".to_owned());
+            return Err(LinearReadError { class, message });
+        }
+    }
+    if (200..=299).contains(&http_status) {
+        return match extract_issue(body) {
+            Some(issue) => Ok(issue),
+            // Terminal: the issue isn't present (issue:null / absent / malformed 2xx body). The §17
+            // taxonomy has no dedicated not-found terminal → a synthetic 404 ClientError (→ §D refinement).
+            None => Err(LinearReadError {
+                class: IntegrationOutcomeClass::ClientError { status: 404 },
+                message: "linear issue not found or empty response".to_owned(),
+            }),
+        };
+    }
+    let class = classify(Some(http_status), retry_after, false);
+    Err(LinearReadError {
+        class,
+        message: format!("linear http {http_status}"),
+    })
+}
+
+/// Resolve a GraphQL `errors[].extensions.code` → `IntegrationOutcomeClass`, layered over the HTTP
+/// status. RATELIMITED / auth recognized case-insensitively; an unrecognized code folds via `classify`,
+/// but a `Success` fold (the HTTP-200+errors case) is forced to a conservative transient `ServerError`
+/// — an error body is never a success. The auth set is `AUTHENTICATION_ERROR`/`FORBIDDEN` plus the
+/// HTTP 401/403 fold (the backstop catches auth regardless of the GraphQL code string).
+fn classify_graphql_error_code(
+    code: Option<&str>,
+    http_status: u16,
+    retry_after: Option<&str>,
+) -> IntegrationOutcomeClass {
+    match code.map(|c| c.trim().to_ascii_uppercase()).as_deref() {
+        Some("RATELIMITED") => IntegrationOutcomeClass::RateLimited {
+            retry_after: parse_retry_after(retry_after),
+        },
+        Some("AUTHENTICATION_ERROR") | Some("FORBIDDEN") => IntegrationOutcomeClass::AuthFailed,
+        _ => match classify(Some(http_status), retry_after, false) {
+            IntegrationOutcomeClass::Success => IntegrationOutcomeClass::ServerError,
+            other => other,
+        },
     }
 }

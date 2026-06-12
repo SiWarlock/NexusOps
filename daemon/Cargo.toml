@@ -55,3 +55,11 @@ rusqlite = { version = "0.34", features = ["bundled"] }
 # the runtime tests drive the write-actor + accept-loop + subscribe over a tokio runtime
 # (#[tokio::test]) + a real ephemeral UnixListener client.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+
+# P2.5 — the §18 event-write/reader perf benchmark. `harness = false`: a plain `fn main()` (NOT the
+# libtest harness), so it is INVISIBLE to `cargo test --workspace` (the per-slice RED/GREEN loop) and
+# its timing assertions never flake there. Runs ONLY at its own cadence: `cargo bench --bench
+# event_write` (the /phase-exit perf-budgets runner + 2.6's nightly CI job).
+[[bench]]
+name = "event_write"
+harness = false

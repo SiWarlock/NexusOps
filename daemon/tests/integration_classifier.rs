@@ -11,7 +11,7 @@
 
 use nexusopsd::eventstore::DeliveryOutcome;
 use nexusopsd::integrations::classifier::{
-    classify, parse_retry_after, IntegrationOutcomeClass, RetryAfter,
+    classify, parse_rate_limit_reset, parse_retry_after, IntegrationOutcomeClass, RetryAfter,
 };
 use time::format_description::well_known::Rfc3339;
 use time::{Date, Month, OffsetDateTime};
@@ -187,6 +187,17 @@ fn client_to_terminal() {
 }
 
 #[test]
+fn not_found_to_terminal() {
+    // spec(§17/§D): the dedicated NotFound terminal sub-class → Terminal — behavior-preserving vs the
+    // prior synthetic ClientError{404}; joins client_to_terminal on the §17 terminal-client semantics
+    // (the gated SyncFailed path can branch not-found vs a payload-fix ClientError distinctly).
+    assert!(matches!(
+        IntegrationOutcomeClass::NotFound.to_delivery_outcome(),
+        DeliveryOutcome::Terminal(_)
+    ));
+}
+
+#[test]
 fn success_to_delivered() {
     assert_eq!(
         IntegrationOutcomeClass::Success.to_delivery_outcome(),
@@ -226,4 +237,39 @@ fn retry_after_absent_or_malformed() {
     assert_eq!(parse_retry_after(Some("")), None);
     assert_eq!(parse_retry_after(Some("not-a-date")), None);
     assert_eq!(parse_retry_after(Some("999999999999999999999")), None); // u64 overflow → None
+}
+
+// ---- parse_rate_limit_reset (epoch-ms reset header → absolute Until) --------
+
+#[test]
+fn parse_rate_limit_reset_epoch_ms() {
+    // spec(§17/§D): Linear's reset header (X-RateLimit-Requests-Reset) is epoch-MILLISECONDS, NOT the
+    // RFC-7231 delta-seconds `parse_retry_after` reads — so an all-digit value → an ABSOLUTE Until at
+    // that instant, NEVER a Delta (a delta misread of ~1.7e12 s ≈ infinite backoff — the load-bearing
+    // fix). Compared as an INSTANT (Z vs +00:00 agnostic), mirroring retry_after_http_date. The value
+    // carries a sub-second ms (.5) to pin millisecond, not second, precision.
+    const EPOCH_MS: i128 = 1_700_000_000_500; // 2023-11-14T22:13:20.5Z
+    let Some(RetryAfter::Until(ts)) = parse_rate_limit_reset(Some("1700000000500")) else {
+        panic!("expected Until(_)");
+    };
+    let got = OffsetDateTime::parse(ts.as_str(), &Rfc3339).unwrap();
+    let expected = OffsetDateTime::from_unix_timestamp_nanos(EPOCH_MS * 1_000_000).unwrap();
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn parse_rate_limit_reset_absent_or_malformed() {
+    // spec(§D): robustness parity with parse_retry_after — absent / empty / non-digit / out-of-range all
+    // → None (no panic; never a bogus hint). The two out-of-range cases hit DISTINCT guards:
+    assert_eq!(parse_rate_limit_reset(None), None);
+    assert_eq!(parse_rate_limit_reset(Some("")), None);
+    assert_eq!(parse_rate_limit_reset(Some("not-digits")), None);
+    // (a) exceeds u64::MAX → caught by the `parse::<u64>` guard:
+    assert_eq!(
+        parse_rate_limit_reset(Some("999999999999999999999999")),
+        None
+    );
+    // (b) a valid u64 but an epoch-ms beyond OffsetDateTime's representable date range (~3.2M years CE)
+    //     → caught by the `from_unix_timestamp_nanos` guard (the real sentinel for an in-range u64):
+    assert_eq!(parse_rate_limit_reset(Some("99999999999999999")), None);
 }

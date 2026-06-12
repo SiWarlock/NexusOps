@@ -19,7 +19,9 @@ use serde::Deserialize;
 
 use nexusops_shared::status::Task;
 
-use super::classifier::{classify, parse_retry_after, IntegrationOutcomeClass};
+use super::classifier::{
+    classify, parse_rate_limit_reset, parse_retry_after, IntegrationOutcomeClass,
+};
 
 /// Linear's `WorkflowState.type` — the closed 6-value lifecycle set (confirmed against the Linear
 /// GraphQL API: `state: { type: { eq: "started" } }` etc.). The daemon-internal decode of the raw
@@ -244,18 +246,23 @@ struct GraphqlErrorExtensions {
 ///      an HTTP 401/403 fold) → `AuthFailed`; any other code → the conservative fold (an error body is
 ///      NEVER `Success`).
 ///   2. **no `errors[]`, HTTP 2xx** → `extract_issue` (edges-014): `Some` → `Ok`; `None` (issue:null /
-///      absent / malformed-on-2xx) → a TERMINAL `ClientError{404}` (the issue isn't there — retrying
-///      won't conjure it).
+///      absent / malformed-on-2xx) → a TERMINAL `NotFound` (the issue isn't there — retrying won't
+///      conjure it).
 ///   3. **no `errors[]`, non-2xx** → `classify(status)` (a 401 with no GraphQL body, a 5xx HTML page, …).
+///
+/// `rate_limit_reset` carries Linear's `X-RateLimit-Requests-Reset` (epoch-ms) when present; on a
+/// `RATELIMITED` it takes precedence over `retry_after` (see `classify_graphql_error_code`).
 pub fn map_linear_response(
     http_status: u16,
     retry_after: Option<&str>,
+    rate_limit_reset: Option<&str>,
     body: &str,
 ) -> Result<LinearIssue, LinearReadError> {
     if let Ok(env) = serde_json::from_str::<GraphqlErrorEnvelope>(body) {
         if let Some(first) = env.errors.first() {
             let code = first.extensions.as_ref().and_then(|e| e.code.as_deref());
-            let class = classify_graphql_error_code(code, http_status, retry_after);
+            let class =
+                classify_graphql_error_code(code, http_status, retry_after, rate_limit_reset);
             let message = first
                 .message
                 .clone()
@@ -266,10 +273,10 @@ pub fn map_linear_response(
     if (200..=299).contains(&http_status) {
         return match extract_issue(body) {
             Some(issue) => Ok(issue),
-            // Terminal: the issue isn't present (issue:null / absent / malformed 2xx body). The §17
-            // taxonomy has no dedicated not-found terminal → a synthetic 404 ClientError (→ §D refinement).
+            // Terminal: the issue isn't present (issue:null / absent / malformed 2xx body) → the
+            // dedicated §17 `NotFound` terminal (edges-016; was a synthetic `ClientError{404}`).
             None => Err(LinearReadError {
-                class: IntegrationOutcomeClass::ClientError { status: 404 },
+                class: IntegrationOutcomeClass::NotFound,
                 message: "linear issue not found or empty response".to_owned(),
             }),
         };
@@ -286,15 +293,22 @@ pub fn map_linear_response(
 /// but a `Success` fold (the HTTP-200+errors case) is forced to a conservative transient `ServerError`
 /// — an error body is never a success. The auth set is `AUTHENTICATION_ERROR`/`FORBIDDEN` plus the
 /// HTTP 401/403 fold (the backstop catches auth regardless of the GraphQL code string).
+///
+/// The RATELIMITED backoff hint resolves with **precedence (edges-016 Q2)**: Linear's epoch-ms
+/// `X-RateLimit-Requests-Reset` (`rate_limit_reset`, → `Until`) WINS; it falls back to the standard
+/// RFC-7231 `retry_after` only when the reset is absent. (The reset is Linear's authoritative,
+/// Linear-specific signal — this is the Linear adapter path; the shared `classify` stays reset-unaware.)
 fn classify_graphql_error_code(
     code: Option<&str>,
     http_status: u16,
     retry_after: Option<&str>,
+    rate_limit_reset: Option<&str>,
 ) -> IntegrationOutcomeClass {
     // Normalize to lowercase (the edges-008/`parse_linear_state_type` convention) before matching.
     match code.map(|c| c.trim().to_ascii_lowercase()).as_deref() {
         Some("ratelimited") => IntegrationOutcomeClass::RateLimited {
-            retry_after: parse_retry_after(retry_after),
+            retry_after: parse_rate_limit_reset(rate_limit_reset)
+                .or_else(|| parse_retry_after(retry_after)),
         },
         Some("authentication_error") | Some("forbidden") => IntegrationOutcomeClass::AuthFailed,
         _ => match classify(Some(http_status), retry_after, false) {
@@ -346,18 +360,26 @@ impl LinearReadClient for LinearGraphqlReadClient {
             .await
             .map_err(|e| to_read_error(&e))?;
         let status = response.status().as_u16();
-        // Linear's rate-limit reset hint is X-RateLimit-Requests-Reset (epoch-ms), NOT Retry-After —
-        // and edges-003's parse_retry_after maps an all-digit value to Delta(seconds), so threading the
-        // epoch-ms reset would yield Delta(~1.7e12 s) ≈ infinite backoff. So forward only the standard
-        // Retry-After (Linear won't send it → None); honoring X-RateLimit-Requests-Reset is the deferred
-        // §17 refinement (the RateLimited *class* is correct regardless).
-        let retry_after = response
-            .headers()
-            .get("Retry-After")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        // Two rate-limit backoff hints, in precedence order (edges-016): Linear's authoritative
+        // X-RateLimit-Requests-Reset (epoch-ms → an absolute `Until` via `parse_rate_limit_reset`) wins;
+        // the standard RFC-7231 Retry-After is the fallback. `map_linear_response`/`classify_graphql_error_code`
+        // resolve the precedence in the pure, tested core; here we only read the two header values.
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+        let retry_after = header("Retry-After");
+        let rate_limit_reset = header("X-RateLimit-Requests-Reset");
         let body = response.text().await.map_err(|e| to_read_error(&e))?;
-        map_linear_response(status, retry_after.as_deref(), &body)
+        map_linear_response(
+            status,
+            retry_after.as_deref(),
+            rate_limit_reset.as_deref(),
+            &body,
+        )
     }
 }
 

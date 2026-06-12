@@ -5,7 +5,7 @@
 //! L1 (this file's coverage) = the **pure deterministic core**, fixture-driven test-first, NO new dep:
 //!   - `build_issue_query(issue_id)` — the GraphQL body with the id as a TYPED variable (injection-safe,
 //!     edges-010 — never interpolated into the query text);
-//!   - `map_linear_response(http_status, retry_after, body)` — the response mapper that layers the
+//!   - `map_linear_response(http_status, retry_after, rate_limit_reset, body)` — the response mapper that layers the
 //!     GraphQL `errors[].extensions.code` OVER edges-003's HTTP-status `classify`, then folds the happy
 //!     body through edges-014's `extract_issue`. The load-bearing Linear quirk: a rate-limit is **HTTP
 //!     400 + `RATELIMITED`** (NOT a clean 429), so the GraphQL code override flips the 400 that
@@ -63,7 +63,8 @@ fn build_issue_query_uses_typed_variable() {
 fn map_started_200_extracts_in_progress() {
     // spec(§9/§5.1): the happy chain — HTTP 200 + a valid started issue → Ok(LinearIssue) with the
     // status derived through edges-014's extract_issue (state.type "started" → InProgress).
-    let issue = map_linear_response(200, None, STARTED_200).expect("a valid issue maps to Ok");
+    let issue =
+        map_linear_response(200, None, None, STARTED_200).expect("a valid issue maps to Ok");
     assert_eq!(issue.status, Task::InProgress);
     assert_eq!(issue.identifier, "BLA-123");
 }
@@ -72,7 +73,8 @@ fn map_started_200_extracts_in_progress() {
 fn map_ratelimited_400_is_retryable() {
     // spec(§17): the load-bearing Linear quirk — HTTP 400 + RATELIMITED is RETRYABLE; the GraphQL code
     // overrides the HTTP-400 that `classify` alone would call a terminal ClientError{400}.
-    let err = map_linear_response(400, None, RATELIMITED_400).expect_err("RATELIMITED is an error");
+    let err =
+        map_linear_response(400, None, None, RATELIMITED_400).expect_err("RATELIMITED is an error");
     assert_eq!(
         err.class,
         IntegrationOutcomeClass::RateLimited { retry_after: None }
@@ -86,9 +88,10 @@ fn map_ratelimited_400_is_retryable() {
 #[test]
 fn map_ratelimited_carries_retry_after() {
     // spec(§17): a backoff hint survives — a Retry-After header parses (via edges-003) into the
-    // RateLimited class. (Linear's PRIMARY hint is X-RateLimit-Requests-Reset (epoch-ms) — a deferred
-    // refinement flagged at Step-2.5; this pins the generic Retry-After capability.)
-    let err = map_linear_response(400, Some("30"), RATELIMITED_400).expect_err("an error");
+    // RateLimited class. (Linear's PRIMARY hint, X-RateLimit-Requests-Reset (epoch-ms), is honored with
+    // precedence by edges-016 — see the *_carries_epoch_ms_reset_winning_over_retry_after /
+    // *_falls_back_to_retry_after pair; this pins the generic Retry-After capability via the fallback.)
+    let err = map_linear_response(400, Some("30"), None, RATELIMITED_400).expect_err("an error");
     assert_eq!(
         err.class,
         IntegrationOutcomeClass::RateLimited {
@@ -101,7 +104,7 @@ fn map_ratelimited_carries_retry_after() {
 fn map_auth_error_is_authfailed() {
     // spec(§17): the auth-error code → AuthFailed — distinct/reachable for the gated auth_expired path
     // to branch on (the §17 forward-constraint), NOT collapsed into a generic client error.
-    let err = map_linear_response(400, None, AUTH_ERROR).expect_err("auth error");
+    let err = map_linear_response(400, None, None, AUTH_ERROR).expect_err("auth error");
     assert_eq!(err.class, IntegrationOutcomeClass::AuthFailed);
 }
 
@@ -110,7 +113,7 @@ fn map_forbidden_code_is_authfailed() {
     // spec(§17): the second auth-terminal code arm — FORBIDDEN also → AuthFailed (the gated auth path
     // branches on AuthFailed regardless of which auth code Linear returns).
     let body = r#"{"errors":[{"message":"Forbidden","extensions":{"code":"FORBIDDEN"}}]}"#;
-    let err = map_linear_response(400, None, body).expect_err("forbidden is an error");
+    let err = map_linear_response(400, None, None, body).expect_err("forbidden is an error");
     assert_eq!(err.class, IntegrationOutcomeClass::AuthFailed);
 }
 
@@ -119,25 +122,24 @@ fn map_http_401_no_body_is_authfailed() {
     // spec(§17): the HTTP-status backstop — a bare 401 with no GraphQL errors[] body folds via
     // edges-003's classify → AuthFailed (auth is caught regardless of a GraphQL code; robust for the
     // gated auth_expired path even if the GraphQL code string is absent/unrecognized).
-    let err = map_linear_response(401, None, "Unauthorized").expect_err("401 is an error");
+    let err = map_linear_response(401, None, None, "Unauthorized").expect_err("401 is an error");
     assert_eq!(err.class, IntegrationOutcomeClass::AuthFailed);
 }
 
 #[test]
-fn map_issue_null_is_terminal_error() {
-    // spec(§8): a fetch for a nonexistent/invisible issue (HTTP 200 + data.issue null) is TERMINAL —
-    // an Err with a non-retryable class (retrying won't conjure the issue), never Ok.
-    let err = map_linear_response(200, None, ISSUE_NULL_200).expect_err("issue:null is terminal");
-    assert_eq!(
-        err.class,
-        IntegrationOutcomeClass::ClientError { status: 404 }
-    );
+fn map_issue_null_is_not_found() {
+    // spec(§8/§D): a fetch for a nonexistent/invisible issue (HTTP 200 + data.issue null) is TERMINAL
+    // and now carries the dedicated NotFound class (was the synthetic ClientError{404}) — retrying won't
+    // conjure the issue. NotFound→Terminal is pinned in integration_classifier::not_found_to_terminal.
+    let err =
+        map_linear_response(200, None, None, ISSUE_NULL_200).expect_err("issue:null is terminal");
+    assert_eq!(err.class, IntegrationOutcomeClass::NotFound);
 }
 
 #[test]
 fn map_server_500_is_retryable() {
     // spec(§17): HTTP 500 with no GraphQL errors[] → a transient ServerError (retry, never dead-letter).
-    let err = map_linear_response(500, None, SERVER_500).expect_err("5xx is an error");
+    let err = map_linear_response(500, None, None, SERVER_500).expect_err("5xx is an error");
     assert_eq!(err.class, IntegrationOutcomeClass::ServerError);
 }
 
@@ -146,8 +148,8 @@ fn map_unknown_graphql_code_floors_conservatively() {
     // spec(§17): an errors[] body with an unrecognized code is ALWAYS an error — never Ok, never
     // silently Success. The 200+errors case (which `classify` alone would call Success) folds to the
     // conservative transient ServerError (Q2 default).
-    let err =
-        map_linear_response(200, None, UNKNOWN_CODE_200).expect_err("an error body is an error");
+    let err = map_linear_response(200, None, None, UNKNOWN_CODE_200)
+        .expect_err("an error body is an error");
     assert_eq!(err.class, IntegrationOutcomeClass::ServerError);
 }
 
@@ -157,7 +159,54 @@ fn map_partial_success_errors_win_over_data() {
     // FIRST, so a populated `data.issue` alongside a RATELIMITED error is still Err(RateLimited),
     // never Ok. Pins the Context7-flagged "check errors[] before assuming success" precedence.
     let body = r#"{"data":{"issue":{"id":"x","identifier":"BLA-1","title":"t","url":"u","state":{"type":"started","name":"In Progress"},"assignee":null}},"errors":[{"message":"Rate limit exceeded","extensions":{"code":"RATELIMITED"}}]}"#;
-    let err = map_linear_response(200, None, body).expect_err("errors[] wins over a present data");
+    let err =
+        map_linear_response(200, None, None, body).expect_err("errors[] wins over a present data");
+    assert_eq!(
+        err.class,
+        IntegrationOutcomeClass::RateLimited { retry_after: None }
+    );
+}
+
+#[test]
+fn map_linear_response_ratelimited_carries_epoch_ms_reset_winning_over_retry_after() {
+    // spec(§17/§D — Q2 precedence): Linear's authoritative reset (X-RateLimit-Requests-Reset, epoch-ms)
+    // WINS over a present Retry-After. Both are threaded; the result must be the reset's ABSOLUTE Until,
+    // NOT Delta(120). (A Retry-After of "120" alone would parse to Delta(120) — never an Until — so an
+    // Until result unambiguously proves the reset path won the precedence.) The exact instant is pinned
+    // in integration_classifier::parse_rate_limit_reset_epoch_ms.
+    let err = map_linear_response(400, Some("120"), Some("1700000000500"), RATELIMITED_400)
+        .expect_err("RATELIMITED is an error");
+    let IntegrationOutcomeClass::RateLimited {
+        retry_after: Some(RetryAfter::Until(_)),
+    } = err.class
+    else {
+        panic!(
+            "expected the reset's absolute Until to win over the present Retry-After, got {:?}",
+            err.class
+        );
+    };
+}
+
+#[test]
+fn map_linear_response_ratelimited_falls_back_to_retry_after() {
+    // spec(§17/§D — Q2 precedence, the fallback branch): when the reset is ABSENT, the RateLimited hint
+    // falls back to the standard Retry-After (`.or_else`). RATELIMITED + reset=None + Retry-After "120"
+    // → Delta(120). Pins the middle precedence state a `.or_else`-dropping refactor would silently break.
+    let err = map_linear_response(400, Some("120"), None, RATELIMITED_400)
+        .expect_err("RATELIMITED is an error");
+    assert_eq!(
+        err.class,
+        IntegrationOutcomeClass::RateLimited {
+            retry_after: Some(RetryAfter::Delta(120))
+        }
+    );
+}
+
+#[test]
+fn map_linear_response_ratelimited_no_reset_is_none() {
+    // spec(§17/§D regression guard): with NO reset AND NO Retry-After, the RateLimited hint stays None
+    // (never a bogus value) — preserves edges-015 behavior under the new threading.
+    let err = map_linear_response(400, None, None, RATELIMITED_400).expect_err("an error");
     assert_eq!(
         err.class,
         IntegrationOutcomeClass::RateLimited { retry_after: None }

@@ -37,6 +37,10 @@ pub enum IntegrationOutcomeClass {
     AuthFailed,
     /// other 4xx — terminal payload/request error (a fix, not a retry).
     ClientError { status: u16 },
+    /// the requested resource is absent (e.g. a Linear `issue:null`) — terminal; retrying won't conjure
+    /// it. A dedicated sub-class of the terminal-client family so the gated `SyncFailed` path can branch
+    /// not-found vs a payload-fix `ClientError` distinctly.
+    NotFound,
 }
 
 impl IntegrationOutcomeClass {
@@ -55,6 +59,7 @@ impl IntegrationOutcomeClass {
             Self::ClientError { status } => {
                 DeliveryOutcome::Terminal(format!("client error ({status})"))
             }
+            Self::NotFound => DeliveryOutcome::Terminal("not found (404)".to_owned()),
         }
     }
 }
@@ -99,6 +104,30 @@ pub fn parse_retry_after(value: Option<&str>) -> Option<RetryAfter> {
         return raw.parse::<u64>().ok().map(RetryAfter::Delta);
     }
     parse_http_date(raw).map(RetryAfter::Until)
+}
+
+/// Parse a provider rate-limit *reset* header value → a `RetryAfter` hint. Unlike RFC-7231 `Retry-After`
+/// (whose all-digit form is delta-**seconds**), a reset header — Linear's `X-RateLimit-Requests-Reset` —
+/// is an absolute instant in epoch-**milliseconds**, so an all-ASCII-digit value → `RetryAfter::Until`
+/// (the instant, RFC3339-Z), **never** `Delta` (an epoch value misread as delta-seconds is ~infinite
+/// backoff). Absent / empty / non-digit / out-of-range (u64 overflow, or beyond the representable date)
+/// → `None`. **Pure** — no `Clock`.
+pub fn parse_rate_limit_reset(value: Option<&str>) -> Option<RetryAfter> {
+    let raw = value?.trim();
+    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    // A value exceeding `u64::MAX` fails to parse → `None`, mirroring `parse_retry_after`'s guard.
+    let epoch_ms = raw.parse::<u64>().ok()?;
+    // ms → ns for `OffsetDateTime`. `(u64 as i128) * 1_000_000` cannot overflow `i128` (max ≈ 1.8e25,
+    // far below `i128::MAX`), so the SOLE out-of-range guard is `from_unix_timestamp_nanos`: it yields
+    // `Err` → `None` for an instant beyond the representable date range (never a panic, never a bogus hint).
+    let nanos = epoch_ms as i128 * 1_000_000;
+    let instant = time::OffsetDateTime::from_unix_timestamp_nanos(nanos).ok()?;
+    let rfc3339 = instant
+        .format(&time::format_description::well_known::Rfc3339)
+        .ok()?;
+    Timestamp::parse(&rfc3339).ok().map(RetryAfter::Until)
 }
 
 /// Parse an RFC-7231 HTTP-date (IMF-fixdate, e.g. `Sun, 06 Nov 1994 08:49:37 GMT`) → an RFC3339-Z

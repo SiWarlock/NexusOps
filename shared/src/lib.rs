@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod event_envelope;
 pub mod events;
 pub mod gateway_ids;
+pub mod harness;
 pub mod ids;
 pub mod ipc;
 pub mod objects;
@@ -53,7 +54,13 @@ pub mod time;
 /// 0.19.0 (2.4 L1) adds the §17 failure-mode contract: the `ActionPartiallySucceeded` event (the
 /// side-effect-applied-but-terminal-event-unwritable record) + the structured `ActionError`
 /// taxonomy now carried on `ActionFailed` (replacing the 2.1b free-string `error`) — additive.
-pub const CONTRACT_VERSION: &str = "0.19.0";
+/// 0.20.0 (3.1) freezes the §9.1 HarnessAdapter normalized return types (`shared/src/harness.rs`):
+/// `TelemetrySample` + `MetricQuality` + `TranscriptRef` + `HarnessCapabilities` (10 PRD-HARN-5
+/// fields) + the §7.1 `TelemetrySampled` telemetry-observation event — additive, no frozen type
+/// reshaped. `NormalizedStatus` re-exports the frozen §5.1 `Session` (not a new type/$def). The
+/// `HarnessAdapter` trait + `MutationIntercept` + the mutation-coverage matrix + `ResumeResult` are
+/// DAEMON-INTERNAL (not a `shared/` wire contract); `ResumeResult`/survival freezes in Phase 4 (§8/§17).
+pub const CONTRACT_VERSION: &str = "0.20.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

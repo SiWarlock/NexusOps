@@ -14,6 +14,7 @@ pub mod eventstore;
 #[cfg(feature = "fault-injection")]
 pub mod fault;
 pub mod gateway;
+pub mod harness;
 pub mod idgen;
 pub mod ipc;
 pub mod locks;

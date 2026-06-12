@@ -1051,6 +1051,55 @@
       ],
       "type": "object"
     },
+    "HarnessCapabilities": {
+      "additionalProperties": false,
+      "description": "Per-harness capability matrix (§9.1; PRD HARN-5's 10 fields) — drives per-capability UI\ndegradation (e.g. `supports_context_metadata=false` for Codex → render \"unknown\"). The UI\nconsumes THIS (not the mutation-coverage matrix, which is daemon-internal). Reject-unknown (§15).",
+      "properties": {
+        "supports_cloud_tasks": {
+          "type": "boolean"
+        },
+        "supports_command_injection": {
+          "type": "boolean"
+        },
+        "supports_context_metadata": {
+          "type": "boolean"
+        },
+        "supports_hooks": {
+          "type": "boolean"
+        },
+        "supports_resume": {
+          "type": "boolean"
+        },
+        "supports_subagents": {
+          "type": "boolean"
+        },
+        "supports_terminal": {
+          "type": "boolean"
+        },
+        "supports_tool_call_parsing": {
+          "type": "boolean"
+        },
+        "supports_transcript_read": {
+          "type": "boolean"
+        },
+        "supports_usage_metadata": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "supports_terminal",
+        "supports_resume",
+        "supports_transcript_read",
+        "supports_tool_call_parsing",
+        "supports_usage_metadata",
+        "supports_context_metadata",
+        "supports_command_injection",
+        "supports_subagents",
+        "supports_hooks",
+        "supports_cloud_tasks"
+      ],
+      "type": "object"
+    },
     "HelloAck": {
       "additionalProperties": false,
       "description": "daemon→client handshake success (§6.4): the negotiated protocol version + the daemon's\nbuild version + its capabilities.",
@@ -1165,6 +1214,26 @@
         "local_runner_id"
       ],
       "type": "object"
+    },
+    "MetricQuality": {
+      "description": "Confidence in a telemetry metric (§9.1/§7.2). Carried on ALL telemetry so the UsageMeter\ndegrades honestly (§11.7) — e.g. Codex has no context window metadata → `context_pct` is\nNone and quality is `Unavailable`, never a faked number. snake_case wire; reject-unknown (§15).",
+      "oneOf": [
+        {
+          "const": "exact",
+          "description": "authoritative (e.g. an SDK `ResultMessage.usage` figure)",
+          "type": "string"
+        },
+        {
+          "const": "estimated",
+          "description": "derived/approximated (e.g. computed from a transcript)",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "the harness cannot report this metric (e.g. Codex context-%)",
+          "type": "string"
+        }
+      ]
     },
     "ObjectRef": {
       "additionalProperties": false,
@@ -1743,9 +1812,92 @@
       ],
       "type": "string"
     },
+    "TelemetrySample": {
+      "additionalProperties": false,
+      "description": "A single telemetry sample (§9.1) — a per-heartbeat usage observation. `context_pct` is an\nexplicit `Option` (None = \"unknown\", never 0% — §11.4); `cost_estimate` is DERIVED (§9.1 prose\n`cost` → `cost_estimate`, the \"estimate\" honesty). `tokens_in`/`tokens_out` are the per-sample\nDELTAS the `proj_usage_ledger` projector SUMs (the adapter emits deltas, not cumulative totals —\na 3.2/3.3 acceptance pin). Optionals serialize as explicit `null` (no `skip_serializing_if`) so\nthe §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
+      "properties": {
+        "context_pct": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "cost_estimate": {
+          "format": "double",
+          "type": "number"
+        },
+        "metric_quality": {
+          "$ref": "#/$defs/MetricQuality"
+        },
+        "tokens_in": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tokens_out": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tokens_in",
+        "tokens_out",
+        "cost_estimate",
+        "metric_quality"
+      ],
+      "type": "object"
+    },
+    "TelemetrySampled": {
+      "additionalProperties": false,
+      "description": "`TelemetrySampled` payload (§9.1/§7.1; §18 usage rollups) — a per-heartbeat usage OBSERVATION\nevent the harness adapters (3.2/3.3) emit. **NOT a Gateway Action** (Q1, lead-confirmed): INV-SEC-1\n(#1) governs FS/git/external/session-STATE mutations; a telemetry observation mutates none — so it\nfollows the System/adapter-actor non-mutation-event precedent (`DeviceRegistered`/\n`AuditIntegrityViolation`): written via the single write-actor through the §15 redaction gate (#2/#3\nhold), never through the Gateway pipeline. The rollup IDENTITY/time (`session_id`/`project_id`/\n`occurred_at`) lives on the [`crate::event_envelope::EventEnvelope`] columns; this payload carries\nonly the dims the envelope LACKS — the [`TelemetrySample`] + the `model` and `execution_profile_id`\nthe `proj_usage_ledger` projector buckets by (3.1). Optionals serialize as explicit `null` (no\n`skip_serializing_if`) so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
+      "properties": {
+        "execution_profile_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sample": {
+          "$ref": "#/$defs/TelemetrySample"
+        }
+      },
+      "required": [
+        "sample"
+      ],
+      "type": "object"
+    },
     "Timestamp": {
       "format": "date-time",
       "type": "string"
+    },
+    "TranscriptRef": {
+      "additionalProperties": false,
+      "description": "A reference to a harness transcript (§9.1) — the JSONL the adapter tails (Claude\n`~/.claude/projects/.../<id>.jsonl`). `is_in_place` = the harness writes its own file we read\n(vs a copy we manage). The daemon stores the `hash` for change detection; never the content (§15).",
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "is_in_place": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "hash",
+        "is_in_place"
+      ],
+      "type": "object"
     },
     "VersionSkewError": {
       "additionalProperties": false,
@@ -1969,6 +2121,9 @@
     "get_projection_params": {
       "$ref": "#/$defs/GetProjectionParams"
     },
+    "harness_capabilities": {
+      "$ref": "#/$defs/HarnessCapabilities"
+    },
     "hello_ack": {
       "$ref": "#/$defs/HelloAck"
     },
@@ -1989,6 +2144,9 @@
     },
     "local_runner_registered": {
       "$ref": "#/$defs/LocalRunnerRegistered"
+    },
+    "metric_quality": {
+      "$ref": "#/$defs/MetricQuality"
     },
     "plan_ack": {
       "$ref": "#/$defs/PlanAck"
@@ -2071,8 +2229,17 @@
     "task": {
       "$ref": "#/$defs/Task"
     },
+    "telemetry_sample": {
+      "$ref": "#/$defs/TelemetrySample"
+    },
+    "telemetry_sampled": {
+      "$ref": "#/$defs/TelemetrySampled"
+    },
     "timestamp": {
       "$ref": "#/$defs/Timestamp"
+    },
+    "transcript_ref": {
+      "$ref": "#/$defs/TranscriptRef"
     },
     "version_skew_error": {
       "$ref": "#/$defs/VersionSkewError"
@@ -2176,9 +2343,14 @@
     "action_type_catalog_entry",
     "preview_class",
     "executor_kind",
-    "idempotency_formula"
+    "idempotency_formula",
+    "telemetry_sample",
+    "metric_quality",
+    "transcript_ref",
+    "harness_capabilities",
+    "telemetry_sampled"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.19.0"
+  "x-contract-version": "0.20.0"
 }

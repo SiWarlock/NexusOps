@@ -722,8 +722,8 @@ fn test_contract_version_bumped_for_sensitive_output_redacted() {
     // 0.15.0 = the 2.1a action-contract freeze (§6.2 models + 9 enums + gateway IDs + Timestamp);
     // 0.16.0 = the 2.1b ActionExecution* event family + ActionAck; 0.17.0 = the 2.1c PlanAck
     // submit_action_plan wire type (O-3); 0.18.0 = the 2.2 ActionTypeCatalog + PolicyDecision
-    // extension — all additive (§5.0). (The canonical version pin is `test_contract_version_bumped_0_19_0`.)
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.19.0");
+    // extension — all additive (§5.0). (The canonical version pin is `test_contract_version_bumped_0_20_0`.)
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.20.0");
 }
 
 // ---- P2.1c L2 — the §6.1 PlanAck wire type (§2.5-seam snapshot, O-3) -----------------------
@@ -1504,8 +1504,8 @@ fn test_catalog_and_policy_decision_field_snapshot() {
 fn test_contract_version_bumped_0_18_0() {
     // 0.17.0 = the 2.1c PlanAck; 0.18.0 = the 2.2 ActionTypeCatalog (+ its enums) + the
     // PolicyDecision extension (required_approvals/constraints/safer_alt) — additive (§5.0).
-    // (The CURRENT canonical version pin is `test_contract_version_bumped_0_19_0`.)
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.19.0");
+    // (The CURRENT canonical version pin is `test_contract_version_bumped_0_20_0`.)
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.20.0");
 }
 
 // =====================================================================================
@@ -1688,5 +1688,198 @@ fn test_action_failure_family_field_snapshot() {
 fn test_contract_version_bumped_0_19_0() {
     // 0.18.0 = the 2.2 catalog + PolicyDecision extension; 0.19.0 = the 2.4 §17 contract additions
     // (the ActionPartiallySucceeded event + the structured ActionError on ActionFailed) — additive (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.19.0");
+    // (The CURRENT canonical version pin is `test_contract_version_bumped_0_20_0`.)
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.20.0");
+}
+
+// =====================================================================================
+// Phase 3.1 L1 — §9.1 HarnessAdapter contract freeze (NEW: shared/src/harness.rs) +
+// the §7.1 TelemetrySampled event. The next §2.5-seam shared-contract freeze (line 138
+// lists the HarnessAdapter normalized types as a shared-contract model → snapshot-pinned).
+// Freezes the NORMALIZED RETURN TYPES both the Claude (3.2) + Codex (3.3) adapters map
+// INTO: TelemetrySample / MetricQuality / TranscriptRef / HarnessCapabilities + the
+// TelemetrySampled telemetry-observation event. (ResumeResult is DAEMON-INTERNAL, NOT frozen
+// here — resume/survival is a Phase-4 §8/§17 design; freezing it now would collide with the
+// ui's provisional ResumeMode at P4 = a breaking reshape the §2.5-seam discipline prevents.)
+// NormalizedStatus is NOT a new type —
+// it is the frozen §5.1 `Session` machine (status.rs:45). CONTRACT 0.19.0 → 0.20.0, additive.
+// Binding: ARCHITECTURE §9.1 + Appendix A rows (HarnessAdapter normalized types / capabilities)
+// + §7.1 (the new event). The HarnessAdapter TRAIT + coverage matrix are daemon-only (Q5) —
+// pinned in daemon/src/harness/mod.rs, not here.
+// =====================================================================================
+
+// ---- sample constructors (fully populated; Options = Some so the snapshot sees every key) --
+
+fn sample_telemetry_sample() -> nexusops_shared::harness::TelemetrySample {
+    use nexusops_shared::harness::{MetricQuality, TelemetrySample};
+    TelemetrySample {
+        tokens_in: 1_200,
+        tokens_out: 340,
+        context_pct: Some(42.5),
+        cost_estimate: 0.0187,
+        metric_quality: MetricQuality::Exact,
+    }
+}
+
+fn sample_transcript_ref() -> nexusops_shared::harness::TranscriptRef {
+    use nexusops_shared::harness::TranscriptRef;
+    TranscriptRef {
+        path: "~/.claude/projects/x/sess_01ARZ3NDEKTSV4RRFFQ69G5FAV.jsonl".to_string(),
+        hash: "sha256:abc123".to_string(),
+        is_in_place: true,
+    }
+}
+
+fn sample_harness_capabilities() -> nexusops_shared::harness::HarnessCapabilities {
+    use nexusops_shared::harness::HarnessCapabilities;
+    // every flag true so the field-name snapshot sees all 10 keys (PRD HARN-5).
+    HarnessCapabilities {
+        supports_terminal: true,
+        supports_resume: true,
+        supports_transcript_read: true,
+        supports_tool_call_parsing: true,
+        supports_usage_metadata: true,
+        supports_context_metadata: true,
+        supports_command_injection: true,
+        supports_subagents: true,
+        supports_hooks: true,
+        supports_cloud_tasks: true,
+    }
+}
+
+fn sample_telemetry_sampled() -> nexusops_shared::events::TelemetrySampled {
+    use nexusops_shared::events::TelemetrySampled;
+    TelemetrySampled {
+        sample: sample_telemetry_sample(),
+        model: Some("claude-opus-4-8".to_string()),
+        execution_profile_id: Some("prof_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+    }
+}
+
+// ---- 3.1 L1 RED #1 — the §2.5-seam normalized-type field-name snapshot (§9.1) ----
+
+#[test]
+fn test_harness_normalized_type_field_names_snapshot() {
+    // spec(§9.1) — §2.5-seam freeze guard (line 138 lists the HarnessAdapter normalized types as a
+    // shared-contract model). A field added/removed/renamed on any normalized type fails this
+    // snapshot. The expected sets ARE the checked-in freeze. (HarnessCapabilities has its own
+    // dedicated 10-field pin in `test_harness_capabilities_ten_fields`.)
+    expect_fields(
+        &sample_telemetry_sample(),
+        &[
+            "tokens_in",
+            "tokens_out",
+            "context_pct",
+            "cost_estimate",
+            "metric_quality",
+        ],
+    );
+    expect_fields(&sample_transcript_ref(), &["path", "hash", "is_in_place"]);
+    // (ResumeResult is daemon-internal — NOT in the shared freeze; see the section header.)
+    // the telemetry-observation event: identity (session_id/project_id/occurred_at) is on the
+    // envelope columns; the payload carries only the rollup dims the envelope lacks.
+    expect_fields(
+        &sample_telemetry_sampled(),
+        &["sample", "model", "execution_profile_id"],
+    );
+}
+
+// ---- 3.1 L1 RED #2 — MetricQuality wire values + reject-unknown (§9.1/§7.2/§11.7) ----
+
+#[test]
+fn test_metric_quality_wire_values() {
+    // spec(§9.1) — `metric_quality` is carried on ALL telemetry; the UsageMeter degrades off it
+    // (§11.7 — "exact" must never render over partially-estimated data). snake_case wire; reject-unknown.
+    use nexusops_shared::harness::MetricQuality;
+    check_values(MetricQuality::ALL, &["exact", "estimated", "unavailable"]);
+    assert!(serde_json::from_value::<MetricQuality>(serde_json::json!("nope")).is_err());
+}
+
+// ---- 3.1 L1 RED #3 — the TelemetrySampled event wire contract (§7.1/§5.0/§15) ----
+
+#[test]
+fn test_telemetry_sampled_wire_contract() {
+    // spec(§7.1) — EventTypeRegistry single-home + reject-unknown. Round-trips snake_case; an extra
+    // key fails closed (deny_unknown_fields); the event-type name has ONE home (the EVENT_TYPE const,
+    // the AuditIntegrityViolation precedent — adds no new bare string-literal to the emit/projector dup set).
+    use nexusops_shared::events::TelemetrySampled;
+    let v = sample_telemetry_sampled();
+    let j = serde_json::to_value(&v).unwrap();
+    assert_eq!(
+        serde_json::from_value::<TelemetrySampled>(j).unwrap(),
+        v,
+        "TelemetrySampled round-trips"
+    );
+    let mut rogue = serde_json::to_value(&v)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    rogue.insert("rogue".to_string(), serde_json::json!(1));
+    assert!(
+        serde_json::from_value::<TelemetrySampled>(serde_json::Value::Object(rogue)).is_err(),
+        "unknown field rejected (deny_unknown_fields, §5.0/§15)"
+    );
+    assert_eq!(TelemetrySampled::EVENT_TYPE, "TelemetrySampled");
+}
+
+// ---- 3.1 L1 RED #4 — NormalizedStatus IS the frozen §5.1 Session machine (no forked enum) ----
+
+#[test]
+fn test_normalized_status_is_session() {
+    // spec(§9.1) — status.rs:45: the §9.1 adapters map INTO `Session` (the driver-agnostic
+    // normalized vocabulary). NormalizedStatus must BE that frozen 17-state machine, not a fork.
+    use nexusops_shared::harness::NormalizedStatus;
+    use nexusops_shared::status::Session;
+    // type identity: a `Session` IS a `NormalizedStatus` (the re-export), so this compiles only if
+    // they are the same type — a forked enum would not (a compile-time anti-fork guard).
+    fn _identity(s: Session) -> NormalizedStatus {
+        s
+    }
+    // and it is exactly the 17 Session states (the §5.1 freeze), not a subset/superset.
+    assert_eq!(
+        NormalizedStatus::ALL.len(),
+        17,
+        "NormalizedStatus == the 17-state Session machine"
+    );
+    assert_eq!(NormalizedStatus::ALL, Session::ALL);
+}
+
+// ---- 3.1 L1 RED #5 — CONTRACT_VERSION bumped to 0.20.0 (the additive §9.1 freeze) ----
+
+#[test]
+fn test_contract_version_bumped_0_20_0() {
+    // 0.19.0 = the 2.4 §17 additions; 0.20.0 = the 3.1 §9.1 HarnessAdapter normalized-type freeze
+    // (TelemetrySample/MetricQuality/TranscriptRef/HarnessCapabilities + the TelemetrySampled event)
+    // — additive, no frozen type reshaped (§5.0). (ResumeResult is daemon-internal — NOT frozen here.)
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.20.0");
+}
+
+// ---- 3.1 L1 RED #7 — HarnessCapabilities pins exactly the 10 PRD HARN-5 fields ----
+
+#[test]
+fn test_harness_capabilities_ten_fields() {
+    // spec(§9.1) — Appendix A "HarnessCapabilities — 10 fields (PRD HARN-5)". The count AND the names
+    // are the freeze; a flag added/removed/renamed fails here. Drives per-capability UI degradation.
+    let caps = sample_harness_capabilities();
+    expect_fields(
+        &caps,
+        &[
+            "supports_terminal",
+            "supports_resume",
+            "supports_transcript_read",
+            "supports_tool_call_parsing",
+            "supports_usage_metadata",
+            "supports_context_metadata",
+            "supports_command_injection",
+            "supports_subagents",
+            "supports_hooks",
+            "supports_cloud_tasks",
+        ],
+    );
+    assert_eq!(
+        field_names(&caps).len(),
+        10,
+        "exactly 10 capability fields (PRD HARN-5)"
+    );
 }

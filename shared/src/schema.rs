@@ -22,9 +22,10 @@ use crate::events::{
     ActionApprovalRequested, ActionApproved, ActionDenied, ActionExpired, ActionFailed,
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
     AuditIntegrityViolation, DeviceRegistered, LocalRunnerRegistered, SensitiveOutputRedacted,
-    SessionStarted,
+    SessionStarted, TelemetrySampled,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
+use crate::harness::{HarnessCapabilities, MetricQuality, TelemetrySample, TranscriptRef};
 use crate::ids::IdKind;
 use crate::ipc::{
     ActionAck, Capabilities, DeltaKind, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode,
@@ -145,6 +146,15 @@ struct ContractBundle {
     preview_class: PreviewClass,
     executor_kind: ExecutorKind,
     idempotency_formula: IdempotencyFormula,
+    // 3.1 — the §9.1 HarnessAdapter normalized return types (shared/src/harness.rs) + the §7.1
+    // TelemetrySampled telemetry-observation event. NormalizedStatus is the frozen `Session` $def
+    // (already registered above), not a new type. ResumeResult + the trait + the mutation-coverage
+    // matrix are DAEMON-INTERNAL (not a wire contract). Additive (CONTRACT 0.20.0).
+    telemetry_sample: TelemetrySample,
+    metric_quality: MetricQuality,
+    transcript_ref: TranscriptRef,
+    harness_capabilities: HarnessCapabilities,
+    telemetry_sampled: TelemetrySampled,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

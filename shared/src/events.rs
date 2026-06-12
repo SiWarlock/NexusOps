@@ -10,6 +10,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::harness::TelemetrySample;
 use crate::objects::{DeviceId, LocalRunnerId};
 use crate::status::Session;
 
@@ -221,4 +222,27 @@ pub struct ActionPartiallySucceeded {
 impl ActionPartiallySucceeded {
     /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
     pub const EVENT_TYPE: &'static str = "ActionPartiallySucceeded";
+}
+
+/// `TelemetrySampled` payload (§9.1/§7.1; §18 usage rollups) — a per-heartbeat usage OBSERVATION
+/// event the harness adapters (3.2/3.3) emit. **NOT a Gateway Action** (Q1, lead-confirmed): INV-SEC-1
+/// (#1) governs FS/git/external/session-STATE mutations; a telemetry observation mutates none — so it
+/// follows the System/adapter-actor non-mutation-event precedent (`DeviceRegistered`/
+/// `AuditIntegrityViolation`): written via the single write-actor through the §15 redaction gate (#2/#3
+/// hold), never through the Gateway pipeline. The rollup IDENTITY/time (`session_id`/`project_id`/
+/// `occurred_at`) lives on the [`crate::event_envelope::EventEnvelope`] columns; this payload carries
+/// only the dims the envelope LACKS — the [`TelemetrySample`] + the `model` and `execution_profile_id`
+/// the `proj_usage_ledger` projector buckets by (3.1). Optionals serialize as explicit `null` (no
+/// `skip_serializing_if`) so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct TelemetrySampled {
+    pub sample: TelemetrySample,
+    pub model: Option<String>,
+    pub execution_profile_id: Option<String>,
+}
+
+impl TelemetrySampled {
+    /// The EventTypeRegistry name — ONE home (the 3.2/3.3 adapter emit path + the usage projector).
+    pub const EVENT_TYPE: &'static str = "TelemetrySampled";
 }

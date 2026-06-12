@@ -3,7 +3,7 @@
 - **Date:** 2026-06-12
 - **Phase:** Phase 2.5 (§18 event-write benchmark) + 2.6 (CI merge gates) — the two non-TDD close-out slices; `/phase-exit 2` → **CLEAR, Phase 2 complete**.
 - **Predecessor:** [013 — the §17 safety capstone (L1–L5)](013-2026-06-11-gateway-17-safety-capstone.md)
-- **Successor:** _(next session — Phase 3: the Claude/Codex HarnessAdapter)_
+- **Successor:** [015 — the §9.1 HarnessAdapter contract freeze + the proj_usage_ledger projector](015-2026-06-12-harness-adapter-contract-and-usage-ledger.md)
 
 ## Why this session existed
 Phase 2 (the Action Gateway) was code-complete at the 2.4 §17 capstone. Two ops tasks remained to close the phase: **2.5** — the §18 performance budget benchmark over the real submit path (the `/phase-exit 2` perf-budgets row was blocked on it); **2.6** — the first CI workflow wiring the §14 merge-gate tiers + the §5.0 contract gates. Both are **non-TDD** (the benchmark / green CI run IS the coverage). Briefs `038` + `039`.

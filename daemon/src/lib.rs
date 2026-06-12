@@ -20,4 +20,5 @@ pub mod ipc;
 pub mod locks;
 pub mod projections;
 pub mod runtime;
+pub mod session;
 pub mod terminal;

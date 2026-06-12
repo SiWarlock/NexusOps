@@ -1,0 +1,80 @@
+# edges-lead — automated-mode decision log
+
+**Mode:** automated (user delegated 2026-06-12 ~07:26Z). **Rule:** decide the architecturally-correct / production-grade answer; **DEFER all HITL items** (park, do not decide); **log every decision + referral** for the user's status report.
+
+**Track:** edges (P5 ∥ P7.1, `daemon/` modules `git/`+`integrations/`+`profiles/`+`workflow/`) · worktree `track/edges` · team `nexusops-edges`.
+
+---
+
+## Decisions (lead-made, automated authority)
+
+### D1 — edges-002+ WIRING routing → **APPROACH A (clean ownership separation)** · 2026-06-12 ~07:26Z
+**Trigger:** orchestrator Finding (~06:0xZ). To land any *real* edges executor (P5 `git.*`, P7.1 GitHub/Linear, the `project.rescan` arm), two **daemon-owned** surfaces must change:
+1. New `EventTypeRegistry` types in `shared/src/events.rs` → each bumps cross-language `CONTRACT_VERSION` (daemon-track-owned).
+2. The executor-arm wiring seam in `gateway/executor.rs` → today a sealed Phase-2 inline `match` in `CatalogExecutor::execute`; no registration seam for an edge module to plug a real `ActionExecutor` into.
+
+**Decision:** **Approach A.** Edges builds ALL in-lane logic + **private (no-CONTRACT) registry migrations** now; **defers WIRING slices** (real executor arm + new event type + its projector) until the daemon track provides (a) a per-namespace `ActionExecutor` **registration seam** in `gateway/`, and (b) the Phase-5/7 **event types** (authored + version-bumped by the daemon track from edges-supplied payload specs). Edges does **not** edit `gateway/` or `shared/`.
+
+**Why architecturally correct (production-grade):**
+- **Ownership integrity** — the Gateway (single-mutator core, INV-SEC-1) owns the dispatch mechanism; `shared/` + `CONTRACT_VERSION` are the daemon track's sole property; edge modules own only their executor *impls* + their *private* tables. Clean seams beat expedient cross-edits.
+- **Rejected B (scoped carve-out: edges edits `gateway/` + `shared/`)** — an ownership + contamination violation; per-edit flagging is a band-aid over a structural boundary breach. Merge-conflict surface on the two most load-bearing files in the crate.
+- **Rejected C (interrupt critical-path Phase 3 for an enablement slice)** — priority inversion: the critical path (P2→P3→P4→P10) must not yield to the **optional bandwidth track** (edges).
+- **Key insight:** the per-namespace registration seam is **shared infra the daemon needs for its own Phase-3 `session.*` arms anyway** (open/closed over the sealed `match`) — so building it is correct for *both* tracks, not an edges-only favor. It lands as natural daemon Phase-3 work.
+- Edges has large **in-lane runway** (5.4 project-scan bench · 7.1 octocrab/Linear read clients · registry/connection migrations · detection refinements) → it does **not** idle while wiring is deferred. `correct > expedient.`
+
+**Edges action (in-lane, design-only):** per wiring slice it would otherwise author, draft (1) exact event-type payload specs + (2) a *proposed* registration-seam interface shape (consumer-driven contract proposal — daemon owns the final shape), and hand to lead → routed to the daemon track as R1.
+
+### D2 — HOLD round-seal at edges-005 (orch flagged "likely round-ender") · 2026-06-12 ~08:05Z
+**Decision:** no close-out at edges-005. Canonical /context-check = OK (55%, impl) → no auto-cycle trigger; user away, no close-out request. Per close-out gating, a round seal waits for a trigger (ACTION 75% or user-on-demand), not a routine boundary; hot-routing accumulates in the working tree. **Continue in-lane after edges-005:** 7.1 octocrab/Linear read/link clients · registry + integration_connections migrations · 5.4 §18 project-scan bench. Will seal + cycle the team at ACTION (~3 slices out at ~8%/slice) or on user request. Orch accepted (continued edges-005 normally). *Gave the orch an out to push back for a non-context reason (runway exhausted / rebase-to-0.21.0 needed) — none raised.*
+
+### D3 — SEAL round + CYCLE team @ edges-006 boundary (WARN 70% + 2 verticals complete) · 2026-06-12 ~08:38Z
+**Decision:** seal Round 1 + cycle both teammates NOW (not at ACTION). **Trigger = intersection of context pressure (WARN 70% impl) + a clean arc boundary** (orch confirmed: worktree-read chain [5.2] + GitHub-PR-read chain [7.1] both COMPLETE in-lane; no slice in flight; suite 308/0). Waiting one slice would (a) start a NEW vertical the cycle straddles + (b) push the context-heavy `/session-end` to ~76%+ (lower close-out quality). Overrode my earlier "cycle at ACTION" lean once the orch surfaced the 2-vertical-complete fact. *Consistent w/ D2 (held at edges-005): there context was OK + mid-vertical; here both flipped — pressure + clean boundary.*
+**STABILIZED (~08:50Z) — after a brief seal↔bench message-race thrash (my fault: I over-steered a tactical call):** I returned the **bench-as-a-slice decision to the orch** (it owns test design + the §18 discipline). Accepted nuance: authoring the bench HARNESS as a deterministic code commit — timing-run deferred to `/phase-exit` + nightly, no flaky per-slice assertion — IS a valid slice; so edges-006-seal-now and valid-edges-007-then-seal are BOTH acceptable. **Lead holds ONLY the cycle gate**, not the slice-sequencing. Context safe either way (70% → ~75%, < HARD-STOP 80%). **Outcome pending the orch's single decision + seal hash** (will record actual seal point when it acks).
+**Round 1 slices (committed):** `d824e42`·`b500496`·`f5d0d6f`·`897a9f2`·`857694d`·`18ad7f0` (308 tests) [± edges-007 bench harness if orch runs it]. **Seal = round commit on `track/edges` ONLY — NO merge/rebase to main** (phase-exit only; P5/P7.1 incomplete; edges based at `a40ac00`). Cross-track plan-delta held for the integration owner (not edited into the shared plan from the worktree). **Cycle = fresh orch+impl pair** from the session doc + this log.
+**LESSON (me, automated-mode):** the lead holds the CYCLE gate; the orch owns slice-sequencing + test-design. Over-steering a tactical call into racing messages caused thrash. Set policy + the hard constraint (don't cross HARD-STOP), then let the orch execute — don't dictate the slice.
+**Deferred to P5 phase-exit:** 5.4 §18 project-scan bench RUN/budget-assert (own-cadence) — alongside H1 (5.3 ExecutionProfile) + the gated wiring slices.
+**Note (future):** track/edges has NOT rebased onto main since branch — it'll absorb the daemon's 0.20→0.21 (+ any further) contract bumps at the P5/P7.1 phase-exit merge. Disjoint modules → low conflict risk. Rebase cadence = user's call on return.
+
+---
+
+## Referrals (cross-track / require the user or daemon track — I cannot execute)
+
+### R1 — to the daemon track (via user on return) · 2026-06-12
+The daemon track to: **(a)** refactor `gateway/executor.rs`'s sealed `match` → a per-namespace `ActionExecutor` **registration seam** (it needs this for its own Phase-3 `session.*` arms — open/closed); **(b)** author the **Phase-5/7 `EventTypeRegistry` types** from edges-supplied payload specs + bump `CONTRACT_VERSION`. Edges supplies the exact specs + a proposed seam interface. **Not blocking yet** (edges has in-lane runway); **becomes blocking** at edges' first wiring slice. *I am edges-lead and cannot direct the daemon track — this is routed up.*
+
+**R1 deliverable READY (orch, 2026-06-12 ~07:36Z):** `docs/planning/edges-R1-wiring-seam-and-event-specs.md` — design-only, no `gateway/`/`shared/` edits. **Part 1 (high-leverage):** make `CatalogExecutor` a `HashMap<ExecutorKind, Arc<dyn ActionExecutor>>` registry with stub-fallback for unregistered namespaces → incremental registration; edges writes handler IMPLs in `git/`+`integrations/`, daemon does the one-line `register(...)`. **Part 2:** field-level event specs — `ProjectRescanned` (P5.1; `remote_url` = load-bearing §15-redaction point), worktree lifecycle (P5.2), `PullRequestSynced`/`IntegrationConnectionRegistered`/`*SyncFailed` (P7.1), each w/ consuming projection + sensitivity.
+
+**3 open design choices — DAEMON-OWNED (surface owner decides); routed up with edges' leans + my edges-lead architectural read (NOT finalized by me — outside my edges-only automated authority):**
+- **(a) async model** — sync trait + `block_on` (edges' lean) vs. an async `execute` variant. *Read:* real tradeoff the daemon owns (touches the frozen 2.3 executor trait). sync+`block_on` is lower blast-radius but has the tokio "block_on-within-runtime panics" footgun → MUST run on a dedicated blocking context (`spawn_blocking` + `Handle::block_on`), not a worker thread. The async-trait variant (native async fn in trait, stable) is cleaner long-term but reopens the frozen seam. Neither is free.
+- **(b) `ProjectRescanned` granularity** — one coarse event (edges' lean) vs. split `ProjectRegistered`+`RepositoryDetected`. *Read:* the separate `projects`/`repositories` registry tables (2 aggregates) hint splitting gives cleaner per-read-model projection; one coarse event is fine if rescan is atomic. Mild lean to the split on event-sourcing grounds, but acceptable either way — daemon's modeling call.
+- **(c) worktree status-refresh** — live-read cache (edges' lean) vs. an event. *Read:* **edges' lean is architecturally correct + I endorse it as the edges-side default** — §7.2 already models worktree status as live-read with a `git_checked_at` cache stamp; emitting an event per status change spams the log with low-value derived churn. Bonus: it REDUCES the contract surface (no worktree-status event). This one edges can hold as its own read/projector modeling (largely in-lane).
+
+---
+
+## HITL — DEFERRED (per user rule)
+
+### H1 — P5.3 ExecutionProfile **0.5b enum re-freeze** (cat-4) — **DEFER**
+When edges reaches **5.3 (Execution Profiles)**, the ExecutionProfile-enum re-freeze (0.5b) is an open human gate. **Defer:** edges does NOT author 5.3 against an unfrozen enum — park 5.3, take the next in-lane slice. Needs the user's freeze ruling before it can land. *(Future 0.1 Claude-mode / 0.3 Codex rulings are daemon-track HITL, not edges.)*
+
+**Linked (R1 Part 2):** the P7.1 `*SyncFailed → auth_expired` event variant depends on the same 0.5b `ExecutionProfile` unfreeze. **Decision:** land the **non-auth** sync-failure events first (when the seam lands); **defer** the `auth_expired` variant with H1. Sound + consistent with the H1 defer — sequencing only, no HITL decided.
+
+---
+
+## Routine notes (no decision)
+- **Migration-number collision** (both tracks add eventstore migrations to one crate): handled by the orch taking the next free number relative to `main` at each rebase-merge (established integration order). No action.
+- **`gateway/preview.rs::owning_phase` cosmetic drift** (Git→"Phase 3" etc.): a `gateway/` touch → falls under R1/the lane rule; fix only when the daemon-track seam work lands, not hot from edges.
+
+---
+
+## Slice ledger (in-lane progress under automated mode)
+- edges-001 (P5.1 detection engine) — committed `d824e42` ✅
+- edges-002 (P5.2 worktree reads + precedence; §5.1 precedence Finding resolved orch-side, brief corrected) — committed `b500496` ✅
+- edges-003 (P7.1 §17 integration-failure classifier) — committed `f5d0d6f` ✅
+- edges-004 (P7.1 §5.1 PullRequest status-derivation; brief Q1 PR-precedence self-inconsistency caught at Step-2.5, orch reconciled) — green, shipping
+- edges-005 (P5.2 git2 diff + log reads) — committed `857694d` ✅
+- edges-006 (P7.1 GitHub PR signals aggregation) — committed `18ad7f0` ✅
+- **Context trajectory (max = implementer):** 47% (3) → 55% (4) → 64% (5) → **70% [WARN] (6)** (orch 52%, lead 20%); rate slowed to +6%. **WARN reached @ edges-006.** Per tier protocol: WARN = surface + work continues; cycle at **ACTION (75%)**. edges-007 projects ~76% (ACTML band, not HARD-STOP) → **edges-007 = likely last pre-cycle slice; cycle both teammates after it commits.** Orch pre-instructed to HOLD edges-008 dispatch + await my cycle trigger (no race). Cycle = round seal on `track/edges` + fresh pair; NOT a merge-to-main (phase-exit only).
+
+## Cross-track awareness (background; verify on return — NOT edges decisions)
+- **Daemon track now at Phase 3.4** (CONTRACT 0.20.0 → **0.21.0**, Terminal Channel / `TerminalProcessExited` — disjoint from edges' `git/`+`integrations/`). Edges absorbs the 0.20→0.21 contract bump harmlessly at its next rebase-merge to main (regen).
+- **H1 outlook:** per current daemon-track state, the **0.5b ExecutionProfile enum freeze is being resolved by the daemon track at Phase 3.2** (freezing `rate_limited` + `credit_exhausted`; the CAT-4 SDK-vs-PTY drain was dissolved → PTY-primary, daemon-lead away-ruled). So **H1 has a resolution path** — when daemon 3.2 freezes the enum + merges to main, edges regens the frozen enum and 5.3 (+ the `auth_expired` sync variant) unblocks **without a separate user ruling**. Until that merge lands, H1 stays deferred (edges does not author 5.3 against an unfrozen-on-`track/edges` enum).

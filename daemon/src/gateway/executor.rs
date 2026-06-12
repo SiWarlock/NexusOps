@@ -165,6 +165,18 @@ impl ActionExecutor for CatalogExecutor {
             Ok(entry) => entry,
             Err(e) => return ExecutionOutcome::Failed(e.to_string()),
         };
+        // 043 defense-in-depth (INV-SEC-1): an ADJUDICATION-ONLY action must NEVER reach the executor —
+        // the pipeline terminates it at the policy/approval verdict (the agent runs the tool, not the
+        // daemon). If one ever does (a routing regression), FAIL CLOSED — never run a side effect (even
+        // a stub) for an action whose whole contract is "no daemon executor". The pipeline guarantee is
+        // code-enforced here, not comment-only (pinned by tests/claude_intercept.rs #13).
+        if entry.executor == nexusops_shared::catalog::ExecutorKind::Adjudication {
+            return ExecutionOutcome::Failed(
+                "adjudication-only action reached the executor — refused (INV-SEC-1: the agent runs \
+                 the tool, the daemon only adjudicates)"
+                    .to_string(),
+            );
+        }
         // dispatch by ExecutorKind → a side-effect-free per-namespace stub. The `detail` names the
         // namespace + its owning phase, so the dispatch is observable + the stub provenance is
         // recorded. Each phase REPLACES its namespace's arm with the real adapter (which runs the

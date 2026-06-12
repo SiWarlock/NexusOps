@@ -12,7 +12,7 @@ use std::path::Path;
 use git2::{Oid, Repository, RepositoryInitOptions, Signature};
 use tempfile::tempdir;
 
-use nexusopsd::git::reads::{read_diff, read_log, ChangeKind};
+use nexusopsd::git::reads::{read_diff, read_file_hunks, read_log, ChangeKind, DiffLineKind};
 
 // ---- hermetic git fixtures -------------------------------------------------
 
@@ -24,6 +24,11 @@ fn init_repo(path: &Path) -> Repository {
 
 /// Commit a file into `repo`'s workdir; chains onto the current HEAD. Returns the new commit oid.
 fn commit_file(repo: &Repository, name: &str, content: &str) -> Oid {
+    commit_bytes(repo, name, content.as_bytes())
+}
+
+/// Commit raw bytes into `repo`'s workdir (for binary fixtures); chains onto HEAD. Returns the oid.
+fn commit_bytes(repo: &Repository, name: &str, content: &[u8]) -> Oid {
     let workdir = repo.workdir().expect("non-bare repo");
     std::fs::write(workdir.join(name), content).expect("write file");
     let mut index = repo.index().expect("index");
@@ -357,4 +362,219 @@ fn diff_log_non_git_degraded() {
     let missing = dir.path().join("nope");
     assert!(read_diff(&missing, None, None).is_empty());
     assert!(read_log(&missing, None, 50).is_empty());
+}
+
+// ---- per-hunk diff (edges-012) ---------------------------------------------
+
+#[test]
+fn hunks_single_modification() {
+    // spec(§9): a one-line edit → one DiffHunk with the new-side geometry + a Deletion (old) and an
+    // Addition (new) line.
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_file(&repo, "a.txt", "l1\nl2\nl3\nl4\nl5\n");
+    std::fs::write(dir.path().join("a.txt"), "l1\nl2\nCHANGED\nl4\nl5\n").unwrap();
+    let hunks = read_file_hunks(dir.path(), "a.txt", None, None);
+    assert_eq!(hunks.len(), 1, "one hunk: {hunks:?}");
+    let h = &hunks[0];
+    // git2's default 3-context-line window pulls the single hunk to cover the whole 5-line file.
+    assert_eq!(h.new_start, 1);
+    assert_eq!(h.new_lines, 5);
+    let del = h
+        .lines
+        .iter()
+        .find(|l| l.kind == DiffLineKind::Deletion)
+        .expect("a deletion line");
+    assert!(del.content.contains("l3"));
+    let add = h
+        .lines
+        .iter()
+        .find(|l| l.kind == DiffLineKind::Addition)
+        .expect("an addition line");
+    assert!(add.content.contains("CHANGED"));
+}
+
+#[test]
+fn hunks_multiple_regions() {
+    // spec(§9): edits in two far-apart regions → ≥2 DiffHunks in file order (per-hunk granularity).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_file(
+        &repo,
+        "a.txt",
+        "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n",
+    );
+    std::fs::write(
+        dir.path().join("a.txt"),
+        "X1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nX12\n",
+    )
+    .unwrap();
+    let hunks = read_file_hunks(dir.path(), "a.txt", None, None);
+    assert!(
+        hunks.len() >= 2,
+        "two far-apart edits → ≥2 hunks: {hunks:?}"
+    );
+    // file order: the first hunk covers the earlier region.
+    assert!(hunks[0].new_start < hunks[1].new_start);
+}
+
+#[test]
+fn hunk_line_kinds_and_linenos() {
+    // spec(§7.2): an Addition has new_lineno Some + old_lineno None; a Deletion the reverse; a Context
+    // line both Some (the UI maps lines to gutter line numbers).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_file(&repo, "a.txt", "l1\nl2\nl3\nl4\nl5\n");
+    std::fs::write(dir.path().join("a.txt"), "l1\nl2\nCHANGED\nl4\nl5\n").unwrap();
+    let hunks = read_file_hunks(dir.path(), "a.txt", None, None);
+    let lines = &hunks[0].lines;
+    let add = lines
+        .iter()
+        .find(|l| l.kind == DiffLineKind::Addition)
+        .expect("addition");
+    assert!(add.new_lineno.is_some() && add.old_lineno.is_none());
+    let del = lines
+        .iter()
+        .find(|l| l.kind == DiffLineKind::Deletion)
+        .expect("deletion");
+    assert!(del.old_lineno.is_some() && del.new_lineno.is_none());
+    let ctx = lines
+        .iter()
+        .find(|l| l.kind == DiffLineKind::Context)
+        .expect("context");
+    assert!(ctx.old_lineno.is_some() && ctx.new_lineno.is_some());
+}
+
+#[test]
+fn hunks_binary_file_is_empty() {
+    // spec(§9): a binary file change → empty hunk list, no panic (git2 yields no textual hunks —
+    // Patch::from_diff is None OR a patch with 0 hunks; both → empty).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_bytes(&repo, "a.bin", &[0u8, 1, 2, 0, 3, 255, 0, 7]);
+    std::fs::write(dir.path().join("a.bin"), [0u8, 9, 9, 0, 8, 254, 0, 1]).unwrap();
+    assert!(read_file_hunks(dir.path(), "a.bin", None, None).is_empty());
+}
+
+#[test]
+fn hunks_file_filter_scopes() {
+    // spec(§9): the file filter scopes the read to one file — a 2-file diff returns only that file's
+    // hunks (not the other file's).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_file(&repo, "a.txt", "a1\na2\na3\n");
+    commit_file(&repo, "b.txt", "b1\nb2\nb3\n");
+    std::fs::write(dir.path().join("a.txt"), "a1\nAAA\na3\n").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "b1\nBBB\nb3\n").unwrap();
+    let hunks = read_file_hunks(dir.path(), "a.txt", None, None);
+    assert!(!hunks.is_empty());
+    let all_lines: String = hunks
+        .iter()
+        .flat_map(|h| h.lines.iter())
+        .map(|l| l.content.clone())
+        .collect();
+    assert!(all_lines.contains("AAA"), "a.txt's change present");
+    assert!(!all_lines.contains("BBB"), "b.txt's change excluded");
+}
+
+#[test]
+fn hunks_non_git_and_clean_empty() {
+    // spec(§9): a non-git path and a clean tree → empty list (degrade-not-panic, read_diff parity).
+    let dir = tempdir().unwrap();
+    assert!(read_file_hunks(dir.path(), "a.txt", None, None).is_empty()); // non-git
+    let repo = init_repo(dir.path());
+    commit_file(&repo, "a.txt", "x\n");
+    assert!(read_file_hunks(dir.path(), "a.txt", None, None).is_empty()); // clean
+    assert!(read_file_hunks(dir.path(), "no-such.txt", None, None).is_empty()); // file not in diff
+}
+
+#[test]
+fn read_file_hunks_read_only() {
+    // spec(§9): forbidden #6 — the per-hunk read leaves HEAD oid unchanged. Asserts hunks were actually
+    // read (non-empty) so the read-only pin is meaningful (edges-011 LESSON).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    let oid = commit_file(&repo, "a.txt", "l1\nl2\nl3\n");
+    std::fs::write(dir.path().join("a.txt"), "l1\nZZZ\nl3\n").unwrap();
+    let before = repo.head().unwrap().target().unwrap();
+    let hunks = read_file_hunks(dir.path(), "a.txt", None, None);
+    assert!(!hunks.is_empty(), "hunks read for the pin to be meaningful");
+    let after = repo.head().unwrap().target().unwrap();
+    assert_eq!(before, after);
+    assert_eq!(after, oid);
+}
+
+#[test]
+fn hunks_rename_with_edit_reflects_edit() {
+    // spec(§9/§7.2): rename-AWARE — read_file_hunks calls find_similar like read_diff (edges-011) so the
+    // two sibling reads of the same diff AGREE. A renamed-with-edit file's hunks reflect the EDIT (an
+    // old-line Deletion + a new-line Addition), NOT b.txt as whole-file additions. File-match is on the
+    // NEW path (the Renamed delta's new_file).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_file(&repo, "a.txt", "l1\nl2\nl3\nl4\nl5\n");
+    std::fs::remove_file(dir.path().join("a.txt")).unwrap();
+    std::fs::write(dir.path().join("b.txt"), "l1\nl2\nEDITED\nl4\nl5\n").unwrap();
+    let hunks = read_file_hunks(dir.path(), "b.txt", None, None);
+    assert!(!hunks.is_empty(), "renamed file has hunks: {hunks:?}");
+    let lines: Vec<_> = hunks.iter().flat_map(|h| h.lines.iter()).collect();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Deletion && l.content.contains("l3")),
+        "old line deleted (the edit, not all-add): {hunks:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Addition && l.content.contains("EDITED")),
+        "new line added: {hunks:?}"
+    );
+    // a whole-file add would be ALL Additions; a rename-with-edit keeps Context/Deletion lines.
+    assert!(
+        lines.iter().any(|l| l.kind != DiffLineKind::Addition),
+        "rename detected (not whole-file additions): {hunks:?}"
+    );
+    // the rename's OLD name does NOT resolve — read_diff reports the rename only under the new path.
+    assert!(
+        read_file_hunks(dir.path(), "a.txt", None, None).is_empty(),
+        "old name does not resolve (read_diff single-path-per-rename consistency)"
+    );
+}
+
+#[test]
+fn hunks_base_vs_workdir_ref() {
+    // spec(§7.2): the (Some(base), None) branch — base-tree-vs-working-tree hunks (read_diff parity).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    let c1 = commit_file(&repo, "a.txt", "l1\nl2\nl3\n");
+    repo.branch("base", &repo.find_commit(c1).unwrap(), false)
+        .unwrap();
+    std::fs::write(dir.path().join("a.txt"), "l1\nYYY\nl3\n").unwrap();
+    let hunks = read_file_hunks(dir.path(), "a.txt", Some("base"), None);
+    assert!(!hunks.is_empty(), "base-vs-workdir hunks: {hunks:?}");
+    let all: String = hunks
+        .iter()
+        .flat_map(|h| h.lines.iter())
+        .map(|l| l.content.clone())
+        .collect();
+    assert!(all.contains("YYY"));
+}
+
+#[test]
+fn hunks_untracked_new_file_all_additions() {
+    // spec(§9): a brand-new untracked file → all-Addition hunks (include_untracked +
+    // show_untracked_content yield real line content, not an empty/binary stub).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_file(&repo, "a.txt", "x\n"); // history so HEAD exists
+    std::fs::write(dir.path().join("new.txt"), "n1\nn2\nn3\n").unwrap();
+    let hunks = read_file_hunks(dir.path(), "new.txt", None, None);
+    assert!(!hunks.is_empty(), "untracked file has hunks: {hunks:?}");
+    let lines: Vec<_> = hunks.iter().flat_map(|h| h.lines.iter()).collect();
+    assert!(
+        lines.iter().all(|l| l.kind == DiffLineKind::Addition),
+        "all additions: {hunks:?}"
+    );
+    assert!(lines.iter().any(|l| l.content.contains("n2")));
 }

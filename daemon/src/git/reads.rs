@@ -148,7 +148,8 @@ fn resolve_git_axis(
 
 // ---- diff + log (§9 read backend) ------------------------------------------
 
-/// A file-level change in a diff. File-level granularity; per-hunk diffs are a 7.2-adjacent slice.
+/// A file-level change in a diff. File-level granularity; the per-hunk detail (ranges + per-line
+/// content) is `read_file_hunks` / `DiffHunk`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileChange {
     /// The changed file's path, relative to the repo root (the rename DESTINATION for a `Renamed`).
@@ -285,6 +286,150 @@ fn line_counts(diff: &git2::Diff, idx: usize) -> (usize, usize) {
             Err(_) => (0, 0),
         },
         _ => (0, 0),
+    }
+}
+
+// ---- per-hunk diff (the §7.2 O-6 PR Review Workspace data) ------------------
+
+/// A single hunk of a file's diff — geometry + header + per-line content. The daemon-side data for the
+/// O-6 §7.2 PR Review Workspace per-hunk actions + diff render. git2 read-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffHunk {
+    /// First old-file line the hunk covers.
+    pub old_start: u32,
+    /// Number of old-file lines in the hunk.
+    pub old_lines: u32,
+    /// First new-file line the hunk covers.
+    pub new_start: u32,
+    /// Number of new-file lines in the hunk.
+    pub new_lines: u32,
+    /// The hunk header (e.g. `@@ -1,5 +1,5 @@`), UTF-8-lossy.
+    pub header: String,
+    /// The hunk's lines, in order.
+    pub lines: Vec<DiffLine>,
+}
+
+/// One line within a hunk. `old_lineno`/`new_lineno`: an Addition has `new_lineno` Some + `old_lineno`
+/// None; a Deletion the reverse; a Context line both Some.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffLine {
+    /// Addition (`+`) / Deletion (`-`) / Context (` ` + the EOFNL markers).
+    pub kind: DiffLineKind,
+    /// The raw line text (UTF-8-lossy), kept incl. the trailing newline — the UI renders it.
+    pub content: String,
+    /// The old-file line number; `None` for an Addition.
+    pub old_lineno: Option<u32>,
+    /// The new-file line number; `None` for a Deletion.
+    pub new_lineno: Option<u32>,
+}
+
+/// The kind of diff line. git2's EOFNL / context origins map to `Context` (a display line, not a
+/// `+`/`-` change).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffLineKind {
+    Addition,
+    Deletion,
+    Context,
+}
+
+/// Read the per-hunk diff for a single `file` (READ-ONLY). `(from, to)` selects the target exactly as
+/// `read_diff`. **Rename-aware** (`find_similar`, like `read_diff`/edges-011) so a renamed-with-edit
+/// file matches on its NEW path and its hunks reflect the EDIT (the two sibling reads of the same diff
+/// agree). A non-git path, a clean tree, an unresolvable ref, a file with no change, or a binary file
+/// (`Patch::from_diff` `None` OR a patch with 0 hunks) → an empty list (degrade-not-panic).
+pub fn read_file_hunks(
+    path: &Path,
+    file: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Vec<DiffHunk> {
+    let Ok(repo) = Repository::discover(path) else {
+        return Vec::new();
+    };
+    let mut opts = DiffOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
+    let from_tree = resolve_tree(&repo, from);
+    let diff = match to {
+        Some(to_ref) => match (from_tree, resolve_tree(&repo, Some(to_ref))) {
+            (Some(f), Some(t)) => repo.diff_tree_to_tree(Some(&f), Some(&t), Some(&mut opts)),
+            _ => return Vec::new(),
+        },
+        None => match from_tree {
+            Some(f) => repo.diff_tree_to_workdir_with_index(Some(&f), Some(&mut opts)),
+            None => return Vec::new(),
+        },
+    };
+    let Ok(mut diff) = diff else {
+        return Vec::new();
+    };
+    // Rename-aware, consistent with read_diff (edges-011) — find_similar is read-only (forbidden #6).
+    // (The shared diff construction is a named open_diff DRY-refactor follow-up.)
+    let mut find_opts = DiffFindOptions::new();
+    find_opts.renames(true).for_untracked(true);
+    let _ = diff.find_similar(Some(&mut find_opts));
+
+    // Find the delta for `file` by its NEW path (= the FileChange.path read_diff reports — for a
+    // Renamed delta that is the new name, so the OLD name does NOT resolve, matching read_diff's
+    // single-path-per-rename). A pure Deleted delta may carry the path only on its old side → match
+    // old_file for Deleted ONLY (never for a rename's source).
+    let target = diff.deltas().position(|d| {
+        d.new_file()
+            .path()
+            .is_some_and(|p| p.to_string_lossy() == file)
+            || (d.status() == Delta::Deleted
+                && d.old_file()
+                    .path()
+                    .is_some_and(|p| p.to_string_lossy() == file))
+    });
+    let Some(idx) = target else {
+        return Vec::new();
+    };
+    // Binary file → `Patch::from_diff` `None` OR a patch with 0 hunks; both → an empty list. Bind the
+    // result so the `patch` temporary (which borrows `diff`) drops before the block's locals.
+    let hunks = match Patch::from_diff(&diff, idx) {
+        Ok(Some(patch)) => extract_hunks(&patch),
+        _ => Vec::new(),
+    };
+    hunks
+}
+
+/// Iterate a per-file `Patch`'s hunks + lines into `DiffHunk`s (READ-ONLY). A hunk/line read error
+/// degrades that hunk/line (never panics).
+fn extract_hunks(patch: &Patch) -> Vec<DiffHunk> {
+    (0..patch.num_hunks())
+        .filter_map(|h| {
+            let (hunk, _) = patch.hunk(h).ok()?;
+            let num_lines = patch.num_lines_in_hunk(h).unwrap_or(0);
+            let lines = (0..num_lines)
+                .filter_map(|l| patch.line_in_hunk(h, l).ok().map(diff_line))
+                .collect();
+            Some(DiffHunk {
+                old_start: hunk.old_start(),
+                old_lines: hunk.old_lines(),
+                new_start: hunk.new_start(),
+                new_lines: hunk.new_lines(),
+                header: String::from_utf8_lossy(hunk.header()).into_owned(),
+                lines,
+            })
+        })
+        .collect()
+}
+
+/// Map a git2 `DiffLine` → the daemon `DiffLine`. Origin `+`→Addition, `-`→Deletion, everything else
+/// (context + the EOFNL markers) → Context. Content UTF-8-lossy, kept raw.
+fn diff_line(line: git2::DiffLine<'_>) -> DiffLine {
+    let kind = match line.origin_value() {
+        git2::DiffLineType::Addition => DiffLineKind::Addition,
+        git2::DiffLineType::Deletion => DiffLineKind::Deletion,
+        _ => DiffLineKind::Context,
+    };
+    DiffLine {
+        kind,
+        content: String::from_utf8_lossy(line.content()).into_owned(),
+        old_lineno: line.old_lineno(),
+        new_lineno: line.new_lineno(),
     }
 }
 

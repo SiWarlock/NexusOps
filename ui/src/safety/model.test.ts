@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { describeConflict, describeAuditIntegrity } from "./model";
 import { fencingConflictFixture } from "./fixtures";
-import { ActionRequest, AuditOutcomeStatus, AuditIntegrityKind } from "../contracts/index";
+import { ActionRequestStatus, AuditOutcomeStatus, AuditIntegrityKind } from "../contracts/index";
 
 describe("safety model — fencing/hard-conflict (§17, safety #6)", () => {
   it("conflict_to_card_descriptor", () => {
@@ -40,13 +40,13 @@ describe("safety model — fencing/hard-conflict (§17, safety #6)", () => {
 
 describe("safety model — audit-integrity (§15/§17, safety #5)", () => {
   it("audit_integrity_reuses_frozen_action_status", () => {
-    // the two action-outcome treatments REUSE the frozen ActionRequest enum —
+    // the two action-outcome treatments REUSE the frozen ActionRequestStatus enum —
     // never a provisional re-declaration (Lesson §2 / no-drift)
-    expect(ActionRequest.options).toContain("partially_succeeded");
-    expect(ActionRequest.options).toContain("rollback_failed");
+    expect(ActionRequestStatus.options).toContain("partially_succeeded");
+    expect(ActionRequestStatus.options).toContain("rollback_failed");
     // AuditOutcomeStatus is a strict subset of the frozen enum (drift-pinned)
     for (const v of AuditOutcomeStatus.options) {
-      expect(ActionRequest.options).toContain(v);
+      expect(ActionRequestStatus.options).toContain(v);
     }
     const partial = describeAuditIntegrity({
       source: "action_status",
@@ -87,9 +87,9 @@ describe("safety model — audit-integrity (§15/§17, safety #5)", () => {
     // distinct labels — a real text channel per state (never color alone, §11.6)
     const labels = descs.map((d) => d.label);
     expect(new Set(labels).size).toBe(labels.length);
-    // the net-new kinds are NOT frozen ActionRequest values — provisional only
+    // the net-new kinds are NOT frozen ActionRequestStatus values — provisional only
     for (const kind of kinds) {
-      expect(ActionRequest.options).not.toContain(kind);
+      expect(ActionRequestStatus.options).not.toContain(kind);
     }
   });
 });

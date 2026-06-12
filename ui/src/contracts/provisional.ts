@@ -8,12 +8,14 @@
 import { z } from "zod";
 import bundle from "./generated";
 
-// Delegate to the generated enums (no hand-declared status unions).
+// Delegate to the generated enums (no hand-declared status unions). The two R-5
+// status enums were renamed to their `$def` names at the 0.19.0 Gateway freeze
+// (`Approval`→`ApprovalStatus`, `ActionRequest`→`ActionRequestStatus`).
 const Session = bundle.shape.Session;
 const PullRequest = bundle.shape.PullRequest;
-const Approval = bundle.shape.Approval;
+const ApprovalStatus = bundle.shape.ApprovalStatus;
 const ActorType = bundle.shape.ActorType;
-const ActionRequest = bundle.shape.ActionRequest;
+const ActionRequestStatus = bundle.shape.ActionRequestStatus;
 
 // ─── Survival/recovery (PROVISIONAL — 6.4d) ──────────────────────────────────
 // The daemon's O-2 survival schema is NOT frozen. RecoveryState/ResumeMode/
@@ -78,8 +80,8 @@ export type FencingConflict = z.infer<typeof FencingConflict>;
 // `.extract` — it THROWS at load if the frozen enum renames them; never a re-
 // declaration, Lesson §2). Only the net-new integrity signals are provisional.
 
-/** The two frozen ActionRequest outcomes that raise an audit-integrity alert. */
-export const AuditOutcomeStatus = ActionRequest.extract([
+/** The two frozen ActionRequestStatus outcomes that raise an audit-integrity alert. */
+export const AuditOutcomeStatus = ActionRequestStatus.extract([
   "partially_succeeded",
   "rollback_failed",
 ]);
@@ -172,7 +174,7 @@ export type PullRequestProjectionPage = z.infer<typeof PullRequestProjectionPage
 export const ApprovalQueueRow = z.object({
   approval_id: z.string(),
   project_id: z.string(),
-  status: Approval,
+  status: ApprovalStatus,
   title: z.string().optional(),
 });
 export type ApprovalQueueRow = z.infer<typeof ApprovalQueueRow>;
@@ -272,6 +274,48 @@ export const ProjectionDelta = z.object({
   id: z.string().optional(),
 });
 export type ProjectionDelta = z.infer<typeof ProjectionDelta>;
+
+// ─── §6.4 frame-mux (PROVISIONAL — contract-ahead) ───────────────────────────
+// The server→client multiplexed frame surface. Hand-modeled here (the GatewayPort
+// frame types are Appendix-A prose, not a generated artifact); the enum-typed
+// fields delegate to the generated enums (never re-declared — Lesson §1/§2). Both
+// shapes are pinned to the frozen schema by the provisional.test §2.5-seam snapshot.
+
+/** A structured daemon→client error frame (§6.4) — carries one closed
+ *  [`IpcErrorCode`]. Frozen §6.4 $def, hand-modeled; field-set == {code}. */
+export const WireError = z.object({
+  code: bundle.shape.IpcErrorCode,
+});
+export type WireError = z.infer<typeof WireError>;
+
+/**
+ * The server→client multiplexed frame envelope (§6.4 `frame_type` tag). The
+ * internally-tagged discriminant demuxes one connection: an RPC response
+ * (`rpc_response`, correlated by `id`, one of result/error) vs a subscription
+ * push (`subscription_push`, the changed projection/kind/row). PROVISIONAL +
+ * contract-ahead — adopted for the intent-seam/transport slice that actually
+ * demuxes; MVP subscribe stays a dedicated single-connection `ProjectionDelta`
+ * stream (no demux yet). The Terminal-Channel tag space is RESERVED (no variant —
+ * a Phase-3 decision). Variant field-sets pinned to `ServerFrame.oneOf`.
+ */
+export const ServerFrame = z.discriminatedUnion("frame_type", [
+  z.object({
+    frame_type: z.literal("rpc_response"),
+    // uint64 correlation id (frozen schema: integer, minimum 0, REQUIRED) — a
+    // numeric id, NOT a string; the JSON-RPC client matches the daemon's id type.
+    id: z.number().int().nonnegative(),
+    result: z.unknown().optional(),
+    error: WireError.nullable().optional(),
+  }),
+  z.object({
+    frame_type: z.literal("subscription_push"),
+    projection: bundle.shape.ProjectionName,
+    kind: bundle.shape.DeltaKind,
+    id: z.string().nullable().optional(),
+    row: SessionRow.optional(),
+  }),
+]);
+export type ServerFrame = z.infer<typeof ServerFrame>;
 
 /** get_capabilities result (provisional; §6.4 handshake surface). */
 export const Capabilities = z.object({

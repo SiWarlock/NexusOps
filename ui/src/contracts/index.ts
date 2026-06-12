@@ -11,10 +11,14 @@ import bundle from "./generated";
 
 const shape = bundle.shape;
 
-export const ActionRequest = shape.ActionRequest;
+// 0.19.0 rename (Phase-2 Gateway freeze): the schema renamed the two R-5 status
+// value-sets to their `$def` names (was bare `ActionRequest`/`Approval`). The
+// UI's status-machine identifiers (`"ActionRequest"`/`"Approval"`) are a separate
+// UI-render-policy naming (descriptor table keys / data-machine) and DON'T follow.
+export const ActionRequestStatus = shape.ActionRequestStatus;
 export const ActorType = shape.ActorType;
 export const AgentTeam = shape.AgentTeam;
-export const Approval = shape.Approval;
+export const ApprovalStatus = shape.ApprovalStatus;
 // 0.12.0 additions (daemon 1.5/1.6 IPC + projection-name freeze).
 export const DeltaKind = shape.DeltaKind;
 export const DesktopObjectKind = shape.DesktopObjectKind;
@@ -39,29 +43,14 @@ export const WorktreeOverlay = shape.WorktreeOverlay;
 
 type EnumValidator = (typeof shape)[keyof typeof shape];
 
-/** Name → generated enum validator, for drift-checking against the frozen schema. */
-export const validators: Record<string, EnumValidator> = {
-  ActionRequest,
-  ActorType,
-  AgentTeam,
-  Approval,
-  DeltaKind,
-  DesktopObjectKind,
-  IdKind,
-  IpcErrorCode,
-  ProjectionName: ProjectionNameEnum,
-  ProjectBrain,
-  PullRequest,
-  RedactionStatus,
-  Sensitivity,
-  Session,
-  SourceType,
-  Task,
-  Visibility,
-  WorkflowInstance,
-  WorktreeGit,
-  WorktreeOverlay,
-};
+/**
+ * Name → generated enum validator, for drift-checking against the frozen schema.
+ * DERIVED from the generated bundle (every value-set, self-maintaining across
+ * contract bumps) — never hand-listed. A hand-list is exactly what drifted at
+ * 0.12.0 (20 listed vs 33 frozen); deriving keeps the §5.0 "keys equal" drift
+ * check self-maintaining so a future bump is a pure `pnpm gen:contracts`.
+ */
+export const validators: Record<string, EnumValidator> = shape;
 
 export { CONTRACT_VERSION } from "./generated";
 export * from "./provisional";

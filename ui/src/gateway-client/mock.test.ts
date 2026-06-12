@@ -35,10 +35,10 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
   it("mock_get_capabilities_reports_contract_version", async () => {
     const mock = new MockGatewayPort();
     const caps = await mock.get_capabilities();
-    // literal "0.12.0" is an intentional version tripwire — it must fail loudly
+    // literal "0.19.0" is an intentional version tripwire — it must fail loudly
     // when the frozen contract bumps (the drift test chains this to the schema).
-    // Bumped 0.8.0 → 0.12.0 at the main→ui cross-track merge regen (daemon 1.5/1.6).
-    expect(caps.contract_version).toBe("0.12.0");
+    // Bumped 0.8.0 → 0.12.0 (main→ui merge regen) → 0.19.0 (Phase-2 Gateway freeze).
+    expect(caps.contract_version).toBe("0.19.0");
     expect(caps.protocol_version).toBe(1);
   });
 });

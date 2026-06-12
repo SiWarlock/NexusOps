@@ -4,7 +4,7 @@
 // PARKED daemon-1.5 intent, rendered disabled-but-present. This is a THIRD
 // distinct surface beyond transport-degraded (6.1c) + session-survival (6.4d):
 // safety-state (conflict / audit-integrity). The audit-integrity half (L2)
-// REUSES the frozen ActionRequest enum for partially_succeeded/rollback_failed.
+// REUSES the frozen ActionRequestStatus enum for partially_succeeded/rollback_failed.
 import type {
   AuditIntegrityKind,
   AuditIntegrityState,
@@ -82,7 +82,7 @@ const SEVERITY_GLYPH: Record<AuditIntegritySeverity, string> = {
   critical: "⛔",
 };
 
-// The two FROZEN ActionRequest outcomes (§17 event-write / rollback rows).
+// The two FROZEN ActionRequestStatus outcomes (§17 event-write / rollback rows).
 const ACTION_OUTCOME: Record<AuditOutcomeStatus, Treatment> = {
   partially_succeeded: {
     label: "Partially succeeded",
@@ -123,7 +123,7 @@ const INTEGRITY: Record<AuditIntegrityKind, Treatment> = {
 
 /**
  * A fail-closed / audit-integrity state → its alert descriptor. The `action_status`
- * branch reuses the FROZEN ActionRequest outcomes; the `integrity` branch carries
+ * branch reuses the FROZEN ActionRequestStatus outcomes; the `integrity` branch carries
  * the provisional net-new signals. Every treatment renders a non-color channel
  * (glyph + label + severity), glyph derived from severity — #5 means the signal
  * must be seen, never color-only.

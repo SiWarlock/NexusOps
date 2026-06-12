@@ -17,6 +17,7 @@ pub mod gateway;
 pub mod git;
 pub mod harness;
 pub mod idgen;
+pub mod integrations;
 pub mod ipc;
 pub mod locks;
 pub mod projections;

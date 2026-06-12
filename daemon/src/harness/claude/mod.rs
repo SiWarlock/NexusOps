@@ -15,6 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
+use nexusops_shared::events::TelemetrySampled;
 use nexusops_shared::harness::{
     HarnessCapabilities, NormalizedStatus, TelemetrySample, TranscriptRef,
 };
@@ -25,7 +26,9 @@ use crate::terminal::{Pty, PtySpawner};
 
 pub mod intercept;
 mod status;
+pub mod telemetry;
 pub use status::{derive_status, ClaudeSignal, NotificationKind};
+use telemetry::{telemetry_sample, TelemetryEventSink, UsageReading};
 
 // ---- the 10 Claude HarnessCapabilities (Q1, lead-confirmed) -------------------------------------
 
@@ -325,6 +328,19 @@ pub struct ClaudeAdapter {
     pty: Option<Box<dyn Pty>>,
     /// the current derived status (L2 `derive_status` advances it via `push_signal`).
     status: Session,
+    /// the last CUMULATIVE usage reading (044) — `push_usage` deltas the next reading against it.
+    last_cumulative: Option<UsageReading>,
+    /// the latest per-heartbeat DELTA sample (044) — what `telemetry_heartbeat` returns. Updated by
+    /// `push_usage` REGARDLESS of whether a sink is bound (delta-tracking is decoupled from emission).
+    last_sample: Option<TelemetrySample>,
+    /// the ExecutionProfile id for the telemetry rollup dims — resolved at launch/approval time
+    /// (safety #8) by the P4 drive loop; `None` in 044's standalone path (the projector keys
+    /// `None`→`~` sentinel).
+    execution_profile_id: Option<String>,
+    /// the injected telemetry emission seam (044; the 3.4 `TerminalEventSink` precedent). The
+    /// production write-actor binding + the periodic pump land at the P4 drive loop; `None` =
+    /// store-the-delta-but-don't-emit (the sink-less default; P4 always binds one).
+    telemetry_sink: Option<Box<dyn TelemetryEventSink>>,
 }
 
 impl ClaudeAdapter {
@@ -343,7 +359,20 @@ impl ClaudeAdapter {
             // pre-launch: the daemon-created session state (`Creating` is a daemon-lifecycle state,
             // not adapter-derived — `launch()` transitions it to `Starting`).
             status: Session::Creating,
+            last_cumulative: None,
+            last_sample: None,
+            execution_profile_id: None,
+            telemetry_sink: None,
         }
+    }
+
+    /// Inject the telemetry emission [`TelemetryEventSink`] (044). A BUILDER (not a `new` parameter) so
+    /// the existing 4-arg [`new`](Self::new) call sites don't churn — the `TerminalSession::new(.., sink)`
+    /// precedent applied as a builder. The production write-actor binding + the periodic pump land at
+    /// the P4 drive loop; tests inject a collecting double.
+    pub fn with_telemetry_sink(mut self, sink: Box<dyn TelemetryEventSink>) -> Self {
+        self.telemetry_sink = Some(sink);
+        self
     }
 
     /// Feed one structured [`ClaudeSignal`] into the status derivation (the §14 ingestion seam — the
@@ -352,6 +381,28 @@ impl ClaudeAdapter {
     /// NEVER from PTY output bytes (safety #9).
     pub fn push_signal(&mut self, signal: ClaudeSignal) {
         self.status = derive_status(self.status, &signal);
+    }
+
+    /// Ingest one CUMULATIVE [`UsageReading`] (044; the §14 ingestion seam — the live transcript/
+    /// statusLine merge PUSHES these at the P4 drive loop, the `push_signal` precedent). Telemetry is
+    /// kept ORTHOGONAL to status derivation (a usage reading can never drive a status transition,
+    /// safety #9). Computes the per-heartbeat DELTA against the last reading, STORES it (so
+    /// [`telemetry_heartbeat`](HarnessAdapter::telemetry_heartbeat) is correct even sink-less), and
+    /// emits exactly one `TelemetrySampled` observation event through the sink if one is bound.
+    /// Delta-tracking is updated BEFORE (and regardless of) emission — never coupled to the sink.
+    pub fn push_usage(&mut self, reading: UsageReading) {
+        let sample = telemetry_sample(self.last_cumulative.as_ref(), &reading);
+        let event = TelemetrySampled {
+            sample: sample.clone(),
+            model: reading.model.clone(),
+            execution_profile_id: self.execution_profile_id.clone(),
+        };
+        // update delta-tracking first — decoupled from emission (the sink-less heartbeat stays correct).
+        self.last_cumulative = Some(reading);
+        self.last_sample = Some(sample);
+        if let Some(sink) = &self.telemetry_sink {
+            sink.emit_telemetry(event);
+        }
     }
 }
 
@@ -423,7 +474,10 @@ impl HarnessAdapter for ClaudeAdapter {
     }
 
     fn telemetry_heartbeat(&self) -> Option<TelemetrySample> {
-        None // → 043 (the ResultMessage/statusLine/transcript merge + TelemetrySampled emission)
+        // the latest per-heartbeat DELTA sample (044) — `None` before any reading. Per-heartbeat
+        // DELTAS, never cumulative (the proj_usage_ledger SUMs them). The live transcript/statusLine
+        // merge that FEEDS `push_usage` + the periodic pump cadence land at the P4 drive loop.
+        self.last_sample.clone()
     }
 
     fn resume(&self) -> ResumeResult {

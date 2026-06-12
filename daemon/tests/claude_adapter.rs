@@ -456,25 +456,43 @@ fn test_read_transcript_locates_jsonl() {
     );
 }
 
-// ---- 3.2 L3 RED #9 — the deferred observe-path surfaces are honest stubs (named-not-silent) ----
+// ---- 3.2 RED #9 — the still-deferred observe-path surfaces are honest stubs (named-not-silent) ----
 
 #[test]
 fn test_observe_path_stubs_marked() {
-    // intercept→043, telemetry→043, resume→P4; the adapter stays object-safe (Box<dyn HarnessAdapter>).
+    use nexusopsd::harness::claude::telemetry::UsageReading;
+
+    // intercept_mutation→ None (the live PreToolUse→Gateway hook wiring is P4), resume→ P4; the
+    // adapter stays object-safe (Box<dyn HarnessAdapter>).
     let mut adapter: Box<dyn HarnessAdapter> = Box::new(adapter_with(RecordingSpawner::default()));
     adapter.launch();
     assert!(
         adapter.intercept_mutation().is_none(),
-        "intercept_mutation → None (the PreToolUse→Gateway routing is 043)"
-    );
-    assert!(
-        adapter.telemetry_heartbeat().is_none(),
-        "telemetry_heartbeat → None/minimal (the emission is 043)"
+        "intercept_mutation → None (the live hook wiring is P4)"
     );
     let r = adapter.resume();
     assert!(
         !r.resumed_live,
         "resume → minimal, not re-attached live (survival is P4)"
+    );
+
+    // telemetry_heartbeat is NO LONGER an always-None stub (044): None before any reading, Some
+    // after a usage reading is pushed (the emission landed this slice).
+    let mut concrete = adapter_with(RecordingSpawner::default());
+    assert!(
+        concrete.telemetry_heartbeat().is_none(),
+        "telemetry_heartbeat → None before any usage reading"
+    );
+    concrete.push_usage(UsageReading {
+        tokens_in: 100,
+        tokens_out: 20,
+        context_pct: Some(30.0),
+        cost: 0.01,
+        model: None,
+    });
+    assert!(
+        concrete.telemetry_heartbeat().is_some(),
+        "telemetry_heartbeat → Some after a reading (044 emission landed)"
     );
 }
 

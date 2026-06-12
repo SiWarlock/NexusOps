@@ -71,3 +71,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 [[bench]]
 name = "event_write"
 harness = false
+
+# P3.5 — the §18 terminal-attach-latency + §6.4 Terminal-Channel-throughput benchmark. `harness =
+# false`: a plain `fn main()` (NOT the libtest harness), so it is INVISIBLE to `cargo test --workspace`
+# (the per-slice RED/GREEN loop) and its `< 250 ms` p95 assertion never flakes there. Runs ONLY at its
+# own cadence: `cargo bench --bench terminal_attach` (the /phase-exit perf-budgets runner + the nightly
+# Phase-3 CI perf job). Drives the AS-BUILT 3.4 TerminalSession/PortablePtyHost host end-to-end.
+[[bench]]
+name = "terminal_attach"
+harness = false

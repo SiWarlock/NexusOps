@@ -14,6 +14,10 @@ pub trait IdGen: Send + Sync {
     /// A fresh `out_<ULID>` outbox id (DATA_MODEL §2.5). Daemon-internal — NOT one of
     /// the 22 frozen `shared/` IDs, so it is a plain `String`, not a newtype.
     fn new_outbox_id(&self) -> String;
+    /// A fresh `term_<ULID>` terminal runtime-handle id (§6.4 Terminal Channel, 3.4). Daemon-internal
+    /// — NOT one of the 22 frozen `shared/` IDs (a connection/session-scoped handle, re-minted on
+    /// resume; the `subscription_id` precedent), so it is a plain `String` wrapped by `terminal::TerminalId`.
+    fn new_terminal_id(&self) -> String;
 }
 
 /// Production generator — real time+random ULIDs.
@@ -27,6 +31,9 @@ impl IdGen for UlidGen {
     fn new_outbox_id(&self) -> String {
         format!("out_{}", ulid::Ulid::new())
     }
+    fn new_terminal_id(&self) -> String {
+        format!("term_{}", ulid::Ulid::new())
+    }
 }
 
 /// Deterministic generator for tests / golden-log replay — yields `evt_` ULIDs
@@ -38,6 +45,9 @@ pub struct FixedIdGen {
     // a SEPARATE counter for outbox ids so writing outbox rows never perturbs the
     // event-id sequence — the golden-log replay stays byte-identical (§14).
     outbox_counter: AtomicU64,
+    // likewise a SEPARATE counter for terminal runtime-handle ids (3.4) — minting a
+    // terminal id never shifts the event-id sequence (golden-log replay byte-identical).
+    terminal_counter: AtomicU64,
 }
 
 impl FixedIdGen {
@@ -58,5 +68,9 @@ impl IdGen for FixedIdGen {
     fn new_outbox_id(&self) -> String {
         let n = self.outbox_counter.fetch_add(1, Ordering::Relaxed);
         format!("out_{}", ulid::Ulid::from(n as u128))
+    }
+    fn new_terminal_id(&self) -> String {
+        let n = self.terminal_counter.fetch_add(1, Ordering::Relaxed);
+        format!("term_{}", ulid::Ulid::from(n as u128))
     }
 }

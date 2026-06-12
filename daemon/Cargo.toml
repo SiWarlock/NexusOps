@@ -34,6 +34,14 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "syn
 # convention keeps real secrets out of `inputs`, so the persisted hash reveals nothing recoverable).
 # RustCrypto, audited; `cargo audit` runs at /phase-exit. Dep beyond the brief's list — flag at Step-9.
 sha2 = "0.10"
+# base64 for the §6.4 Terminal Channel `data` payload (3.4): raw PTY bytes are base64-encoded so they
+# ride the unchanged 4-byte-len+JSON codec (LESSON §7 — no new framing). Dep beyond the brief's list
+# (which named only portable-pty) — flag at Step-9; widely-audited, `cargo audit` runs at /phase-exit.
+base64 = "0.22"
+# portable-pty (the brief's named dep): the daemon owns each PTY (master/slave, spawn, read/write,
+# resize, waitpid exit). PTY is DISPLAY-ONLY (#9) — never scraped for status. The blocking reader runs
+# on a spawn_blocking thread in the production drive loop (the write-actor-thread precedent, LESSON §9).
+portable-pty = "0.9"
 # (the `nexusopsd` bin is auto-discovered from src/main.rs — no explicit [[bin]] needed.)
 
 [features]

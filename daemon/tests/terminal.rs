@@ -10,9 +10,28 @@ use base64::Engine as _;
 use std::sync::{Arc, Mutex};
 
 use nexusops_shared::events::TerminalProcessExited;
+use nexusops_shared::ipc::{TerminalControlKind, TerminalOutputFrame};
 use nexusopsd::terminal::{
-    ExitStatus, FakePty, PtyRead, TerminalEventSink, TerminalId, TerminalSession,
+    ExitStatus, FakePty, PtyRead, TerminalEmit, TerminalEventSink, TerminalId, TerminalSession,
 };
+
+/// keep only the data (output) frames from a pump/flush emit list.
+fn outputs_of(emits: Vec<TerminalEmit>) -> Vec<TerminalOutputFrame> {
+    emits
+        .into_iter()
+        .filter_map(|e| match e {
+            TerminalEmit::Output(f) => Some(f),
+            TerminalEmit::Control(_) => None,
+        })
+        .collect()
+}
+
+/// true if the emit list contains a control frame of the given kind.
+fn has_control(emits: &[TerminalEmit], kind: TerminalControlKind) -> bool {
+    emits
+        .iter()
+        .any(|e| matches!(e, TerminalEmit::Control(c) if c.kind == kind))
+}
 
 /// A collecting [`TerminalEventSink`] for assertions — records every emitted `TerminalProcessExited`
 /// (the L1-frozen §7.1 observation event). The PRODUCTION sink binds `WriteHandle::append` (the
@@ -29,18 +48,21 @@ impl TerminalEventSink for CollectingSink {
     }
 }
 
-/// drive a session to completion, collecting every emitted output frame.
-fn run_to_exit(session: &mut TerminalSession) -> Vec<nexusops_shared::ipc::TerminalOutputFrame> {
+/// drive a session to completion, collecting every emitted output frame. `pump()` = one
+/// read-step + one flush-tick (the L2-compatible convenience), so each loop turn reads + flushes.
+fn run_to_exit(session: &mut TerminalSession) -> Vec<TerminalOutputFrame> {
     let mut frames = Vec::new();
     let mut guard = 0;
     while !session.is_exited() {
-        frames.extend(session.pump());
+        frames.extend(outputs_of(session.pump()));
         guard += 1;
         assert!(
             guard < 10_000,
             "pump must terminate (reader EOF → exit), not hang"
         );
     }
+    // a final flush drains any trailing pending bytes read just before EOF.
+    frames.extend(outputs_of(session.flush()));
     frames
 }
 
@@ -306,5 +328,202 @@ fn test_terminal_id_minted_via_idgen() {
         TerminalId::mint(&gen2).as_str(),
         a.as_str(),
         "deterministic mint sequence"
+    );
+}
+
+// ==== L3 — app-level backpressure flow control ===================================================
+
+// ---- 3.4 L3 RED #11 — the pure watermark classifier (LESSON §12, timing-free) ----
+
+#[test]
+fn test_next_terminal_action_watermarks() {
+    // LESSON §12 — the pause/resume decision is a PURE function of (buffered, high, low, paused), with
+    // NO real timing (mirrors `next_push_action`). Pin both watermark boundaries (inclusive).
+    use nexusopsd::terminal::next_terminal_action;
+    use nexusopsd::terminal::TerminalAction::{Emit, Hold, Pause, Resume};
+
+    // unpaused: at/above HIGH → Pause (stop reading); below HIGH → Emit (keep flowing).
+    assert_eq!(
+        next_terminal_action(100, 100, 50, false),
+        Pause,
+        "== high → pause"
+    );
+    assert_eq!(next_terminal_action(101, 100, 50, false), Pause);
+    assert_eq!(
+        next_terminal_action(99, 100, 50, false),
+        Emit,
+        "< high → flow"
+    );
+    assert_eq!(next_terminal_action(0, 100, 50, false), Emit);
+
+    // paused: at/below LOW → Resume; above LOW → Hold (stay paused, don't read).
+    assert_eq!(
+        next_terminal_action(50, 100, 50, true),
+        Resume,
+        "== low → resume"
+    );
+    assert_eq!(next_terminal_action(49, 100, 50, true), Resume);
+    assert_eq!(
+        next_terminal_action(51, 100, 50, true),
+        Hold,
+        "> low while paused → hold"
+    );
+    assert_eq!(next_terminal_action(100, 100, 50, true), Hold);
+}
+
+// ---- 3.4 L3 RED #12 — a high-output flood bounds the buffer (no OOM/stall) ----
+
+#[test]
+fn test_high_output_bounds_buffer_no_oom() {
+    // 3.4 edge — a flooding child crosses HIGH → the pump emits {pause} and STOPS reading the child
+    // (OS pipe backpressure propagates), so the in-memory buffer NEVER grows unbounded (≤ HIGH + one
+    // chunk). Draining (flush) below LOW → {resume}. Small watermarks make the bound observable.
+    let chunks: Vec<PtyRead> = (0..200)
+        .map(|_| PtyRead::Chunk(b"xxxxx".to_vec()))
+        .collect();
+    let pty = FakePty::new(
+        chunks,
+        ExitStatus {
+            exit_code: Some(0),
+            signal: None,
+        },
+    );
+    let sink = CollectingSink::default();
+    let mut session = TerminalSession::with_watermarks(
+        TerminalId::from_raw("term_flood"),
+        Box::new(pty),
+        Box::new(sink),
+        20, // HIGH
+        8,  // LOW
+    );
+
+    // read (without flushing) until the buffer crosses HIGH → {pause}
+    let mut paused = false;
+    for _ in 0..1000 {
+        let emits = session.read_step();
+        if has_control(&emits, TerminalControlKind::Pause) {
+            paused = true;
+            break;
+        }
+    }
+    assert!(paused, "crossing the high watermark emits {{pause}}");
+    assert!(
+        session.buffered_bytes() <= 20 + 5,
+        "buffer bounded ≤ HIGH + one chunk (no unbounded queue): {}",
+        session.buffered_bytes()
+    );
+
+    // while paused, read_step does NOT read the child (the buffer does not grow) — OS backpressure.
+    let before = session.buffered_bytes();
+    session.read_step();
+    session.read_step();
+    assert_eq!(
+        session.buffered_bytes(),
+        before,
+        "paused → stops reading the child, the buffer stays bounded"
+    );
+
+    // drain (flush) → coalesce all pending → one frame; below LOW → {resume}.
+    let emits = session.flush();
+    assert!(
+        has_control(&emits, TerminalControlKind::Resume),
+        "drained below low → {{resume}}"
+    );
+    assert_eq!(session.buffered_bytes(), 0, "flush coalesced all pending");
+}
+
+// ---- 3.4 L3 RED #13 — output is batched per tick (~30 fps coalescing) ----
+
+#[test]
+fn test_output_batched_per_tick() {
+    // ~30 fps batching — many small reads accumulated within ONE tick coalesce into ONE
+    // TerminalOutputFrame (not a frame per read). The "tick" is the caller's `flush()` cadence
+    // (production: a ~33 ms tokio interval; here driven explicitly — deterministic, NOT wall-clock).
+    let pty = FakePty::new(
+        vec![
+            PtyRead::Chunk(b"a".to_vec()),
+            PtyRead::Chunk(b"b".to_vec()),
+            PtyRead::Chunk(b"c".to_vec()),
+            PtyRead::Eof,
+        ],
+        ExitStatus {
+            exit_code: Some(0),
+            signal: None,
+        },
+    );
+    let sink = CollectingSink::default();
+    let mut session = TerminalSession::new(
+        TerminalId::from_raw("term_batch"),
+        Box::new(pty),
+        Box::new(sink),
+    );
+
+    // three reads WITHIN one tick (no flush between) → accumulate
+    session.read_step();
+    session.read_step();
+    session.read_step();
+    // ONE tick → one coalesced frame
+    let outputs = outputs_of(session.flush());
+    assert_eq!(outputs.len(), 1, "3 reads in one tick → ONE batched frame");
+    assert_eq!(
+        STANDARD.decode(&outputs[0].data).unwrap(),
+        b"abc",
+        "coalesced in order"
+    );
+    assert_eq!(outputs[0].seq, 0, "the batched frame is seq 0");
+    // the trailing queued EOF still drives a clean exit under batching (completeness).
+    session.read_step();
+    assert!(
+        session.is_exited(),
+        "the queued EOF cleanly exits the session"
+    );
+}
+
+// ---- 3.4 L3 RED #14 — terminal flow control never back-pressures the write-actor (#3 / LESSON §9) ----
+
+#[test]
+fn test_terminal_pump_does_not_backpressure_write_actor() {
+    // forbidden #3 / LESSON §9 — the terminal output flow control is INDEPENDENT of the event
+    // (DB-write) path: the read/flush/pause/resume cycle NEVER calls the event sink (a stand-in for
+    // the write-actor append). The sink is touched ONLY by the exit event — so a stalled/backpressured
+    // terminal never drives an event append, hence never back-pressures the writer.
+    let chunks: Vec<PtyRead> = (0..30).map(|_| PtyRead::Chunk(b"data ".to_vec())).collect();
+    let pty = FakePty::new(
+        chunks,
+        ExitStatus {
+            exit_code: Some(0),
+            signal: None,
+        },
+    );
+    let sink = CollectingSink::default();
+    let mut session = TerminalSession::with_watermarks(
+        TerminalId::from_raw("term_indep"),
+        Box::new(pty),
+        Box::new(sink.clone()),
+        12,
+        4,
+    );
+
+    // drive read/flush cycles that CROSS pause→resume (4 reads accumulate past HIGH=12 → {pause};
+    // the flush drains → {resume}) — NO event must be emitted during any of this flow control.
+    for _ in 0..1000 {
+        session.read_step();
+        session.read_step();
+        session.read_step();
+        session.read_step();
+        session.flush();
+        if session.is_exited() {
+            break;
+        }
+        assert_eq!(
+            sink.exits.lock().unwrap().len(),
+            0,
+            "flow control (read/flush/pause/resume) emits NO event"
+        );
+    }
+    assert_eq!(
+        sink.exits.lock().unwrap().len(),
+        1,
+        "the ONLY sink call is the exit event (the output backpressure is independent of it)"
     );
 }

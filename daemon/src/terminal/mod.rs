@@ -17,9 +17,12 @@
 //! `PortablePtyHost` (a live child) is the non-deterministic surface; the deterministic pump/exit
 //! logic is exercised via the [`FakePty`] §14 seam.
 //!
-//! **L2** (this commit): the `Pty` trait + `PortablePtyHost` + `FakePty` + `TerminalSession` (the
-//! basic 1-frame-per-read pump + the exit emission). **L3** layers the watermark backpressure +
-//! ~30 fps batching on top (a pure `next_terminal_action` classifier, LESSON §12).
+//! **L2:** the `Pty` trait + `PortablePtyHost` + `FakePty` + `TerminalSession` + the exit emission.
+//! **L3:** the watermark backpressure + ~30 fps batching — a pure `next_terminal_action` classifier
+//! (LESSON §12, timing-free) + a bounded buffer (reading STOPS at the high watermark, so the queue
+//! never grows unbounded → no OOM/stall) + `read_step`/`flush` (the reader cadence vs the ~33 ms
+//! tick). The flow control is entirely between the PTY child and the socket — it NEVER back-pressures
+//! the write-actor (forbidden #3 / LESSON §9).
 
 use std::io::{self, Read, Write};
 use std::sync::Arc;
@@ -28,7 +31,7 @@ use std::sync::Mutex;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use nexusops_shared::events::TerminalProcessExited;
-use nexusops_shared::ipc::TerminalOutputFrame;
+use nexusops_shared::ipc::{TerminalControlFrame, TerminalControlKind, TerminalOutputFrame};
 
 use crate::idgen::IdGen;
 
@@ -102,28 +105,113 @@ pub trait TerminalEventSink: Send {
     fn emit_process_exited(&self, event: TerminalProcessExited);
 }
 
-// ---- TerminalSession — the per-terminal pump (L2 basic form; L3 adds backpressure) --------------
+// ---- the backpressure classifier + watermarks (L3; LESSON §12 — timing-free) --------------------
 
-/// One attached terminal: pumps PTY output into seq-numbered output frames and emits the
-/// `TerminalProcessExited` observation event once, on child exit.
+/// The default per-terminal output watermarks (bytes). Crossing HIGH pauses reading the child;
+/// draining below LOW resumes. **Named consts — 3.5 tunes them with terminal-attach throughput data**
+/// (no §18 budget exists until then); sized to bound the in-memory queue without choking interactive use.
+pub const DEFAULT_HIGH_WATERMARK: usize = 256 * 1024; // 256 KiB
+pub const DEFAULT_LOW_WATERMARK: usize = 64 * 1024; //   64 KiB
+
+/// The flow-control decision for one pump step — a PURE function of the buffered byte count + the
+/// watermarks + the paused flag (LESSON §12; mirrors `next_push_action`, never timing-dependent).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TerminalAction {
+    /// flowing (unpaused, below high) → keep reading the child.
+    Emit,
+    /// crossed the high watermark while flowing → emit {pause} + stop reading (OS pipe backpressure).
+    Pause,
+    /// drained to/below the low watermark while paused → emit {resume} + resume reading.
+    Resume,
+    /// paused + still above low → hold (wait for the client to drain; don't read).
+    Hold,
+}
+
+/// The pure watermark classifier (LESSON §12). `buffered` = bytes queued for the client but not yet
+/// sent (the backpressure signal). Both boundaries are INCLUSIVE: `>= high` pauses, `<= low` resumes.
+pub fn next_terminal_action(
+    buffered: usize,
+    high: usize,
+    low: usize,
+    paused: bool,
+) -> TerminalAction {
+    if !paused {
+        if buffered >= high {
+            TerminalAction::Pause
+        } else {
+            TerminalAction::Emit
+        }
+    } else if buffered <= low {
+        TerminalAction::Resume
+    } else {
+        TerminalAction::Hold
+    }
+}
+
+/// What a pump step produces — a batched output data frame or a flow-control (pause/resume) frame.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum TerminalEmit {
+    Output(TerminalOutputFrame),
+    Control(TerminalControlFrame),
+}
+
+// ---- TerminalSession — read-accumulate + watermark backpressure + ~30 fps batch -----------------
+
+/// One attached terminal: reads PTY output into a bounded buffer (watermark backpressure — never an
+/// unbounded queue), flushes it into seq-numbered **batched** output frames (~30 fps, the caller's
+/// flush cadence), and emits the `TerminalProcessExited` observation event once, on child exit.
 pub struct TerminalSession {
     terminal_id: TerminalId,
     pty: Box<dyn Pty>,
     sink: Box<dyn TerminalEventSink>,
+    /// output read from the child but not yet flushed into a frame (the backpressure buffer; bounded
+    /// by `high` — at the high watermark reading STOPS, so this never grows unbounded → no OOM/stall).
+    pending: Vec<u8>,
+    paused: bool,
+    high: usize,
+    low: usize,
     next_seq: u64,
     exited: bool,
 }
 
 impl TerminalSession {
+    /// A session with the default watermarks ([`DEFAULT_HIGH_WATERMARK`] / [`DEFAULT_LOW_WATERMARK`]).
     pub fn new(
         terminal_id: TerminalId,
         pty: Box<dyn Pty>,
         sink: Box<dyn TerminalEventSink>,
     ) -> Self {
+        Self::with_watermarks(
+            terminal_id,
+            pty,
+            sink,
+            DEFAULT_HIGH_WATERMARK,
+            DEFAULT_LOW_WATERMARK,
+        )
+    }
+
+    /// A session with explicit watermarks (tests use small ones to observe the bound).
+    pub fn with_watermarks(
+        terminal_id: TerminalId,
+        pty: Box<dyn Pty>,
+        sink: Box<dyn TerminalEventSink>,
+        high: usize,
+        low: usize,
+    ) -> Self {
+        // the hysteresis gap must be ordered (`low < high`); an inverted pair only changes cadence
+        // (never breaks the buffer bound or the no-backpressure property), but it is always a caller bug.
+        debug_assert!(
+            low < high,
+            "low watermark ({low}) must be below high ({high})"
+        );
         Self {
             terminal_id,
             pty,
             sink,
+            pending: Vec::new(),
+            paused: false,
+            high,
+            low,
             next_seq: 0,
             exited: false,
         }
@@ -137,6 +225,12 @@ impl TerminalSession {
         self.exited
     }
 
+    /// Bytes currently buffered (read but not yet flushed) — the backpressure level. Bounded by the
+    /// high watermark (reading stops there), so it never grows unbounded.
+    pub fn buffered_bytes(&self) -> usize {
+        self.pending.len()
+    }
+
     /// Forward client input bytes to the PTY child (the client→daemon write path).
     pub fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.pty.write(bytes)
@@ -147,35 +241,97 @@ impl TerminalSession {
         self.pty.resize(rows, cols)
     }
 
-    /// Kill the PTY child (session abort). The next [`pump`](TerminalSession::pump) observes EOF (the
-    /// child is gone) and emits the `TerminalProcessExited` event exactly once.
+    /// Kill the PTY child (session abort). The next [`read_step`](TerminalSession::read_step) observes
+    /// EOF (the child is gone) and emits the `TerminalProcessExited` event exactly once.
     pub fn kill(&mut self) -> io::Result<()> {
         self.pty.kill()
     }
 
-    /// One pump step: read one available output chunk → 0-or-1 output frame; on EOF / a read error,
-    /// finish (emit the exit event exactly once). After exit, a pump is a no-op (returns `[]`). The
-    /// production drive loop calls this in a `spawn_blocking` loop until `is_exited()`.
-    pub fn pump(&mut self) -> Vec<TerminalOutputFrame> {
+    /// One READ step (the reader cadence — production: a `spawn_blocking` loop). Applies the watermark
+    /// classifier: while flowing, read ONE chunk into the buffer; crossing the high watermark → emit
+    /// {pause} + stop reading (OS pipe backpressure propagates to the child); while paused → don't
+    /// read. On EOF / a read error → finish (the exit event, exactly once). Data is emitted by
+    /// [`flush`](TerminalSession::flush), not here — this returns only any flow-control frame.
+    pub fn read_step(&mut self) -> Vec<TerminalEmit> {
         if self.exited {
             return Vec::new();
         }
+        match next_terminal_action(self.pending.len(), self.high, self.low, self.paused) {
+            TerminalAction::Pause => {
+                self.paused = true;
+                return vec![TerminalEmit::Control(
+                    self.control(TerminalControlKind::Pause),
+                )];
+            }
+            // paused + still above low → wait for the client to drain (flush owns the drain + resume).
+            TerminalAction::Hold => return Vec::new(),
+            // Defensive: the buffer is ≤ low while paused — normally `flush` already cleared `paused`
+            // (it owns the drain + resume), so in the read→flush flow this arm is unreached. If it IS
+            // reached (a drained-while-paused state), un-pause and read rather than stall; the
+            // {resume} control frame is emitted by `flush`, the drain owner (no duplicate here).
+            TerminalAction::Resume => self.paused = false,
+            // flowing → read.
+            TerminalAction::Emit => {}
+        }
+        // Resume + Emit both fall through here → read ONE chunk into the buffer.
         match self.pty.read() {
-            Ok(PtyRead::Chunk(bytes)) if !bytes.is_empty() => vec![self.frame(&bytes)],
-            Ok(PtyRead::Chunk(_)) => Vec::new(), // an empty chunk = nothing available this step
-            Ok(PtyRead::Eof) => {
-                self.finish();
+            Ok(PtyRead::Chunk(b)) if !b.is_empty() => {
+                self.pending.extend_from_slice(&b);
                 Vec::new()
             }
-            // a read error means the child/PTY is gone → terminal (the reader hung up).
-            Err(_) => {
+            Ok(PtyRead::Chunk(_)) => Vec::new(), // an empty chunk = nothing available this step
+            // EOF / a read error → the child/PTY is gone → finish (exit event once).
+            Ok(PtyRead::Eof) | Err(_) => {
                 self.finish();
                 Vec::new()
             }
         }
     }
 
-    /// Base64-encode a raw output chunk into a seq-numbered [`TerminalOutputFrame`].
+    /// One FLUSH tick (the ~30 fps cadence — production: a ~33 ms tokio interval; deterministic, NOT
+    /// wall-clock — the caller drives the cadence). Coalesces ALL buffered bytes into ONE **batched**
+    /// output frame (if any), then routes the resume decision through the SAME classifier on the
+    /// now-drained buffer. NOTE: because flush coalesces EVERYTHING, the buffer is empty afterwards →
+    /// the classifier returns `Resume` (0 ≤ low) → a paused terminal resumes immediately. The high/low
+    /// hysteresis GAP only bites once a per-frame size cap / partial flush lands (a 3.5 tuning
+    /// concern — the classifier is already forward-compatible: a partial drain resumes only at ≤ low).
+    pub fn flush(&mut self) -> Vec<TerminalEmit> {
+        let mut emits = Vec::new();
+        if !self.pending.is_empty() {
+            let bytes = std::mem::take(&mut self.pending);
+            emits.push(TerminalEmit::Output(self.frame(&bytes)));
+        }
+        if matches!(
+            next_terminal_action(self.pending.len(), self.high, self.low, self.paused),
+            TerminalAction::Resume
+        ) {
+            self.paused = false;
+            emits.push(TerminalEmit::Control(
+                self.control(TerminalControlKind::Resume),
+            ));
+        }
+        emits
+    }
+
+    /// One pump = a read step + a flush tick (the L2-compatible convenience). The production drive
+    /// loop calls [`read_step`](TerminalSession::read_step) continuously + [`flush`](TerminalSession::flush)
+    /// on its own ~33 ms tick instead (so reads BATCH across a tick).
+    pub fn pump(&mut self) -> Vec<TerminalEmit> {
+        let mut emits = self.read_step();
+        emits.extend(self.flush());
+        emits
+    }
+
+    /// Build a flow-control frame for this terminal.
+    fn control(&self, kind: TerminalControlKind) -> TerminalControlFrame {
+        TerminalControlFrame {
+            terminal_id: self.terminal_id.as_str().to_string(),
+            kind,
+        }
+    }
+
+    /// Base64-encode a coalesced output buffer into a seq-numbered [`TerminalOutputFrame`] (one `seq`
+    /// per EMITTED frame — a gap is client-detectable).
     fn frame(&mut self, bytes: &[u8]) -> TerminalOutputFrame {
         let seq = self.next_seq;
         self.next_seq += 1;

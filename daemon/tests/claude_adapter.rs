@@ -399,3 +399,127 @@ fn test_push_signal_updates_stream_status() {
     adapter.push_signal(ClaudeSignal::Stop);
     assert_eq!(adapter.stream_status(), Session::Idle);
 }
+
+// ==== L3 — read_transcript + the observe-path completion + the §14 conformance fixture ==========
+
+// ---- 3.2 L3 RED #8 — read_transcript locates the session JSONL (§9.1) ----
+
+#[test]
+fn test_read_transcript_locates_jsonl() {
+    // §9.1 — Claude stores the session transcript at ~/.claude/projects/<slug(cwd)>/<session_id>.jsonl.
+    // The path is derived from cwd + session_id (043's live hook input supplies the authoritative
+    // path; this is the best-effort default). Never None for Claude (supports_transcript_read=true).
+    assert!(
+        std::env::var_os("HOME").is_some(),
+        "this test derives ~/.claude/… and needs HOME set"
+    );
+    let adapter = adapter_with(RecordingSpawner::default()); // cwd=/Users/x/proj, sess_01ARZ…
+    let t = adapter
+        .read_transcript()
+        .expect("Claude supports transcript read");
+    assert!(t.is_in_place, "the Claude transcript is in-place");
+    assert!(
+        t.path.contains("/.claude/projects/"),
+        "under ~/.claude/projects: {}",
+        t.path
+    );
+    assert!(
+        t.path.contains("-Users-x-proj"),
+        "the cwd-derived project slug: {}",
+        t.path
+    );
+    assert!(
+        t.path.ends_with("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV.jsonl"),
+        "the session JSONL: {}",
+        t.path
+    );
+    // Q3: an HONEST EMPTY placeholder hash now — real content-addressing is P4; NEVER a fake sha256:.
+    assert!(
+        t.hash.is_empty(),
+        "empty placeholder hash until P4 content-addressing: {:?}",
+        t.hash
+    );
+
+    // the project slug replaces path separators AND dots → '-' (best-effort; 043 overwrites). A
+    // dotted cwd exercises the non-obvious dot-replacement.
+    let dotted = ClaudeAdapter::new(
+        Box::new(RecordingSpawner::default()),
+        PathBuf::from("/Users/x/v1.2.3/proj"),
+        "sess_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        "/usr/local/bin/nexusops-hook".to_string(),
+    );
+    let dt = dotted.read_transcript().expect("transcript ref");
+    assert!(
+        dt.path.contains("-Users-x-v1-2-3-proj"),
+        "dots + separators slugged to '-': {}",
+        dt.path
+    );
+}
+
+// ---- 3.2 L3 RED #9 — the deferred observe-path surfaces are honest stubs (named-not-silent) ----
+
+#[test]
+fn test_observe_path_stubs_marked() {
+    // intercept→043, telemetry→043, resume→P4; the adapter stays object-safe (Box<dyn HarnessAdapter>).
+    let mut adapter: Box<dyn HarnessAdapter> = Box::new(adapter_with(RecordingSpawner::default()));
+    adapter.launch();
+    assert!(
+        adapter.intercept_mutation().is_none(),
+        "intercept_mutation → None (the PreToolUse→Gateway routing is 043)"
+    );
+    assert!(
+        adapter.telemetry_heartbeat().is_none(),
+        "telemetry_heartbeat → None/minimal (the emission is 043)"
+    );
+    let r = adapter.resume();
+    assert!(
+        !r.resumed_live,
+        "resume → minimal, not re-attached live (survival is P4)"
+    );
+}
+
+// ---- 3.2 L3 RED #10 — the §14 conformance fixture: a signal sequence → the Session trajectory ----
+
+#[test]
+fn test_claude_status_conformance_fixture() {
+    use nexusopsd::harness::claude::{derive_status, ClaudeSignal, NotificationKind};
+    use Session::*;
+    // a golden ClaudeSignal sequence folded through derive_status → the expected §5.1 trajectory (the
+    // §14 conformance scaffold; the both-harness conformance suite completes at 3.3 Codex).
+    let pre = |tool: &str| ClaudeSignal::PreToolUse {
+        tool: tool.to_string(),
+    };
+    let fixture: Vec<(ClaudeSignal, Session)> = vec![
+        (
+            ClaudeSignal::SessionStart {
+                source: "startup".to_string(),
+                model: Some("claude-opus-4-8".to_string()),
+            },
+            Starting,
+        ),
+        (pre("Read"), Active),
+        (pre("Edit"), EditingFiles),
+        (ClaudeSignal::PostToolUse, Active),
+        (pre("Bash"), RunningCommand),
+        (
+            ClaudeSignal::Notification(NotificationKind::Permission),
+            WaitingOnPermission,
+        ),
+        (ClaudeSignal::PostToolUse, Active),
+        (ClaudeSignal::Stop, Idle),
+        (
+            ClaudeSignal::ProcessExited {
+                exit_code: Some(0),
+                signal: None,
+            },
+            Completed,
+        ),
+        // the terminal sink — a post-exit signal does NOT move it (R-9)
+        (pre("Bash"), Completed),
+    ];
+    let mut state = Creating;
+    for (sig, expected) in &fixture {
+        state = derive_status(state, sig);
+        assert_eq!(state, *expected, "after {sig:?}");
+    }
+}

@@ -232,6 +232,12 @@ impl ClaudeLaunchSpec {
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_COLS: u16 = 80;
 
+/// The Claude project-dir slug for a cwd: path separators + dots → '-' (so `/Users/x/proj` →
+/// `-Users-x-proj`). Best-effort — 043's live hook input supplies the authoritative `transcript_path`.
+fn project_slug(cwd: &Path) -> String {
+    cwd.to_string_lossy().replace(['/', '.'], "-")
+}
+
 /// The Claude Code `HarnessAdapter` (PTY-primary). Owns the spawned `Box<dyn Pty>` (the 3.4 seam) +
 /// the derived status state machine. **Send, not Sync** — owned by ONE drive-loop thread.
 pub struct ClaudeAdapter {
@@ -314,7 +320,30 @@ impl HarnessAdapter for ClaudeAdapter {
     }
 
     fn read_transcript(&self) -> Option<TranscriptRef> {
-        None // L3 implements (locate the session JSONL)
+        // Claude stores the session transcript at ~/.claude/projects/<slug>/<session_id>.jsonl, where
+        // <slug> is the cwd with path separators → '-'. This is the best-effort default derived from
+        // cwd + session_id; 043's live hook input carries the AUTHORITATIVE `transcript_path` (every
+        // hook provides it). None only if the capability is off (never for Claude) or HOME is unset.
+        // defensive — `supports_transcript_read` is always `true` for Claude; this honors the
+        // capability gate so the Codex adapter (3.3) can reuse the shape with `false`.
+        if !CLAUDE_CAPABILITIES.supports_transcript_read {
+            return None;
+        }
+        let home = std::env::var_os("HOME")?;
+        let path = PathBuf::from(home)
+            .join(".claude")
+            .join("projects")
+            .join(project_slug(&self.cwd))
+            .join(format!("{}.jsonl", self.session_id));
+        Some(TranscriptRef {
+            // lossy is intentional — a best-effort default; 043's hook input overwrites with the
+            // authoritative `transcript_path` (a non-UTF-8 HOME is exotic on macOS).
+            path: path.to_string_lossy().into_owned(),
+            // an HONEST placeholder — real content-addressing of the live-appended JSONL is the P4
+            // reattach/dedup story (Q3); never a fake `sha256:` that would mislead that path.
+            hash: String::new(), // → P4 content-addressing
+            is_in_place: true,
+        })
     }
 
     fn telemetry_heartbeat(&self) -> Option<TelemetrySample> {

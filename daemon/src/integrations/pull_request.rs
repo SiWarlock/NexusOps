@@ -57,7 +57,7 @@ pub enum ChecksConclusion {
 }
 
 /// Daemon-internal GitHub PR signals — the octocrab adapter maps a GitHub API response into these.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PullRequestSignals {
     pub state: PrState,
     pub merged: bool,
@@ -219,4 +219,101 @@ fn aggregate_checks(checks: &[CheckConclusion]) -> ChecksConclusion {
     } else {
         ChecksConclusion::None
     }
+}
+
+// ---- raw GitHub-response decode (edges-008) --------------------------------
+//
+// The string→enum decode layer ONE LEVEL BELOW `from_github`: the gated octocrab client calls these
+// parsers on its raw REST response strings, then feeds the decoded enums into `from_github`. Every
+// parser is TOTAL + CONSERVATIVE — an unrecognized API string maps to the LEAST-SALIENT variant
+// (`Open` / `Unknown` / `Commented` / `Neutral`) so it can never fabricate a more-blocking or
+// terminal §5.1 status (it degrades toward `Open`, never toward `Conflict`/`Closed`/`ChecksFailing`).
+// All matching is case-insensitive (input normalized before match) for resilience to GitHub API
+// casing drift; the canonical GitHub casing is noted per fn.
+
+/// Decode GitHub's PR top-level `state` (canonical lowercase `"open"`/`"closed"`). An unrecognized
+/// string → `Open` — never fabricate the terminal `Closed`.
+pub fn parse_pr_state(state: &str) -> PrState {
+    match state.trim().to_ascii_lowercase().as_str() {
+        "closed" => PrState::Closed,
+        _ => PrState::Open,
+    }
+}
+
+/// Decode GitHub's `mergeable_state` (canonical lowercase). Unrecognized / empty / the not-yet-modeled
+/// values (`"draft"`, `"has_hooks"`, …) → `Unknown` — the conservative "not a conflict" floor
+/// (`map_mergeable` collapses `Unknown` away from `Conflicting`).
+pub fn parse_mergeable_state(mergeable_state: &str) -> GitHubMergeableState {
+    match mergeable_state.trim().to_ascii_lowercase().as_str() {
+        "clean" => GitHubMergeableState::Clean,
+        "dirty" => GitHubMergeableState::Dirty,
+        "blocked" => GitHubMergeableState::Blocked,
+        "behind" => GitHubMergeableState::Behind,
+        "unstable" => GitHubMergeableState::Unstable,
+        _ => GitHubMergeableState::Unknown,
+    }
+}
+
+/// Decode a single GitHub review's `state` (canonical UPPERCASE: `APPROVED`, `CHANGES_REQUESTED`,
+/// `COMMENTED`, `DISMISSED`, `PENDING`). An unrecognized string → `Commented`, which carries no
+/// decision in `aggregate_reviews` (the least-salient review value).
+pub fn parse_review_state(state: &str) -> ReviewState {
+    match state.trim().to_ascii_lowercase().as_str() {
+        "approved" => ReviewState::Approved,
+        "changes_requested" => ReviewState::ChangesRequested,
+        "dismissed" => ReviewState::Dismissed,
+        "pending" => ReviewState::Pending,
+        // "commented" + every unrecognized state collapse here — no review decision.
+        _ => ReviewState::Commented,
+    }
+}
+
+/// Decode a GitHub check-run's two-field `(status, conclusion)` shape. A `conclusion` is only present
+/// once `status == "completed"`, so any non-`completed` status (`queued`/`in_progress`/future values)
+/// → `Pending` (a running build is SOFT-pending; the conclusion is ignored). For `completed`:
+/// `success`→`Success`; `failure`/`timed_out`/`action_required`→`Failure`; `neutral`/`cancelled`/
+/// `skipped`/`stale`→`Neutral`; a missing or unrecognized conclusion → `Neutral` (total + conservative
+/// — a `Failure` can ONLY arise from a completed conclusion, so a non-completed check never reads
+/// `Failure`).
+pub fn parse_check_conclusion(status: &str, conclusion: Option<&str>) -> CheckConclusion {
+    if !status.trim().eq_ignore_ascii_case("completed") {
+        return CheckConclusion::Pending;
+    }
+    match conclusion.map(|c| c.trim().to_ascii_lowercase()).as_deref() {
+        Some("success") => CheckConclusion::Success,
+        Some("failure" | "timed_out" | "action_required") => CheckConclusion::Failure,
+        Some("neutral" | "cancelled" | "skipped" | "stale") => CheckConclusion::Neutral,
+        // None (completed-but-no-conclusion) or an unrecognized conclusion — conservatively ignored.
+        _ => CheckConclusion::Neutral,
+    }
+}
+
+/// Decode a raw GitHub PR API response into `PullRequestSignals` in one call — the full
+/// raw-strings → signals path (decode each field with the parsers above, then aggregate via
+/// `from_github`). The gated octocrab client calls this on its response strings; no extra logic
+/// beyond parser-composition.
+pub fn signals_from_github_response(
+    state: &str,
+    draft: bool,
+    merged: bool,
+    mergeable_state: &str,
+    review_states: &[&str],
+    check_runs: &[(&str, Option<&str>)],
+) -> PullRequestSignals {
+    let reviews: Vec<ReviewState> = review_states
+        .iter()
+        .map(|&s| parse_review_state(s))
+        .collect();
+    let checks: Vec<CheckConclusion> = check_runs
+        .iter()
+        .map(|&(status, conclusion)| parse_check_conclusion(status, conclusion))
+        .collect();
+    PullRequestSignals::from_github(
+        parse_pr_state(state),
+        draft,
+        merged,
+        parse_mergeable_state(mergeable_state),
+        &reviews,
+        &checks,
+    )
 }

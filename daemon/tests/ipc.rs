@@ -378,6 +378,9 @@ fn client_session(client: &UnixStream, requests: &[RpcRequest]) -> Vec<RpcRespon
                 nexusops_shared::ipc::ServerFrame::SubscriptionPush(_) => {
                     panic!("expected an RpcResponse frame, got a SubscriptionPush")
                 }
+                nexusops_shared::ipc::ServerFrame::TerminalOutput(_) => {
+                    panic!("expected an RpcResponse frame, got a TerminalOutput")
+                }
             },
         )
         .collect()
@@ -677,6 +680,9 @@ fn test_subscribe_pushes_projection_delta() {
             assert_eq!(d.id.as_deref(), Some("sess_1"));
         }
         ServerFrame::RpcResponse(_) => panic!("expected a SubscriptionPush, got an RpcResponse"),
+        ServerFrame::TerminalOutput(_) => {
+            panic!("expected a SubscriptionPush, got a TerminalOutput")
+        }
     }
 }
 

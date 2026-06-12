@@ -144,21 +144,24 @@ fn test_envelope_round_trips_with_required_and_optional_fields() {
 
 #[test]
 fn test_contract_version_bumped_past_0_5() {
-    // Each contract extension advances CONTRACT_VERSION: 1.1 → 0.6.0 (envelope) →
-    // 0.7.0 (redaction); 1.2 → 0.8.0 (first event-type payload, SessionStarted);
-    // 1.5 L2 → 0.9.0 (the IPC GatewayPort wire contract, §6.4); 1.5 L3 → 0.10.0 (the §6.1 RPC
-    // method envelopes + the `protocol_error` code); 1.5 L4 → 0.11.0 (ServerFrame frame-type
-    // multiplexing + subscribe streaming: ProjectionDelta/DeltaKind/SubscribeParams);
-    // 1.6a L3 → 0.12.0 (Device/LocalRunner registration event payloads, §5.3/§16);
-    // 1.6c L2 → 0.13.0 (the §17 AuditIntegrityViolation event payload, Option C);
-    // 1.7 L2 → 0.14.0 (the §15 SensitiveOutputRedacted quarantine-divert event payload);
-    // 2.1a → 0.15.0 (the §6.2 action-contract freeze: the 10 ActionRequest/ActionPlan/Approval/
-    // ActionResult-family models + 9 enums + the gateway IDs + Timestamp, shared/src/actions.rs);
-    // 2.1b → 0.16.0 (the Gateway ActionExecution* event family — ActionRequested/ApprovalRequested/
-    // Approved/Denied/Expired/Started/Succeeded/Failed — + the §6.1 ActionAck, shared/src/events.rs);
-    // 2.1c → 0.17.0 (the §6.1 submit_action_plan result PlanAck/PlanStepAck, O-3 bundled plans);
-    // 2.2 → 0.18.0 (the §6.3 ActionTypeCatalog contract + the PolicyDecision 2.2-field extension);
-    // 2.4 L1 → 0.19.0 (the §17 failure-mode additions: the ActionPartiallySucceeded event + the
-    // structured ActionError taxonomy on ActionFailed, shared/src/{events,actions}.rs).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.19.0");
+    // A monotonicity FLOOR (matching this test's name) — the contract has advanced past the 0.5
+    // freeze and never regresses to ≤ 0.5. The SINGLE current-version EQUALITY pin lives in
+    // `tests/contract.rs` (`test_contract_version_bumped_0_21_0`); the full bump history lives in
+    // the `shared/src/lib.rs` CONTRACT_VERSION doc (the SoT). Floor (not equality) → no per-slice churn.
+    let v = nexusops_shared::CONTRACT_VERSION;
+    let mut parts = v.split('.');
+    let major: u32 = parts
+        .next()
+        .unwrap()
+        .parse()
+        .expect("CONTRACT_VERSION major");
+    let minor: u32 = parts
+        .next()
+        .unwrap()
+        .parse()
+        .expect("CONTRACT_VERSION minor");
+    assert!(
+        (major, minor) > (0, 5),
+        "CONTRACT_VERSION {v} must be past the 0.5 freeze (monotonic floor)"
+    );
 }

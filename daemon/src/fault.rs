@@ -29,6 +29,12 @@ pub enum FaultPoint {
     /// the gateway aborts AFTER the executing-commit (txn-A) + BEFORE the terminal txn — models a crash
     /// mid-execute, leaving an `executing` orphan (L5 crash-reconcile). One-shot/counted.
     BeforeTerminalTxn,
+    /// (043 L3) the next (counted) `ActionRequested` OR `ActionApproved` append — the **adjudication
+    /// audit-gate** events: a risk-0 allow verdict is gated on `ActionRequested`, a human-approved
+    /// allow on `ActionApproved` (§15 #5 — an Allow is gated on the authoritative event being durably
+    /// written FIRST). Returns an injected write error, exercising the "audit-write BEFORE verdict,
+    /// fail-closed" path: the submit/approve txn rolls back → the intercept resolves to Deny, never Allow.
+    AuditEventWrite,
 }
 
 thread_local! {

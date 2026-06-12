@@ -383,6 +383,9 @@ fn client_get_projection(sock: &Path, name: ProjectionName) -> RpcResponse {
         ServerFrame::SubscriptionPush(_) => {
             panic!("expected an RpcResponse, got a SubscriptionPush")
         }
+        ServerFrame::TerminalOutput(_) => {
+            panic!("expected an RpcResponse, got a TerminalOutput frame")
+        }
     }
 }
 

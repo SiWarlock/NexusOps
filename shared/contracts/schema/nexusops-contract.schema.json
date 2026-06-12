@@ -51,17 +51,19 @@
     },
     "ActionDenied": {
       "additionalProperties": false,
-      "description": "`ActionDenied` payload (§6.2/§7.1; AG §17.1) — the action was denied (terminal). Carries the\n`approval_id` + the denial `reason` (the audit record of WHY).",
+      "description": "`ActionDenied` payload (§6.2/§7.1; AG §17.1) — the action was denied (terminal). Carries the\ndenial `reason` (the audit record of WHY) + an **OPTIONAL** `approval_id`. A HUMAN-deny carries\n`Some(appr_…)`; a 043/A1 agent deny-rule **policy-deny** (denied at submit, BEFORE any approval\nobject) carries `None` (the record-then-deny forensic event — there is no approval to reference).",
       "properties": {
         "approval_id": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "reason": {
           "type": "string"
         }
       },
       "required": [
-        "approval_id",
         "reason"
       ],
       "type": "object"
@@ -1004,7 +1006,7 @@
       "type": "string"
     },
     "ExecutorKind": {
-      "description": "Which executor adapter handles an action (§6.3). A NAME binding — the real per-namespace\nadapters (git CLI / octocrab / session host / …) land in 2.3.",
+      "description": "Which executor adapter handles an action (§6.3). A NAME binding — the real per-namespace\nadapters (git CLI / octocrab / session host / …) land in 2.3. **`Adjudication` (3.2-part-2,\nbrief 043) is the ODD ONE OUT**: it marks the agent-mutation family as **adjudication-only** —\nthe `ActionRequest` TERMINATES at the policy/approval verdict and **no daemon executor runs the\ntool** (the agent executes the allowed tool itself; the daemon only adjudicates + audits, the\nINV-SEC-1 chokepoint). It is NOT a real-executor namespace and never reaches the executor seam.",
       "enum": [
         "brain",
         "project",
@@ -1015,7 +1017,8 @@
         "github",
         "linear",
         "code",
-        "review"
+        "review",
+        "adjudication"
       ],
       "type": "string"
     },
@@ -1048,6 +1051,55 @@
       },
       "required": [
         "name"
+      ],
+      "type": "object"
+    },
+    "HarnessCapabilities": {
+      "additionalProperties": false,
+      "description": "Per-harness capability matrix (§9.1; PRD HARN-5's 10 fields) — drives per-capability UI\ndegradation (e.g. `supports_context_metadata=false` for Codex → render \"unknown\"). The UI\nconsumes THIS (not the mutation-coverage matrix, which is daemon-internal). Reject-unknown (§15).",
+      "properties": {
+        "supports_cloud_tasks": {
+          "type": "boolean"
+        },
+        "supports_command_injection": {
+          "type": "boolean"
+        },
+        "supports_context_metadata": {
+          "type": "boolean"
+        },
+        "supports_hooks": {
+          "type": "boolean"
+        },
+        "supports_resume": {
+          "type": "boolean"
+        },
+        "supports_subagents": {
+          "type": "boolean"
+        },
+        "supports_terminal": {
+          "type": "boolean"
+        },
+        "supports_tool_call_parsing": {
+          "type": "boolean"
+        },
+        "supports_transcript_read": {
+          "type": "boolean"
+        },
+        "supports_usage_metadata": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "supports_terminal",
+        "supports_resume",
+        "supports_transcript_read",
+        "supports_tool_call_parsing",
+        "supports_usage_metadata",
+        "supports_context_metadata",
+        "supports_command_injection",
+        "supports_subagents",
+        "supports_hooks",
+        "supports_cloud_tasks"
       ],
       "type": "object"
     },
@@ -1165,6 +1217,26 @@
         "local_runner_id"
       ],
       "type": "object"
+    },
+    "MetricQuality": {
+      "description": "Confidence in a telemetry metric (§9.1/§7.2). Carried on ALL telemetry so the UsageMeter\ndegrades honestly (§11.7) — e.g. Codex has no context window metadata → `context_pct` is\nNone and quality is `Unavailable`, never a faked number. snake_case wire; reject-unknown (§15).",
+      "oneOf": [
+        {
+          "const": "exact",
+          "description": "authoritative (e.g. an SDK `ResultMessage.usage` figure)",
+          "type": "string"
+        },
+        {
+          "const": "estimated",
+          "description": "derived/approximated (e.g. computed from a transcript)",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "the harness cannot report this metric (e.g. Codex context-%)",
+          "type": "string"
+        }
+      ]
     },
     "ObjectRef": {
       "additionalProperties": false,
@@ -1566,7 +1638,7 @@
       "type": "string"
     },
     "ServerFrame": {
-      "description": "The server→client **multiplexed frame envelope** (§6.4 frame-type tag). The internally-tagged\n`frame_type` discriminant lets the client demultiplex one connection: an RPC response vs a\nsubscription push. The **Terminal-Channel tag space is RESERVED** — raw PTY frames are a\nPhase-3 decision (JSON-base64 vs a binary fast-path, made with throughput data); no variant yet.",
+      "description": "The server→client **multiplexed frame envelope** (§6.4 frame-type tag). The internally-tagged\n`frame_type` discriminant lets the client demultiplex one connection: an RPC response, a\nsubscription push, or raw terminal output. **AS-BUILT (3.4):** the reserved Terminal-Channel slot\nis filled with the **JSON-base64 MVP** `TerminalOutput` variant (`data` base64 over the unchanged\ncodec, LESSON §7); the **binary fast-path stays a deferred 3.5 decision**, made with the\nterminal-attach throughput benchmark (additive — a future variant + a CONTRACT bump, not a reshape).",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -1626,6 +1698,36 @@
             "frame_type",
             "projection",
             "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "raw terminal output (§6.4 Terminal Channel) — the reserved slot, filled 3.4 (JSON-base64 MVP).",
+          "properties": {
+            "data": {
+              "description": "base64-encoded raw PTY output bytes.",
+              "type": "string"
+            },
+            "frame_type": {
+              "const": "terminal_output",
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "terminal_id": {
+              "description": "the opaque daemon-minted terminal runtime handle (NOT a frozen-22 ID; re-minted on resume).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "frame_type",
+            "terminal_id",
+            "seq",
+            "data"
           ],
           "type": "object"
         }
@@ -1743,9 +1845,189 @@
       ],
       "type": "string"
     },
+    "TelemetrySample": {
+      "additionalProperties": false,
+      "description": "A single telemetry sample (§9.1) — a per-heartbeat usage observation. `context_pct` is an\nexplicit `Option` (None = \"unknown\", never 0% — §11.4); `cost_estimate` is DERIVED (§9.1 prose\n`cost` → `cost_estimate`, the \"estimate\" honesty). `tokens_in`/`tokens_out` are the per-sample\nDELTAS the `proj_usage_ledger` projector SUMs (the adapter emits deltas, not cumulative totals —\na 3.2/3.3 acceptance pin). Optionals serialize as explicit `null` (no `skip_serializing_if`) so\nthe §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
+      "properties": {
+        "context_pct": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "cost_estimate": {
+          "format": "double",
+          "type": "number"
+        },
+        "metric_quality": {
+          "$ref": "#/$defs/MetricQuality"
+        },
+        "tokens_in": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tokens_out": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tokens_in",
+        "tokens_out",
+        "cost_estimate",
+        "metric_quality"
+      ],
+      "type": "object"
+    },
+    "TelemetrySampled": {
+      "additionalProperties": false,
+      "description": "`TelemetrySampled` payload (§9.1/§7.1; §18 usage rollups) — a per-heartbeat usage OBSERVATION\nevent the harness adapters (3.2/3.3) emit. **NOT a Gateway Action** (Q1, lead-confirmed): INV-SEC-1\n(#1) governs FS/git/external/session-STATE mutations; a telemetry observation mutates none — so it\nfollows the System/adapter-actor non-mutation-event precedent (`DeviceRegistered`/\n`AuditIntegrityViolation`): written via the single write-actor through the §15 redaction gate (#2/#3\nhold), never through the Gateway pipeline. The rollup IDENTITY/time (`session_id`/`project_id`/\n`occurred_at`) lives on the [`crate::event_envelope::EventEnvelope`] columns; this payload carries\nonly the dims the envelope LACKS — the [`TelemetrySample`] + the `model` and `execution_profile_id`\nthe `proj_usage_ledger` projector buckets by (3.1). Optionals serialize as explicit `null` (no\n`skip_serializing_if`) so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
+      "properties": {
+        "execution_profile_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sample": {
+          "$ref": "#/$defs/TelemetrySample"
+        }
+      },
+      "required": [
+        "sample"
+      ],
+      "type": "object"
+    },
+    "TerminalControlFrame": {
+      "additionalProperties": false,
+      "description": "A terminal **control** frame (§6.4): the explicit app-level flow-control signal (pause/resume).",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/TerminalControlKind"
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "TerminalControlKind": {
+      "description": "The kind of explicit app-level **flow-control** frame in a [`TerminalControlFrame`] (§6.4\nbackpressure). snake_case wire values. The client emits `pause`/`resume` to throttle a chatty\nPTY; the L3 watermark pump also produces these as its flow-control decision (display-only #9).",
+      "enum": [
+        "pause",
+        "resume"
+      ],
+      "type": "string"
+    },
+    "TerminalInputFrame": {
+      "additionalProperties": false,
+      "description": "A client→daemon terminal **input** frame (§6.4): keystrokes/paste for the PTY child. `data` base64.",
+      "properties": {
+        "data": {
+          "description": "base64-encoded raw input bytes written to the PTY child.",
+          "type": "string"
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "data"
+      ],
+      "type": "object"
+    },
+    "TerminalOutputFrame": {
+      "additionalProperties": false,
+      "description": "A daemon→client terminal **output** frame (§6.4). `data` = base64 raw PTY output bytes. `seq`\nincrements per emitted frame (the L3 ~30 fps batch pump assigns it) so a gap is client-detectable.",
+      "properties": {
+        "data": {
+          "description": "base64-encoded raw PTY output bytes.",
+          "type": "string"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "terminal_id": {
+          "description": "the opaque daemon-minted terminal runtime handle (NOT a frozen-22 ID; re-minted on resume).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "seq",
+        "data"
+      ],
+      "type": "object"
+    },
+    "TerminalProcessExited": {
+      "additionalProperties": false,
+      "description": "The §17 PTY-death record (3.4): a terminal child process exited. A **non-mutation OBSERVATION\nevent** — the daemon WITNESSES the child exit (via portable-pty waitpid / reader EOF) and records\nit; it follows the System/supervisor-actor non-mutation-event precedent (`DeviceRegistered`/\n`TelemetrySampled`, LESSON §10/§23): written via the single write-actor through the §15 redaction\ngate (#2/#3 hold), NEVER through the Gateway pipeline (INV-SEC-1 governs state *mutations*; a\nprocess-exit notification is none). **Safety #9** — `exit_code`/`signal` come from the OS exit\nstatus, NEVER inferred by parsing terminal output (the PTY is display-only). The session identity\n(`session_id`/`occurred_at`) lives on the [`crate::event_envelope::EventEnvelope`] columns; this\npayload carries only `terminal_id` + the OS exit detail. The §17 SessionFailed → ActionFailed →\nlease-release cascade is **Phase 4** (it CONSUMES this event). Optionals serialize as explicit\n`null` (no `skip_serializing_if`) for a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).",
+      "properties": {
+        "exit_code": {
+          "description": "the child's exit code (None when killed by a signal, or unavailable).",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "signal": {
+          "description": "the terminating signal name (None when it exited normally).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "terminal_id": {
+          "description": "the opaque daemon-minted terminal runtime handle (NOT a frozen-22 ID; matches the wire frames).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id"
+      ],
+      "type": "object"
+    },
     "Timestamp": {
       "format": "date-time",
       "type": "string"
+    },
+    "TranscriptRef": {
+      "additionalProperties": false,
+      "description": "A reference to a harness transcript (§9.1) — the JSONL the adapter tails (Claude\n`~/.claude/projects/.../<id>.jsonl`). `is_in_place` = the harness writes its own file we read\n(vs a copy we manage). The daemon stores the `hash` for change detection; never the content (§15).",
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "is_in_place": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "hash",
+        "is_in_place"
+      ],
+      "type": "object"
     },
     "VersionSkewError": {
       "additionalProperties": false,
@@ -1969,6 +2251,9 @@
     "get_projection_params": {
       "$ref": "#/$defs/GetProjectionParams"
     },
+    "harness_capabilities": {
+      "$ref": "#/$defs/HarnessCapabilities"
+    },
     "hello_ack": {
       "$ref": "#/$defs/HelloAck"
     },
@@ -1989,6 +2274,9 @@
     },
     "local_runner_registered": {
       "$ref": "#/$defs/LocalRunnerRegistered"
+    },
+    "metric_quality": {
+      "$ref": "#/$defs/MetricQuality"
     },
     "plan_ack": {
       "$ref": "#/$defs/PlanAck"
@@ -2071,8 +2359,32 @@
     "task": {
       "$ref": "#/$defs/Task"
     },
+    "telemetry_sample": {
+      "$ref": "#/$defs/TelemetrySample"
+    },
+    "telemetry_sampled": {
+      "$ref": "#/$defs/TelemetrySampled"
+    },
+    "terminal_control_frame": {
+      "$ref": "#/$defs/TerminalControlFrame"
+    },
+    "terminal_control_kind": {
+      "$ref": "#/$defs/TerminalControlKind"
+    },
+    "terminal_input_frame": {
+      "$ref": "#/$defs/TerminalInputFrame"
+    },
+    "terminal_output_frame": {
+      "$ref": "#/$defs/TerminalOutputFrame"
+    },
+    "terminal_process_exited": {
+      "$ref": "#/$defs/TerminalProcessExited"
+    },
     "timestamp": {
       "$ref": "#/$defs/Timestamp"
+    },
+    "transcript_ref": {
+      "$ref": "#/$defs/TranscriptRef"
     },
     "version_skew_error": {
       "$ref": "#/$defs/VersionSkewError"
@@ -2176,9 +2488,19 @@
     "action_type_catalog_entry",
     "preview_class",
     "executor_kind",
-    "idempotency_formula"
+    "idempotency_formula",
+    "telemetry_sample",
+    "metric_quality",
+    "transcript_ref",
+    "harness_capabilities",
+    "telemetry_sampled",
+    "terminal_output_frame",
+    "terminal_input_frame",
+    "terminal_control_frame",
+    "terminal_control_kind",
+    "terminal_process_exited"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.19.0"
+  "x-contract-version": "0.23.0"
 }

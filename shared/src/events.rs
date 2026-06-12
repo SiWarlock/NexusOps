@@ -10,6 +10,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::harness::TelemetrySample;
 use crate::objects::{DeviceId, LocalRunnerId};
 use crate::status::Session;
 
@@ -143,11 +144,14 @@ impl ActionApproved {
 }
 
 /// `ActionDenied` payload (§6.2/§7.1; AG §17.1) — the action was denied (terminal). Carries the
-/// `approval_id` + the denial `reason` (the audit record of WHY).
+/// denial `reason` (the audit record of WHY) + an **OPTIONAL** `approval_id`. A HUMAN-deny carries
+/// `Some(appr_…)`; a 043/A1 agent deny-rule **policy-deny** (denied at submit, BEFORE any approval
+/// object) carries `None` (the record-then-deny forensic event — there is no approval to reference).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
 pub struct ActionDenied {
-    pub approval_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
     pub reason: String,
 }
 
@@ -221,4 +225,54 @@ pub struct ActionPartiallySucceeded {
 impl ActionPartiallySucceeded {
     /// The EventTypeRegistry name — ONE home (the Gateway emit path + the audit projector).
     pub const EVENT_TYPE: &'static str = "ActionPartiallySucceeded";
+}
+
+/// `TelemetrySampled` payload (§9.1/§7.1; §18 usage rollups) — a per-heartbeat usage OBSERVATION
+/// event the harness adapters (3.2/3.3) emit. **NOT a Gateway Action** (Q1, lead-confirmed): INV-SEC-1
+/// (#1) governs FS/git/external/session-STATE mutations; a telemetry observation mutates none — so it
+/// follows the System/adapter-actor non-mutation-event precedent (`DeviceRegistered`/
+/// `AuditIntegrityViolation`): written via the single write-actor through the §15 redaction gate (#2/#3
+/// hold), never through the Gateway pipeline. The rollup IDENTITY/time (`session_id`/`project_id`/
+/// `occurred_at`) lives on the [`crate::event_envelope::EventEnvelope`] columns; this payload carries
+/// only the dims the envelope LACKS — the [`TelemetrySample`] + the `model` and `execution_profile_id`
+/// the `proj_usage_ledger` projector buckets by (3.1). Optionals serialize as explicit `null` (no
+/// `skip_serializing_if`) so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct TelemetrySampled {
+    pub sample: TelemetrySample,
+    pub model: Option<String>,
+    pub execution_profile_id: Option<String>,
+}
+
+impl TelemetrySampled {
+    /// The EventTypeRegistry name — ONE home (the 3.2/3.3 adapter emit path + the usage projector).
+    pub const EVENT_TYPE: &'static str = "TelemetrySampled";
+}
+
+/// The §17 PTY-death record (3.4): a terminal child process exited. A **non-mutation OBSERVATION
+/// event** — the daemon WITNESSES the child exit (via portable-pty waitpid / reader EOF) and records
+/// it; it follows the System/supervisor-actor non-mutation-event precedent (`DeviceRegistered`/
+/// `TelemetrySampled`, LESSON §10/§23): written via the single write-actor through the §15 redaction
+/// gate (#2/#3 hold), NEVER through the Gateway pipeline (INV-SEC-1 governs state *mutations*; a
+/// process-exit notification is none). **Safety #9** — `exit_code`/`signal` come from the OS exit
+/// status, NEVER inferred by parsing terminal output (the PTY is display-only). The session identity
+/// (`session_id`/`occurred_at`) lives on the [`crate::event_envelope::EventEnvelope`] columns; this
+/// payload carries only `terminal_id` + the OS exit detail. The §17 SessionFailed → ActionFailed →
+/// lease-release cascade is **Phase 4** (it CONSUMES this event). Optionals serialize as explicit
+/// `null` (no `skip_serializing_if`) for a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct TerminalProcessExited {
+    /// the opaque daemon-minted terminal runtime handle (NOT a frozen-22 ID; matches the wire frames).
+    pub terminal_id: String,
+    /// the child's exit code (None when killed by a signal, or unavailable).
+    pub exit_code: Option<i32>,
+    /// the terminating signal name (None when it exited normally).
+    pub signal: Option<String>,
+}
+
+impl TerminalProcessExited {
+    /// The EventTypeRegistry name — ONE home (the 3.4 terminal-host emit path; §7.1 single-home).
+    pub const EVENT_TYPE: &'static str = "TerminalProcessExited";
 }

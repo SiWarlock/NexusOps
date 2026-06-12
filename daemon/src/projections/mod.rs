@@ -18,6 +18,7 @@ mod graph;
 mod object_refs;
 mod schema;
 mod session;
+mod usage;
 
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde::Serialize;
@@ -74,6 +75,9 @@ fn projectors() -> Vec<Box<dyn Projector>> {
         Box::new(audit::AuditProjector),
         Box::new(activity::ActivityProjector),
         Box::new(approval_queue::ApprovalQueueProjector),
+        // P3.1 — folds the §9.1 TelemetrySampled observation event into per-day usage rollups
+        // (§18). Wired NOW; its branch fires once the 3.2/3.3 adapters emit the feeding events.
+        Box::new(usage::UsageLedgerProjector),
     ]
 }
 

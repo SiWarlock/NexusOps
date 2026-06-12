@@ -22,14 +22,16 @@ use crate::events::{
     ActionApprovalRequested, ActionApproved, ActionDenied, ActionExpired, ActionFailed,
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
     AuditIntegrityViolation, DeviceRegistered, LocalRunnerRegistered, SensitiveOutputRedacted,
-    SessionStarted,
+    SessionStarted, TelemetrySampled, TerminalProcessExited,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
+use crate::harness::{HarnessCapabilities, MetricQuality, TelemetrySample, TranscriptRef};
 use crate::ids::IdKind;
 use crate::ipc::{
     ActionAck, Capabilities, DeltaKind, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode,
     PlanAck, PlanStepAck, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest,
-    RpcResponse, ServerFrame, SubscribeParams, VersionSkewError, WireError,
+    RpcResponse, ServerFrame, SubscribeParams, TerminalControlFrame, TerminalControlKind,
+    TerminalInputFrame, TerminalOutputFrame, VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
 use crate::status::{
@@ -145,6 +147,24 @@ struct ContractBundle {
     preview_class: PreviewClass,
     executor_kind: ExecutorKind,
     idempotency_formula: IdempotencyFormula,
+    // 3.1 — the §9.1 HarnessAdapter normalized return types (shared/src/harness.rs) + the §7.1
+    // TelemetrySampled telemetry-observation event. NormalizedStatus is the frozen `Session` $def
+    // (already registered above), not a new type. ResumeResult + the trait + the mutation-coverage
+    // matrix are DAEMON-INTERNAL (not a wire contract). Additive (CONTRACT 0.20.0).
+    telemetry_sample: TelemetrySample,
+    metric_quality: MetricQuality,
+    transcript_ref: TranscriptRef,
+    harness_capabilities: HarnessCapabilities,
+    telemetry_sampled: TelemetrySampled,
+    // 3.4 — the §6.4 Terminal Channel wire contract (shared/src/ipc.rs): the 3 terminal frames +
+    // the TerminalControlKind flow-control enum + the §7.1 TerminalProcessExited observation event.
+    // ServerFrame (already registered above) gains the TerminalOutput variant — the reserved slot
+    // filled (JSON-base64 MVP; binary fast-path deferred to 3.5). Additive (CONTRACT 0.21.0).
+    terminal_output_frame: TerminalOutputFrame,
+    terminal_input_frame: TerminalInputFrame,
+    terminal_control_frame: TerminalControlFrame,
+    terminal_control_kind: TerminalControlKind,
+    terminal_process_exited: TerminalProcessExited,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod event_envelope;
 pub mod events;
 pub mod gateway_ids;
+pub mod harness;
 pub mod ids;
 pub mod ipc;
 pub mod objects;
@@ -53,7 +54,34 @@ pub mod time;
 /// 0.19.0 (2.4 L1) adds the §17 failure-mode contract: the `ActionPartiallySucceeded` event (the
 /// side-effect-applied-but-terminal-event-unwritable record) + the structured `ActionError`
 /// taxonomy now carried on `ActionFailed` (replacing the 2.1b free-string `error`) — additive.
-pub const CONTRACT_VERSION: &str = "0.19.0";
+/// 0.20.0 (3.1) freezes the §9.1 HarnessAdapter normalized return types (`shared/src/harness.rs`):
+/// `TelemetrySample` + `MetricQuality` + `TranscriptRef` + `HarnessCapabilities` (10 PRD-HARN-5
+/// fields) + the §7.1 `TelemetrySampled` telemetry-observation event — additive, no frozen type
+/// reshaped. `NormalizedStatus` re-exports the frozen §5.1 `Session` (not a new type/$def). The
+/// `HarnessAdapter` trait + `MutationIntercept` + the mutation-coverage matrix + `ResumeResult` are
+/// DAEMON-INTERNAL (not a `shared/` wire contract); `ResumeResult`/survival freezes in Phase 4 (§8/§17).
+/// 0.21.0 (3.4) freezes the §6.4 Terminal Channel wire contract (`shared/src/ipc.rs`): the 3 terminal
+/// frames (`TerminalOutputFrame`/`TerminalInputFrame`/`TerminalControlFrame`) + the `TerminalControlKind`
+/// (pause|resume) flow-control enum + the §7.1 `TerminalProcessExited` PTY-death observation event.
+/// `ServerFrame` gains the `TerminalOutput` variant — the reserved Terminal slot filled with the
+/// JSON-base64 MVP (raw PTY bytes base64 over the unchanged codec, LESSON §7); the binary fast-path is
+/// a deferred 3.5 decision (additive — a future variant + bump, not a reshape). Additive, no frozen
+/// type reshaped (§5.0). `terminal_id` = an opaque daemon runtime handle (`String` wire), NOT a 23rd
+/// `IdKind`; the PTY host + backpressure pump are DAEMON-INTERNAL (`daemon/src/terminal/`).
+/// 0.22.0 (3.2-part-2 / brief 043) extends the §6.3 ActionTypeCatalog for the Claude
+/// `MutationIntercept`→Gateway interception (INV-SEC-1): a new `ExecutorKind::Adjudication` value (the
+/// adjudication-only marker — the ActionRequest terminates at the verdict; no daemon executor runs the
+/// tool) + the 4 `agent.*` catalog entries (`AGENT_MUTATION_ACTION_TYPES`, a SEPARATE machine-internal
+/// const — the locked MVP-22 set is UNTOUCHED). Additive (a new enum value + a new action-type const;
+/// no frozen type reshaped, §5.0). The `tool_name → agent.*` mapping + the params deny-rules + the
+/// adjudication verdict are DAEMON-INTERNAL (`daemon/src/harness/claude/intercept.rs`).
+/// 0.23.0 (043 L5 / A1) relaxes `ActionDenied.approval_id` `String`→`Option<String>` (`skip_serializing_if`):
+/// a HUMAN-deny carries `Some(appr_…)`, an agent deny-rule **policy-deny** (denied at submit, before any
+/// approval) carries `None` — the record-then-deny forensic event for a blocked dangerous agent attempt
+/// (audit-integrity: never silently dropped). Additive-tolerant: a human-deny (`Some`) still serializes
+/// the field identically; a policy-deny (`None`) OMITS it (`skip_serializing_if`), and a reader uses
+/// `#[serde(default)]` to read it back as `None`. Un-consumed by ui today. §5.0.
+pub const CONTRACT_VERSION: &str = "0.23.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

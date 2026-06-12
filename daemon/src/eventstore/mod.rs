@@ -595,7 +595,8 @@ impl GatewayTxn<'_> {
         #[cfg(feature = "fault-injection")]
         {
             use nexusops_shared::events::{
-                ActionFailed, ActionPartiallySucceeded, ActionSucceeded,
+                ActionApproved, ActionFailed, ActionPartiallySucceeded, ActionRequested,
+                ActionSucceeded,
             };
             let is_terminal = i.event_type == ActionSucceeded::EVENT_TYPE
                 || i.event_type == ActionFailed::EVENT_TYPE
@@ -606,6 +607,20 @@ impl GatewayTxn<'_> {
                 return Err(EventStoreError::Write(rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
                     Some("injected §14 audit-write fault (TerminalEventWrite)".to_string()),
+                )));
+            }
+            // 043 L3 — the adjudication audit-gate (§15 #5): a risk-0 allow is gated on ActionRequested,
+            // a human-approved allow on ActionApproved. Failing either exercises the "audit-write BEFORE
+            // verdict, fail-closed" path (the submit/approve txn rolls back → the verdict is Deny).
+            // NOTE: this fires on EVERY ActionRequested/ActionApproved append (the type is not
+            // action_type-scoped) — incl. a plan-cascade's per-step ActionApproved. A test arming it
+            // alongside a non-adjudication pipeline must account for that (the counted `arm_n` helps).
+            let is_audit_gate = i.event_type == ActionRequested::EVENT_TYPE
+                || i.event_type == ActionApproved::EVENT_TYPE;
+            if is_audit_gate && crate::fault::take_if(crate::fault::FaultPoint::AuditEventWrite) {
+                return Err(EventStoreError::Write(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+                    Some("injected §14 audit-write fault (AuditEventWrite)".to_string()),
                 )));
             }
         }

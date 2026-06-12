@@ -717,15 +717,6 @@ fn test_sensitive_output_redacted_wire_contract() {
     );
 }
 
-#[test]
-fn test_contract_version_bumped_for_sensitive_output_redacted() {
-    // 0.15.0 = the 2.1a action-contract freeze (§6.2 models + 9 enums + gateway IDs + Timestamp);
-    // 0.16.0 = the 2.1b ActionExecution* event family + ActionAck; 0.17.0 = the 2.1c PlanAck
-    // submit_action_plan wire type (O-3); 0.18.0 = the 2.2 ActionTypeCatalog + PolicyDecision
-    // extension — all additive (§5.0). (The canonical version pin is `test_contract_version_bumped_0_19_0`.)
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.19.0");
-}
-
 // ---- P2.1c L2 — the §6.1 PlanAck wire type (§2.5-seam snapshot, O-3) -----------------------
 
 fn sample_plan_ack() -> nexusops_shared::ipc::PlanAck {
@@ -1500,12 +1491,167 @@ fn test_catalog_and_policy_decision_field_snapshot() {
     );
 }
 
+// =====================================================================================
+// Phase 3.2-part-2 (brief 043) L1 — the §6.3 agent-mutation catalog family + the
+// adjudication-only outcome class (freeze; CONTRACT 0.21.0 → 0.22.0; §2.5-seam):
+//   • a new `ExecutorKind::Adjudication` — the adjudication-only marker: an agent-mutation
+//     ActionRequest TERMINATES at the verdict, NO daemon executor runs (the agent runs the
+//     tool; the daemon adjudicates + audits). INV-SEC-1 (the harness mutation chokepoint).
+//   • the 4 `agent.*` action types routed through the EXISTING catalog `lookup` (Option A —
+//     one chokepoint), each `executor == Adjudication`, with the Q2-conservative base risk:
+//     read-only `agent.file_read` = risk-0 (auto-allow — read-only ≠ mutation); the mutating
+//     `agent.bash`/`agent.file_edit`/`agent.mcp_tool` = risk-2 (→ require_approval by default).
+// BINDING: ARCHITECTURE §6.3 (ActionTypeCatalog) + §9.1 (the Claude adapter interception) + §15
+// (INV-SEC-1 #1/#5/#10). The MVP set stays 22 (the agent family is a SEPARATE machine-internal
+// const, AGENT_MUTATION_ACTION_TYPES); the params-sensitive deny-rules live in the policy (L4),
+// NOT the static catalog risk.
+// =====================================================================================
+
+// ---- 043 L1 RED #1 — the agent-mutation catalog family + the conservative base risk ----
+
 #[test]
-fn test_contract_version_bumped_0_18_0() {
-    // 0.17.0 = the 2.1c PlanAck; 0.18.0 = the 2.2 ActionTypeCatalog (+ its enums) + the
-    // PolicyDecision extension (required_approvals/constraints/safer_alt) — additive (§5.0).
-    // (The CURRENT canonical version pin is `test_contract_version_bumped_0_19_0`.)
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.19.0");
+fn test_agent_mutation_catalog_family() {
+    // spec(§6.3) — the 4 agent-mutation action types are catalogued (routed through the existing
+    // closed `lookup`, Option A), each `executor == Adjudication` (adjudication-only). The
+    // Q2-conservative base risk: read-only = risk-0 (auto-allow — read-only ≠ mutation); every
+    // MUTATING tool = risk-2 (→ require_approval by default, BEFORE the L4 params-sensitive deny-rules).
+    use nexusops_shared::actions::RiskLevel;
+    use nexusops_shared::catalog::{lookup, ExecutorKind, AGENT_MUTATION_ACTION_TYPES};
+
+    // the family is exactly the 4 named tools (the §9.1 matrix's interceptable Claude channels).
+    assert_eq!(
+        AGENT_MUTATION_ACTION_TYPES,
+        &[
+            "agent.bash",
+            "agent.file_edit",
+            "agent.file_read",
+            "agent.mcp_tool",
+        ],
+        "the agent-mutation family is the 4 §9.1 interceptable tool categories"
+    );
+
+    // every family member is catalogued + adjudication-only (NOT a real-executor namespace).
+    for at in AGENT_MUTATION_ACTION_TYPES {
+        let e =
+            lookup(at).unwrap_or_else(|| panic!("catalog missing the agent-mutation type {at}"));
+        assert_eq!(
+            e.executor,
+            ExecutorKind::Adjudication,
+            "{at} is adjudication-only (the daemon decides; no executor runs the tool)"
+        );
+    }
+
+    // the Q2-conservative base risk (read-only ≠ mutation): the read tool auto-allows (risk-0);
+    // every mutating tool requires approval by default (risk-2 — the deny-rules raise, never lower).
+    assert_eq!(
+        lookup("agent.file_read").unwrap().locked_risk,
+        RiskLevel::Level0,
+        "agent.file_read is read-only → risk-0 auto-allow (read-only ≠ mutation)"
+    );
+    for mutating in ["agent.bash", "agent.file_edit", "agent.mcp_tool"] {
+        assert_eq!(
+            lookup(mutating).unwrap().locked_risk,
+            RiskLevel::Level2,
+            "{mutating} mutates → risk-2 (require_approval by default; the L4 deny-rules raise/deny)"
+        );
+    }
+}
+
+// ---- 043 L1 RED #2 — the Adjudication outcome class (a distinct ExecutorKind; no executor binding) ----
+
+#[test]
+fn test_adjudication_outcome_class() {
+    // spec(§6.3) — `ExecutorKind::Adjudication` is a distinct, frozen catalog value (wire =
+    // `adjudication`). It marks the adjudication-only family: the ActionRequest terminates at the
+    // verdict, no daemon executor runs (pinned BEHAVIORALLY in L3 `tests/claude_intercept.rs` —
+    // no `queued`→`executing` for an Adjudication action). Here we pin the value exists + round-trips
+    // + is NOT one of the real-executor namespaces (Git/Github/Session/… run side effects; this does not).
+    use nexusops_shared::catalog::ExecutorKind;
+
+    assert!(
+        ExecutorKind::ALL.contains(&ExecutorKind::Adjudication),
+        "Adjudication is a frozen ExecutorKind value"
+    );
+    // wire value is the contract (LESSON §2): the snake_case `adjudication`.
+    assert_eq!(
+        serde_json::to_value(ExecutorKind::Adjudication).unwrap(),
+        serde_json::json!("adjudication"),
+        "ExecutorKind::Adjudication wire value = `adjudication`"
+    );
+    assert_eq!(
+        serde_json::from_value::<ExecutorKind>(serde_json::json!("adjudication")).unwrap(),
+        ExecutorKind::Adjudication,
+        "round-trips from the wire value"
+    );
+    // distinct from every real-executor namespace (those run side effects; adjudication never does).
+    for real in [
+        ExecutorKind::Brain,
+        ExecutorKind::Project,
+        ExecutorKind::Workflow,
+        ExecutorKind::Plan,
+        ExecutorKind::Session,
+        ExecutorKind::Git,
+        ExecutorKind::Github,
+        ExecutorKind::Linear,
+        ExecutorKind::Code,
+        ExecutorKind::Review,
+    ] {
+        assert_ne!(
+            real,
+            ExecutorKind::Adjudication,
+            "Adjudication is its own class, not a real-executor namespace"
+        );
+    }
+}
+
+// ---- 043 L1 RED #3 — the agent-mutation family snapshot (§2.5-seam: the catalog is line-138) ----
+
+#[test]
+fn test_agent_mutation_family_snapshot_spec_6_3() {
+    // spec(§6.3) — the §2.5-seam freeze guard for the agent-mutation extension. The agent family
+    // const + the per-type {executor, risk, params_schema_present} ARE the freeze; a drift fails here.
+    // The MVP set stays 22 (the agent family is a SEPARATE const — it never inflates the human-facing
+    // MVP catalog count, which other invariants pin). `params_schema_present=true` (the tool_input is
+    // a structured payload — NOT the §6.3/OQ-WP-5 null-schema floor).
+    use nexusops_shared::catalog::{lookup, AGENT_MUTATION_ACTION_TYPES, MVP_ACTION_TYPES};
+
+    assert_eq!(
+        MVP_ACTION_TYPES.len(),
+        22,
+        "the human-facing §6.3 MVP set stays 22 — the agent family is a separate machine-internal const"
+    );
+    assert_eq!(
+        AGENT_MUTATION_ACTION_TYPES.len(),
+        4,
+        "the agent-mutation family is the 4 §9.1 interceptable Claude tool categories"
+    );
+    // the agent family is DISJOINT from the MVP set (no name collision — distinct namespaces).
+    for at in AGENT_MUTATION_ACTION_TYPES {
+        assert!(
+            !MVP_ACTION_TYPES.contains(at),
+            "the agent-mutation type {at} is its own namespace, never in the human MVP set"
+        );
+        assert!(
+            lookup(at).unwrap().params_schema_present,
+            "{at} carries a structured tool_input schema (not the null-schema OQ-WP-5 floor)"
+        );
+    }
+    // §15 fail-closed for the agent namespace: an un-listed `agent.*` tool (a stray `lookup` arm
+    // with NO const entry, or a brand-new Claude tool the daemon hasn't classified) resolves to
+    // None → the policy DENIES it (never default-allows). Pins the closed domain in BOTH directions:
+    // the loop above checks every const member IS catalogued; this checks NON-members are NOT.
+    for unlisted in [
+        "agent.network",
+        "agent.write_file",
+        "agent.kill",
+        "agent.",
+        "agent.unknown",
+    ] {
+        assert!(
+            lookup(unlisted).is_none(),
+            "an un-listed agent tool `{unlisted}` must fail closed (None) — never a stray catalog entry"
+        );
+    }
 }
 
 // =====================================================================================
@@ -1682,11 +1828,440 @@ fn test_action_failure_family_field_snapshot() {
     expect_fields(&ActionError::AuditWriteFailed, &["kind"]);
 }
 
-// ---- 2.4 L1 RED #5 — CONTRACT_VERSION bumped to 0.19.0 (the additive event/taxonomy change) ----
+// =====================================================================================
+// Phase 3.1 L1 — §9.1 HarnessAdapter contract freeze (NEW: shared/src/harness.rs) +
+// the §7.1 TelemetrySampled event. The next §2.5-seam shared-contract freeze (line 138
+// lists the HarnessAdapter normalized types as a shared-contract model → snapshot-pinned).
+// Freezes the NORMALIZED RETURN TYPES both the Claude (3.2) + Codex (3.3) adapters map
+// INTO: TelemetrySample / MetricQuality / TranscriptRef / HarnessCapabilities + the
+// TelemetrySampled telemetry-observation event. (ResumeResult is DAEMON-INTERNAL, NOT frozen
+// here — resume/survival is a Phase-4 §8/§17 design; freezing it now would collide with the
+// ui's provisional ResumeMode at P4 = a breaking reshape the §2.5-seam discipline prevents.)
+// NormalizedStatus is NOT a new type —
+// it is the frozen §5.1 `Session` machine (status.rs:45). CONTRACT 0.19.0 → 0.20.0, additive.
+// Binding: ARCHITECTURE §9.1 + Appendix A rows (HarnessAdapter normalized types / capabilities)
+// + §7.1 (the new event). The HarnessAdapter TRAIT + coverage matrix are daemon-only (Q5) —
+// pinned in daemon/src/harness/mod.rs, not here.
+// =====================================================================================
+
+// ---- sample constructors (fully populated; Options = Some so the snapshot sees every key) --
+
+fn sample_telemetry_sample() -> nexusops_shared::harness::TelemetrySample {
+    use nexusops_shared::harness::{MetricQuality, TelemetrySample};
+    TelemetrySample {
+        tokens_in: 1_200,
+        tokens_out: 340,
+        context_pct: Some(42.5),
+        cost_estimate: 0.0187,
+        metric_quality: MetricQuality::Exact,
+    }
+}
+
+fn sample_transcript_ref() -> nexusops_shared::harness::TranscriptRef {
+    use nexusops_shared::harness::TranscriptRef;
+    TranscriptRef {
+        path: "~/.claude/projects/x/sess_01ARZ3NDEKTSV4RRFFQ69G5FAV.jsonl".to_string(),
+        hash: "sha256:abc123".to_string(),
+        is_in_place: true,
+    }
+}
+
+fn sample_harness_capabilities() -> nexusops_shared::harness::HarnessCapabilities {
+    use nexusops_shared::harness::HarnessCapabilities;
+    // every flag true so the field-name snapshot sees all 10 keys (PRD HARN-5).
+    HarnessCapabilities {
+        supports_terminal: true,
+        supports_resume: true,
+        supports_transcript_read: true,
+        supports_tool_call_parsing: true,
+        supports_usage_metadata: true,
+        supports_context_metadata: true,
+        supports_command_injection: true,
+        supports_subagents: true,
+        supports_hooks: true,
+        supports_cloud_tasks: true,
+    }
+}
+
+fn sample_telemetry_sampled() -> nexusops_shared::events::TelemetrySampled {
+    use nexusops_shared::events::TelemetrySampled;
+    TelemetrySampled {
+        sample: sample_telemetry_sample(),
+        model: Some("claude-opus-4-8".to_string()),
+        execution_profile_id: Some("prof_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+    }
+}
+
+// ---- 3.1 L1 RED #1 — the §2.5-seam normalized-type field-name snapshot (§9.1) ----
 
 #[test]
-fn test_contract_version_bumped_0_19_0() {
-    // 0.18.0 = the 2.2 catalog + PolicyDecision extension; 0.19.0 = the 2.4 §17 contract additions
-    // (the ActionPartiallySucceeded event + the structured ActionError on ActionFailed) — additive (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.19.0");
+fn test_harness_normalized_type_field_names_snapshot() {
+    // spec(§9.1) — §2.5-seam freeze guard (line 138 lists the HarnessAdapter normalized types as a
+    // shared-contract model). A field added/removed/renamed on any normalized type fails this
+    // snapshot. The expected sets ARE the checked-in freeze. (HarnessCapabilities has its own
+    // dedicated 10-field pin in `test_harness_capabilities_ten_fields`.)
+    expect_fields(
+        &sample_telemetry_sample(),
+        &[
+            "tokens_in",
+            "tokens_out",
+            "context_pct",
+            "cost_estimate",
+            "metric_quality",
+        ],
+    );
+    expect_fields(&sample_transcript_ref(), &["path", "hash", "is_in_place"]);
+    // (ResumeResult is daemon-internal — NOT in the shared freeze; see the section header.)
+    // the telemetry-observation event: identity (session_id/project_id/occurred_at) is on the
+    // envelope columns; the payload carries only the rollup dims the envelope lacks.
+    expect_fields(
+        &sample_telemetry_sampled(),
+        &["sample", "model", "execution_profile_id"],
+    );
+}
+
+// ---- 3.1 L1 RED #2 — MetricQuality wire values + reject-unknown (§9.1/§7.2/§11.7) ----
+
+#[test]
+fn test_metric_quality_wire_values() {
+    // spec(§9.1) — `metric_quality` is carried on ALL telemetry; the UsageMeter degrades off it
+    // (§11.7 — "exact" must never render over partially-estimated data). snake_case wire; reject-unknown.
+    use nexusops_shared::harness::MetricQuality;
+    check_values(MetricQuality::ALL, &["exact", "estimated", "unavailable"]);
+    assert!(serde_json::from_value::<MetricQuality>(serde_json::json!("nope")).is_err());
+}
+
+// ---- 3.1 L1 RED #3 — the TelemetrySampled event wire contract (§7.1/§5.0/§15) ----
+
+#[test]
+fn test_telemetry_sampled_wire_contract() {
+    // spec(§7.1) — EventTypeRegistry single-home + reject-unknown. Round-trips snake_case; an extra
+    // key fails closed (deny_unknown_fields); the event-type name has ONE home (the EVENT_TYPE const,
+    // the AuditIntegrityViolation precedent — adds no new bare string-literal to the emit/projector dup set).
+    use nexusops_shared::events::TelemetrySampled;
+    let v = sample_telemetry_sampled();
+    let j = serde_json::to_value(&v).unwrap();
+    assert_eq!(
+        serde_json::from_value::<TelemetrySampled>(j).unwrap(),
+        v,
+        "TelemetrySampled round-trips"
+    );
+    let mut rogue = serde_json::to_value(&v)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    rogue.insert("rogue".to_string(), serde_json::json!(1));
+    assert!(
+        serde_json::from_value::<TelemetrySampled>(serde_json::Value::Object(rogue)).is_err(),
+        "unknown field rejected (deny_unknown_fields, §5.0/§15)"
+    );
+    assert_eq!(TelemetrySampled::EVENT_TYPE, "TelemetrySampled");
+}
+
+// ---- 3.1 L1 RED #4 — NormalizedStatus IS the frozen §5.1 Session machine (no forked enum) ----
+
+#[test]
+fn test_normalized_status_is_session() {
+    // spec(§9.1) — status.rs:45: the §9.1 adapters map INTO `Session` (the driver-agnostic
+    // normalized vocabulary). NormalizedStatus must BE that frozen 17-state machine, not a fork.
+    use nexusops_shared::harness::NormalizedStatus;
+    use nexusops_shared::status::Session;
+    // type identity: a `Session` IS a `NormalizedStatus` (the re-export), so this compiles only if
+    // they are the same type — a forked enum would not (a compile-time anti-fork guard).
+    fn _identity(s: Session) -> NormalizedStatus {
+        s
+    }
+    // and it is exactly the 17 Session states (the §5.1 freeze), not a subset/superset.
+    assert_eq!(
+        NormalizedStatus::ALL.len(),
+        17,
+        "NormalizedStatus == the 17-state Session machine"
+    );
+    assert_eq!(NormalizedStatus::ALL, Session::ALL);
+}
+
+// ---- 3.1 L1 RED #7 — HarnessCapabilities pins exactly the 10 PRD HARN-5 fields ----
+
+#[test]
+fn test_harness_capabilities_ten_fields() {
+    // spec(§9.1) — Appendix A "HarnessCapabilities — 10 fields (PRD HARN-5)". The count AND the names
+    // are the freeze; a flag added/removed/renamed fails here. Drives per-capability UI degradation.
+    let caps = sample_harness_capabilities();
+    expect_fields(
+        &caps,
+        &[
+            "supports_terminal",
+            "supports_resume",
+            "supports_transcript_read",
+            "supports_tool_call_parsing",
+            "supports_usage_metadata",
+            "supports_context_metadata",
+            "supports_command_injection",
+            "supports_subagents",
+            "supports_hooks",
+            "supports_cloud_tasks",
+        ],
+    );
+    assert_eq!(
+        field_names(&caps).len(),
+        10,
+        "exactly 10 capability fields (PRD HARN-5)"
+    );
+}
+
+// ==== 3.4 L1 — the §6.4 Terminal Channel wire-contract freeze (CONTRACT 0.21.0) ================
+//
+// The §2.5-seam terminal frames (the GatewayPort/§6.4 wire surface is on the line-138 list): the
+// daemon→client output frame + the client→daemon input/control frames + the TerminalProcessExited
+// observation event. `data` is base64 (raw PTY bytes ride the unchanged 4-byte-len+JSON codec —
+// LESSON §7, no new framing). `terminal_id` is a wire String (an opaque daemon-minted runtime
+// handle — NOT one of the frozen-22 IDs; the L2 daemon newtype is internal; Step-2.5 Q1).
+
+fn sample_terminal_output_frame() -> nexusops_shared::ipc::TerminalOutputFrame {
+    use nexusops_shared::ipc::TerminalOutputFrame;
+    TerminalOutputFrame {
+        terminal_id: "term_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        seq: 7,
+        data: "aGVsbG8=".to_string(), // base64("hello") — raw PTY bytes, base64 over the JSON codec
+    }
+}
+
+fn sample_terminal_input_frame() -> nexusops_shared::ipc::TerminalInputFrame {
+    use nexusops_shared::ipc::TerminalInputFrame;
+    TerminalInputFrame {
+        terminal_id: "term_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        data: "bHMK".to_string(), // base64("ls\n")
+    }
+}
+
+fn sample_terminal_control_frame() -> nexusops_shared::ipc::TerminalControlFrame {
+    use nexusops_shared::ipc::{TerminalControlFrame, TerminalControlKind};
+    TerminalControlFrame {
+        terminal_id: "term_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        kind: TerminalControlKind::Pause,
+    }
+}
+
+fn sample_terminal_process_exited() -> nexusops_shared::events::TerminalProcessExited {
+    use nexusops_shared::events::TerminalProcessExited;
+    // The semantically-honest NORMAL-exit case (exit_code XOR signal — a signal kill is the mirror:
+    // exit_code:None, signal:Some). The field-name snapshot still sees every key because the struct
+    // has NO `skip_serializing_if` (LESSON §15 trap 3) — `signal:None` serializes as explicit `null`,
+    // so the key is present regardless of the value.
+    TerminalProcessExited {
+        terminal_id: "term_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        exit_code: Some(0),
+        signal: None,
+    }
+}
+
+// ---- 3.4 L1 RED #1 — the §2.5-seam terminal-frame field-name snapshot (§6.4) ----
+
+#[test]
+fn test_terminal_frame_field_names_snapshot() {
+    // spec(§6.4) — §2.5-seam freeze guard (line-138 lists the GatewayPort/§6.4 wire surface as a
+    // shared-contract model). A field added/removed/renamed on any terminal frame or the exit event
+    // fails this snapshot. The expected sets ARE the checked-in freeze.
+    expect_fields(
+        &sample_terminal_output_frame(),
+        &["terminal_id", "seq", "data"],
+    );
+    expect_fields(&sample_terminal_input_frame(), &["terminal_id", "data"]);
+    expect_fields(&sample_terminal_control_frame(), &["terminal_id", "kind"]);
+    // the PTY-death observation event: identity (session_id/occurred_at) is on the envelope columns;
+    // the payload carries only terminal_id + the OS-derived exit_code/signal (never output-parsed, #9).
+    expect_fields(
+        &sample_terminal_process_exited(),
+        &["terminal_id", "exit_code", "signal"],
+    );
+}
+
+// ---- 3.4 L1 RED #1b — the client→daemon input/control frames round-trip + reject-unknown (§6.4) ----
+
+#[test]
+fn test_terminal_input_control_frames_reject_unknown() {
+    // spec(§6.4) — `TerminalInputFrame` is the UNTRUSTED client→daemon ingress direction (keystrokes
+    // for the PTY child) → its fail-closed reject-unknown is the most security-relevant of the frames
+    // (#5.0/§15). `TerminalControlFrame` (pause/resume) is the same direction. Both carry
+    // `deny_unknown_fields`; pin round-trip + an extra-key rejection (the TerminalOutputFrame form).
+    use nexusops_shared::ipc::{TerminalControlFrame, TerminalInputFrame};
+    for (name, j) in [
+        (
+            "input",
+            serde_json::to_value(sample_terminal_input_frame()).unwrap(),
+        ),
+        (
+            "control",
+            serde_json::to_value(sample_terminal_control_frame()).unwrap(),
+        ),
+    ] {
+        // round-trip
+        if name == "input" {
+            let back: TerminalInputFrame = serde_json::from_value(j.clone()).unwrap();
+            assert_eq!(
+                back,
+                sample_terminal_input_frame(),
+                "input frame round-trips"
+            );
+        } else {
+            let back: TerminalControlFrame = serde_json::from_value(j.clone()).unwrap();
+            assert_eq!(
+                back,
+                sample_terminal_control_frame(),
+                "control frame round-trips"
+            );
+        }
+        // an extra key fails closed (deny_unknown_fields, §5.0/§15)
+        let mut rogue = j.as_object().unwrap().clone();
+        rogue.insert("rogue".to_string(), serde_json::json!(1));
+        let rogue = serde_json::Value::Object(rogue);
+        let rejected = match name {
+            "input" => serde_json::from_value::<TerminalInputFrame>(rogue).is_err(),
+            _ => serde_json::from_value::<TerminalControlFrame>(rogue).is_err(),
+        };
+        assert!(
+            rejected,
+            "{name} frame rejects an unknown field (fail-closed)"
+        );
+    }
+}
+
+// ---- 3.4 L1 RED #2 — TerminalControlKind wire values + reject-unknown (§6.4) ----
+
+#[test]
+fn test_terminal_control_kind_wire_values() {
+    // spec(§6.4) — the explicit app-level backpressure control frames §6.4 mandates: snake_case
+    // `pause`/`resume`, reject-unknown both ways (a typo'd control verb can't deserialize).
+    use nexusops_shared::ipc::TerminalControlKind;
+    check_values(TerminalControlKind::ALL, &["pause", "resume"]);
+    assert!(serde_json::from_value::<TerminalControlKind>(serde_json::json!("stop")).is_err());
+}
+
+// ---- 3.4 L1 RED #3 — ServerFrame::TerminalOutput fills the reserved §6.4 mux slot ----
+
+#[test]
+fn test_server_frame_terminal_output_tag() {
+    // spec(§6.4) — the reserved Terminal tag slot (the §6.4 `ServerFrame` mux) is filled additively:
+    // the internally-tagged `frame_type` discriminant serializes to "terminal_output" and the frame
+    // round-trips through the ServerFrame mux. (deny_unknown_fields reject-unknown is pinned on the
+    // bare TerminalOutputFrame below — the established `test_telemetry_sampled_wire_contract` form —
+    // not through the internally-tagged wrapper, which buffers content and is not a reliable
+    // deny_unknown surface.)
+    use nexusops_shared::ipc::{ServerFrame, TerminalOutputFrame};
+    let frame = ServerFrame::TerminalOutput(sample_terminal_output_frame());
+    let j = serde_json::to_value(&frame).unwrap();
+    assert_eq!(
+        j.get("frame_type").and_then(|v| v.as_str()),
+        Some("terminal_output"),
+        "the reserved §6.4 Terminal slot serializes as frame_type:\"terminal_output\""
+    );
+    // the inner frame's fields are flattened alongside the tag (internally-tagged newtype variant).
+    assert_eq!(
+        j.get("terminal_id").and_then(|v| v.as_str()),
+        Some("term_01ARZ3NDEKTSV4RRFFQ69G5FAV")
+    );
+    assert_eq!(j.get("seq").and_then(|v| v.as_u64()), Some(7));
+    // round-trips through the mux
+    match serde_json::from_value::<ServerFrame>(j).unwrap() {
+        ServerFrame::TerminalOutput(f) => assert_eq!(f, sample_terminal_output_frame()),
+        other => panic!("expected TerminalOutput, got {other:?}"),
+    }
+    // reject-unknown on the bare frame (fail-closed, §5.0/§15)
+    let mut rogue = serde_json::to_value(sample_terminal_output_frame())
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    rogue.insert("rogue".to_string(), serde_json::json!(1));
+    assert!(
+        serde_json::from_value::<TerminalOutputFrame>(serde_json::Value::Object(rogue)).is_err(),
+        "unknown field rejected on TerminalOutputFrame (deny_unknown_fields)"
+    );
+}
+
+// ---- 3.4 L1 RED #4 — the TerminalProcessExited event wire contract (§7.1/§5.0/§15) ----
+
+#[test]
+fn test_terminal_process_exited_wire_contract() {
+    // spec(§7.1) — EventTypeRegistry single-home + reject-unknown (the TelemetrySampled precedent).
+    // A non-mutation OBSERVATION event (the §17 PTY-death record; write-actor, NOT the Gateway).
+    use nexusops_shared::events::TerminalProcessExited;
+    let v = sample_terminal_process_exited();
+    let j = serde_json::to_value(&v).unwrap();
+    assert_eq!(
+        serde_json::from_value::<TerminalProcessExited>(j).unwrap(),
+        v,
+        "TerminalProcessExited round-trips"
+    );
+    let mut rogue = serde_json::to_value(&v)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    rogue.insert("rogue".to_string(), serde_json::json!(1));
+    assert!(
+        serde_json::from_value::<TerminalProcessExited>(serde_json::Value::Object(rogue)).is_err(),
+        "unknown field rejected (deny_unknown_fields, §5.0/§15)"
+    );
+    assert_eq!(TerminalProcessExited::EVENT_TYPE, "TerminalProcessExited");
+}
+
+// ---- 043 L5 RED — ActionDenied.approval_id is OPTIONAL (the A1 record-then-deny forensic event) ----
+
+#[test]
+fn test_action_denied_approval_id_optional() {
+    // spec(§7.1) — 043 L5 / A1: `ActionDenied.approval_id` is OPTIONAL. A HUMAN-deny carries
+    // `Some(appr_…)`; an agent deny-rule POLICY-deny (fired at submit, before any approval) carries
+    // `None`. Both round-trip; `None` OMITS the field (skip_serializing_if); deny_unknown_fields holds.
+    use nexusops_shared::events::ActionDenied;
+    // the policy-deny (no approval object): None omits the field.
+    let policy = ActionDenied {
+        approval_id: None,
+        reason: "agent-mutation deny-rule: rm -rf on a broad path".to_string(),
+    };
+    let j = serde_json::to_value(&policy).unwrap();
+    assert!(
+        j.get("approval_id").is_none(),
+        "a policy-deny (None) omits approval_id (skip_serializing_if)"
+    );
+    assert_eq!(
+        serde_json::from_value::<ActionDenied>(j).unwrap(),
+        policy,
+        "the policy-deny round-trips"
+    );
+    // the human-deny still carries Some(approval_id).
+    let human = ActionDenied {
+        approval_id: Some("appr_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        reason: "operator declined".to_string(),
+    };
+    let j2 = serde_json::to_value(&human).unwrap();
+    assert_eq!(
+        j2.get("approval_id").and_then(|v| v.as_str()),
+        Some("appr_01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+        "a human-deny carries Some(approval_id)"
+    );
+    assert_eq!(
+        serde_json::from_value::<ActionDenied>(j2).unwrap(),
+        human,
+        "the human-deny round-trips"
+    );
+    // reject-unknown holds.
+    assert!(
+        serde_json::from_value::<ActionDenied>(serde_json::json!({ "reason": "x", "extra": true }))
+            .is_err(),
+        "unknown field rejected (deny_unknown_fields, §5.0/§15)"
+    );
+}
+
+// ---- 043 L5 RED — CONTRACT_VERSION bumped to 0.23.0 (the ActionDenied.approval_id relax) ----
+
+#[test]
+fn test_contract_version_bumped_0_23_0() {
+    // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.22.0 =
+    // the 043 L1 §6.3 agent-mutation freeze; **0.23.0** = the 043 L5 / A1 relax of
+    // `ActionDenied.approval_id` to OPTIONAL (the agent deny-rule policy-deny audit event has no
+    // approval object) — additive-tolerant (the field becomes optional; un-consumed by ui, §5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.23.0");
 }

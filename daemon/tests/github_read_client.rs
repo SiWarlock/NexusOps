@@ -17,7 +17,8 @@
 use nexusops_shared::status::PullRequest;
 use nexusopsd::integrations::classifier::IntegrationOutcomeClass;
 use nexusopsd::integrations::github::{
-    extract_pr_signals, FakeGithubReadClient, GithubReadClient, GithubReadError,
+    extract_pr_signals, layer_review_decision, parse_review_decision, FakeGithubReadClient,
+    GithubReadClient, GithubReadError,
 };
 use nexusopsd::integrations::pull_request::{
     derive_pull_request_status, ChecksConclusion, GitHubMergeableState, Mergeability, PrState,
@@ -167,4 +168,114 @@ async fn fake_client_returns_canned_error() {
     // the §17 forward-constraint: the carried class is reachable + distinct (AuthFailed, not a
     // collapsed terminal) — the field the gated SyncFailed/auth_expired path branches on.
     assert_eq!(got.unwrap_err().class, IntegrationOutcomeClass::AuthFailed);
+}
+
+// ---- edges-010: GraphQL reviewDecision layering ------------------------------------------------
+
+#[test]
+fn parse_review_decision_known_values() {
+    // spec(§9): GitHub's GraphQL reviewDecision values decode (REVIEW_REQUIRED is GraphQL-only).
+    assert_eq!(
+        parse_review_decision(Some("REVIEW_REQUIRED")),
+        ReviewDecision::ReviewRequired
+    );
+    assert_eq!(
+        parse_review_decision(Some("APPROVED")),
+        ReviewDecision::Approved
+    );
+    assert_eq!(
+        parse_review_decision(Some("CHANGES_REQUESTED")),
+        ReviewDecision::ChangesRequested
+    );
+}
+
+#[test]
+fn parse_review_decision_none_and_unknown_floor() {
+    // spec(§9): None/null/unrecognized → None (edges-008 least-salient floor — never fabricate a decision).
+    assert_eq!(parse_review_decision(None), ReviewDecision::None);
+    assert_eq!(parse_review_decision(Some("FOO")), ReviewDecision::None);
+    assert_eq!(parse_review_decision(Some("")), ReviewDecision::None);
+}
+
+#[test]
+fn parse_review_decision_case_insensitive() {
+    // spec(§9): case-folded before match (edges-008/009 convention).
+    assert_eq!(
+        parse_review_decision(Some("review_required")),
+        ReviewDecision::ReviewRequired
+    );
+    assert_eq!(
+        parse_review_decision(Some("Approved")),
+        ReviewDecision::Approved
+    );
+    assert_eq!(
+        parse_review_decision(Some("Changes_Requested")),
+        ReviewDecision::ChangesRequested
+    );
+}
+
+/// Build REST-only signals with a chosen review aggregate (open / clean / no checks).
+fn rest_signals_with_review(reviews: &[ReviewState]) -> PullRequestSignals {
+    PullRequestSignals::from_github(
+        PrState::Open,
+        false,
+        false,
+        GitHubMergeableState::Clean,
+        reviews,
+        &[],
+    )
+}
+
+#[test]
+fn layer_review_required_overlays_onto_rest_none() {
+    // spec(§9): the core gap — REST aggregate None + GraphQL ReviewRequired → final ReviewRequired
+    // (REST reviews[] can never yield ReviewRequired).
+    let rest = rest_signals_with_review(&[]);
+    assert_eq!(rest.review, ReviewDecision::None);
+    let layered = layer_review_decision(rest, ReviewDecision::ReviewRequired);
+    assert_eq!(layered.review, ReviewDecision::ReviewRequired);
+}
+
+#[test]
+fn layer_graphql_overrides_stale_rest() {
+    // spec(§9): GraphQL reviewDecision is authoritative when present — Approved overrides a stale REST
+    // ChangesRequested aggregate.
+    let rest = rest_signals_with_review(&[ReviewState::ChangesRequested]);
+    assert_eq!(rest.review, ReviewDecision::ChangesRequested);
+    let layered = layer_review_decision(rest, ReviewDecision::Approved);
+    assert_eq!(layered.review, ReviewDecision::Approved);
+}
+
+#[test]
+fn layer_graphql_none_falls_back_to_rest() {
+    // spec(§9): GraphQL None = no decision / not reachable → the REST aggregate stands (identity overlay).
+    let rest = rest_signals_with_review(&[ReviewState::Approved]);
+    let layered = layer_review_decision(rest.clone(), ReviewDecision::None);
+    assert_eq!(layered, rest);
+    assert_eq!(layered.review, ReviewDecision::Approved);
+}
+
+#[test]
+fn layered_review_required_derives_needs_review() {
+    // spec(§5.1): the gap edges-009 left as Open — open/clean/no-reviews/checks-success + GraphQL
+    // ReviewRequired → derive == NeedsReview (the full REST→GraphQL-layered chain).
+    let rest = extract_pr_signals(&pr(PR_OPEN_CLEAN), &[], &[check(CHECK_SUCCESS)]);
+    assert_eq!(derive_pull_request_status(&rest), PullRequest::Open); // before layering
+    let layered = layer_review_decision(rest, ReviewDecision::ReviewRequired);
+    assert_eq!(
+        derive_pull_request_status(&layered),
+        PullRequest::NeedsReview
+    );
+}
+
+#[test]
+fn layer_review_decision_none_is_identity() {
+    // spec(§17): the best-effort degrade — a GraphQL failure is treated as None, so the layered signals
+    // equal the REST-only signals (the enrichment never loses the PR status). The live GraphQL round-trip
+    // is the fake-covered edge: not-tested-because (non-deterministic; degrade pinned deterministically here).
+    let rest = rest_signals_with_review(&[ReviewState::Approved]);
+    assert_eq!(
+        layer_review_decision(rest.clone(), ReviewDecision::None),
+        rest
+    );
 }

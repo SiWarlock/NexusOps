@@ -28,9 +28,10 @@ use async_trait::async_trait;
 use octocrab::models::checks::CheckRun;
 use octocrab::models::pulls::{MergeableState, PullRequest, Review, ReviewState};
 use octocrab::models::IssueState;
+use serde::Deserialize;
 
 use super::classifier::{classify, IntegrationOutcomeClass};
-use super::pull_request::{signals_from_github_response, PullRequestSignals};
+use super::pull_request::{signals_from_github_response, PullRequestSignals, ReviewDecision};
 
 // ---- the deterministic extraction core (fixture-driven) ----------------------------------------
 
@@ -109,6 +110,35 @@ fn review_state_str(state: &Option<ReviewState>) -> &'static str {
         Some(ReviewState::Open) => "OPEN",
         _ => "",
     }
+}
+
+// ---- edges-010: GraphQL reviewDecision layering ------------------------------------------------
+
+/// Decode GitHub's GraphQL `reviewDecision` string → `ReviewDecision`. `REVIEW_REQUIRED` is the
+/// GraphQL-only branch-protection signal (the REST `reviews[]` aggregate can never yield it). None /
+/// null / unrecognized → `None` (the least-salient floor — an unknown value never fabricates a
+/// decision). Case-insensitive (edges-008/009 convention).
+pub fn parse_review_decision(decision: Option<&str>) -> ReviewDecision {
+    match decision.map(|d| d.trim().to_ascii_lowercase()).as_deref() {
+        Some("approved") => ReviewDecision::Approved,
+        Some("changes_requested") => ReviewDecision::ChangesRequested,
+        Some("review_required") => ReviewDecision::ReviewRequired,
+        _ => ReviewDecision::None,
+    }
+}
+
+/// Overlay the GraphQL `reviewDecision` onto the REST-derived signals. GraphQL `reviewDecision` is
+/// GitHub's branch-protection-aware aggregate → authoritative WHEN PRESENT (non-`None`); a `None`
+/// decision (no protection / not reachable) keeps the REST `reviews[]` aggregate. This is the ONLY
+/// path that can set `ReviewRequired` (the REST `aggregate_reviews` is unchanged).
+pub fn layer_review_decision(
+    mut signals: PullRequestSignals,
+    graphql_decision: ReviewDecision,
+) -> PullRequestSignals {
+    if graphql_decision != ReviewDecision::None {
+        signals.review = graphql_decision;
+    }
+    signals
 }
 
 // ---- the read-client trait + fake + live octocrab impl -----------------------------------------
@@ -208,7 +238,11 @@ impl GithubReadClient for OctocrabGithubReadClient {
             }
             _ => Vec::new(),
         };
-        Ok(extract_pr_signals(&pr, &reviews.items, &check_runs))
+        let signals = extract_pr_signals(&pr, &reviews.items, &check_runs);
+        // Best-effort GraphQL enrichment: overlay reviewDecision (the only source of ReviewRequired).
+        // Any GraphQL failure degrades to None → the REST aggregate stands (never fails the read).
+        let decision = fetch_review_decision(&self.octocrab, owner, repo, pr_number).await;
+        Ok(layer_review_decision(signals, decision))
     }
 }
 
@@ -235,4 +269,53 @@ fn classify_octocrab_error(err: &octocrab::Error) -> IntegrationOutcomeClass {
         }
         _ => classify(None, None, false),
     }
+}
+
+/// Best-effort GraphQL fetch of a PR's `reviewDecision`. Uses GraphQL VARIABLES (NOT string
+/// interpolation) for the caller-supplied coords — injection-safe. ANY failure degrades to
+/// `ReviewDecision::None` → the REST aggregate stands (the enrichment never fails the whole read).
+/// Note: octocrab's high-level `graphql::<R>()` already folds a logical GraphQL error
+/// (`GraphqlResponse::Err`) into `Err(octocrab::Error::Graphql)`, so transport AND logical failures
+/// arrive as `Err(_)` — one degrade arm covers both. Not unit-tested (live HTTP — fake-covered, like
+/// the REST fetch); the deterministic `layer_review_decision(.., None)` degrade is pinned in tests.
+async fn fetch_review_decision(
+    octocrab: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+) -> ReviewDecision {
+    const QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewDecision}}}";
+    let payload = serde_json::json!({
+        "query": QUERY,
+        "variables": { "owner": owner, "name": repo, "number": pr_number },
+    });
+    match octocrab.graphql::<ReviewDecisionData>(&payload).await {
+        Ok(data) => parse_review_decision(
+            data.repository
+                .and_then(|r| r.pull_request)
+                .and_then(|p| p.review_decision)
+                .as_deref(),
+        ),
+        Err(_) => ReviewDecision::None,
+    }
+}
+
+/// The `data` payload of the reviewDecision query (octocrab's `graphql()` returns the inner `data`).
+/// Every node is optional → a missing field degrades to `None` (best-effort).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewDecisionData {
+    repository: Option<RepositoryNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RepositoryNode {
+    pull_request: Option<PullRequestNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PullRequestNode {
+    review_decision: Option<String>,
 }

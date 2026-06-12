@@ -659,3 +659,460 @@ fn test_catch_up_replay_noop_when_offsets_current() {
         "counter not re-incremented: {after}"
     );
 }
+
+// ======================= P3.1 — UsageLedger projector (tests 17–23) ==================
+//
+// The `proj_usage_ledger` projector folds `TelemetrySampled` events into per-day usage
+// rollups (§7/§7.2/§18). Driven here through the REAL append path (registered in
+// `projectors()` → runs in the in-band fan-out), so these also prove reachability.
+// rollup key `ledger_id` = (project, session, profile, model, bucket_day);
+// tokens/cost SUM; context_pct_max = MAX; metric_quality = worst-wins.
+
+use nexusops_shared::events::TelemetrySampled;
+use nexusops_shared::harness::{MetricQuality, TelemetrySample};
+
+/// a TelemetrySampled intent: identity (session/project/occurred_at) on the envelope; the rollup
+/// dims the envelope lacks (model/execution_profile_id) + the sample in the payload. source = UsageMeter.
+fn telemetry_intent(
+    session_id: &SessionId,
+    project_id: &ProjectId,
+    occurred_at: &str,
+    payload: &TelemetrySampled,
+) -> AppendIntent {
+    let mut i = intent(&serde_json::to_string(payload).unwrap());
+    i.event_type = "TelemetrySampled".to_string();
+    i.occurred_at = occurred_at.to_string();
+    i.session_id = Some(session_id.clone());
+    i.project_id = Some(project_id.clone());
+    i.source_type = SourceType::UsageMeter;
+    i
+}
+
+fn sampled(
+    tokens_in: u64,
+    tokens_out: u64,
+    context_pct: Option<f32>,
+    cost_estimate: f64,
+    metric_quality: MetricQuality,
+    model: &str,
+    profile: &str,
+) -> TelemetrySampled {
+    TelemetrySampled {
+        sample: TelemetrySample {
+            tokens_in,
+            tokens_out,
+            context_pct,
+            cost_estimate,
+            metric_quality,
+        },
+        model: Some(model.to_string()),
+        execution_profile_id: Some(profile.to_string()),
+    }
+}
+
+/// the one usage row for a session (panics if != 1 row) — (tokens_in, tokens_out, ctx_max, cost, quality, bucket_day).
+fn usage_row(
+    path: &std::path::Path,
+    session_id: &str,
+) -> (i64, i64, Option<f64>, f64, String, String) {
+    nexusopsd::eventstore::open_read_only(path)
+        .unwrap()
+        .query_row(
+            "SELECT tokens_in, tokens_out, context_pct_max, cost_estimate, metric_quality, bucket_day \
+             FROM proj_usage_ledger WHERE session_id=?1",
+            [session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .unwrap()
+}
+
+/// a stable fingerprint of the whole usage-ledger surface (for rebuild-equivalence).
+fn usage_fingerprint(path: &std::path::Path) -> String {
+    let conn = nexusopsd::eventstore::open_read_only(path).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT ledger_id, tokens_in, tokens_out, context_pct_max, cost_estimate, metric_quality \
+             FROM proj_usage_ledger ORDER BY ledger_id",
+        )
+        .unwrap();
+    let rows: Vec<String> = stmt
+        .query_map([], |r| {
+            Ok(format!(
+                "{}|in={}|out={}|ctx={:?}|cost={}|q={}",
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Option<f64>>(3)?,
+                r.get::<_, f64>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    rows.join(",")
+}
+
+// ---- Test 17 — one TelemetrySampled folds one usage row with the right dims+values (§7/§18) ----
+
+#[test]
+fn test_usage_projector_folds_single_sample() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    let s = sampled(
+        1200,
+        340,
+        Some(42.5),
+        0.5,
+        MetricQuality::Exact,
+        "claude-opus-4-8",
+        "prof_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    );
+    store
+        .append(telemetry_intent(&sid, &pid, "2026-06-08T12:00:00Z", &s))
+        .unwrap();
+
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_usage_ledger"),
+        1,
+        "one sample → one rollup row"
+    );
+    let (ti, to, ctx, cost, q, day) = usage_row(&path, sid.as_str());
+    assert_eq!((ti, to), (1200, 340), "tokens recorded");
+    assert_eq!(ctx, Some(42.5), "context_pct_max gauge");
+    assert_eq!(cost, 0.5, "cost recorded");
+    assert_eq!(q, "exact", "metric_quality wire string");
+    assert_eq!(
+        day, "2026-06-08",
+        "bucket_day = the UTC date of occurred_at"
+    );
+    // wired + reachable: the projector advanced its offset in the same txn (§2.4)
+    assert_eq!(offset(&path, "usage_ledger"), (1, "healthy".to_string()));
+}
+
+// ---- Test 18 — same (project,session,profile,model,day) accumulates; ctx=MAX; quality=worst ----
+
+#[test]
+fn test_usage_projector_accumulates_tokens_and_cost() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    let profile = "prof_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    let a = sampled(
+        100,
+        50,
+        Some(30.0),
+        0.5,
+        MetricQuality::Exact,
+        "claude-opus-4-8",
+        profile,
+    );
+    let b = sampled(
+        200,
+        70,
+        Some(45.0),
+        0.25,
+        MetricQuality::Estimated,
+        "claude-opus-4-8",
+        profile,
+    );
+    store
+        .append(telemetry_intent(&sid, &pid, "2026-06-08T08:00:00Z", &a))
+        .unwrap();
+    store
+        .append(telemetry_intent(&sid, &pid, "2026-06-08T09:00:00Z", &b))
+        .unwrap();
+
+    // same rollup key → ONE row that accumulates
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_usage_ledger"),
+        1,
+        "same key → one accumulating row"
+    );
+    let (ti, to, ctx, cost, q, _day) = usage_row(&path, sid.as_str());
+    assert_eq!((ti, to), (300, 120), "tokens_in/out SUM across the bucket");
+    assert_eq!(cost, 0.75, "cost_estimate SUMs");
+    assert_eq!(
+        ctx,
+        Some(45.0),
+        "context_pct_max takes the MAX (a gauge, not a sum)"
+    );
+    assert_eq!(
+        q, "estimated",
+        "metric_quality is worst-wins (any estimated → estimated; §11.7)"
+    );
+}
+
+// ---- Test 18b — context_pct_max MAX is NULL-safe across None/Some orderings (the hot CASE) ----
+
+#[test]
+fn test_usage_projector_context_pct_max_null_orderings() {
+    // the `context_pct_max` upsert CASE must survive every None/Some ordering in one bucket —
+    // SQLite `MAX(a, b)` returns NULL if EITHER arg is NULL, so the CASE guards the NULL arms.
+    // Sequence: None (INSERT stores NULL) → Some(40) (None→Some: takes the new) → None (Some→None:
+    // KEEPS the existing max, must NOT be wiped to NULL).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    let profile = "prof_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    let none_sample = sampled(
+        10,
+        5,
+        None,
+        0.0,
+        MetricQuality::Unavailable,
+        "claude-opus-4-8",
+        profile,
+    );
+    let some_sample = sampled(
+        10,
+        5,
+        Some(40.0),
+        0.0,
+        MetricQuality::Exact,
+        "claude-opus-4-8",
+        profile,
+    );
+    for (occurred, s) in [
+        ("2026-06-08T08:00:00Z", &none_sample), // INSERT with NULL context
+        ("2026-06-08T09:00:00Z", &some_sample), // None→Some: stores 40
+        ("2026-06-08T10:00:00Z", &none_sample), // Some→None: keeps 40 (not wiped to NULL)
+    ] {
+        store
+            .append(telemetry_intent(&sid, &pid, occurred, s))
+            .unwrap();
+    }
+
+    let (_ti, _to, ctx, _cost, _q, _day) = usage_row(&path, sid.as_str());
+    assert_eq!(
+        ctx,
+        Some(40.0),
+        "context_pct_max = MAX over present gauges; a later None sample never wipes it to NULL"
+    );
+}
+
+// ---- Test 19 — different occurred_at UTC dates bucket into distinct rows ----
+
+#[test]
+fn test_usage_projector_buckets_by_day() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    let profile = "prof_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    let s = sampled(
+        10,
+        10,
+        Some(5.0),
+        0.5,
+        MetricQuality::Exact,
+        "claude-opus-4-8",
+        profile,
+    );
+    store
+        .append(telemetry_intent(&sid, &pid, "2026-06-08T23:00:00Z", &s))
+        .unwrap();
+    store
+        .append(telemetry_intent(&sid, &pid, "2026-06-09T01:00:00Z", &s))
+        .unwrap();
+
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_usage_ledger"),
+        2,
+        "two UTC dates → two day-buckets"
+    );
+    let days: std::collections::BTreeSet<String> = {
+        let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT bucket_day FROM proj_usage_ledger")
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    assert!(days.contains("2026-06-08") && days.contains("2026-06-09"));
+}
+
+// ---- Test 20 — same session, different model → distinct ledger rows ----
+
+#[test]
+fn test_usage_projector_distinct_model_distinct_row() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    let profile = "prof_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    let claude = sampled(
+        10,
+        5,
+        Some(5.0),
+        0.5,
+        MetricQuality::Exact,
+        "claude-opus-4-8",
+        profile,
+    );
+    let codex = sampled(
+        20,
+        8,
+        None,
+        0.25,
+        MetricQuality::Estimated,
+        "gpt-5.5-codex",
+        profile,
+    );
+    store
+        .append(telemetry_intent(
+            &sid,
+            &pid,
+            "2026-06-08T08:00:00Z",
+            &claude,
+        ))
+        .unwrap();
+    store
+        .append(telemetry_intent(&sid, &pid, "2026-06-08T09:00:00Z", &codex))
+        .unwrap();
+
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_usage_ledger"),
+        2,
+        "distinct model → distinct ledger_id row (model is a rollup dim)"
+    );
+}
+
+// ---- Test 21 — rebuild reproduces identical rollups (§7.2 rebuild-equivalence) ----
+
+#[test]
+fn test_usage_projector_rebuild_idempotent() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    let profile = "prof_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    // two into one bucket (accumulate) + one into another (distinct model)
+    store
+        .append(telemetry_intent(
+            &sid,
+            &pid,
+            "2026-06-08T08:00:00Z",
+            &sampled(
+                100,
+                40,
+                Some(20.0),
+                0.5,
+                MetricQuality::Exact,
+                "claude-opus-4-8",
+                profile,
+            ),
+        ))
+        .unwrap();
+    store
+        .append(telemetry_intent(
+            &sid,
+            &pid,
+            "2026-06-08T10:00:00Z",
+            &sampled(
+                150,
+                60,
+                Some(35.0),
+                0.25,
+                MetricQuality::Estimated,
+                "claude-opus-4-8",
+                profile,
+            ),
+        ))
+        .unwrap();
+    store
+        .append(telemetry_intent(
+            &sid,
+            &pid,
+            "2026-06-08T11:00:00Z",
+            &sampled(
+                20,
+                8,
+                None,
+                0.125,
+                MetricQuality::Unavailable,
+                "gpt-5.5-codex",
+                profile,
+            ),
+        ))
+        .unwrap();
+
+    let incremental = usage_fingerprint(&path);
+    store.rebuild_projections().unwrap();
+    let rebuilt = usage_fingerprint(&path);
+    assert_eq!(
+        incremental, rebuilt,
+        "a full rebuild reproduces the incremental SUM/MAX/worst-wins rollups (each event folded once)"
+    );
+    // sanity: the accumulating bucket really did SUM (not a no-op fingerprint)
+    assert!(
+        incremental.contains("in=250|out=100"),
+        "claude bucket SUMmed: {incremental}"
+    );
+}
+
+// ---- Test 22 — a non-TelemetrySampled event is a healthy no-op (no row, no degrade) ----
+
+#[test]
+fn test_usage_projector_ignores_other_event_types() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    store
+        .append(session_intent(
+            &SessionId::new(),
+            &ProjectId::new(),
+            "{\"status\":\"starting\"}",
+        ))
+        .unwrap();
+
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_usage_ledger"),
+        0,
+        "SessionStarted writes no usage row"
+    );
+    // healthy no-op: the projector advanced past the event WITHOUT degrading (the session.rs precedent)
+    assert_eq!(
+        offset(&path, "usage_ledger"),
+        (1, "healthy".to_string()),
+        "advanced, healthy (a foreign event is a no-op, not a degrade)"
+    );
+}
+
+// ---- Test 23 — a malformed TelemetrySampled payload degrades-skips (Decode); no raw bytes leaked ----
+
+#[test]
+fn test_usage_projector_rejects_unbinding_payload() {
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    // a TelemetrySampled event whose payload does NOT bind (missing `sample`, unknown keys) — the
+    // §15 reject-unknown / Decode path. The payload still passes the (structure-agnostic) redactor.
+    let mut i = intent("{\"not_a_sample\":true}");
+    i.event_type = "TelemetrySampled".to_string();
+    i.occurred_at = "2026-06-08T12:00:00Z".to_string();
+    i.session_id = Some(sid.clone());
+    i.project_id = Some(pid.clone());
+    i.source_type = SourceType::UsageMeter;
+    store.append(i).unwrap();
+
+    // the usage projector Decode-failed → degraded + skipped (no row); the append still succeeded
+    // and the raw event persisted (a projector never corrupts the spine, §7.2).
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_usage_ledger"),
+        0,
+        "no row from an unbinding payload"
+    );
+    assert_eq!(
+        offset(&path, "usage_ledger"),
+        (0, "degraded".to_string()),
+        "degraded, offset not advanced (savepoint rolled row+offset back together)"
+    );
+    assert_eq!(store.read_all().unwrap().len(), 1, "raw event intact");
+}

@@ -7,11 +7,16 @@
 //! clean` — dirty masks divergence). A non-git / inaccessible path yields `None` (typed absence — a
 //! worktree has no git state). The `proj_worktree` projector (the gated 5.2-remainder) consumes
 //! these plus `precedence::derive_worktree_status`.
+//!
+//! `read_diff` (file-level `FileChange`, working-tree-vs-ref or ref-vs-ref) and `read_log` (a bounded
+//! newest-first `CommitInfo` list) complete the §9 `status/diff/log/branch` read set; both are git2
+//! read-only and degrade to an empty list on a non-git path.
 
 use std::path::Path;
 
-use git2::{Oid, Repository, StatusOptions};
+use git2::{Delta, DiffOptions, Oid, Patch, Repository, Sort, StatusOptions};
 use nexusops_shared::status::WorktreeGit;
+use nexusops_shared::time::Timestamp;
 
 /// The daemon-internal git-truth read for a worktree (feeds `proj_worktree`: `dirty_state` = the
 /// `git_axis` wire value, plus `branch_name`/`last_commit_sha`/`ahead_count`/`behind_count`).
@@ -138,5 +143,189 @@ fn resolve_git_axis(
         WorktreeGit::AheadOfBase
     } else {
         WorktreeGit::Clean
+    }
+}
+
+// ---- diff + log (§9 read backend) ------------------------------------------
+
+/// A file-level change in a diff. File-level granularity; per-hunk diffs are a 7.2-adjacent slice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChange {
+    /// The changed file's path, relative to the repo root.
+    pub path: String,
+    /// The kind of change.
+    pub change_kind: ChangeKind,
+    /// Lines added in this file.
+    pub additions: usize,
+    /// Lines deleted in this file.
+    pub deletions: usize,
+}
+
+/// The kind of file change. Rename/copy detection is OFF for the MVP (no git2 `find_similar`) → a
+/// rename reads as Delete + Add; any non-core git2 delta collapses to `Other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    Other,
+}
+
+impl ChangeKind {
+    fn from_delta(status: Delta) -> Self {
+        match status {
+            // an untracked working-tree file is an addition relative to the base tree
+            Delta::Added | Delta::Untracked => ChangeKind::Added,
+            Delta::Modified | Delta::Typechange => ChangeKind::Modified,
+            Delta::Deleted => ChangeKind::Deleted,
+            _ => ChangeKind::Other,
+        }
+    }
+}
+
+/// One commit in a `read_log` walk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitInfo {
+    /// The commit's 40-hex sha.
+    pub sha: String,
+    /// The commit message's first line.
+    pub summary: String,
+    /// The author as `name <email>`.
+    pub author: String,
+    /// The commit time as an RFC3339-Z `Timestamp`; `None` only for an out-of-range epoch.
+    pub timestamp: Option<Timestamp>,
+}
+
+/// Read a file-level diff at `path` (READ-ONLY). `(from, to)` selects the target: `(None, None)` =
+/// working-tree-vs-HEAD; `(Some(base), Some(head))` = ref-vs-ref; `(Some(base), None)` = base-vs-
+/// working-tree. A non-git path, a clean tree, or an unresolvable ref → an empty list (the §7.2
+/// consumer establishes git-ness first via `detect_git`/`read_worktree_status`).
+pub fn read_diff(path: &Path, from: Option<&str>, to: Option<&str>) -> Vec<FileChange> {
+    let Ok(repo) = Repository::discover(path) else {
+        return Vec::new();
+    };
+    let mut opts = DiffOptions::new();
+    // `show_untracked_content` so a new working-tree file gets real line counts (without it,
+    // `Patch::from_diff` is `None` for an untracked delta → counts silently read 0).
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
+
+    let from_tree = resolve_tree(&repo, from);
+    let diff = match to {
+        // ref-vs-ref
+        Some(to_ref) => match (from_tree, resolve_tree(&repo, Some(to_ref))) {
+            (Some(f), Some(t)) => repo.diff_tree_to_tree(Some(&f), Some(&t), Some(&mut opts)),
+            _ => return Vec::new(),
+        },
+        // base (or HEAD) -vs- working tree — `_with_index` = `git diff <tree>` semantics (accounts
+        // for the index, so staged-only changes show too), not bare tree-vs-workdir.
+        None => match from_tree {
+            Some(f) => repo.diff_tree_to_workdir_with_index(Some(&f), Some(&mut opts)),
+            None => return Vec::new(), // unborn HEAD + no base → nothing to diff
+        },
+    };
+    let Ok(diff) = diff else {
+        return Vec::new();
+    };
+
+    diff.deltas()
+        .enumerate()
+        .map(|(i, delta)| {
+            let (additions, deletions) = line_counts(&diff, i);
+            FileChange {
+                path: delta
+                    .new_file()
+                    .path()
+                    .or_else(|| delta.old_file().path())
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                change_kind: ChangeKind::from_delta(delta.status()),
+                additions,
+                deletions,
+            }
+        })
+        .collect()
+}
+
+/// Per-file `(additions, deletions)` for delta `idx`; `(0, 0)` for a binary file or a stats failure.
+fn line_counts(diff: &git2::Diff, idx: usize) -> (usize, usize) {
+    match Patch::from_diff(diff, idx) {
+        Ok(Some(patch)) => match patch.line_stats() {
+            Ok((_, additions, deletions)) => (additions, deletions),
+            Err(_) => (0, 0),
+        },
+        _ => (0, 0),
+    }
+}
+
+/// Read a bounded, newest-first commit log from `start` (a ref; `None` = HEAD), capped at `limit`.
+/// READ-ONLY. A non-git path, an unborn HEAD, or an unresolvable ref → an empty list. `limit` bounds
+/// the lazy revwalk — no full-history walk.
+pub fn read_log(path: &Path, start: Option<&str>, limit: usize) -> Vec<CommitInfo> {
+    let Ok(repo) = Repository::discover(path) else {
+        return Vec::new();
+    };
+    let start_oid = match start {
+        Some(r) => repo
+            .revparse_single(r)
+            .ok()
+            .and_then(|obj| obj.peel_to_commit().ok())
+            .map(|commit| commit.id()),
+        None => repo
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_commit().ok())
+            .map(|commit| commit.id()),
+    };
+    let Some(start_oid) = start_oid else {
+        return Vec::new(); // unborn HEAD / unresolvable ref
+    };
+    let Ok(mut walk) = repo.revwalk() else {
+        return Vec::new();
+    };
+    if walk.set_sorting(Sort::TIME).is_err() || walk.push(start_oid).is_err() {
+        return Vec::new();
+    }
+    walk.filter_map(Result::ok)
+        .take(limit)
+        .filter_map(|oid| repo.find_commit(oid).ok())
+        .map(|commit| {
+            let author = commit.author();
+            CommitInfo {
+                sha: commit.id().to_string(),
+                // git2 0.21: `Commit::summary` is `Result<Option<&str>, Error>` (Err on non-UTF-8).
+                summary: commit
+                    .summary()
+                    .ok()
+                    .flatten()
+                    .map(str::to_owned)
+                    .unwrap_or_default(),
+                author: format!(
+                    "{} <{}>",
+                    author.name().unwrap_or_default(),
+                    author.email().unwrap_or_default()
+                ),
+                timestamp: commit_timestamp(&commit),
+            }
+        })
+        .collect()
+}
+
+/// The commit time as an RFC3339-Z `Timestamp`; `None` only for an out-of-range epoch
+/// (`from_unix_timestamp` is theoretically fallible — keeps the read no-unwrap).
+fn commit_timestamp(commit: &git2::Commit) -> Option<Timestamp> {
+    let dt = time::OffsetDateTime::from_unix_timestamp(commit.time().seconds()).ok()?;
+    let rfc3339 = dt
+        .format(&time::format_description::well_known::Rfc3339)
+        .ok()?;
+    Timestamp::parse(&rfc3339).ok()
+}
+
+/// Resolve `refspec` (or HEAD when `None`) to its tree; `None` if it won't resolve (e.g. unborn HEAD).
+fn resolve_tree<'r>(repo: &'r Repository, refspec: Option<&str>) -> Option<git2::Tree<'r>> {
+    match refspec {
+        Some(r) => repo.revparse_single(r).ok()?.peel_to_tree().ok(),
+        None => repo.head().ok()?.peel_to_tree().ok(),
     }
 }

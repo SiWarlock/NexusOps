@@ -56,6 +56,12 @@
 
 ---
 
+### D5 — eventstore-migration cross-track contention → adopt Option A (defer edges migrations to the coordinated phase-exit) · 2026-06-12 (R3 closeout)
+**Finding (orch, edges-006 §FINDING):** edges' next-planned line (registry + `integration_connections` migrations) would be edges' FIRST eventstore migration. `user_version` is a single GLOBAL linear sequence shared by all tracks (one daemon, one DB). Both edges + daemon at user_version 8; daemon's P4 will claim `MIGRATION_9`/v9 independently → phase-exit merge = two `MIGRATION_9` defs = hard merge + runtime schema-version conflict.
+**Decision (edges-side, within authority): Option A — edges adds NO eventstore migration until the coordinated P5/P7.1 phase-exit merge**, where the daemon track (eventstore-schema owner) assigns coordinated migration numbers. Rationale: the `integration_connections` migration is **consumer-less forward-laying** (no in-lane consumer until the gated wiring — populated only by a gated Gateway action + gated `IntegrationConnectionRegistered` event + gated projector), so deferral is FREE; keeps edges' pure-read posture; coordinates once. Rejected B (claim a number now) — more fragile, needs active cross-track coordination + still risks drift; reserved-range-per-track impossible (user_version strictly sequential). **Surfaced to the user at closeout for confirm/override at restart.** *Sub-note: `integration_connections.connection_id` uses a `conn_` prefix NOT in the frozen-22 IDs (confirmed absent from shared/) → likely daemon-internal; the frozen-22 determination (+ whether the UI consumes `connection_id`) is made when the gated population/UI slice lands.*
+
+---
+
 ## Referrals (cross-track / require the user or daemon track — I cannot execute)
 
 ### R1 — to the daemon track (via user on return) · 2026-06-12

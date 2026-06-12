@@ -25,7 +25,7 @@ use nexusops_shared::time::Timestamp;
 
 use crate::eventstore::EventStore;
 use crate::gateway::Gateway;
-use crate::harness::MutationVerdict;
+use crate::harness::{coverage_of, Harness, MutationChannel, MutationCoverage, MutationVerdict};
 
 /// The subset of the Claude `PreToolUse` hook payload the receiver consumes. The daemon-wired hook
 /// pipes the FULL JSON on stdin; the extra fields (`cwd`/`transcript_path`/`hook_event_name`/…) are
@@ -55,12 +55,69 @@ pub struct HookPayload {
 pub enum DenyReason {
     /// `permission_mode != "default"` — interception is only guaranteed in default mode (O-13 #10).
     NonDefaultMode,
-    /// the tool is not a recognized interceptable DIRECT mutation: an unknown tool, OR a not-Direct
-    /// category (MCP / `Task` subagent) which L4 denies via the §9.1 coverage matrix + the launch
-    /// `permissions.deny` baseline. Conservative: anything not a covered direct tool is denied.
+    /// a RECOGNIZED tool whose §9.1 mutation channel is NOT reliably interceptable in default mode (MCP
+    /// = BestEffort, `Task` subagent = NotGuaranteed, background subagent = Unsupported #27203) → the
+    /// O-13 coverage-gap deny (the matrix disposition; the launch `permissions.deny` is the
+    /// hook-independent second layer). Distinct from `UnmappedTool` so the operator sees WHY.
+    CoverageGap,
+    /// an UNKNOWN tool (not a classified Claude tool the receiver maps) — fail-closed (a new Claude tool
+    /// must be classified before it is permitted).
     UnmappedTool,
     /// the hook payload did not parse (truncated / missing a required field / wrong type).
     Malformed,
+}
+
+/// The O-13 coverage-gap disposition for a §9.1 (Claude, channel) cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disposition {
+    /// the hook reliably intercepts → route the tool through the Gateway for adjudication.
+    Adjudicate,
+    /// the hook does NOT reliably intercept (a bypass risk) → DENY (the launch `permissions.deny` is
+    /// the hook-independent second layer).
+    Deny,
+}
+
+/// The §9.1 coverage-matrix disposition for a (Claude, channel) cell's `coverage` in `permission_mode`
+/// (O-13). **Lead-ratified conservative ruling:** ADJUDICATE only when the hook reliably intercepts —
+/// `Guaranteed` (Codex direct/mcp) or `GuaranteedInDefaultMode` (Claude direct, default mode); DENY
+/// every weaker cell — `BestEffort` (Claude MCP — best-effort ≠ reliable; a default-mode hook-MISS
+/// could silently proceed), `NotGuaranteed` (subagent), `Unsupported` (background subagent #27203),
+/// `NotApplicable`. A non-`default` mode → Deny REGARDLESS (interception isn't guaranteed outside it).
+/// The launch `permissions.deny` baseline is the hook-INDEPENDENT second layer for the denied channels.
+pub fn disposition(coverage: MutationCoverage, permission_mode: &str) -> Disposition {
+    if permission_mode != "default" {
+        return Disposition::Deny;
+    }
+    match coverage {
+        MutationCoverage::Guaranteed | MutationCoverage::GuaranteedInDefaultMode => {
+            Disposition::Adjudicate
+        }
+        MutationCoverage::BestEffort
+        | MutationCoverage::NotGuaranteed
+        | MutationCoverage::Unsupported
+        | MutationCoverage::NotApplicable => Disposition::Deny,
+    }
+}
+
+/// Classify a Claude tool name into its §9.1 mutation channel + (for an interceptable DIRECT tool) its
+/// agent-mutation `action_type`. `None` = an UNKNOWN tool (not a classified Claude tool → fail-closed
+/// deny). The DIRECT tools carry an action_type; MCP / `Task` carry their channel but no action_type
+/// (their channel's coverage denies them — only the Adjudicate disposition consumes the action_type).
+fn classify_tool(tool_name: &str) -> Option<(MutationChannel, Option<&'static str>)> {
+    match tool_name {
+        "Bash" => Some((MutationChannel::DirectToolUse, Some("agent.bash"))),
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
+            Some((MutationChannel::DirectToolUse, Some("agent.file_edit")))
+        }
+        "Read" | "Glob" | "Grep" => Some((MutationChannel::DirectToolUse, Some("agent.file_read"))),
+        // the DENIED channels carry NO action_type — their coverage (BestEffort / NotGuaranteed) denies
+        // them, so an action_type would be dead. Returning `None` keeps it that way STRUCTURALLY: if a
+        // future edit ever made these Adjudicate-eligible, the `action_type.ok_or(UnmappedTool)` on the
+        // Adjudicate arm fails CLOSED (no silent resurrection of an un-interceptable channel — INV-SEC-1).
+        "Task" => Some((MutationChannel::Subagent, None)),
+        t if t.starts_with("mcp__") => Some((MutationChannel::McpTool, None)),
+        _ => None,
+    }
 }
 
 /// Parse a raw `PreToolUse` hook payload (the JSON the daemon-wired hook pipes on stdin). A parse
@@ -71,24 +128,28 @@ pub fn parse_payload(json: &str) -> Result<HookPayload, DenyReason> {
 }
 
 /// Map a parsed hook payload to its agent-mutation `action_type` (a catalog `agent.*` key — L1), or a
-/// typed [`DenyReason`] (fail-closed). **The mode gate precedes the tool map** (O-13 #10 — a
-/// non-`default` mode is a deny regardless of the tool). The DIRECT, hook-interceptable tools map to
-/// their action_type; everything else (MCP / `Task` subagent / unknown) → [`DenyReason::UnmappedTool`]
-/// (L4 formalizes the per-channel coverage-matrix disposition + the launch `permissions.deny`
-/// hard-block — defense-in-depth). A returned action_type is the catalog key the L3 routing resolves
+/// typed [`DenyReason`] (fail-closed) — **grounded in the §9.1 coverage matrix** (the O-13 disposition).
+/// The gates, in order: (1) a non-`default` mode → `NonDefaultMode` (O-13 #10); (2) an UNKNOWN tool →
+/// `UnmappedTool` (a new Claude tool must be classified before it is permitted); (3) the tool's §9.1
+/// channel coverage drives [`disposition`] — `Adjudicate` → the DIRECT tool's action_type; `Deny` → a
+/// `CoverageGap` (MCP BestEffort / `Task` NotGuaranteed — the launch `permissions.deny` is the
+/// hook-independent second layer). A returned action_type is the catalog key the L3 routing resolves
 /// via `catalog::lookup`; a drift (a key not in the catalog) is itself fail-closed (lookup → None →
 /// the policy denies it).
 pub fn map_to_action_type(payload: &HookPayload) -> Result<&'static str, DenyReason> {
     if payload.permission_mode != "default" {
         return Err(DenyReason::NonDefaultMode);
     }
-    match payload.tool_name.as_str() {
-        "Bash" => Ok("agent.bash"),
-        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => Ok("agent.file_edit"),
-        "Read" | "Glob" | "Grep" => Ok("agent.file_read"),
-        // MCP (`mcp__*`) / `Task` (subagent) / any unknown tool → the conservative L2 deny; L4 gives
-        // the §9.1-matrix reason (BestEffort / NotGuaranteed / Unsupported) + the launch hard-block.
-        _ => Err(DenyReason::UnmappedTool),
+    let (channel, action_type) =
+        classify_tool(&payload.tool_name).ok_or(DenyReason::UnmappedTool)?;
+    // the §9.1 matrix decides adjudicate-vs-deny. A missing cell (cannot happen — all 8 are defined)
+    // fails closed to Unsupported → Deny.
+    let coverage = coverage_of(Harness::Claude, channel).unwrap_or(MutationCoverage::Unsupported);
+    match disposition(coverage, &payload.permission_mode) {
+        // only DIRECT tools reach Adjudicate, and they always carry an action_type; an adjudicable
+        // channel with no action_type would be a classify_tool bug → fail closed (UnmappedTool).
+        Disposition::Adjudicate => action_type.ok_or(DenyReason::UnmappedTool),
+        Disposition::Deny => Err(DenyReason::CoverageGap),
     }
 }
 
@@ -191,9 +252,10 @@ pub fn route_intercept(
 fn deny_verdict(reason: DenyReason) -> MutationVerdict {
     let r = match reason {
         DenyReason::NonDefaultMode => "non-default permission mode (O-13 #10)",
-        DenyReason::UnmappedTool => {
-            "tool not interceptable in default mode (coverage gap / unknown tool)"
+        DenyReason::CoverageGap => {
+            "tool channel not reliably interceptable in default mode (§9.1 coverage gap — MCP/subagent)"
         }
+        DenyReason::UnmappedTool => "unknown tool (not classified for interception)",
         DenyReason::Malformed => "malformed hook payload",
     };
     MutationVerdict::Deny {

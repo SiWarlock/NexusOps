@@ -49,6 +49,10 @@ pub const CLAUDE_CAPABILITIES: HarnessCapabilities = HarnessCapabilities {
 
 // ---- ClaudeSettings — the generated per-session hooks + statusLine (Q4: NEVER the user's global) -
 
+/// The hook-command timeout (seconds) — 043's cheap-closure: SHORT (not the 600s default) so a hung
+/// PreToolUse adjudication hook fails closed FAST instead of stalling the session for 10 minutes.
+const HOOK_TIMEOUT_SECS: u64 = 5;
+
 /// The generated per-session Claude `settings.json` content — the `PreToolUse`/`PostToolUse`/
 /// `SessionStart`/`Notification`/`Stop` hooks + the statusLine, all wired to the daemon's hook
 /// receiver. **Q4 (lead-confirmed):** this is a per-session file passed via `--settings`; the daemon
@@ -62,7 +66,17 @@ impl ClaudeSettings {
     fn build(hook_receiver: &str) -> Self {
         // each hook invokes the daemon receiver, tagged with its event (the receiver also sees
         // `hook_event_name` on stdin; the arg is belt-and-suspenders for the receiver's dispatch).
-        let cmd = |event: &str| serde_json::json!({ "type": "command", "command": format!("{hook_receiver} {event}") });
+        // **043 (the cheap-closure):** every hook command carries a SHORT timeout (`HOOK_TIMEOUT_SECS`,
+        // not the 600s default) so a hung/slow hook fails closed FAST — combined with no
+        // `permissions.allow` + the non-interactive PTY, a PreToolUse hook-miss has no cached allow to
+        // fall through to → it BLOCKS (fail-closed), never silently proceeds.
+        let cmd = |event: &str| {
+            serde_json::json!({
+                "type": "command",
+                "command": format!("{hook_receiver} {event}"),
+                "timeout": HOOK_TIMEOUT_SECS,
+            })
+        };
         let json = serde_json::json!({
             "hooks": {
                 "SessionStart": [{ "matcher": "startup|resume", "hooks": [cmd("SessionStart")] }],
@@ -70,6 +84,21 @@ impl ClaudeSettings {
                 "PostToolUse":  [{ "matcher": "*",              "hooks": [cmd("PostToolUse")] }],
                 "Notification": [{ "hooks": [cmd("Notification")] }],
                 "Stop":         [{ "hooks": [cmd("Stop")] }],
+            },
+            // **043 (the O-13 coverage-gap compensation + the cheap-closure):** the hook-INDEPENDENT
+            // permission baseline. `deny` HARD-BLOCKS the un-interceptable channels (MCP best-effort /
+            // `Task` subagent) regardless of any hook decision (a Claude deny-rule is evaluated even
+            // when a hook returns allow). EMPTY `allow` (+ empty `ask`) makes the daemon hook the SOLE
+            // allow-authority — nothing is pre-allowed or cached, so a hook-MISS on a mutating tool, in
+            // the non-interactive daemon PTY, has no cached allow + no human to prompt → it BLOCKS
+            // (fail-closed). NOTE: the exact Claude rule syntax for the deny-baseline is validated at
+            // the P4 live drive loop; the receiver-side deny (intercept.rs) is the PRIMARY control —
+            // this is the defense-in-depth second layer.
+            "permissions": {
+                "defaultMode": "default",
+                "deny": ["mcp__*", "Task"],
+                "allow": [],
+                "ask": [],
             },
             "statusLine": { "type": "command", "command": format!("{hook_receiver} statusline") },
         });
@@ -124,6 +153,52 @@ impl ClaudeSettings {
             cmds.push(c.to_string());
         }
         cmds
+    }
+
+    /// Whether the generated `permissions.deny` carries the EXACT rule `pattern` (the 043
+    /// hook-INDEPENDENT compensation for an un-interceptable channel — `mcp__*` / `Task`). This is an
+    /// exact-string presence check (NOT glob tool-matching — Claude itself interprets the rule glob);
+    /// the receiver-side `CoverageGap` deny is the PRIMARY control, this baseline is defense-in-depth.
+    /// NOTE: the exact Claude rule grammar for the deny-baseline is validated at the P4 live drive loop.
+    pub fn has_deny_rule(&self, pattern: &str) -> bool {
+        self.permission_list("deny").iter().any(|d| d == pattern)
+    }
+
+    /// Whether `permissions.allow` is EMPTY (043's cheap-closure: the daemon hook is the SOLE
+    /// allow-authority, so a hook-MISS has no cached allow → it fails closed in the non-interactive PTY).
+    pub fn permission_allow_is_empty(&self) -> bool {
+        self.permission_list("allow").is_empty()
+    }
+
+    /// The `permissions.<key>` array's string entries (empty if absent).
+    fn permission_list(&self, key: &str) -> Vec<String> {
+        self.json
+            .get("permissions")
+            .and_then(|p| p.get(key))
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The `PreToolUse` hook's timeout in seconds (043's cheap-closure — short so a hung adjudication
+    /// hook fails closed fast). `None` if absent (a missing timeout would default to 600s).
+    pub fn pre_tool_use_timeout_secs(&self) -> Option<u64> {
+        self.json
+            .get("hooks")?
+            .get("PreToolUse")?
+            .as_array()?
+            .iter()
+            .flat_map(|g| {
+                g.get("hooks")
+                    .and_then(|h| h.as_array())
+                    .into_iter()
+                    .flatten()
+            })
+            .find_map(|h| h.get("timeout").and_then(|t| t.as_u64()))
     }
 
     /// The settings JSON serialized for the `--settings` file. **Fallible** so a (latent) serialize

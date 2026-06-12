@@ -204,6 +204,59 @@ pub struct CommitInfo {
     pub timestamp: Option<Timestamp>,
 }
 
+/// Build the rename-aware `git2::Diff` for `(from, to)` over an already-discovered `repo` (READ-ONLY).
+/// `(from, to)` selects the target exactly as the public reads: `(None, None)` = working-tree-vs-HEAD;
+/// `(Some(base), Some(head))` = ref-vs-ref; `(Some(base), None)` = base-vs-working-tree. Returns `None`
+/// on any early-out — an unresolvable ref, an unborn HEAD with no base, or a diff-construction failure
+/// — which the callers map to an empty result.
+///
+/// The returned `Diff` borrows `repo`: git2 ties the `Diff` to the repository's ODB and copies the
+/// `DiffOptions` into it (it does NOT retain the locally-resolved trees), so `opts`/the resolved trees
+/// are free to drop at return while the `Diff<'r>` stays valid. The caller therefore keeps its own
+/// `Repository::discover`, and `repo` must outlive the returned `Diff` — the `'r` lifetime, matching
+/// the `resolve_tree<'r>` idiom below.
+fn open_diff<'r>(
+    repo: &'r Repository,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Option<git2::Diff<'r>> {
+    let mut opts = DiffOptions::new();
+    // `show_untracked_content` so a new working-tree file gets real line counts (without it,
+    // `Patch::from_diff` is `None` for an untracked delta → counts silently read 0).
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
+
+    let from_tree = resolve_tree(repo, from);
+    let diff = match to {
+        // ref-vs-ref
+        Some(to_ref) => match (from_tree, resolve_tree(repo, Some(to_ref))) {
+            (Some(f), Some(t)) => repo.diff_tree_to_tree(Some(&f), Some(&t), Some(&mut opts)),
+            _ => return None,
+        },
+        // base (or HEAD) -vs- working tree — `_with_index` = `git diff <tree>` semantics (accounts
+        // for the index, so staged-only changes show too), not bare tree-vs-workdir.
+        None => match from_tree {
+            Some(f) => repo.diff_tree_to_workdir_with_index(Some(&f), Some(&mut opts)),
+            None => return None, // unborn HEAD + no base → nothing to diff
+        },
+    };
+    let mut diff = diff.ok()?;
+    // Rename detection (forbidden #6: `find_similar` mutates only the in-memory `Diff`, never the
+    // repo — the `diff_log_do_not_mutate`/`rename_detection_read_only`/`read_file_hunks_read_only`
+    // guards hold). `for_untracked` is REQUIRED to pair a rename whose NEW side is an untracked
+    // working-tree file (the common `(None,None)` case) — find_similar needs its OWN flag, distinct
+    // from the `DiffOptions` untracked flags above; it's a no-op when there is no untracked side (the
+    // ref-vs-ref / base-vs-tree modes). git's DEFAULT similarity threshold (≈50%, matching the user's
+    // terminal `git diff -M`) — a low-similarity pair stays Add + Delete. Copy detection stays OFF
+    // (git2 0.21 detects none). A `find_similar` failure is best-effort: the diff keeps its
+    // un-collapsed Add + Delete deltas.
+    let mut find_opts = DiffFindOptions::new();
+    find_opts.renames(true).for_untracked(true);
+    let _ = diff.find_similar(Some(&mut find_opts));
+    Some(diff)
+}
+
 /// Read a file-level diff at `path` (READ-ONLY). `(from, to)` selects the target: `(None, None)` =
 /// working-tree-vs-HEAD; `(Some(base), Some(head))` = ref-vs-ref; `(Some(base), None)` = base-vs-
 /// working-tree. A non-git path, a clean tree, or an unresolvable ref → an empty list (the §7.2
@@ -212,41 +265,9 @@ pub fn read_diff(path: &Path, from: Option<&str>, to: Option<&str>) -> Vec<FileC
     let Ok(repo) = Repository::discover(path) else {
         return Vec::new();
     };
-    let mut opts = DiffOptions::new();
-    // `show_untracked_content` so a new working-tree file gets real line counts (without it,
-    // `Patch::from_diff` is `None` for an untracked delta → counts silently read 0).
-    opts.include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .show_untracked_content(true);
-
-    let from_tree = resolve_tree(&repo, from);
-    let diff = match to {
-        // ref-vs-ref
-        Some(to_ref) => match (from_tree, resolve_tree(&repo, Some(to_ref))) {
-            (Some(f), Some(t)) => repo.diff_tree_to_tree(Some(&f), Some(&t), Some(&mut opts)),
-            _ => return Vec::new(),
-        },
-        // base (or HEAD) -vs- working tree — `_with_index` = `git diff <tree>` semantics (accounts
-        // for the index, so staged-only changes show too), not bare tree-vs-workdir.
-        None => match from_tree {
-            Some(f) => repo.diff_tree_to_workdir_with_index(Some(&f), Some(&mut opts)),
-            None => return Vec::new(), // unborn HEAD + no base → nothing to diff
-        },
-    };
-    let Ok(mut diff) = diff else {
+    let Some(diff) = open_diff(&repo, from, to) else {
         return Vec::new();
     };
-    // Rename detection (forbidden #6: `find_similar` mutates only the in-memory `Diff`, never the
-    // repo — the `diff_log_do_not_mutate`/`rename_detection_read_only` guards hold). `for_untracked`
-    // is REQUIRED to pair a rename whose NEW side is an untracked working-tree file (the common
-    // `(None,None)` case) — find_similar needs its OWN flag, distinct from the `DiffOptions` untracked
-    // flags above; it's a no-op when there is no untracked side (the ref-vs-ref / base-vs-tree modes).
-    // git's DEFAULT similarity threshold (≈50%, matching the user's terminal `git diff -M`) — a
-    // low-similarity pair stays Add + Delete. Copy detection stays OFF (git2 0.21 detects none). A
-    // `find_similar` failure is best-effort: the diff keeps its un-collapsed Add + Delete deltas.
-    let mut find_opts = DiffFindOptions::new();
-    find_opts.renames(true).for_untracked(true);
-    let _ = diff.find_similar(Some(&mut find_opts));
 
     diff.deltas()
         .enumerate()
@@ -346,29 +367,9 @@ pub fn read_file_hunks(
     let Ok(repo) = Repository::discover(path) else {
         return Vec::new();
     };
-    let mut opts = DiffOptions::new();
-    opts.include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .show_untracked_content(true);
-    let from_tree = resolve_tree(&repo, from);
-    let diff = match to {
-        Some(to_ref) => match (from_tree, resolve_tree(&repo, Some(to_ref))) {
-            (Some(f), Some(t)) => repo.diff_tree_to_tree(Some(&f), Some(&t), Some(&mut opts)),
-            _ => return Vec::new(),
-        },
-        None => match from_tree {
-            Some(f) => repo.diff_tree_to_workdir_with_index(Some(&f), Some(&mut opts)),
-            None => return Vec::new(),
-        },
-    };
-    let Ok(mut diff) = diff else {
+    let Some(diff) = open_diff(&repo, from, to) else {
         return Vec::new();
     };
-    // Rename-aware, consistent with read_diff (edges-011) — find_similar is read-only (forbidden #6).
-    // (The shared diff construction is a named open_diff DRY-refactor follow-up.)
-    let mut find_opts = DiffFindOptions::new();
-    find_opts.renames(true).for_untracked(true);
-    let _ = diff.find_similar(Some(&mut find_opts));
 
     // Find the delta for `file` by its NEW path (= the FileChange.path read_diff reports — for a
     // Renamed delta that is the new name, so the OLD name does NOT resolve, matching read_diff's

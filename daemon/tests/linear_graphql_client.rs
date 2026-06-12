@@ -17,7 +17,9 @@
 
 use nexusops_shared::status::Task;
 use nexusopsd::integrations::classifier::{IntegrationOutcomeClass, RetryAfter};
-use nexusopsd::integrations::linear::{build_issue_query, map_linear_response};
+use nexusopsd::integrations::linear::{
+    build_issue_query, map_linear_response, LinearGraphqlReadClient, LinearReadClient,
+};
 
 // ---- recorded public-shape Linear GraphQL response bodies (inline const) ------------------------
 
@@ -104,6 +106,24 @@ fn map_auth_error_is_authfailed() {
 }
 
 #[test]
+fn map_forbidden_code_is_authfailed() {
+    // spec(§17): the second auth-terminal code arm — FORBIDDEN also → AuthFailed (the gated auth path
+    // branches on AuthFailed regardless of which auth code Linear returns).
+    let body = r#"{"errors":[{"message":"Forbidden","extensions":{"code":"FORBIDDEN"}}]}"#;
+    let err = map_linear_response(400, None, body).expect_err("forbidden is an error");
+    assert_eq!(err.class, IntegrationOutcomeClass::AuthFailed);
+}
+
+#[test]
+fn map_http_401_no_body_is_authfailed() {
+    // spec(§17): the HTTP-status backstop — a bare 401 with no GraphQL errors[] body folds via
+    // edges-003's classify → AuthFailed (auth is caught regardless of a GraphQL code; robust for the
+    // gated auth_expired path even if the GraphQL code string is absent/unrecognized).
+    let err = map_linear_response(401, None, "Unauthorized").expect_err("401 is an error");
+    assert_eq!(err.class, IntegrationOutcomeClass::AuthFailed);
+}
+
+#[test]
 fn map_issue_null_is_terminal_error() {
     // spec(§8): a fetch for a nonexistent/invisible issue (HTTP 200 + data.issue null) is TERMINAL —
     // an Err with a non-retryable class (retrying won't conjure the issue), never Ok.
@@ -141,5 +161,45 @@ fn map_partial_success_errors_win_over_data() {
     assert_eq!(
         err.class,
         IntegrationOutcomeClass::RateLimited { retry_after: None }
+    );
+}
+
+// ---- L2: LinearGraphqlReadClient (the reqwest IO shell) -----------------------------------------
+//
+// The live HTTP round-trip (test 10, build_issue_query → POST → map_linear_response against a mock
+// endpoint) is NOT tested here — not-tested-because: it is the non-deterministic edge (edges-009
+// posture, no mock-server dep). Its two halves ARE pinned deterministically: build_issue_query +
+// map_linear_response above (the request body + the response mapping), and the consumer fake-covers
+// `fetch_issue` via edges-014's FakeLinearReadClient. The §15 no-key-leak invariant IS exercised
+// against the real client below (a true transport-error path).
+
+#[tokio::test]
+async fn error_message_never_contains_api_key() {
+    // spec(§15 rule #5): the injected api_key reaches ONLY the Authorization header — NEVER an error
+    // message / log / row. Drive a real transport failure (a guaranteed-closed local port) and assert
+    // the sentinel key is absent from LinearReadError.message. (map_linear_response + to_read_error are
+    // structurally key-free — they never receive the key; this pins the client's own error arm too.)
+    const SENTINEL_KEY: &str = "lin_api_SENTINEL_DO_NOT_LEAK_0123456789";
+    // bind→drop to claim a port that is now closed → the POST gets connection-refused (deterministic).
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local_addr").port();
+    drop(listener);
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .build()
+        .expect("build reqwest client");
+    let client = LinearGraphqlReadClient::new(
+        http,
+        format!("http://127.0.0.1:{port}/graphql"),
+        SENTINEL_KEY.to_owned(),
+    );
+    let err = client
+        .fetch_issue("BLA-123")
+        .await
+        .expect_err("a closed port → transport error");
+    assert_eq!(err.class, IntegrationOutcomeClass::TransportError);
+    assert!(
+        !err.message.contains(SENTINEL_KEY),
+        "the api_key must NEVER appear in an error message (§15 rule #5)"
     );
 }

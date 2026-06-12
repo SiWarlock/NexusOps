@@ -50,6 +50,13 @@ git2 = { version = "0.21", default-features = false, features = ["vendored-libgi
 # trait-object idiom: Arc<dyn ActionExecutor>/dyn Policy) so the gated github executor can inject it.
 octocrab = "0.53"
 async-trait = "0.1"
+# reqwest (P7.1 edges-015) — the Linear GraphQL network adapter's HTTP shell (§9; Linear has no
+# octocrab-equivalent Rust client). READ-ONLY here: POST the issue query over an INJECTED reqwest
+# Client + endpoint + api_key (auth bootstrap deferred — never builds the key/reads the keychain).
+# `default-features = false` + `rustls-tls` REUSES the in-tree rustls stack (hyper-rustls via octocrab)
+# — NO native-tls/OpenSSL, no system-cert/credential auto-discovery. `json` for the request body.
+# `cargo audit` runs at the P7.1 /phase-exit. The live POST is the fake-covered non-deterministic edge.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # (the `nexusopsd` bin is auto-discovered from src/main.rs — no explicit [[bin]] needed.)
 
 [features]
@@ -71,6 +78,9 @@ rusqlite = { version = "0.34", features = ["bundled"] }
 # the runtime tests drive the write-actor + accept-loop + subscribe over a tokio runtime
 # (#[tokio::test]) + a real ephemeral UnixListener client.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+# reqwest in dev-deps too (like tokio above) so the §15 no-key-leak test can CONSTRUCT a Client +
+# drive fetch_issue against a closed local port (transport-error path). Same version/features → one compile.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # P2.5 — the §18 event-write/reader perf benchmark. `harness = false`: a plain `fn main()` (NOT the
 # libtest harness), so it is INVISIBLE to `cargo test --workspace` (the per-slice RED/GREEN loop) and

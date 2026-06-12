@@ -291,14 +291,84 @@ fn classify_graphql_error_code(
     http_status: u16,
     retry_after: Option<&str>,
 ) -> IntegrationOutcomeClass {
-    match code.map(|c| c.trim().to_ascii_uppercase()).as_deref() {
-        Some("RATELIMITED") => IntegrationOutcomeClass::RateLimited {
+    // Normalize to lowercase (the edges-008/`parse_linear_state_type` convention) before matching.
+    match code.map(|c| c.trim().to_ascii_lowercase()).as_deref() {
+        Some("ratelimited") => IntegrationOutcomeClass::RateLimited {
             retry_after: parse_retry_after(retry_after),
         },
-        Some("AUTHENTICATION_ERROR") | Some("FORBIDDEN") => IntegrationOutcomeClass::AuthFailed,
+        Some("authentication_error") | Some("forbidden") => IntegrationOutcomeClass::AuthFailed,
         _ => match classify(Some(http_status), retry_after, false) {
             IntegrationOutcomeClass::Success => IntegrationOutcomeClass::ServerError,
             other => other,
         },
+    }
+}
+
+// ---- the real Linear GraphQL network adapter: L2 reqwest IO shell (edges-015) -------------------
+//
+// The thin non-deterministic edge: build_issue_query → reqwest POST → map_linear_response. Takes an
+// INJECTED reqwest::Client + endpoint + api_key (auth bootstrap — keychain/OAuth 24h refresh, §9 — is
+// deferred; this client never builds the key / reads the keychain). The live HTTP round-trip is
+// fake-covered at the consumer level (edges-014's FakeLinearReadClient) per the edges-009 posture (no
+// mock-server dep). §15 rule #5: the api_key reaches ONLY the Authorization header — never a message /
+// log / row (map_linear_response + to_read_error are key-free by construction).
+
+/// The real Linear read client over an INJECTED `reqwest::Client` + endpoint + api_key.
+pub struct LinearGraphqlReadClient {
+    http: reqwest::Client,
+    endpoint: String,
+    api_key: String,
+}
+
+impl LinearGraphqlReadClient {
+    /// `endpoint` is normally `https://api.linear.app/graphql`; `api_key` is a personal API key (used as
+    /// the `Authorization` value as-is) or an OAuth `Bearer <token>` — INJECTED by the caller (auth
+    /// bootstrap deferred; this client never reads the keychain / mints the key).
+    pub fn new(http: reqwest::Client, endpoint: String, api_key: String) -> Self {
+        Self {
+            http,
+            endpoint,
+            api_key,
+        }
+    }
+}
+
+#[async_trait]
+impl LinearReadClient for LinearGraphqlReadClient {
+    async fn fetch_issue(&self, issue_id: &str) -> Result<LinearIssue, LinearReadError> {
+        let query = build_issue_query(issue_id);
+        let response = self
+            .http
+            .post(&self.endpoint)
+            .header("Authorization", &self.api_key) // §15: the key reaches ONLY this header
+            .json(&query)
+            .send()
+            .await
+            .map_err(|e| to_read_error(&e))?;
+        let status = response.status().as_u16();
+        // Linear's rate-limit reset hint is X-RateLimit-Requests-Reset (epoch-ms), NOT Retry-After —
+        // and edges-003's parse_retry_after maps an all-digit value to Delta(seconds), so threading the
+        // epoch-ms reset would yield Delta(~1.7e12 s) ≈ infinite backoff. So forward only the standard
+        // Retry-After (Linear won't send it → None); honoring X-RateLimit-Requests-Reset is the deferred
+        // §17 refinement (the RateLimited *class* is correct regardless).
+        let retry_after = response
+            .headers()
+            .get("Retry-After")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let body = response.text().await.map_err(|e| to_read_error(&e))?;
+        map_linear_response(status, retry_after.as_deref(), &body)
+    }
+}
+
+/// Map a `reqwest::Error` (a transport/connection/decode failure — NOT an HTTP 4xx/5xx, which reqwest
+/// returns as `Ok(response)`) → `LinearReadError`. **Key-free by construction**: takes ONLY the error,
+/// never the api_key, so no key can reach the message (§15 rule #5; a reqwest error's Display carries
+/// the URL/kind, never request headers). A transport failure is transient → `classify(None, None,
+/// true)` = `TransportError` (writes queue, not fail; §17 line-452).
+fn to_read_error(err: &reqwest::Error) -> LinearReadError {
+    LinearReadError {
+        class: classify(None, None, true),
+        message: err.to_string(),
     }
 }

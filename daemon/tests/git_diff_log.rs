@@ -138,6 +138,153 @@ fn diff_ref_vs_ref() {
         .any(|c| c.path == "b.txt" && c.change_kind == ChangeKind::Added));
 }
 
+// ---- rename detection (edges-011) ------------------------------------------
+
+#[test]
+fn diff_detects_rename() {
+    // spec(§9): a working-tree rename (rm a.txt, add b.txt same content) reads as ONE Renamed change
+    // carrying its source path — NOT a separate Delete + Add (the git/reads.rs:164 deferral closed).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_file(&repo, "a.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n");
+    std::fs::remove_file(dir.path().join("a.txt")).unwrap();
+    std::fs::write(
+        dir.path().join("b.txt"),
+        "alpha\nbeta\ngamma\ndelta\nepsilon\n",
+    )
+    .unwrap();
+    let changes = read_diff(dir.path(), None, None);
+    assert_eq!(
+        changes.len(),
+        1,
+        "rename collapses to one delta: {changes:?}"
+    );
+    let c = &changes[0];
+    assert_eq!(c.path, "b.txt");
+    assert_eq!(c.change_kind, ChangeKind::Renamed);
+    assert_eq!(c.old_path.as_deref(), Some("a.txt"));
+}
+
+#[test]
+fn diff_rename_with_small_edit_still_rename() {
+    // spec(§9): a rename WITH a small edit (above the similarity threshold) still reads Renamed, with
+    // additions/deletions reflecting the edit.
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_file(&repo, "a.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n");
+    std::fs::remove_file(dir.path().join("a.txt")).unwrap();
+    std::fs::write(
+        dir.path().join("b.txt"),
+        "alpha\nbeta\nGAMMA\ndelta\nepsilon\n", // one line changed
+    )
+    .unwrap();
+    let changes = read_diff(dir.path(), None, None);
+    // the edit-rename still COLLAPSES to one delta (no residual Deleted for a.txt).
+    assert_eq!(
+        changes.len(),
+        1,
+        "edit-rename collapses to one delta: {changes:?}"
+    );
+    let c = &changes[0];
+    assert_eq!(c.path, "b.txt");
+    assert_eq!(c.change_kind, ChangeKind::Renamed);
+    assert_eq!(c.old_path.as_deref(), Some("a.txt"));
+    assert!(
+        c.additions >= 1 && c.deletions >= 1,
+        "edit reflected: {c:?}"
+    );
+}
+
+#[test]
+fn diff_low_similarity_is_add_delete_not_rename() {
+    // spec(§9): a low-similarity "rename" (wholly different content) stays Delete + Add — find_similar
+    // is gated by the threshold (not over-eager).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_file(&repo, "a.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n");
+    std::fs::remove_file(dir.path().join("a.txt")).unwrap();
+    std::fs::write(
+        dir.path().join("b.txt"),
+        "totally\ndifferent\nstuff\nhere\nnow\n",
+    )
+    .unwrap();
+    let changes = read_diff(dir.path(), None, None);
+    assert!(
+        changes
+            .iter()
+            .any(|c| c.path == "a.txt" && c.change_kind == ChangeKind::Deleted),
+        "a.txt stays Deleted: {changes:?}"
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|c| c.path == "b.txt" && c.change_kind == ChangeKind::Added),
+        "b.txt stays Added: {changes:?}"
+    );
+    assert!(
+        changes.iter().all(|c| c.change_kind != ChangeKind::Renamed),
+        "no Renamed below threshold: {changes:?}"
+    );
+}
+
+#[test]
+fn diff_pure_add_has_no_old_path() {
+    // spec(§9): a pure add → Added, old_path None (no false rename pairing).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_file(&repo, "a.txt", "x\n");
+    std::fs::write(dir.path().join("new.txt"), "hello\n").unwrap();
+    let changes = read_diff(dir.path(), None, None);
+    let n = changes
+        .iter()
+        .find(|c| c.path == "new.txt")
+        .expect("new.txt change");
+    assert_eq!(n.change_kind, ChangeKind::Added);
+    assert_eq!(n.old_path, None);
+}
+
+#[test]
+fn diff_pure_delete_has_no_old_path() {
+    // spec(§9): a pure delete (no matching add) → Deleted, old_path None (no false pairing).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_file(&repo, "a.txt", "x\n");
+    std::fs::remove_file(dir.path().join("a.txt")).unwrap();
+    let changes = read_diff(dir.path(), None, None);
+    let a = changes
+        .iter()
+        .find(|c| c.path == "a.txt")
+        .expect("a.txt change");
+    assert_eq!(a.change_kind, ChangeKind::Deleted);
+    assert_eq!(a.old_path, None);
+}
+
+#[test]
+fn rename_detection_read_only() {
+    // spec(§9): forbidden #6 — find_similar mutates only the in-memory Diff; a rename read leaves the
+    // repo HEAD oid unchanged (parallels diff_log_do_not_mutate over a rename).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    let oid = commit_file(&repo, "a.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n");
+    std::fs::remove_file(dir.path().join("a.txt")).unwrap();
+    std::fs::write(
+        dir.path().join("b.txt"),
+        "alpha\nbeta\ngamma\ndelta\nepsilon\n",
+    )
+    .unwrap();
+    let before = repo.head().unwrap().target().unwrap();
+    let changes = read_diff(dir.path(), None, None);
+    // the rename MUST be detected for the read-only pin to be meaningful (else find_similar could
+    // have silently no-op'd and the oid check would pass vacuously).
+    assert!(
+        changes.iter().any(|c| c.change_kind == ChangeKind::Renamed),
+        "rename detected: {changes:?}"
+    );
+    let after = repo.head().unwrap().target().unwrap();
+    assert_eq!(before, after);
+    assert_eq!(after, oid);
+}
+
 // ---- log -------------------------------------------------------------------
 
 #[test]

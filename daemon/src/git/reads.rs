@@ -14,7 +14,7 @@
 
 use std::path::Path;
 
-use git2::{Delta, DiffOptions, Oid, Patch, Repository, Sort, StatusOptions};
+use git2::{Delta, DiffFindOptions, DiffOptions, Oid, Patch, Repository, Sort, StatusOptions};
 use nexusops_shared::status::WorktreeGit;
 use nexusops_shared::time::Timestamp;
 
@@ -151,23 +151,29 @@ fn resolve_git_axis(
 /// A file-level change in a diff. File-level granularity; per-hunk diffs are a 7.2-adjacent slice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileChange {
-    /// The changed file's path, relative to the repo root.
+    /// The changed file's path, relative to the repo root (the rename DESTINATION for a `Renamed`).
     pub path: String,
     /// The kind of change.
     pub change_kind: ChangeKind,
+    /// The rename SOURCE path (the `old_file` path) for a `Renamed` change; `None` for
+    /// Added/Modified/Deleted/Other.
+    pub old_path: Option<String>,
     /// Lines added in this file.
     pub additions: usize,
     /// Lines deleted in this file.
     pub deletions: usize,
 }
 
-/// The kind of file change. Rename/copy detection is OFF for the MVP (no git2 `find_similar`) → a
-/// rename reads as Delete + Add; any non-core git2 delta collapses to `Other`.
+/// The kind of file change. Rename detection is ON (git2 `find_similar`) → a rename reads as ONE
+/// `Renamed` change carrying its `old_path`, not a Delete + Add pair. Copy detection is OFF (git2 0.21
+/// does not detect copies of unmodified files in either diff mode — a named follow-up; no `Copied`
+/// variant ships unproduced). Any non-core git2 delta collapses to `Other`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
     Added,
     Modified,
     Deleted,
+    Renamed,
     Other,
 }
 
@@ -178,6 +184,7 @@ impl ChangeKind {
             Delta::Added | Delta::Untracked => ChangeKind::Added,
             Delta::Modified | Delta::Typechange => ChangeKind::Modified,
             Delta::Deleted => ChangeKind::Deleted,
+            Delta::Renamed => ChangeKind::Renamed,
             _ => ChangeKind::Other,
         }
     }
@@ -225,14 +232,35 @@ pub fn read_diff(path: &Path, from: Option<&str>, to: Option<&str>) -> Vec<FileC
             None => return Vec::new(), // unborn HEAD + no base → nothing to diff
         },
     };
-    let Ok(diff) = diff else {
+    let Ok(mut diff) = diff else {
         return Vec::new();
     };
+    // Rename detection (forbidden #6: `find_similar` mutates only the in-memory `Diff`, never the
+    // repo — the `diff_log_do_not_mutate`/`rename_detection_read_only` guards hold). `for_untracked`
+    // is REQUIRED to pair a rename whose NEW side is an untracked working-tree file (the common
+    // `(None,None)` case) — find_similar needs its OWN flag, distinct from the `DiffOptions` untracked
+    // flags above; it's a no-op when there is no untracked side (the ref-vs-ref / base-vs-tree modes).
+    // git's DEFAULT similarity threshold (≈50%, matching the user's terminal `git diff -M`) — a
+    // low-similarity pair stays Add + Delete. Copy detection stays OFF (git2 0.21 detects none). A
+    // `find_similar` failure is best-effort: the diff keeps its un-collapsed Add + Delete deltas.
+    let mut find_opts = DiffFindOptions::new();
+    find_opts.renames(true).for_untracked(true);
+    let _ = diff.find_similar(Some(&mut find_opts));
 
     diff.deltas()
         .enumerate()
         .map(|(i, delta)| {
             let (additions, deletions) = line_counts(&diff, i);
+            let change_kind = ChangeKind::from_delta(delta.status());
+            // `old_path` = the rename SOURCE (`old_file` path), only for a `Renamed` delta.
+            let old_path = (change_kind == ChangeKind::Renamed)
+                .then(|| {
+                    delta
+                        .old_file()
+                        .path()
+                        .map(|p| p.to_string_lossy().into_owned())
+                })
+                .flatten();
             FileChange {
                 path: delta
                     .new_file()
@@ -240,7 +268,8 @@ pub fn read_diff(path: &Path, from: Option<&str>, to: Option<&str>) -> Vec<FileC
                     .or_else(|| delta.old_file().path())
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_default(),
-                change_kind: ChangeKind::from_delta(delta.status()),
+                change_kind,
+                old_path,
                 additions,
                 deletions,
             }

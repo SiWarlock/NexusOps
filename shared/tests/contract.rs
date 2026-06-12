@@ -717,15 +717,6 @@ fn test_sensitive_output_redacted_wire_contract() {
     );
 }
 
-#[test]
-fn test_contract_version_bumped_for_sensitive_output_redacted() {
-    // 0.15.0 = the 2.1a action-contract freeze (§6.2 models + 9 enums + gateway IDs + Timestamp);
-    // 0.16.0 = the 2.1b ActionExecution* event family + ActionAck; 0.17.0 = the 2.1c PlanAck
-    // submit_action_plan wire type (O-3); 0.18.0 = the 2.2 ActionTypeCatalog + PolicyDecision
-    // extension — all additive (§5.0). (The canonical version pin is `test_contract_version_bumped_0_20_0`.)
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.20.0");
-}
-
 // ---- P2.1c L2 — the §6.1 PlanAck wire type (§2.5-seam snapshot, O-3) -----------------------
 
 fn sample_plan_ack() -> nexusops_shared::ipc::PlanAck {
@@ -1500,14 +1491,6 @@ fn test_catalog_and_policy_decision_field_snapshot() {
     );
 }
 
-#[test]
-fn test_contract_version_bumped_0_18_0() {
-    // 0.17.0 = the 2.1c PlanAck; 0.18.0 = the 2.2 ActionTypeCatalog (+ its enums) + the
-    // PolicyDecision extension (required_approvals/constraints/safer_alt) — additive (§5.0).
-    // (The CURRENT canonical version pin is `test_contract_version_bumped_0_20_0`.)
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.20.0");
-}
-
 // =====================================================================================
 // Phase 2.4 L1 — §17 failure-mode CONTRACT additions (freeze; CONTRACT 0.18.0 → 0.19.0):
 //   • a NEW `ActionPartiallySucceeded` event in the §7.1 ActionExecution* family
@@ -1682,16 +1665,6 @@ fn test_action_failure_family_field_snapshot() {
     expect_fields(&ActionError::AuditWriteFailed, &["kind"]);
 }
 
-// ---- 2.4 L1 RED #5 — CONTRACT_VERSION bumped to 0.19.0 (the additive event/taxonomy change) ----
-
-#[test]
-fn test_contract_version_bumped_0_19_0() {
-    // 0.18.0 = the 2.2 catalog + PolicyDecision extension; 0.19.0 = the 2.4 §17 contract additions
-    // (the ActionPartiallySucceeded event + the structured ActionError on ActionFailed) — additive (§5.0).
-    // (The CURRENT canonical version pin is `test_contract_version_bumped_0_20_0`.)
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.20.0");
-}
-
 // =====================================================================================
 // Phase 3.1 L1 — §9.1 HarnessAdapter contract freeze (NEW: shared/src/harness.rs) +
 // the §7.1 TelemetrySampled event. The next §2.5-seam shared-contract freeze (line 138
@@ -1845,16 +1818,6 @@ fn test_normalized_status_is_session() {
     assert_eq!(NormalizedStatus::ALL, Session::ALL);
 }
 
-// ---- 3.1 L1 RED #5 — CONTRACT_VERSION bumped to 0.20.0 (the additive §9.1 freeze) ----
-
-#[test]
-fn test_contract_version_bumped_0_20_0() {
-    // 0.19.0 = the 2.4 §17 additions; 0.20.0 = the 3.1 §9.1 HarnessAdapter normalized-type freeze
-    // (TelemetrySample/MetricQuality/TranscriptRef/HarnessCapabilities + the TelemetrySampled event)
-    // — additive, no frozen type reshaped (§5.0). (ResumeResult is daemon-internal — NOT frozen here.)
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.20.0");
-}
-
 // ---- 3.1 L1 RED #7 — HarnessCapabilities pins exactly the 10 PRD HARN-5 fields ----
 
 #[test]
@@ -1882,4 +1845,213 @@ fn test_harness_capabilities_ten_fields() {
         10,
         "exactly 10 capability fields (PRD HARN-5)"
     );
+}
+
+// ==== 3.4 L1 — the §6.4 Terminal Channel wire-contract freeze (CONTRACT 0.21.0) ================
+//
+// The §2.5-seam terminal frames (the GatewayPort/§6.4 wire surface is on the line-138 list): the
+// daemon→client output frame + the client→daemon input/control frames + the TerminalProcessExited
+// observation event. `data` is base64 (raw PTY bytes ride the unchanged 4-byte-len+JSON codec —
+// LESSON §7, no new framing). `terminal_id` is a wire String (an opaque daemon-minted runtime
+// handle — NOT one of the frozen-22 IDs; the L2 daemon newtype is internal; Step-2.5 Q1).
+
+fn sample_terminal_output_frame() -> nexusops_shared::ipc::TerminalOutputFrame {
+    use nexusops_shared::ipc::TerminalOutputFrame;
+    TerminalOutputFrame {
+        terminal_id: "term_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        seq: 7,
+        data: "aGVsbG8=".to_string(), // base64("hello") — raw PTY bytes, base64 over the JSON codec
+    }
+}
+
+fn sample_terminal_input_frame() -> nexusops_shared::ipc::TerminalInputFrame {
+    use nexusops_shared::ipc::TerminalInputFrame;
+    TerminalInputFrame {
+        terminal_id: "term_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        data: "bHMK".to_string(), // base64("ls\n")
+    }
+}
+
+fn sample_terminal_control_frame() -> nexusops_shared::ipc::TerminalControlFrame {
+    use nexusops_shared::ipc::{TerminalControlFrame, TerminalControlKind};
+    TerminalControlFrame {
+        terminal_id: "term_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        kind: TerminalControlKind::Pause,
+    }
+}
+
+fn sample_terminal_process_exited() -> nexusops_shared::events::TerminalProcessExited {
+    use nexusops_shared::events::TerminalProcessExited;
+    // The semantically-honest NORMAL-exit case (exit_code XOR signal — a signal kill is the mirror:
+    // exit_code:None, signal:Some). The field-name snapshot still sees every key because the struct
+    // has NO `skip_serializing_if` (LESSON §15 trap 3) — `signal:None` serializes as explicit `null`,
+    // so the key is present regardless of the value.
+    TerminalProcessExited {
+        terminal_id: "term_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        exit_code: Some(0),
+        signal: None,
+    }
+}
+
+// ---- 3.4 L1 RED #1 — the §2.5-seam terminal-frame field-name snapshot (§6.4) ----
+
+#[test]
+fn test_terminal_frame_field_names_snapshot() {
+    // spec(§6.4) — §2.5-seam freeze guard (line-138 lists the GatewayPort/§6.4 wire surface as a
+    // shared-contract model). A field added/removed/renamed on any terminal frame or the exit event
+    // fails this snapshot. The expected sets ARE the checked-in freeze.
+    expect_fields(
+        &sample_terminal_output_frame(),
+        &["terminal_id", "seq", "data"],
+    );
+    expect_fields(&sample_terminal_input_frame(), &["terminal_id", "data"]);
+    expect_fields(&sample_terminal_control_frame(), &["terminal_id", "kind"]);
+    // the PTY-death observation event: identity (session_id/occurred_at) is on the envelope columns;
+    // the payload carries only terminal_id + the OS-derived exit_code/signal (never output-parsed, #9).
+    expect_fields(
+        &sample_terminal_process_exited(),
+        &["terminal_id", "exit_code", "signal"],
+    );
+}
+
+// ---- 3.4 L1 RED #1b — the client→daemon input/control frames round-trip + reject-unknown (§6.4) ----
+
+#[test]
+fn test_terminal_input_control_frames_reject_unknown() {
+    // spec(§6.4) — `TerminalInputFrame` is the UNTRUSTED client→daemon ingress direction (keystrokes
+    // for the PTY child) → its fail-closed reject-unknown is the most security-relevant of the frames
+    // (#5.0/§15). `TerminalControlFrame` (pause/resume) is the same direction. Both carry
+    // `deny_unknown_fields`; pin round-trip + an extra-key rejection (the TerminalOutputFrame form).
+    use nexusops_shared::ipc::{TerminalControlFrame, TerminalInputFrame};
+    for (name, j) in [
+        (
+            "input",
+            serde_json::to_value(sample_terminal_input_frame()).unwrap(),
+        ),
+        (
+            "control",
+            serde_json::to_value(sample_terminal_control_frame()).unwrap(),
+        ),
+    ] {
+        // round-trip
+        if name == "input" {
+            let back: TerminalInputFrame = serde_json::from_value(j.clone()).unwrap();
+            assert_eq!(
+                back,
+                sample_terminal_input_frame(),
+                "input frame round-trips"
+            );
+        } else {
+            let back: TerminalControlFrame = serde_json::from_value(j.clone()).unwrap();
+            assert_eq!(
+                back,
+                sample_terminal_control_frame(),
+                "control frame round-trips"
+            );
+        }
+        // an extra key fails closed (deny_unknown_fields, §5.0/§15)
+        let mut rogue = j.as_object().unwrap().clone();
+        rogue.insert("rogue".to_string(), serde_json::json!(1));
+        let rogue = serde_json::Value::Object(rogue);
+        let rejected = match name {
+            "input" => serde_json::from_value::<TerminalInputFrame>(rogue).is_err(),
+            _ => serde_json::from_value::<TerminalControlFrame>(rogue).is_err(),
+        };
+        assert!(
+            rejected,
+            "{name} frame rejects an unknown field (fail-closed)"
+        );
+    }
+}
+
+// ---- 3.4 L1 RED #2 — TerminalControlKind wire values + reject-unknown (§6.4) ----
+
+#[test]
+fn test_terminal_control_kind_wire_values() {
+    // spec(§6.4) — the explicit app-level backpressure control frames §6.4 mandates: snake_case
+    // `pause`/`resume`, reject-unknown both ways (a typo'd control verb can't deserialize).
+    use nexusops_shared::ipc::TerminalControlKind;
+    check_values(TerminalControlKind::ALL, &["pause", "resume"]);
+    assert!(serde_json::from_value::<TerminalControlKind>(serde_json::json!("stop")).is_err());
+}
+
+// ---- 3.4 L1 RED #3 — ServerFrame::TerminalOutput fills the reserved §6.4 mux slot ----
+
+#[test]
+fn test_server_frame_terminal_output_tag() {
+    // spec(§6.4) — the reserved Terminal tag slot (the §6.4 `ServerFrame` mux) is filled additively:
+    // the internally-tagged `frame_type` discriminant serializes to "terminal_output" and the frame
+    // round-trips through the ServerFrame mux. (deny_unknown_fields reject-unknown is pinned on the
+    // bare TerminalOutputFrame below — the established `test_telemetry_sampled_wire_contract` form —
+    // not through the internally-tagged wrapper, which buffers content and is not a reliable
+    // deny_unknown surface.)
+    use nexusops_shared::ipc::{ServerFrame, TerminalOutputFrame};
+    let frame = ServerFrame::TerminalOutput(sample_terminal_output_frame());
+    let j = serde_json::to_value(&frame).unwrap();
+    assert_eq!(
+        j.get("frame_type").and_then(|v| v.as_str()),
+        Some("terminal_output"),
+        "the reserved §6.4 Terminal slot serializes as frame_type:\"terminal_output\""
+    );
+    // the inner frame's fields are flattened alongside the tag (internally-tagged newtype variant).
+    assert_eq!(
+        j.get("terminal_id").and_then(|v| v.as_str()),
+        Some("term_01ARZ3NDEKTSV4RRFFQ69G5FAV")
+    );
+    assert_eq!(j.get("seq").and_then(|v| v.as_u64()), Some(7));
+    // round-trips through the mux
+    match serde_json::from_value::<ServerFrame>(j).unwrap() {
+        ServerFrame::TerminalOutput(f) => assert_eq!(f, sample_terminal_output_frame()),
+        other => panic!("expected TerminalOutput, got {other:?}"),
+    }
+    // reject-unknown on the bare frame (fail-closed, §5.0/§15)
+    let mut rogue = serde_json::to_value(sample_terminal_output_frame())
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    rogue.insert("rogue".to_string(), serde_json::json!(1));
+    assert!(
+        serde_json::from_value::<TerminalOutputFrame>(serde_json::Value::Object(rogue)).is_err(),
+        "unknown field rejected on TerminalOutputFrame (deny_unknown_fields)"
+    );
+}
+
+// ---- 3.4 L1 RED #4 — the TerminalProcessExited event wire contract (§7.1/§5.0/§15) ----
+
+#[test]
+fn test_terminal_process_exited_wire_contract() {
+    // spec(§7.1) — EventTypeRegistry single-home + reject-unknown (the TelemetrySampled precedent).
+    // A non-mutation OBSERVATION event (the §17 PTY-death record; write-actor, NOT the Gateway).
+    use nexusops_shared::events::TerminalProcessExited;
+    let v = sample_terminal_process_exited();
+    let j = serde_json::to_value(&v).unwrap();
+    assert_eq!(
+        serde_json::from_value::<TerminalProcessExited>(j).unwrap(),
+        v,
+        "TerminalProcessExited round-trips"
+    );
+    let mut rogue = serde_json::to_value(&v)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    rogue.insert("rogue".to_string(), serde_json::json!(1));
+    assert!(
+        serde_json::from_value::<TerminalProcessExited>(serde_json::Value::Object(rogue)).is_err(),
+        "unknown field rejected (deny_unknown_fields, §5.0/§15)"
+    );
+    assert_eq!(TerminalProcessExited::EVENT_TYPE, "TerminalProcessExited");
+}
+
+// ---- 3.4 L1 RED #5 — CONTRACT_VERSION bumped to 0.21.0 (the additive §6.4 Terminal freeze) ----
+
+#[test]
+fn test_contract_version_bumped_0_21_0() {
+    // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.21.0 =
+    // the 3.4 §6.4 Terminal Channel freeze (the 3 terminal frames + TerminalControlKind + the
+    // ServerFrame::TerminalOutput variant + the TerminalProcessExited event) — additive, the reserved
+    // ServerFrame slot filled, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.21.0");
 }

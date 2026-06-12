@@ -60,7 +60,15 @@ pub mod time;
 /// reshaped. `NormalizedStatus` re-exports the frozen §5.1 `Session` (not a new type/$def). The
 /// `HarnessAdapter` trait + `MutationIntercept` + the mutation-coverage matrix + `ResumeResult` are
 /// DAEMON-INTERNAL (not a `shared/` wire contract); `ResumeResult`/survival freezes in Phase 4 (§8/§17).
-pub const CONTRACT_VERSION: &str = "0.20.0";
+/// 0.21.0 (3.4) freezes the §6.4 Terminal Channel wire contract (`shared/src/ipc.rs`): the 3 terminal
+/// frames (`TerminalOutputFrame`/`TerminalInputFrame`/`TerminalControlFrame`) + the `TerminalControlKind`
+/// (pause|resume) flow-control enum + the §7.1 `TerminalProcessExited` PTY-death observation event.
+/// `ServerFrame` gains the `TerminalOutput` variant — the reserved Terminal slot filled with the
+/// JSON-base64 MVP (raw PTY bytes base64 over the unchanged codec, LESSON §7); the binary fast-path is
+/// a deferred 3.5 decision (additive — a future variant + bump, not a reshape). Additive, no frozen
+/// type reshaped (§5.0). `terminal_id` = an opaque daemon runtime handle (`String` wire), NOT a 23rd
+/// `IdKind`; the PTY host + backpressure pump are DAEMON-INTERNAL (`daemon/src/terminal/`).
+pub const CONTRACT_VERSION: &str = "0.21.0";
 
 /// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
 /// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,

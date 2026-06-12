@@ -1635,7 +1635,7 @@
       "type": "string"
     },
     "ServerFrame": {
-      "description": "The server→client **multiplexed frame envelope** (§6.4 frame-type tag). The internally-tagged\n`frame_type` discriminant lets the client demultiplex one connection: an RPC response vs a\nsubscription push. The **Terminal-Channel tag space is RESERVED** — raw PTY frames are a\nPhase-3 decision (JSON-base64 vs a binary fast-path, made with throughput data); no variant yet.",
+      "description": "The server→client **multiplexed frame envelope** (§6.4 frame-type tag). The internally-tagged\n`frame_type` discriminant lets the client demultiplex one connection: an RPC response, a\nsubscription push, or raw terminal output. **AS-BUILT (3.4):** the reserved Terminal-Channel slot\nis filled with the **JSON-base64 MVP** `TerminalOutput` variant (`data` base64 over the unchanged\ncodec, LESSON §7); the **binary fast-path stays a deferred 3.5 decision**, made with the\nterminal-attach throughput benchmark (additive — a future variant + a CONTRACT bump, not a reshape).",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -1695,6 +1695,36 @@
             "frame_type",
             "projection",
             "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "raw terminal output (§6.4 Terminal Channel) — the reserved slot, filled 3.4 (JSON-base64 MVP).",
+          "properties": {
+            "data": {
+              "description": "base64-encoded raw PTY output bytes.",
+              "type": "string"
+            },
+            "frame_type": {
+              "const": "terminal_output",
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "terminal_id": {
+              "description": "the opaque daemon-minted terminal runtime handle (NOT a frozen-22 ID; re-minted on resume).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "frame_type",
+            "terminal_id",
+            "seq",
+            "data"
           ],
           "type": "object"
         }
@@ -1871,6 +1901,103 @@
       },
       "required": [
         "sample"
+      ],
+      "type": "object"
+    },
+    "TerminalControlFrame": {
+      "additionalProperties": false,
+      "description": "A terminal **control** frame (§6.4): the explicit app-level flow-control signal (pause/resume).",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/TerminalControlKind"
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "TerminalControlKind": {
+      "description": "The kind of explicit app-level **flow-control** frame in a [`TerminalControlFrame`] (§6.4\nbackpressure). snake_case wire values. The client emits `pause`/`resume` to throttle a chatty\nPTY; the L3 watermark pump also produces these as its flow-control decision (display-only #9).",
+      "enum": [
+        "pause",
+        "resume"
+      ],
+      "type": "string"
+    },
+    "TerminalInputFrame": {
+      "additionalProperties": false,
+      "description": "A client→daemon terminal **input** frame (§6.4): keystrokes/paste for the PTY child. `data` base64.",
+      "properties": {
+        "data": {
+          "description": "base64-encoded raw input bytes written to the PTY child.",
+          "type": "string"
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "data"
+      ],
+      "type": "object"
+    },
+    "TerminalOutputFrame": {
+      "additionalProperties": false,
+      "description": "A daemon→client terminal **output** frame (§6.4). `data` = base64 raw PTY output bytes. `seq`\nincrements per emitted frame (the L3 ~30 fps batch pump assigns it) so a gap is client-detectable.",
+      "properties": {
+        "data": {
+          "description": "base64-encoded raw PTY output bytes.",
+          "type": "string"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "terminal_id": {
+          "description": "the opaque daemon-minted terminal runtime handle (NOT a frozen-22 ID; re-minted on resume).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "seq",
+        "data"
+      ],
+      "type": "object"
+    },
+    "TerminalProcessExited": {
+      "additionalProperties": false,
+      "description": "The §17 PTY-death record (3.4): a terminal child process exited. A **non-mutation OBSERVATION\nevent** — the daemon WITNESSES the child exit (via portable-pty waitpid / reader EOF) and records\nit; it follows the System/supervisor-actor non-mutation-event precedent (`DeviceRegistered`/\n`TelemetrySampled`, LESSON §10/§23): written via the single write-actor through the §15 redaction\ngate (#2/#3 hold), NEVER through the Gateway pipeline (INV-SEC-1 governs state *mutations*; a\nprocess-exit notification is none). **Safety #9** — `exit_code`/`signal` come from the OS exit\nstatus, NEVER inferred by parsing terminal output (the PTY is display-only). The session identity\n(`session_id`/`occurred_at`) lives on the [`crate::event_envelope::EventEnvelope`] columns; this\npayload carries only `terminal_id` + the OS exit detail. The §17 SessionFailed → ActionFailed →\nlease-release cascade is **Phase 4** (it CONSUMES this event). Optionals serialize as explicit\n`null` (no `skip_serializing_if`) for a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).",
+      "properties": {
+        "exit_code": {
+          "description": "the child's exit code (None when killed by a signal, or unavailable).",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "signal": {
+          "description": "the terminating signal name (None when it exited normally).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "terminal_id": {
+          "description": "the opaque daemon-minted terminal runtime handle (NOT a frozen-22 ID; matches the wire frames).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id"
       ],
       "type": "object"
     },
@@ -2235,6 +2362,21 @@
     "telemetry_sampled": {
       "$ref": "#/$defs/TelemetrySampled"
     },
+    "terminal_control_frame": {
+      "$ref": "#/$defs/TerminalControlFrame"
+    },
+    "terminal_control_kind": {
+      "$ref": "#/$defs/TerminalControlKind"
+    },
+    "terminal_input_frame": {
+      "$ref": "#/$defs/TerminalInputFrame"
+    },
+    "terminal_output_frame": {
+      "$ref": "#/$defs/TerminalOutputFrame"
+    },
+    "terminal_process_exited": {
+      "$ref": "#/$defs/TerminalProcessExited"
+    },
     "timestamp": {
       "$ref": "#/$defs/Timestamp"
     },
@@ -2348,9 +2490,14 @@
     "metric_quality",
     "transcript_ref",
     "harness_capabilities",
-    "telemetry_sampled"
+    "telemetry_sampled",
+    "terminal_output_frame",
+    "terminal_input_frame",
+    "terminal_control_frame",
+    "terminal_control_kind",
+    "terminal_process_exited"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.20.0"
+  "x-contract-version": "0.21.0"
 }

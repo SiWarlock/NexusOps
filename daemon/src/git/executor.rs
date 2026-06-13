@@ -1,19 +1,20 @@
-//! The `git.create_worktree` executor (P5.2, edges-020) — `ExecutorKind::Git`. The FIRST real edges
-//! FS/git MUTATION.
+//! The P5.2 edges git mutators (`ExecutorKind::Git`) — the FIRST real edges FS/git MUTATIONS.
 //!
-//! Handles `git.create_worktree` by shelling to the git CLI (`git worktree add`) via the injected
-//! [`GitCli`] seam — **forbidden #6: NEVER git2 for mutations** (git2 stays read-only in
-//! `git::{detect,reads,precedence}`). On success it mints a `WorktreeId` and emits `WorktreeCreated`
-//! through the in-txn §15 gate via the edges-019 `EmittedEvent::Namespaced` bridge.
-//! `side_effect_applied: true` — a real on-disk worktree → a txn-B append fault yields the honest
-//! `ActionPartiallySucceeded` (LESSON 21), not a clean rollback. `git.status`/`git.diff`/
-//! `git.create_branch` (also `ExecutorKind::Git`) delegate to the inner stub (no consumer this slice;
-//! reads via the read path; `create_branch` → edges-021).
+//! `GitExecutor` handles `git.create_worktree` (`git worktree add`, edges-020) and `git.create_branch`
+//! (`git branch`, edges-021) by shelling to the git CLI via the injected [`GitCli`] seam —
+//! **forbidden #6: NEVER git2 for mutations** (git2 stays read-only in `git::{detect,reads,
+//! precedence}`). Each mutator validates the catalog `requires_resource_refs` precondition, guards its
+//! operands against argument-injection ([`reject_dash_operands`]), runs the CLI, and on success emits
+//! its lifecycle event (`WorktreeCreated` / `BranchCreated`) through the in-txn §15 gate via the
+//! edges-019 `EmittedEvent::Namespaced` bridge. `side_effect_applied: true` — a real FS/git change → a
+//! txn-B append fault yields the honest `ActionPartiallySucceeded` (LESSON 21), not a clean rollback.
+//! `git.status`/`git.diff` (also `ExecutorKind::Git`) delegate to the inner stub (served via the read
+//! path).
 
 use std::path::Path;
 
 use nexusops_shared::actions::{ActionPreview, ActionRequest};
-use nexusops_shared::events::WorktreeCreated;
+use nexusops_shared::events::{BranchCreated, WorktreeCreated};
 use nexusops_shared::ids::WorktreeId;
 use nexusops_shared::time::Timestamp;
 
@@ -22,8 +23,9 @@ use crate::gateway::executor::{
 };
 use crate::git::cli::GitCli;
 
-/// The git action type this executor handles directly (`ExecutorKind::Git`); the rest delegate.
+/// The git action types this executor handles directly (`ExecutorKind::Git`); the rest delegate.
 const GIT_CREATE_WORKTREE: &str = "git.create_worktree";
+const GIT_CREATE_BRANCH: &str = "git.create_branch";
 
 /// Runs git mutations via the injected CLI seam (forbidden #6). Holds an inner [`CatalogExecutor`] for
 /// the catalog precondition check + delegation of the non-`create_worktree` `git.*` actions.
@@ -77,22 +79,11 @@ impl GitExecutor {
         };
         let base_branch = string_input(req, "base_branch");
 
-        // ARGUMENT-INJECTION guard (defense-in-depth, INV-SEC-1): `Command::args` is shell-free, but
-        // git parses a leading-`-` OPERAND as an OPTION — e.g. `base_branch = "--no-checkout"` would
-        // SILENTLY change the create, so the on-disk worktree would diverge from the approved+audited
-        // Action (an audit-integrity gap). Reject any git-arg operand that starts with `-`, fail-closed
-        // BEFORE the CLI runs (mirrors the blank-input guard). `repo_path` is the cwd (not a git arg) →
-        // exempt. Generalizes to every git/external mutator (edges-021+).
-        for operand in [&worktree_path, &branch_name]
-            .into_iter()
-            .chain(base_branch.as_ref())
-        {
-            if operand.starts_with('-') {
-                return ExecutionOutcome::Failed(
-                    "git.create_worktree operand must not start with '-' (argument-injection guard)"
-                        .to_string(),
-                );
-            }
+        // ARGUMENT-INJECTION guard (shared across both git mutators — see `reject_dash_operands`).
+        let mut operands = vec![worktree_path.as_str(), branch_name.as_str()];
+        operands.extend(base_branch.as_deref());
+        if let Err(failed) = reject_dash_operands(&operands) {
+            return failed;
         }
 
         // forbidden #6 — the mutation runs via the git CLI, NEVER a git2 mutating API. Canonical
@@ -152,6 +143,67 @@ impl GitExecutor {
             }],
         }
     }
+
+    fn execute_create_branch(&self, req: &ActionRequest) -> ExecutionOutcome {
+        // validate the catalog `requires_resource_refs` precondition (the repo IDENTITY) FIRST.
+        if let Err(e) = self.inner.validate(req) {
+            return ExecutionOutcome::Failed(e.to_string());
+        }
+        // operational params from `req.inputs` (the §7.2/§15 real-input-fidelity NOTE on
+        // `execute_create_worktree` applies equally — production branch names/paths are low-entropy;
+        // MVP-accept).
+        let Some(repo_path) = string_input(req, "repo_path") else {
+            return ExecutionOutcome::Failed(
+                "git.create_branch requires a non-empty inputs[\"repo_path\"]".to_string(),
+            );
+        };
+        let Some(branch_name) = string_input(req, "branch_name") else {
+            return ExecutionOutcome::Failed(
+                "git.create_branch requires a non-empty inputs[\"branch_name\"]".to_string(),
+            );
+        };
+        // the optional start-point (`base`); `git branch <name>` with no start-point uses current HEAD.
+        let base = string_input(req, "base");
+
+        // ARGUMENT-INJECTION guard (shared across both git mutators — see `reject_dash_operands`).
+        let mut operands = vec![branch_name.as_str()];
+        operands.extend(base.as_deref());
+        if let Err(failed) = reject_dash_operands(&operands) {
+            return failed;
+        }
+
+        // forbidden #6 — via the git CLI, NEVER a git2 mutating API: git branch <name> [<start-point>].
+        let mut args = vec!["branch".to_string(), branch_name.clone()];
+        if let Some(start) = &base {
+            args.push(start.clone());
+        }
+        match self.cli.run(&args, Path::new(&repo_path)) {
+            Ok(out) if out.success => {}
+            Ok(_) => {
+                // a non-zero git exit — fail BEFORE any event; STRUCTURAL reason only (raw git stderr
+                // can carry paths, §15).
+                return ExecutionOutcome::Failed("git branch failed (non-zero exit)".to_string());
+            }
+            Err(e) => return ExecutionOutcome::Failed(format!("git branch: {e}")),
+        }
+
+        let payload = BranchCreated { branch_name, base };
+        let payload_json = match serde_json::to_string(&payload) {
+            Ok(j) => j,
+            Err(e) => return ExecutionOutcome::Failed(format!("serialize BranchCreated: {e}")),
+        };
+        ExecutionOutcome::Succeeded {
+            changed_resources: req.resource_refs.clone(),
+            detail: "git.create_branch — created a branch via the git CLI".to_string(),
+            // a real git branch was created BEFORE txn-B → honest ActionPartiallySucceeded on a lost
+            // terminal write (LESSON 21).
+            side_effect_applied: true,
+            emitted_events: vec![EmittedEvent::Namespaced {
+                event_type: BranchCreated::EVENT_TYPE,
+                payload_json,
+            }],
+        }
+    }
 }
 
 impl ActionExecutor for GitExecutor {
@@ -162,9 +214,10 @@ impl ActionExecutor for GitExecutor {
     fn execute(&self, req: &ActionRequest) -> ExecutionOutcome {
         match req.action_type.as_str() {
             GIT_CREATE_WORKTREE => self.execute_create_worktree(req),
-            // git.status/git.diff/git.create_branch (also ExecutorKind::Git) are not handled this slice
-            // → the inner side-effect-free stub (no-op success, no event). status/diff are served via
-            // the read path (get_projection(Worktree) + the diff backend); create_branch → edges-021.
+            GIT_CREATE_BRANCH => self.execute_create_branch(req),
+            // git.status/git.diff (also ExecutorKind::Git) are not handled → the inner side-effect-free
+            // stub (no-op success, no event); served via the read path (get_projection(Worktree) + the
+            // diff backend).
             _ => self.inner.execute(req),
         }
     }
@@ -174,8 +227,24 @@ impl ActionExecutor for GitExecutor {
     }
 }
 
+/// ARGUMENT-INJECTION guard (defense-in-depth, INV-SEC-1; the edges-020 security HIGH, now SHARED
+/// across both git mutators). `Command::args` is shell-free, but git parses a leading-`-` OPERAND as
+/// an OPTION (e.g. `--no-checkout`/`--force`/`--orphan` would SILENTLY change the mutation → the
+/// on-disk result diverges from the approved+audited Action). Reject any git-ARG operand starting with
+/// `-`, fail-closed. `operands` are the values passed to git's arg parser ONLY — the cwd (`repo_path`,
+/// passed via `Command::current_dir`) is NOT a git arg → not an injection vector, so callers exclude
+/// it. Generalizes to every git/external mutator.
+fn reject_dash_operands(operands: &[&str]) -> Result<(), ExecutionOutcome> {
+    if operands.iter().any(|op| op.starts_with('-')) {
+        return Err(ExecutionOutcome::Failed(
+            "git operand must not start with '-' (argument-injection guard)".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// a non-blank string input — `None` if absent or whitespace-only (fail-closed for a required input;
-/// the natural optionality for `base_branch`).
+/// the natural optionality for `base_branch`/`base`).
 fn string_input(req: &ActionRequest, key: &str) -> Option<String> {
     req.inputs
         .get(key)

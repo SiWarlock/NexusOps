@@ -1,11 +1,11 @@
 //! P5.2 (edges-020) — the `git.create_worktree` executor: the FIRST real edges FS/git MUTATION.
 //!
-//! `GitExecutor` (`ExecutorKind::Git`) handles `git.create_worktree` by shelling to the **git CLI**
-//! (forbidden #6 — NEVER git2 for mutations) via an injected `GitCli` seam, mints a `WorktreeId`, and
-//! emits `WorktreeCreated` through the in-txn §15 gate via the edges-019 `EmittedEvent::Namespaced`
-//! bridge. `side_effect_applied: true` (a real FS worktree → honest `ActionPartiallySucceeded` on a
-//! txn-B fault). `git.status`/`git.diff`/`git.create_branch` (also `ExecutorKind::Git`) delegate to
-//! the inner stub (no consumer this slice).
+//! `GitExecutor` (`ExecutorKind::Git`) handles `git.create_worktree` (edges-020) AND `git.create_branch`
+//! (edges-021) by shelling to the **git CLI** (forbidden #6 — NEVER git2 for mutations) via an injected
+//! `GitCli` seam and emits `WorktreeCreated`/`BranchCreated` through the in-txn §15 gate via the
+//! edges-019 `EmittedEvent::Namespaced` bridge. `side_effect_applied: true` (a real FS/git change →
+//! honest `ActionPartiallySucceeded` on a txn-B fault). `git.status`/`git.diff` (also
+//! `ExecutorKind::Git`) delegate to the inner stub (served via the read path).
 //!
 //! **Test strategy** (note the §7.2 approve-path redaction interaction — see the Step-2.5 finding):
 //!  * Tests 1-8 + 9a call `execute()` DIRECTLY with RAW inputs (no approve-path redaction).
@@ -24,7 +24,7 @@ use nexusops_shared::actions::{
     ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
 };
 use nexusops_shared::catalog::ExecutorKind;
-use nexusops_shared::events::WorktreeCreated;
+use nexusops_shared::events::{BranchCreated, WorktreeCreated};
 use nexusops_shared::ids::{ActionRequestId, WorktreeId};
 use nexusops_shared::status::ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
@@ -350,15 +350,15 @@ fn test_create_worktree_requires_resource_ref() {
     ));
 }
 
-// ---- 8. shared ExecutorKind::Git dispatch — delegate the rest -------------
+// ---- 8. shared ExecutorKind::Git dispatch — status/diff still delegate -----
 
 #[test]
-fn test_git_status_diff_branch_delegate_to_stub() {
-    // spec(§6.3): git.status/git.diff/git.create_branch dispatched to GitExecutor delegate to the
-    // inner stub (no-op success, NO event) — not handled this slice (status/diff → read path;
-    // create_branch → edges-021).
+fn test_git_status_diff_still_delegate_to_stub() {
+    // spec(§6.3): git.status/git.diff dispatched to GitExecutor still delegate to the inner stub
+    // (no-op success, NO event) AFTER the create_branch arm lands — served via the read path, not
+    // handled here. (git.create_branch is now a real mutator — see the create_branch tests below.)
     let exec = GitExecutor::new(Box::new(FakeGitCli::succeeding()));
-    for verb in ["git.status", "git.diff", "git.create_branch"] {
+    for verb in ["git.status", "git.diff"] {
         match exec.execute(&git_verb_req(verb)) {
             ExecutionOutcome::Succeeded { emitted_events, .. } => {
                 assert!(emitted_events.is_empty(), "{verb} emits no event (stub)");
@@ -445,4 +445,256 @@ fn test_create_worktree_e2e_via_submit_action_approve() {
         events[0].worktree_id.as_str().starts_with("wt_"),
         "the approve path mints a valid wt_ id too"
     );
+}
+
+// ============================================================================
+// edges-021 — the git.create_branch arm (extends GitExecutor)
+// ============================================================================
+
+/// A `git.create_branch` ActionRequest: `branch_name` (+ optional `base` start-point) + the repo cwd
+/// in `inputs`, the repo identity in a `resource_ref`.
+fn branch_req(repo_path: &str, branch: &str, base: Option<&str>, with_ref: bool) -> ActionRequest {
+    let mut inputs = serde_json::json!({
+        "repo_path": repo_path,
+        "branch_name": branch,
+    });
+    if let Some(b) = base {
+        inputs["base"] = serde_json::json!(b);
+    }
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id: None,
+        action_type: "git.create_branch".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs: if with_ref {
+            vec![ResourceRef {
+                resource_type: ResourceType::Repo,
+                id: "repo_x".to_string(),
+                uri: None,
+            }]
+        } else {
+            vec![]
+        },
+        inputs,
+        risk_level: RiskLevel::Level2,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse(FIXED_TS).unwrap(),
+    }
+}
+
+fn branch_created_events(store: &EventStore) -> Vec<BranchCreated> {
+    store
+        .read_all()
+        .unwrap()
+        .iter()
+        .filter(|e| e.event_type == "BranchCreated")
+        .map(|e| serde_json::from_str(&e.payload_json).expect("BranchCreated parses"))
+        .collect()
+}
+
+#[test]
+fn test_create_branch_invokes_git_cli_branch() {
+    // spec(forbidden #6): the branch is created by `git branch <name> [<start-point>]` run in the repo
+    // cwd, via the INJECTED CLI runner (never git2).
+    // with a start-point:
+    let fake = FakeGitCli::succeeding();
+    let inv = fake.invocations();
+    let exec = GitExecutor::new(Box::new(fake));
+    let _ = exec.execute(&branch_req("/repo", "feature", Some("main"), true));
+    assert_eq!(
+        inv.lock().unwrap()[0].0,
+        vec!["branch", "feature", "main"],
+        "git branch <name> <start-point>"
+    );
+    assert_eq!(inv.lock().unwrap()[0].1, Path::new("/repo"), "repo cwd");
+
+    // without a start-point → current HEAD:
+    let fake = FakeGitCli::succeeding();
+    let inv = fake.invocations();
+    let exec = GitExecutor::new(Box::new(fake));
+    let _ = exec.execute(&branch_req("/repo", "feature", None, true));
+    assert_eq!(
+        inv.lock().unwrap()[0].0,
+        vec!["branch", "feature"],
+        "no start-point → no trailing operand"
+    );
+}
+
+#[test]
+fn test_create_branch_emits_branch_created() {
+    // spec(§6.3/§7.2): success → exactly one BranchCreated whose branch_name/base match inputs.
+    let exec = GitExecutor::new(Box::new(FakeGitCli::succeeding()));
+    let payload = match exec.execute(&branch_req("/repo", "feature", Some("main"), true)) {
+        ExecutionOutcome::Succeeded { emitted_events, .. } => {
+            assert_eq!(emitted_events.len(), 1);
+            match &emitted_events[0] {
+                nexusopsd::gateway::executor::EmittedEvent::Namespaced {
+                    event_type,
+                    payload_json,
+                } => {
+                    assert_eq!(*event_type, "BranchCreated");
+                    serde_json::from_str::<BranchCreated>(payload_json).expect("parses")
+                }
+                _ => panic!("expected a Namespaced BranchCreated"),
+            }
+        }
+        ExecutionOutcome::Failed(e) => panic!("expected Succeeded, got Failed: {e}"),
+    };
+    assert_eq!(payload.branch_name, "feature");
+    assert_eq!(payload.base.as_deref(), Some("main"));
+}
+
+#[test]
+fn test_create_branch_side_effect_applied_true() {
+    // spec(§17): a real git branch mutation → side_effect_applied: true (honest ActionPartiallySucceeded
+    // on a txn-B fault, not a clean rollback).
+    let exec = GitExecutor::new(Box::new(FakeGitCli::succeeding()));
+    match exec.execute(&branch_req("/repo", "feature", None, true)) {
+        ExecutionOutcome::Succeeded {
+            side_effect_applied,
+            ..
+        } => assert!(side_effect_applied, "a real branch was created"),
+        ExecutionOutcome::Failed(e) => panic!("expected Succeeded, got Failed: {e}"),
+    }
+}
+
+#[test]
+fn test_create_branch_cli_failure_is_failed_no_event() {
+    // spec(fail-before-event): a CLI failure (non-zero exit OR spawn error) → Failed, NO BranchCreated;
+    // the CLI WAS reached (the failure is CLI-level, not an input/guard short-circuit).
+    for make in [FakeGitCli::failing, FakeGitCli::spawn_error] {
+        let fake = make();
+        let inv = fake.invocations();
+        let exec = GitExecutor::new(Box::new(fake));
+        match exec.execute(&branch_req("/repo", "feature", None, true)) {
+            ExecutionOutcome::Failed(_) => {}
+            ExecutionOutcome::Succeeded { emitted_events, .. } => panic!(
+                "expected Failed; got Succeeded with {} events",
+                emitted_events.len()
+            ),
+        }
+        assert_eq!(
+            inv.lock().unwrap().len(),
+            1,
+            "the CLI was reached (a CLI-level failure, not an input short-circuit)"
+        );
+    }
+}
+
+#[test]
+fn test_create_branch_missing_inputs_failed() {
+    // spec(fail-closed): blank repo_path OR branch_name → Failed, the CLI runner is NEVER invoked.
+    let fake = FakeGitCli::succeeding();
+    let inv = fake.invocations();
+    let exec = GitExecutor::new(Box::new(fake));
+    for (repo, branch) in [("/repo", "   "), ("   ", "feature")] {
+        assert!(
+            matches!(
+                exec.execute(&branch_req(repo, branch, None, true)),
+                ExecutionOutcome::Failed(_)
+            ),
+            "blank input ({repo:?},{branch:?}) fails closed"
+        );
+    }
+    assert_eq!(
+        inv.lock().unwrap().len(),
+        0,
+        "CLI never invoked on fail-closed input"
+    );
+}
+
+#[test]
+fn test_create_branch_rejects_dash_leading_operand() {
+    // spec(INV-SEC-1 / argument-injection, the edges-020 standing requirement): a branch_name/base
+    // starting with `-` (which git would parse as an OPTION, e.g. `--force`) is rejected fail-closed,
+    // the CLI runner NEVER invoked — the SHARED guard now covers both git arms.
+    let fake = FakeGitCli::succeeding();
+    let inv = fake.invocations();
+    let exec = GitExecutor::new(Box::new(fake));
+    for (branch, base) in [("--force", None), ("feature", Some("--orphan"))] {
+        match exec.execute(&branch_req("/repo", branch, base, true)) {
+            ExecutionOutcome::Failed(_) => {}
+            ExecutionOutcome::Succeeded { .. } => {
+                panic!("a dash-leading operand ({branch:?},{base:?}) must fail closed")
+            }
+        }
+    }
+    assert_eq!(
+        inv.lock().unwrap().len(),
+        0,
+        "CLI never invoked when an operand is rejected"
+    );
+}
+
+#[test]
+fn test_create_branch_repo_path_dash_not_guarded() {
+    // spec(INV-SEC-1 boundary): repo_path is the cwd (`Command::current_dir`), NOT a git arg → it is
+    // intentionally EXEMPT from the arg-injection guard. A `-`-leading repo_path PASSES the guard
+    // (reaches the CLI as the cwd) — proving the exemption is real, so a future author must not add
+    // repo_path to the operand list "for symmetry".
+    let fake = FakeGitCli::succeeding();
+    let inv = fake.invocations();
+    let exec = GitExecutor::new(Box::new(fake));
+    match exec.execute(&branch_req("--evil", "feature", None, true)) {
+        ExecutionOutcome::Succeeded { .. } => {}
+        ExecutionOutcome::Failed(e) => {
+            panic!("repo_path is exempt from the operand guard; got Failed: {e}")
+        }
+    }
+    assert_eq!(
+        inv.lock().unwrap()[0].1,
+        Path::new("--evil"),
+        "repo_path rides as the cwd (current_dir), not a git arg"
+    );
+}
+
+#[test]
+fn test_create_branch_requires_resource_ref() {
+    // spec(§6.3): the catalog requires_resource_refs precondition is enforced — no resource_ref → Failed.
+    let exec = GitExecutor::new(Box::new(FakeGitCli::succeeding()));
+    assert!(matches!(
+        exec.execute(&branch_req("/repo", "feature", None, false)),
+        ExecutionOutcome::Failed(_)
+    ));
+}
+
+#[test]
+fn test_create_branch_e2e_via_submit_action_approve() {
+    // spec(§6.3 reachability): submit git.create_branch (risk-2) → AwaitingApproval (gate holds, no
+    // event) → approve → BranchCreated persisted. FakeGitCli + LOW-ENTROPY paths (§7.2 redaction).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gateway_with_git_executor(Box::new(FakeGitCli::succeeding()));
+
+    let ack = gw
+        .submit_action(
+            &mut store,
+            branch_req("/repo", "feature", Some("main"), true),
+        )
+        .expect("submit");
+    assert_eq!(
+        ack.status,
+        ActionRequestStatus::AwaitingApproval,
+        "risk-2 holds at the approval gate"
+    );
+    assert_eq!(
+        branch_created_events(&store).len(),
+        0,
+        "no event before approval"
+    );
+
+    gw.approve(&mut store, &approval_id_of(&path))
+        .expect("approve drives execute");
+    let events = branch_created_events(&store);
+    assert_eq!(
+        events.len(),
+        1,
+        "approve → execute → BranchCreated persisted"
+    );
+    assert_eq!(events[0].branch_name, "feature");
+    assert_eq!(events[0].base.as_deref(), Some("main"));
 }

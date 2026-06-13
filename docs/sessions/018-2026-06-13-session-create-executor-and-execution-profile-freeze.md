@@ -3,7 +3,7 @@
 - **Date:** 2026-06-13
 - **Phase:** Phase 3 (3.5 benchmark) + Phase 4 (P4.0a spine, P4.0b-1 the cat-1 risk-0 session-lifecycle)
 - **Predecessor:** [017 — Claude MutationIntercept→Gateway interception](017-2026-06-12-claude-mutation-intercept-gateway.md)
-- **Successor:** _(next session — 4.0b-2: the live launch + the INV-SEC-1 interception + the reachable IPC session.create)_
+- **Successor:** [019](019-2026-06-13-edges-r1-and-4-0b-2-decision-logic.md) — 4.0b-T + edges-R1 + 4.0b-2 (L1 + Option-A safe floor)
 
 ## Why this session existed
 

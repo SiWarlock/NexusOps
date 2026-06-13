@@ -2828,5 +2828,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.26.0"
+  "x-contract-version": "0.27.0"
 }

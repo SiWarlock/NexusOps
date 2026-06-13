@@ -1568,7 +1568,8 @@ fn test_agent_mutation_catalog_family() {
     use nexusops_shared::actions::RiskLevel;
     use nexusops_shared::catalog::{lookup, ExecutorKind, AGENT_MUTATION_ACTION_TYPES};
 
-    // the family is exactly the 4 named tools (the §9.1 matrix's interceptable Claude channels).
+    // the family = the 4 §9.1 interceptable channels (043) + the 3 P4.0b-2 split-tool-policy types
+    // (`agent.todo_write` benign auto-allow + `agent.web_fetch`/`agent.web_search` egress).
     assert_eq!(
         AGENT_MUTATION_ACTION_TYPES,
         &[
@@ -1576,8 +1577,11 @@ fn test_agent_mutation_catalog_family() {
             "agent.file_edit",
             "agent.file_read",
             "agent.mcp_tool",
+            "agent.todo_write",
+            "agent.web_fetch",
+            "agent.web_search",
         ],
-        "the agent-mutation family is the 4 §9.1 interceptable tool categories"
+        "the agent-mutation family = the 4 §9.1 channels + the 3 P4.0b-2 split-tool-policy types"
     );
 
     // every family member is catalogued + adjudication-only (NOT a real-executor namespace).
@@ -1603,6 +1607,20 @@ fn test_agent_mutation_catalog_family() {
             lookup(mutating).unwrap().locked_risk,
             RiskLevel::Level2,
             "{mutating} mutates → risk-2 (require_approval by default; the L4 deny-rules raise/deny)"
+        );
+    }
+    // P4.0b-2 split tool-policy (call-3): `agent.todo_write` is the LONE benign auto-allow (risk-0 —
+    // no FS/git/external/exfil); the EGRESS tools require approval (risk-2 — the exfil dimension).
+    assert_eq!(
+        lookup("agent.todo_write").unwrap().locked_risk,
+        RiskLevel::Level0,
+        "agent.todo_write is benign-internal → the lone risk-0 auto-allow (call-3 explicit allowlist)"
+    );
+    for egress in ["agent.web_fetch", "agent.web_search"] {
+        assert_eq!(
+            lookup(egress).unwrap().locked_risk,
+            RiskLevel::Level2,
+            "{egress} is network EGRESS → risk-2 require_approval (the data-exfil dimension)"
         );
     }
 }
@@ -1673,8 +1691,8 @@ fn test_agent_mutation_family_snapshot_spec_6_3() {
     );
     assert_eq!(
         AGENT_MUTATION_ACTION_TYPES.len(),
-        4,
-        "the agent-mutation family is the 4 §9.1 interceptable Claude tool categories"
+        7,
+        "the agent-mutation family = the 4 §9.1 channels + the 3 P4.0b-2 split-tool-policy types"
     );
     // the agent family is DISJOINT from the MVP set (no name collision — distinct namespaces).
     for at in AGENT_MUTATION_ACTION_TYPES {
@@ -2305,16 +2323,16 @@ fn test_action_denied_approval_id_optional() {
     );
 }
 
-// ---- P4.0b-R1b RED — CONTRACT_VERSION bumped to 0.26.0 (the Phase-5/7 wiring event types) ----
+// ---- P4.0b-2 RED — CONTRACT_VERSION bumped to 0.27.0 (the 3 split-tool-policy agent.* types) ----
 
 #[test]
-fn test_contract_version_bumped_0_26_0() {
+fn test_contract_version_bumped_0_27_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.25.0 =
-    // the §6.3 catalog reclassification for the away-ruled risk-0 session-lifecycle; **0.26.0** = the
-    // edges-R1 Phase-5/7 wiring event-type freeze (~11 new EventTypeRegistry payloads + the `Provider`
-    // enum, ONE batched additive bump — edges regenerates once). Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.26.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.26.0 =
+    // the edges-R1 Phase-5/7 wiring event-type freeze; **0.27.0** = the P4.0b-2 split tool-policy — 3
+    // new `agent.*` catalog types (`agent.todo_write` risk-0 benign auto-allow + `agent.web_fetch`/
+    // `agent.web_search` risk-2 egress). Machine-internal (MVP-22 untouched); additive (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.27.0");
 }
 
 // =================================================================================================

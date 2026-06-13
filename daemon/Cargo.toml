@@ -68,8 +68,9 @@ nexusopsd = { path = ".", features = ["fault-injection", "test-support"] }
 # read-path degrade/quarantine (§17) without a pub test-backdoor in the API.
 rusqlite = { version = "0.34", features = ["bundled"] }
 # the runtime tests drive the write-actor + accept-loop + subscribe over a tokio runtime
-# (#[tokio::test]) + a real ephemeral UnixListener client.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+# (#[tokio::test]) + a real ephemeral UnixListener client. `test-util` (P4.0b-2) = `start_paused` /
+# `tokio::time::pause` for the deterministic 5-min decision-wait timeout test (no real-time sleep).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util", "test-util"] }
 
 # P2.5 — the §18 event-write/reader perf benchmark. `harness = false`: a plain `fn main()` (NOT the
 # libtest harness), so it is INVISIBLE to `cargo test --workspace` (the per-slice RED/GREEN loop) and

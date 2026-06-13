@@ -26,6 +26,12 @@ const RISK0_AUTO_EXECUTE_ALLOWLIST: &[&str] = &[
     "code.open_file",
     // the agent-mutation read-only adjudication (governed by AgentMutationPolicy; no executor runs)
     "agent.file_read",
+    // P4.0b-2 (the user-ruled d.2 split tool-policy, call-3 PIN) — `agent.todo_write` is the LONE
+    // benign-internal auto-allow: the agent's own scratch TODO list, provably NO FS/git/external/exfil
+    // surface (adjudication-only → no executor runs). This explicit-enumeration re-gate (NOT a category
+    // heuristic) mirrors the 4.0b-1 all-risk-0-allowlist; the EGRESS tools (`agent.web_fetch`/
+    // `agent.web_search`) are risk-2 + ABSENT here → they require approval (the exfil dimension).
+    "agent.todo_write",
     // session-lifecycle — the away-ruled risk-0 MUTATIONS (the NARROW relaxation, PIN d)
     "session.create",
     "session.kill",

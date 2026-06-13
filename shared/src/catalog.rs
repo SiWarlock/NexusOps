@@ -117,6 +117,15 @@ pub const AGENT_MUTATION_ACTION_TYPES: &[&str] = &[
     "agent.file_edit",
     "agent.file_read",
     "agent.mcp_tool",
+    // P4.0b-2 (the live drive loop, user-ruled d.2 split tool-policy): the catalog IS the explicit
+    // enumerated allowlist. `agent.todo_write` = the LONE benign-internal auto-allow (risk-0; provably
+    // no FS/git/external/exfil surface — the agent's own scratch TODO list). `agent.web_fetch` /
+    // `agent.web_search` = the network-EGRESS tools (risk-2 approval-gated — a data-exfil dimension,
+    // secrets-in-a-URL past the trust boundary; NOT benign). Everything unclassified stays fail-closed
+    // (the receiver denies an unmapped tool — `CoverageGap`/`UnmappedTool`). Additive (MVP-22 untouched).
+    "agent.todo_write",
+    "agent.web_fetch",
+    "agent.web_search",
 ];
 
 fn entry(
@@ -272,6 +281,15 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
         "agent.bash" => entry(R::Level2, P::Command, I::None, X::Adjudication, false, true),
         "agent.file_edit" => entry(R::Level2, P::Diff, I::None, X::Adjudication, false, true),
         "agent.mcp_tool" => entry(R::Level2, P::Api, I::None, X::Adjudication, false, true),
+        // P4.0b-2 — the d.2 split tool-policy. `agent.todo_write` = the LONE benign-internal auto-allow
+        // (risk-0). NOT "read-only" — it WRITES the agent's own scratch TODO list — but that write has
+        // **no daemon-side side effect**: adjudication-only (no executor runs) + no FS/git/external/exfil
+        // surface, so the agent updating its own task list can't harm the trust boundary. `agent.web_fetch`/
+        // `agent.web_search` = network EGRESS → risk-2 require_approval (the exfil dimension; the L4 params
+        // deny-rules may raise, never lower).
+        "agent.todo_write" => entry(R::Level0, P::Command, I::None, X::Adjudication, false, true),
+        "agent.web_fetch" => entry(R::Level2, P::Api, I::None, X::Adjudication, false, true),
+        "agent.web_search" => entry(R::Level2, P::Api, I::None, X::Adjudication, false, true),
         _ => return None,
     })
 }

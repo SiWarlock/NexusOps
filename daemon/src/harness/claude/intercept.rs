@@ -24,7 +24,7 @@ use nexusops_shared::status::ActionRequest as ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
 
 use crate::eventstore::EventStore;
-use crate::gateway::Gateway;
+use crate::gateway::{Gateway, GatewayError};
 use crate::harness::{coverage_of, Harness, MutationChannel, MutationCoverage, MutationVerdict};
 
 /// The subset of the Claude `PreToolUse` hook payload the receiver consumes. The daemon-wired hook
@@ -110,6 +110,14 @@ fn classify_tool(tool_name: &str) -> Option<(MutationChannel, Option<&'static st
             Some((MutationChannel::DirectToolUse, Some("agent.file_edit")))
         }
         "Read" | "Glob" | "Grep" => Some((MutationChannel::DirectToolUse, Some("agent.file_read"))),
+        // P4.0b-2 (the d.2 split tool-policy) — DIRECT, interceptable in default mode → Adjudicate, so
+        // each routes through the Gateway at its CATALOG risk (the catalog IS the explicit allowlist,
+        // call-3 PIN): `TodoWrite` → `agent.todo_write` (risk-0 → auto-allow, the lone benign-internal);
+        // `WebFetch`/`WebSearch` → `agent.web_fetch`/`agent.web_search` (risk-2 → require_approval, the
+        // EGRESS/exfil dimension). An unknown tool stays `None` → `UnmappedTool` → Deny (fail-closed).
+        "TodoWrite" => Some((MutationChannel::DirectToolUse, Some("agent.todo_write"))),
+        "WebFetch" => Some((MutationChannel::DirectToolUse, Some("agent.web_fetch"))),
+        "WebSearch" => Some((MutationChannel::DirectToolUse, Some("agent.web_search"))),
         // the DENIED channels carry NO action_type — their coverage (BestEffort / NotGuaranteed) denies
         // them, so an action_type would be dead. Returning `None` keeps it that way STRUCTURALLY: if a
         // future edit ever made these Adjudicate-eligible, the `action_type.ok_or(UnmappedTool)` on the
@@ -241,11 +249,40 @@ pub fn route_intercept(
             // default verdict (only PolicyDecided/Approved → Allow), never silently allowing.
             other => InterceptOutcome::Resolved(verdict_for_status(other)),
         },
-        // a Gateway error — an audit-write fault (§15 #5) or a policy-deny — fails CLOSED to Deny.
-        Err(_) => InterceptOutcome::Resolved(MutationVerdict::Deny {
-            reason: "the Gateway refused the intercepted tool call (fail-closed §15 #5)"
-                .to_string(),
+        // a Gateway error fails CLOSED to Deny — but call 2 DISTINGUISHES the kind: a §17/§15 #5
+        // AUDIT-WRITE-FAULT (the adjudication audit event could not commit) is a LOUD integrity alert,
+        // not a routine deny. The live drive loop (L2) keys a §17 `AuditWriteFailed` signal off this
+        // kind; both still fail-closed to Deny. (A policy-deny is a SEPARATE `Ok(Denied)` path above,
+        // never an `Err` — `verdict_for_status(Denied)` → routine Deny.)
+        Err(e) => InterceptOutcome::Resolved(MutationVerdict::Deny {
+            reason: match classify_gateway_error(&e) {
+                GatewayDenyKind::AuditWriteFailed =>
+                    "AUDIT-WRITE-FAILED (§17/§15 #5 integrity alert): the adjudication audit event \
+                     could not be committed — fail-closed Deny. A loud integrity fault, NOT a routine deny."
+                        .to_string(),
+                GatewayDenyKind::Other =>
+                    "the Gateway refused the intercepted tool call (fail-closed §15 #5)".to_string(),
+            },
         }),
+    }
+}
+
+/// The kind of a Gateway `Err` for the call-2 audit-fault distinction. A §17/§15 #5
+/// [`GatewayDenyKind::AuditWriteFailed`] (the adjudication audit event could not commit) is a LOUD
+/// integrity alert the live drive loop surfaces distinctly; everything else is a routine fail-closed
+/// deny. **Both fail closed to Deny** — the distinction drives the §17 signal, never the gate. (A
+/// POLICY-deny never reaches here: it is the `Ok(Denied)` path → [`verdict_for_status`] → routine Deny.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GatewayDenyKind {
+    AuditWriteFailed,
+    Other,
+}
+
+/// Classify a Gateway `Err` for the §17 audit-fault distinction (call 2).
+pub fn classify_gateway_error(err: &GatewayError) -> GatewayDenyKind {
+    match err {
+        GatewayError::AuditWriteFailed(_) => GatewayDenyKind::AuditWriteFailed,
+        _ => GatewayDenyKind::Other,
     }
 }
 

@@ -24,6 +24,7 @@ use nexusops_shared::status::Session;
 use crate::harness::{HarnessAdapter, MutationIntercept, ResumeResult};
 use crate::terminal::{Pty, PtySpawner};
 
+pub mod decision;
 pub mod intercept;
 mod status;
 pub mod telemetry;

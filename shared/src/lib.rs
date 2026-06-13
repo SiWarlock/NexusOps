@@ -102,4 +102,10 @@ pub mod time;
 /// `GithubSyncFailed` + `LinearSyncFailed` (non-auth variant only; `reason` = a structural class-name) +
 /// the closed `Provider` enum (`github`|`linear`). `shared/`-only — NO daemon emission (edges' P5/P7
 /// executors emit later). Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.26.0";
+/// 0.27.0 (P4.0b-2 — the live drive loop, user-ruled d.2 split tool-policy) adds **3 new `agent.*`
+/// catalog types** to `AGENT_MUTATION_ACTION_TYPES`: `agent.todo_write` (risk-0 — the LONE benign-
+/// internal auto-allow; the catalog IS the explicit enumerated allowlist, call-3 PIN) +
+/// `agent.web_fetch`/`agent.web_search` (risk-2 require_approval — the network-EGRESS/exfil dimension).
+/// Machine-internal (minted by the hook-receiver), so `MVP_ACTION_TYPES` stays 22 (the 043 precedent).
+/// Additive — a new agent.* set + catalog entries; no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.27.0";

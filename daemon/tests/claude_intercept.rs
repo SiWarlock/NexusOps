@@ -20,10 +20,10 @@ use nexusopsd::eventstore::{EventStore, PrefixRedactor};
 use nexusopsd::fault::{arm, FaultPoint};
 use nexusopsd::gateway::executor::{ActionExecutor, ExecError, ExecutionOutcome, StubExecutor};
 use nexusopsd::gateway::policy::{deny_rule_match, AgentMutationPolicy, CatalogPolicy};
-use nexusopsd::gateway::Gateway;
+use nexusopsd::gateway::{Gateway, GatewayError};
 use nexusopsd::harness::claude::intercept::{
-    disposition, map_to_action_type, parse_payload, route_intercept, verdict_for_status,
-    DenyReason, Disposition, InterceptOutcome,
+    classify_gateway_error, disposition, map_to_action_type, parse_payload, route_intercept,
+    verdict_for_status, DenyReason, Disposition, GatewayDenyKind, InterceptOutcome,
 };
 use nexusopsd::harness::claude::ClaudeLaunchSpec;
 use nexusopsd::harness::{
@@ -87,7 +87,9 @@ fn test_unknown_tool_fail_closed_deny() {
             "a coverage-gap channel `{tool}` must fail closed (CoverageGap)"
         );
     }
-    for tool in ["WebFetch", "WebSearch", "SomeBrandNewTool", ""] {
+    // (WebFetch/WebSearch are now CLASSIFIED — the P4.0b-2 split-tool-policy egress types; their
+    // mapping + approval-gating is pinned by `test_tool_policy_benign_allowlist_explicit`.)
+    for tool in ["SomeBrandNewTool", "RmRfTool", ""] {
         let payload = parse_payload(&payload_json(tool, "default")).expect("well-formed payload");
         assert_eq!(
             map_to_action_type(&payload),
@@ -762,4 +764,103 @@ fn test_non_agent_policy_deny_still_rolls_back() {
         None,
         "a non-agent deny ROLLS BACK (unchanged) — nothing persists"
     );
+}
+
+// =================================================================================================
+// P4.0b-2 L1 — the split tool-policy (call 3) + the coverage-gap primary control (call 4) + the
+// audit-fault-vs-policy-deny distinction (call 2). Deterministic, FakeHarness/fault-injected — the
+// receiver-side `CoverageGap` deny is the PRIMARY control (the test pins the rule, not that Claude
+// honors it). The live transport + the real launch are L2 (security-reviewed).
+// =================================================================================================
+
+// ---- L1 #5 — the split tool-policy: explicit benign allowlist, fail-closed for unclassified --------
+
+#[test]
+fn test_tool_policy_benign_allowlist_explicit() {
+    // spec(§6.3 / call-3 PIN) — the CATALOG is the explicit enumerated allowlist. `TodoWrite` is the
+    // LONE benign auto-allow (maps to risk-0 `agent.todo_write`); `WebFetch`/`WebSearch` map to the
+    // risk-2 egress types (→ require_approval); an UNKNOWN tool fails closed (UnmappedTool, NOT
+    // auto-allowed — the adversarial guard); MCP/Task stay CoverageGap-denied.
+    assert_eq!(map_to_action_type(&pp("TodoWrite")), Ok("agent.todo_write"));
+    assert_eq!(map_to_action_type(&pp("WebFetch")), Ok("agent.web_fetch"));
+    assert_eq!(map_to_action_type(&pp("WebSearch")), Ok("agent.web_search"));
+    // ADVERSARIAL — an unknown/未classified tool is NEVER auto-allowed (fail-closed UnmappedTool).
+    for unknown in ["RmRf", "Sudo", "TodoWrite2", "WebFetchPlus", "AnythingElse"] {
+        assert_eq!(
+            map_to_action_type(&pp(unknown)),
+            Err(DenyReason::UnmappedTool),
+            "an unclassified tool `{unknown}` must fail closed (NOT auto-allowed) — call-3 PIN"
+        );
+    }
+
+    // drive the auto-allow vs approval through the Gateway: TodoWrite (risk-0) → Allow (no human);
+    // WebFetch (risk-2 egress) → AwaitingApproval (the human decides — exfil ≠ benign).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = catalog_gw();
+    assert!(
+        matches!(
+            route_intercept(&gw, &mut store, &pp("TodoWrite")),
+            InterceptOutcome::Resolved(MutationVerdict::Allow)
+        ),
+        "agent.todo_write is the lone benign auto-allow (risk-0, no human)"
+    );
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    assert!(
+        matches!(
+            route_intercept(&gw, &mut store2, &pp("WebFetch")),
+            InterceptOutcome::AwaitingApproval { .. }
+        ),
+        "agent.web_fetch is network egress → require_approval (exfil ≠ benign)"
+    );
+}
+
+// ---- L1 #6 — the coverage-gap deny is the PRIMARY control (call 4) --------------------------------
+
+#[test]
+fn test_coverage_gap_denies() {
+    // spec(§9.1 / O-13 / call-4) — an un-interceptable category (MCP best-effort, Task subagent) fails
+    // closed to a CoverageGap deny REGARDLESS of the launch `permissions.deny` (the receiver-side deny
+    // is the PRIMARY control — the test pins the rule, not that Claude honors the grammar).
+    for tool in ["mcp__codegraph__search", "mcp__anything__x", "Task"] {
+        assert_eq!(
+            map_to_action_type(&pp(tool)),
+            Err(DenyReason::CoverageGap),
+            "an un-interceptable channel `{tool}` → CoverageGap deny (primary control)"
+        );
+    }
+}
+
+// ---- L1 #4 — audit-fault distinguished from a routine deny (call 2) -------------------------------
+
+#[test]
+fn test_audit_fault_distinguished_from_policy_deny() {
+    // spec(§15 #5 / §17 / call-2) — a Gateway AUDIT-WRITE-FAULT is classified distinctly (the live
+    // drive loop raises a §17 AuditWriteFailed signal off it); BOTH fail closed to Deny. A policy-deny
+    // is a SEPARATE path (Ok(Denied) → verdict_for_status), never an Err — so it never classifies as an
+    // audit-fault.
+    let audit = GatewayError::AuditWriteFailed(nexusopsd::eventstore::EventStoreError::Write(
+        rusqlite::Error::QueryReturnedNoRows,
+    ));
+    assert_eq!(
+        classify_gateway_error(&audit),
+        GatewayDenyKind::AuditWriteFailed,
+        "an AuditWriteFailed Gateway error → the loud §17 integrity kind"
+    );
+
+    // route_intercept under an injected audit-write fault → Deny, MARKED as the audit-fault (the live
+    // path keys the §17 signal off this); the existing #12 already pins fail-closed — this pins the KIND.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = catalog_gw();
+    arm(FaultPoint::AuditEventWrite); // the next ActionRequested append fails (the audit-before-verdict gate)
+    let outcome = route_intercept(&gw, &mut store, &pp("Bash"));
+    match outcome {
+        InterceptOutcome::Resolved(MutationVerdict::Deny { reason }) => assert!(
+            reason.contains("AUDIT-WRITE-FAILED"),
+            "an audit-fault Deny is MARKED distinctly (§17 alert), not a routine deny: {reason}"
+        ),
+        _ => panic!("an audit-write fault must Deny (fail-closed)"),
+    }
 }

@@ -34,10 +34,14 @@ const FAST: Duration = Duration::from_secs(10);
 
 /// Resolve a verdict that MUST come fast (the drop path) — fails the test (rather than hanging the
 /// suite for 5 min) if a regression made `resolve_verdict` actually wait on the `FIVE_MIN` timer.
-async fn fast_verdict(rx: tokio::sync::oneshot::Receiver<nexusopsd::harness::claude::decision::DecisionSignal>) -> MutationVerdict {
+async fn fast_verdict(
+    rx: tokio::sync::oneshot::Receiver<nexusopsd::harness::claude::decision::DecisionSignal>,
+) -> MutationVerdict {
     tokio::time::timeout(FAST, resolve_verdict(rx, FIVE_MIN))
         .await
-        .expect("a dropped/resolved decision must resolve FAST — never hang to the 5-min wall-clock")
+        .expect(
+            "a dropped/resolved decision must resolve FAST — never hang to the 5-min wall-clock",
+        )
 }
 
 // ---- L1b #1 — register → resolve delivers the audit-gated verdict, exactly once ------------------
@@ -53,7 +57,11 @@ async fn test_register_resolve_delivers_verdict() {
     assert_eq!(reg.pending_count(), 1, "the decision is registered");
 
     reg.resolve("act_1", ActionRequestStatus::Approved);
-    assert_eq!(reg.pending_count(), 0, "resolve removes the entry (exactly-once)");
+    assert_eq!(
+        reg.pending_count(),
+        0,
+        "resolve removes the entry (exactly-once)"
+    );
 
     let verdict = resolve_verdict(rx, FIVE_MIN).await;
     assert!(
@@ -88,8 +96,14 @@ async fn test_cancel_session_drops_pending_fails_closed() {
 
     // sess_a's waits fail closed → Deny, resolved BY THE DROP (not the 5-min wall-clock). `fast_verdict`
     // makes "fast" an explicit assertion — a leaked sender would hang to FIVE_MIN, tripping the FAST bound.
-    assert!(matches!(fast_verdict(rx_a1).await, MutationVerdict::Deny { .. }));
-    assert!(matches!(fast_verdict(rx_a2).await, MutationVerdict::Deny { .. }));
+    assert!(matches!(
+        fast_verdict(rx_a1).await,
+        MutationVerdict::Deny { .. }
+    ));
+    assert!(matches!(
+        fast_verdict(rx_a2).await,
+        MutationVerdict::Deny { .. }
+    ));
     // sess_b is unaffected — it still resolves normally.
     reg.resolve("act_b", ActionRequestStatus::Approved);
     assert!(matches!(
@@ -114,7 +128,11 @@ async fn test_resolve_after_waiter_cleanup_no_redeliver() {
 
     // a LATE decision — must be a no-op (no re-arm, no phantom, no panic).
     reg.resolve("act_1", ActionRequestStatus::Approved);
-    assert_eq!(reg.pending_count(), 0, "a late resolve does NOT re-register");
+    assert_eq!(
+        reg.pending_count(),
+        0,
+        "a late resolve does NOT re-register"
+    );
 
     // the orphaned receiver resolves to Deny (its sender was dropped by `remove`) — fail-closed.
     assert!(matches!(

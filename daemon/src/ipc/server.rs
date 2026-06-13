@@ -28,6 +28,7 @@ use super::{authorize_peer, methods, read_frame, run_push_loop, write_frame, Ipc
 /// handshake: a valid in-range `HelloFrame` → `HelloAck`; otherwise a structured error frame is
 /// written and the connection disconnects (the stream drops on the error return). L3/L4 extend
 /// the authorized post-ack path with the JSON-RPC serve loop + subscribe streaming.
+#[allow(clippy::too_many_arguments)]
 pub fn serve_connection(
     mut stream: UnixStream,
     peer_uid: u32,
@@ -35,6 +36,10 @@ pub fn serve_connection(
     db_path: &Path,
     deltas: broadcast::Sender<ProjectionDelta>,
     write: &crate::runtime::WriteHandle,
+    // C2 — the per-session decision_sink registry (the `intercept` wait + the approve/deny resolve);
+    // shared across connections (the supervisor reap cancels too). The `intercept` bridge gets its
+    // runtime handle via `Handle::try_current()` (the serve thread is a `spawn_blocking` task).
+    registry: &crate::decisions::DecisionRegistry,
 ) -> Result<(), IpcError> {
     // Rule #7 (§15 / ADR-004): peer-auth before anything else — before any frame is read.
     authorize_peer(peer_uid, daemon_uid)?;
@@ -116,7 +121,7 @@ pub fn serve_connection(
         if req.method == "subscribe" {
             if let Ok(params) = serde_json::from_value::<SubscribeParams>(req.params.clone()) {
                 let rx = deltas.subscribe();
-                let ack = methods::dispatch(&req, db_path, write)?;
+                let ack = methods::dispatch(&req, db_path, write, registry)?;
                 let accepted = ack.error.is_none();
                 let buf = serde_json::to_vec(&ServerFrame::RpcResponse(ack))
                     .map_err(|e| IpcError::Protocol(e.to_string()))?;
@@ -146,7 +151,7 @@ pub fn serve_connection(
         }
         // wrap the response in the frame-type-tagged ServerFrame envelope (§6.4 multiplexing) so
         // the client demuxes rpc-responses from subscription-push frames on one connection.
-        let frame = ServerFrame::RpcResponse(methods::dispatch(&req, db_path, write)?);
+        let frame = ServerFrame::RpcResponse(methods::dispatch(&req, db_path, write, registry)?);
         let buf = serde_json::to_vec(&frame).map_err(|e| IpcError::Protocol(e.to_string()))?;
         write_frame(&mut stream, &buf)?;
     }

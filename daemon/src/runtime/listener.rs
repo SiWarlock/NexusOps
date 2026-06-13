@@ -55,6 +55,9 @@ pub fn spawn_accept_loop(
     // the write-actor handle each served connection uses for §6.1 mutation methods (2.1b); cloned
     // per connection into its blocking serve task (the handle is cheap to clone — an mpsc sender).
     write: super::WriteHandle,
+    // C2 — the per-session decision_sink registry (shared across the `intercept` + approve/deny
+    // connections + the supervisor reap); cloned (Arc) per connection into its serve task.
+    registry: Arc<crate::decisions::DecisionRegistry>,
     mut shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     let permits = Arc::new(Semaphore::new(max_connections));
@@ -84,6 +87,8 @@ pub fn spawn_accept_loop(
                     let deltas = deltas.clone();
                     // a per-connection clone of the write-actor handle (the §6.1 mutation path).
                     let write = write.clone();
+                    // a per-connection clone of the C2 decision_sink registry (Arc, cheap).
+                    let registry = Arc::clone(&registry);
                     tokio::task::spawn_blocking(move || {
                         // the permit is held for the connection's lifetime; it RELEASES when this
                         // closure ends (connection closed) — no leak / self-DoS.
@@ -111,9 +116,15 @@ pub fn spawn_accept_loop(
                             }
                         };
                         // a disconnect / version-skew / unauthorized-peer is a normal close, logged.
-                        if let Err(e) =
-                            serve_connection(std_stream, uid, daemon_uid, &db_path, deltas, &write)
-                        {
+                        if let Err(e) = serve_connection(
+                            std_stream,
+                            uid,
+                            daemon_uid,
+                            &db_path,
+                            deltas,
+                            &write,
+                            &registry,
+                        ) {
                             eprintln!("nexusopsd: connection closed: {e}");
                         }
                     });

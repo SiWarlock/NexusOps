@@ -31,11 +31,19 @@ fn test_file_alarm_appends_each_incident_durably() {
     drop(alarm);
     let contents = std::fs::read_to_string(&path).expect("the incident file exists + is readable");
     let lines: Vec<&str> = contents.lines().collect();
-    assert_eq!(lines.len(), 2, "each incident is APPENDED (the first survives the second)");
+    assert_eq!(
+        lines.len(),
+        2,
+        "each incident is APPENDED (the first survives the second)"
+    );
     // each line is a structured record carrying the kind + the structural (content-free) detail.
     for (line, needle) in lines.iter().zip(["agent.bash", "agent.file_edit"]) {
-        let v: serde_json::Value = serde_json::from_str(line).expect("each line is one JSON object");
-        assert_eq!(v["kind"], "audit_write_failed", "the structured incident kind");
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("each line is one JSON object");
+        assert_eq!(
+            v["kind"], "audit_write_failed",
+            "the structured incident kind"
+        );
         assert!(
             v["detail"].as_str().unwrap().contains(needle),
             "the structural detail records the action_type (content-free — no payload/secret)"
@@ -45,7 +53,10 @@ fn test_file_alarm_appends_each_incident_durably() {
     // the incident file is 0600 (owner-only) — daemon-private safety state (§15 / rule #11 ethos).
     use std::os::unix::fs::PermissionsExt as _;
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600, "the incident log is owner-only (not group/world-readable)");
+    assert_eq!(
+        mode, 0o600,
+        "the incident log is owner-only (not group/world-readable)"
+    );
 }
 
 // ---- C1b #2 — the trait is object-safe + a recording double collects (the C2 wiring seam) ---------
@@ -60,6 +71,10 @@ fn test_integrity_alarm_object_safe_recording_double() {
     alarm.raise(IntegrityIncident::audit_write_failed("agent.bash"));
 
     let seen = recorder.incidents();
-    assert_eq!(seen.len(), 1, "the recording double collects the raised incident");
+    assert_eq!(
+        seen.len(),
+        1,
+        "the recording double collects the raised incident"
+    );
     assert_eq!(seen[0].kind, IntegrityKind::AuditWriteFailed);
 }

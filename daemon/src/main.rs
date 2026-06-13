@@ -11,18 +11,23 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
+use nexusops_shared::catalog::ExecutorKind;
 use tokio::sync::watch;
 
 use nexusopsd::bootstrap::{cold_start, BootstrapConfig, DB_FILENAME};
 use nexusopsd::clock::SystemClock;
+use nexusopsd::decisions::DecisionRegistry;
 use nexusopsd::eventstore::{JsonlMirror, PrefixRedactor};
 use nexusopsd::gateway::executor::CatalogExecutor;
-use nexusopsd::gateway::policy::CatalogPolicy;
+use nexusopsd::gateway::policy::AgentMutationPolicy;
+use nexusopsd::gateway::session_executor::SessionExecutor;
 use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
+use nexusopsd::integrity::FileIntegrityAlarm;
 use nexusopsd::ipc::current_euid;
 use nexusopsd::runtime::{bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor};
-use nexusopsd::session::spawn_supervisor_task;
+use nexusopsd::session::{spawn_supervisor_task, PtyLauncher};
+use nexusopsd::terminal::PortablePtySpawner;
 
 /// outbox drain cadence (§12) — deliver due rows a few times a minute.
 const DRAINER_INTERVAL: Duration = Duration::from_secs(5);
@@ -32,12 +37,28 @@ const REAPER_INTERVAL: Duration = Duration::from_secs(30);
 const EVENTS_MIRROR_FILE: &str = "events.jsonl";
 /// the GatewayPort UDS within the app-support dir (§6.4).
 const SOCKET_FILE: &str = "gateway.sock";
+/// the §17 durable integrity-incident file within the app-support dir (call-2 — the off-DB alarm).
+const INTEGRITY_INCIDENTS_FILE: &str = "integrity-incidents.jsonl";
 /// max concurrent live GatewayPort connections (anti-DoS bound, §6.4).
 const MAX_CONNECTIONS: usize = 64;
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    match run().await {
+fn main() -> ExitCode {
+    // C2 — the `nexusopsd hook <event>` subcommand: the live PreToolUse interception ingress (a
+    // short-lived UDS client Claude spawns per tool-call). Dispatched BEFORE the daemon runtime — it
+    // is a synchronous client, not the daemon; it must NOT start the write-actor / accept-loop.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("hook") {
+        return nexusopsd::hook::run(args.get(2).map(String::as_str).unwrap_or(""));
+    }
+    // the daemon — build the tokio runtime + run.
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("nexusopsd: fatal: cannot build the tokio runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match rt.block_on(run()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("nexusopsd: fatal: {e}");
@@ -61,28 +82,61 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // keep the PidLock bound for the daemon lifetime (single-instance); the write-actor owns the
-    // writable store (the sole mutation path). The drainer/reaper loops + (L3) the UDS accept-loop
-    // run off the write-actor handle.
+    // writable store (the sole mutation path). The drainer/reaper loops + the UDS accept-loop run off
+    // the write-actor handle.
     let (_pidlock, store, _version) = ctx.into_parts();
-    // the Action Gateway (the sole mutator) runs its pipeline ON the write-actor thread (forbidden
-    // #2/#3). 2.2: CatalogPolicy (the §6.3 catalog-authoritative risk engine — risk-0 auto-allows,
-    // 1-3 require approval, 4 require step-approval, uncatalogued fail-closed deny). 2.3:
-    // CatalogExecutor (validates requires_resource_refs + dispatches by ExecutorKind to a registered
-    // handler else a side-effect-free per-namespace stub). R1a registers NO handler → every action
-    // stubs (production behavior unchanged; the 4.0b-1 binding condition holds — no live executor);
-    // the first real handler registers at the cat-1 4.0b-2 (+ edges' Project/Git/Github/Linear P5/P7).
-    // (The session-executor type name is deliberately absent here — `tests/session_executor.rs`
-    // #test_no_reachable_live_caller greps this file for it to prove no production session.create
-    // caller is wired; the literal lands when 4.0b-2 actually registers it.)
-    let gateway = Gateway::new(Box::new(CatalogPolicy), Box::new(CatalogExecutor::new()));
-    let actor = WriteActor::spawn(store, Box::new(SystemClock), gateway);
+
+    // ---- P4.0b-2 C2 (CAT-1) — the live drive loop: the atomic binding-flip ----
+    // The binding condition flips from BY-CONSTRUCTION to ENFORCED-BY-THE-INTERCEPTION here: a live
+    // agent becomes reachable (the registered SessionExecutor + the live PtyLauncher) ONLY TOGETHER
+    // with the interception (AgentMutationPolicy + the per-session decision_sink registry + the §17
+    // alarm) — never an un-intercepted-live window (the call-5 atomicity PIN; the inverted guard
+    // `tests/session_executor.rs::test_live_session_create_has_interception` pins this co-residency).
+
+    // the shutdown watch + the per-session decision_sink registry FIRST — the supervisor (cancel a
+    // dead session's pending interceptions → Deny) and the accept-loop (the `intercept` wait + the
+    // approve/deny resolve) both share the registry.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let registry = Arc::new(DecisionRegistry::new());
+
+    // the §10 opt-3 session supervisor (spawned before the write-actor — it needs only the runtime +
+    // the shutdown watch + the registry). Its `SupervisorHandle` DRIVES the SessionExecutor.
+    let (supervisor, supervisor_handle) =
+        spawn_supervisor_task(shutdown_rx.clone(), registry.clone());
+
+    // the LIVE launcher — the real `ClaudeAdapter` via the `PortablePtySpawner` (the O-13 #10
+    // enforcement surface + the env-hygiene/correlation, P4.0b-2 Option A). cwd = the daemon's project
+    // dir (MVP: the current dir; per-project resolution from session.create's project_id is Phase 5).
+    // hook_receiver = `<this binary> hook` — the PreToolUse interception ingress.
+    let project_cwd = std::env::current_dir()?;
+    let hook_receiver = format!("{} hook", std::env::current_exe()?.display());
+    let launcher = PtyLauncher::new(Box::new(PortablePtySpawner), project_cwd, hook_receiver);
+
+    // the session.create/kill executor (the live launcher + the supervisor), REGISTERED under
+    // `ExecutorKind::Session` in the production CatalogExecutor — this is the reachable session.create
+    // dispatch home (the `Adjudication` INV-SEC-1 guard still runs BEFORE dispatch, R1-A).
+    let mut catalog_exec = CatalogExecutor::new();
+    catalog_exec.register(
+        ExecutorKind::Session,
+        Arc::new(SessionExecutor::new(Box::new(launcher), supervisor_handle)),
+    );
+
+    // the production policy is now `AgentMutationPolicy` (the catalog-authoritative risk engine + the
+    // O-13 agent-mutation deny-rules) — the daemon supervises live agents. The Action Gateway (the
+    // sole mutator) runs its pipeline ON the write-actor thread (forbidden #2/#3).
+    let gateway = Gateway::new(Box::new(AgentMutationPolicy), Box::new(catalog_exec));
+
+    // the durable independent §17 integrity alarm (call-2) — an agent-mutation adjudication's
+    // audit-WRITE-fault raises it on the off-DB channel; bound at the write-actor.
+    let alarm = Box::new(FileIntegrityAlarm::new(
+        base_dir.join(INTEGRITY_INCIDENTS_FILE),
+    ));
+    let actor = WriteActor::spawn_with_alarm(store, Box::new(SystemClock), gateway, alarm);
     let handle = actor.handle();
-    // the post-commit broadcast sender for the accept-loop's per-connection live subscribers (1.6d);
-    // captured before `handle` is moved into the reaper below.
+    // the post-commit broadcast sender for the accept-loop's per-connection live subscribers (1.6d).
     let deltas = handle.delta_sender();
 
-    // L2 — the outbox-drainer + lease-reaper interval loops, stopped by the shutdown watch.
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    // the outbox-drainer + lease-reaper interval loops, stopped by the shutdown watch.
     let mirror = Arc::new(JsonlMirror::new(base_dir.join(EVENTS_MIRROR_FILE)));
     let drainer = spawn_drainer(
         handle.clone(),
@@ -92,14 +146,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     let reaper = spawn_reaper(handle.clone(), REAPER_INTERVAL, shutdown_rx.clone());
 
-    // P4.0a — the §10 opt-3 session supervisor (the live drive-loop spine), spawned like the
-    // drainer/reaper, stopped by the shutdown watch. FakeHarness/FakePty-capable; in 4.0a it holds NO
-    // live sessions — the cat-1 live launch + the INV-SEC-1 interception + the Gateway session.create
-    // executor that DRIVES it are 4.0b. `_supervisor` (the SupervisorHandle) is that 4.0b driver entry
-    // — wired + reachable here, not yet driven (the underscore binds it alive for the daemon lifetime).
-    let (supervisor, _supervisor) = spawn_supervisor_task(shutdown_rx.clone());
-
-    // L3 — bind the GatewayPort UDS (reclaiming a stale socket) + spawn the peer-auth'd accept-loop.
+    // bind the GatewayPort UDS (reclaiming a stale socket) + spawn the peer-auth'd accept-loop — the
+    // registry is threaded in for the live `intercept` transport + the approve/deny decision_sink.
     let db_path = base_dir.join(DB_FILENAME);
     let listener = bind(&base_dir.join(SOCKET_FILE))?;
     eprintln!("nexusopsd: GatewayPort listening at {SOCKET_FILE}");
@@ -110,6 +158,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         MAX_CONNECTIONS,
         deltas,
         handle, // the §6.1 mutation path → the Gateway pipeline on the write-actor
+        registry.clone(),
         shutdown_rx,
     );
 

@@ -864,3 +864,48 @@ fn test_audit_fault_distinguished_from_policy_deny() {
         _ => panic!("an audit-write fault must Deny (fail-closed)"),
     }
 }
+
+// ---- C2 call-2 — the live path RAISES the §17 durable alarm on an audit-fault (off-DB channel) ----
+
+#[test]
+fn test_route_intercept_live_raises_alarm_on_audit_fault() {
+    // spec(§15 #5 / §17 / call-2) — `route_intercept_live` (the production write-actor's caller) fires
+    // the durable INDEPENDENT IntegrityAlarm on an audit-WRITE-fault (the §17 signal keyed STRUCTURALLY
+    // off `GatewayDenyKind::AuditWriteFailed`, never a string-match), AND still fails closed to Deny.
+    // A POLICY-deny (Ok(Denied)) must NOT raise the alarm (it is a routine block, not an integrity fault).
+    use nexusopsd::harness::claude::intercept::route_intercept_live;
+    use nexusopsd::integrity::{IntegrityKind, RecordingIntegrityAlarm};
+
+    // (1) an audit-write fault → Deny + EXACTLY ONE alarm incident (AuditWriteFailed).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = catalog_gw();
+    let alarm = RecordingIntegrityAlarm::new();
+    arm(FaultPoint::AuditEventWrite);
+    let outcome = route_intercept_live(&gw, &mut store, &pp("Bash"), &alarm);
+    assert!(
+        matches!(
+            outcome,
+            InterceptOutcome::Resolved(MutationVerdict::Deny { .. })
+        ),
+        "an audit-fault still fails closed to Deny"
+    );
+    let seen = alarm.incidents();
+    assert_eq!(
+        seen.len(),
+        1,
+        "the §17 alarm is raised exactly once on the audit-fault"
+    );
+    assert_eq!(seen[0].kind, IntegrityKind::AuditWriteFailed);
+
+    // (2) a routine risk-0 auto-allow (no fault) raises NO alarm.
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    let gw2 = catalog_gw();
+    let alarm2 = RecordingIntegrityAlarm::new();
+    let _ = route_intercept_live(&gw2, &mut store2, &pp("Read"), &alarm2);
+    assert!(
+        alarm2.incidents().is_empty(),
+        "a non-fault adjudication raises no integrity alarm (only an audit-WRITE-fault does)"
+    );
+}

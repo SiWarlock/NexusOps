@@ -129,6 +129,7 @@ fn test_unauthorized_peer_disconnects_unserved() {
         &path,
         no_deltas(),
         &nexusopsd::runtime::WriteHandle::disconnected(),
+        &decision_registry(),
     );
     assert!(
         matches!(outcome, Err(IpcError::UnauthorizedPeer { .. })),
@@ -169,6 +170,12 @@ fn no_deltas() -> tokio::sync::broadcast::Sender<nexusops_shared::ipc::Projectio
     tokio::sync::broadcast::channel(1).0
 }
 
+/// a fresh C2 decision_sink registry for the `serve_connection` `registry` param — these tests don't
+/// exercise the `intercept` method, so it stays empty (the transport param is just plumbing here).
+fn decision_registry() -> nexusopsd::decisions::DecisionRegistry {
+    nexusopsd::decisions::DecisionRegistry::new()
+}
+
 // ---- Test 5 — handshake: in-range HelloFrame → HelloAck (§6.4) ---------------
 
 #[test]
@@ -194,6 +201,7 @@ fn test_handshake_hello_ack() {
         &path,
         no_deltas(),
         &nexusopsd::runtime::WriteHandle::disconnected(),
+        &decision_registry(),
     )
     .expect("authorized in-range handshake succeeds");
 
@@ -234,6 +242,7 @@ fn test_version_skew_disconnects() {
         &path,
         no_deltas(),
         &nexusopsd::runtime::WriteHandle::disconnected(),
+        &decision_registry(),
     );
     assert!(
         matches!(outcome, Err(IpcError::VersionSkew { .. })),
@@ -278,6 +287,7 @@ fn test_method_before_handshake_rejected() {
         &path,
         no_deltas(),
         &nexusopsd::runtime::WriteHandle::disconnected(),
+        &decision_registry(),
     );
     assert!(
         matches!(outcome, Err(IpcError::Protocol(_))),
@@ -414,6 +424,7 @@ fn test_get_projection_returns_rows() {
             &path,
             no_deltas(),
             &nexusopsd::runtime::WriteHandle::disconnected(),
+            &decision_registry(),
         )
         .expect("serve get_projection");
         h.join().unwrap()
@@ -492,7 +503,16 @@ fn test_submit_action_reachable_through_ipc_dispatch() {
     };
     let responses = std::thread::scope(|s| {
         let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
-        serve_connection(server, uid, uid, &path, no_deltas(), &handle).expect("serve submit");
+        serve_connection(
+            server,
+            uid,
+            uid,
+            &path,
+            no_deltas(),
+            &handle,
+            &decision_registry(),
+        )
+        .expect("serve submit");
         h.join().unwrap()
     });
 
@@ -540,6 +560,7 @@ fn test_get_projection_unfed_is_empty_not_error() {
             &path,
             no_deltas(),
             &nexusopsd::runtime::WriteHandle::disconnected(),
+            &decision_registry(),
         )
         .expect("serve unfed projection");
         h.join().unwrap()
@@ -585,6 +606,7 @@ fn test_unknown_method_and_get_capabilities() {
             &path,
             no_deltas(),
             &nexusopsd::runtime::WriteHandle::disconnected(),
+            &decision_registry(),
         )
         .expect("serve capabilities + unknown");
         h.join().unwrap()
@@ -633,6 +655,7 @@ fn test_get_projection_scope_not_yet_enforced() {
             &path,
             no_deltas(),
             &nexusopsd::runtime::WriteHandle::disconnected(),
+            &decision_registry(),
         )
         .expect("serve scoped projection");
         h.join().unwrap()
@@ -753,6 +776,7 @@ fn test_subscribe_method_recognized() {
             &path,
             no_deltas(),
             &nexusopsd::runtime::WriteHandle::disconnected(),
+            &decision_registry(),
         )
         .expect("serve subscribe ack");
         h.join().unwrap()
@@ -848,6 +872,7 @@ fn test_subscriber_receives_delta_frame() {
                 &path,
                 deltas_serve,
                 &nexusopsd::runtime::WriteHandle::disconnected(),
+                &decision_registry(),
             );
         });
         let client_h = s.spawn(move || {
@@ -932,6 +957,7 @@ fn test_subscribe_connection_is_dedicated() {
                 &path,
                 deltas_serve,
                 &nexusopsd::runtime::WriteHandle::disconnected(),
+                &decision_registry(),
             );
         });
         let client_h = s.spawn(move || {

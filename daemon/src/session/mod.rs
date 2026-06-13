@@ -18,6 +18,7 @@ pub use actor::{spawn_session_actor, SessionActorHandle, SessionCommand};
 pub use launcher::{FakeLauncher, LaunchedSession, NullTerminalSink, PtyLauncher, SessionLauncher};
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
@@ -25,6 +26,8 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use nexusops_shared::ids::SessionId;
 use nexusops_shared::status::Session;
+
+use crate::decisions::DecisionRegistry;
 
 /// The §5.1-status observer an actor publishes each transition to — an **in-memory** feed (the future
 /// projection source; NOT the write-actor, cat-1 boundary).
@@ -196,9 +199,15 @@ impl SupervisorHandle {
 
 /// Spawn the §10 supervisor background task (alongside the drainer/reaper/accept-loop in `main.rs`),
 /// stopped by the shutdown watch (LESSON §9 await-on-shutdown). Returns its `JoinHandle` + the
-/// [`SupervisorHandle`] (the 4.0b session.create driver entry — wired + reachable, not yet driven).
+/// [`SupervisorHandle`] (the 4.0b session.create driver entry). **C2 (carry-forward a):** when a
+/// session reaches a terminal §5.1 state (the reaper harvests it), the supervisor
+/// [`cancel_session`](DecisionRegistry::cancel_session)s its pending agent-mutation decisions —
+/// DROPPING their senders so a live `PreToolUse` hook awaiting the human resolves to Deny **fast**
+/// (never hanging to the 5-min wall-clock). The supervisor stays an EDGE (the registry is pure
+/// in-memory coordination — no DB / write-actor / gateway, so the cat-1 import-boundary holds).
 pub fn spawn_supervisor_task(
     mut shutdown: watch::Receiver<bool>,
+    registry: Arc<DecisionRegistry>,
 ) -> (JoinHandle<()>, SupervisorHandle) {
     let (control_tx, mut control_rx) = mpsc::unbounded_channel();
     let join = tokio::spawn(async move {
@@ -219,7 +228,10 @@ pub fn spawn_supervisor_task(
                     None => break,
                 },
                 _ = reaper.tick() => {
-                    let _ = supervisor.try_reap();
+                    // a reaped (terminal) session → cancel its pending interceptions (fail-closed).
+                    for (id, _status) in supervisor.try_reap() {
+                        registry.cancel_session(id.as_str());
+                    }
                 }
             }
         }

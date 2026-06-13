@@ -16,6 +16,7 @@ pub mod eventstore;
 pub mod fault;
 pub mod gateway;
 pub mod harness;
+pub mod hook;
 pub mod idgen;
 pub mod integrity;
 pub mod ipc;

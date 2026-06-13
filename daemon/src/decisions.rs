@@ -83,7 +83,8 @@ impl DecisionRegistry {
         session_id: String,
     ) -> oneshot::Receiver<DecisionSignal> {
         let (sender, rx) = oneshot::channel();
-        self.lock().insert(action_request_id, Pending { session_id, sender });
+        self.lock()
+            .insert(action_request_id, Pending { session_id, sender });
         rx
     }
 

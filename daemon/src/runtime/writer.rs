@@ -20,6 +20,10 @@ use nexusops_shared::ipc::{ActionAck, DeltaKind, PlanAck, ProjectionDelta, Proje
 use crate::clock::Clock;
 use crate::eventstore::{AppendIntent, Destination, DrainSummary, EventStore, EventStoreError};
 use crate::gateway::{Gateway, GatewayError};
+use crate::harness::claude::intercept::{
+    route_intercept, route_intercept_live, HookPayload, InterceptOutcome,
+};
+use crate::integrity::IntegrityAlarm;
 use crate::locks::{LeaseError, LeaseKind, ResourceId};
 
 /// the bounded command-channel depth — backpressures a flood of mutation requests onto the
@@ -84,6 +88,13 @@ enum Command {
     GatewayPreview {
         action_request_id: String,
         reply: oneshot::Sender<Result<ActionPreview, GatewayError>>,
+    },
+    // C2 (the live INV-SEC-1 interception): route an intercepted agent tool-call through the Gateway
+    // ON the single writer (the adjudication ActionRequest commits here — audit-before-verdict, §15
+    // #5). Boxed — HookPayload carries the verbatim tool params (clippy large_enum_variant).
+    GatewayIntercept {
+        payload: Box<HookPayload>,
+        reply: oneshot::Sender<InterceptOutcome>,
     },
     Shutdown,
 }
@@ -249,6 +260,26 @@ impl WriteHandle {
             .map_err(|_| RuntimeError::ActorGone)?;
         rx.blocking_recv().map_err(|_| RuntimeError::ActorGone)
     }
+
+    /// Route an intercepted agent tool-call through the Gateway on the single writer (C2 — the live
+    /// INV-SEC-1 interception). The adjudication `ActionRequest` commits here (audit-BEFORE-verdict);
+    /// when the write-actor was spawned with an [`IntegrityAlarm`], an audit-WRITE-fault raises the
+    /// §17 alarm (call-2). **BLOCKING** — the sync IPC `intercept` handler can't `.await`; the returned
+    /// [`InterceptOutcome`] drives the per-session `decision_sink` wait (an `AwaitingApproval` rests for
+    /// the human; a `Resolved` is the verdict NOW).
+    pub fn intercept_blocking(
+        &self,
+        payload: HookPayload,
+    ) -> Result<InterceptOutcome, RuntimeError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .blocking_send(Command::GatewayIntercept {
+                payload: Box::new(payload),
+                reply,
+            })
+            .map_err(|_| RuntimeError::ActorGone)?;
+        rx.blocking_recv().map_err(|_| RuntimeError::ActorGone)
+    }
 }
 
 /// Owns the write-actor thread. Hand its [`WriteHandle`] to every async task that must mutate;
@@ -261,8 +292,31 @@ pub struct WriteActor {
 impl WriteActor {
     /// Spawn the dedicated writer thread owning `store` (with a `clock` for `drain_once`/
     /// `reap_leases` and the `gateway` whose mutation pipeline runs ON this single-writer thread).
-    /// The thread blocks on the command channel; reads never reach it.
+    /// The thread blocks on the command channel; reads never reach it. **No `IntegrityAlarm`** — the
+    /// `GatewayIntercept` path uses the no-alarm `route_intercept` (tests never exercise the call-2
+    /// audit-fault-with-alarm path); PRODUCTION uses [`spawn_with_alarm`](Self::spawn_with_alarm).
     pub fn spawn(store: EventStore, clock: Box<dyn Clock>, gateway: Gateway) -> Self {
+        Self::spawn_inner(store, clock, gateway, None)
+    }
+
+    /// Spawn the write-actor WITH the §17 [`IntegrityAlarm`] bound (C2, production — `main.rs`): an
+    /// agent-mutation adjudication's audit-WRITE-fault raises the alarm on the independent durable
+    /// channel (call-2). The only difference from [`spawn`](Self::spawn) is the bound alarm.
+    pub fn spawn_with_alarm(
+        store: EventStore,
+        clock: Box<dyn Clock>,
+        gateway: Gateway,
+        alarm: Box<dyn IntegrityAlarm>,
+    ) -> Self {
+        Self::spawn_inner(store, clock, gateway, Some(alarm))
+    }
+
+    fn spawn_inner(
+        store: EventStore,
+        clock: Box<dyn Clock>,
+        gateway: Gateway,
+        alarm: Option<Box<dyn IntegrityAlarm>>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_DEPTH);
         // the broadcast sender lives in the actor thread (it publishes post-commit); the handle
         // keeps a clone so `subscribe()` can mint receivers without touching the writer. The
@@ -272,7 +326,7 @@ impl WriteActor {
         let actor_deltas = deltas.clone();
         let join = std::thread::Builder::new()
             .name("nexusops-write-actor".to_string())
-            .spawn(move || run_actor(store, clock, gateway, rx, actor_deltas))
+            .spawn(move || run_actor(store, clock, gateway, rx, actor_deltas, alarm))
             // a daemon that cannot spawn its sole writer cannot run — fail loud at startup.
             .expect("spawn the write-actor thread");
         Self {
@@ -322,6 +376,7 @@ fn run_actor(
     gateway: Gateway,
     mut rx: mpsc::Receiver<Command>,
     deltas: broadcast::Sender<ProjectionDelta>,
+    alarm: Option<Box<dyn IntegrityAlarm>>,
 ) {
     while let Some(cmd) = rx.blocking_recv() {
         match cmd {
@@ -388,6 +443,25 @@ fn run_actor(
                 reply,
             } => {
                 let _ = reply.send(gateway.preview_action(&mut store, &action_request_id));
+            }
+            // C2 — the live INV-SEC-1 interception: the adjudication ActionRequest commits on this
+            // single writer (audit-before-verdict). With a bound alarm, `route_intercept_live` raises
+            // the §17 alarm on an audit-WRITE-fault (call-2); without one (tests), the no-alarm route.
+            // No delta publish — the agent-mutation approval row folds in-band (the UI reads it via
+            // get_projection; the live approval-queue delta on intercept is a flagged follow-on).
+            Command::GatewayIntercept { payload, reply } => {
+                let outcome = match &alarm {
+                    Some(a) => route_intercept_live(&gateway, &mut store, &payload, a.as_ref()),
+                    None => route_intercept(&gateway, &mut store, &payload),
+                };
+                if reply.send(outcome).is_err() {
+                    // the intercept connection dropped before the verdict — the adjudication audit
+                    // event already committed (the hook fails closed, no verdict). Log for triage: the
+                    // awaiting_approval row resolves via approve/deny or is swept by cancel_session.
+                    eprintln!(
+                        "nexusopsd: intercept reply channel dropped (hook gone); audit committed, verdict discarded"
+                    );
+                }
             }
             Command::Shutdown => break,
         }

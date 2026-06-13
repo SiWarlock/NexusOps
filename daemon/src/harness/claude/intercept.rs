@@ -26,6 +26,7 @@ use nexusops_shared::time::Timestamp;
 use crate::eventstore::EventStore;
 use crate::gateway::{Gateway, GatewayError};
 use crate::harness::{coverage_of, Harness, MutationChannel, MutationCoverage, MutationVerdict};
+use crate::integrity::{IntegrityAlarm, IntegrityIncident};
 
 /// The subset of the Claude `PreToolUse` hook payload the receiver consumes. The daemon-wired hook
 /// pipes the FULL JSON on stdin; the extra fields (`cwd`/`transcript_path`/`hook_event_name`/…) are
@@ -206,9 +207,43 @@ pub fn route_intercept(
     store: &mut EventStore,
     payload: &HookPayload,
 ) -> InterceptOutcome {
+    route_intercept_classified(gateway, store, payload).0
+}
+
+/// The PRODUCTION caller's route (the write-actor's `GatewayIntercept` handler, C2): route the tool +
+/// on an audit-WRITE-fault (call-2) raise the §17 [`IntegrityAlarm`] on the INDEPENDENT durable channel
+/// (NOT the broken audit-write path), keyed STRUCTURALLY off `GatewayDenyKind::AuditWriteFailed` —
+/// never a string-match (the L1 code-quality flag (i)). The alarm fires for the audit-fault ONLY; a
+/// policy-deny is a routine block (the `Ok(Denied)` path, no alarm). The verdict is UNCHANGED — both
+/// fail closed to Deny; the alarm is the loud integrity signal, never the gate. The unit tests call
+/// [`route_intercept`] directly (no alarm); only the live path needs the sink.
+pub fn route_intercept_live(
+    gateway: &Gateway,
+    store: &mut EventStore,
+    payload: &HookPayload,
+    alarm: &dyn IntegrityAlarm,
+) -> InterceptOutcome {
+    let (outcome, audit_fault_action_type) = route_intercept_classified(gateway, store, payload);
+    if let Some(action_type) = audit_fault_action_type {
+        // the audited mutator could not AUDIT → the §17 best-practice surface: deny (in `outcome`) +
+        // this durable off-DB alarm. `detail` is content-free by construction (the action_type only).
+        alarm.raise(IntegrityIncident::audit_write_failed(action_type));
+    }
+    outcome
+}
+
+/// The shared classifier: route the tool through the Gateway and return the [`InterceptOutcome`] PLUS
+/// the action_type IFF the Gateway failed with an **audit-write-fault** (so [`route_intercept_live`]
+/// can raise the §17 alarm with the structural action_type). `None` for every non-audit-fault path
+/// (an allow, an await, a policy-deny, an ingress-deny) — only the audit-backbone fault is the §17 signal.
+fn route_intercept_classified(
+    gateway: &Gateway,
+    store: &mut EventStore,
+    payload: &HookPayload,
+) -> (InterceptOutcome, Option<&'static str>) {
     let action_type = match map_to_action_type(payload) {
         Ok(at) => at,
-        Err(reason) => return InterceptOutcome::Resolved(deny_verdict(reason)),
+        Err(reason) => return (InterceptOutcome::Resolved(deny_verdict(reason)), None),
     };
     let req = ActionRequest {
         action_request_id: ActionRequestId::new(),
@@ -232,38 +267,49 @@ pub fn route_intercept(
             .expect("placeholder created_at — request::insert stamps the real daemon-clock time; this constant always parses"),
     };
     match gateway.submit_action(store, req) {
-        Ok(ack) => match ack.status {
-            // risk-0 adjudication terminal → Allow (no human).
-            ActionRequestStatus::PolicyDecided => {
-                InterceptOutcome::Resolved(MutationVerdict::Allow)
-            }
-            // a mutating tool → the human decides (the verdict comes from verdict_for_status later).
-            ActionRequestStatus::AwaitingApproval => InterceptOutcome::AwaitingApproval {
-                action_request_id: ack.action_request_id,
-            },
-            // an adjudication submit yields PolicyDecided (risk-0) or AwaitingApproval (both handled
-            // above), or — since 043 L5 — `Denied` (the deny-rule record-then-deny commits the denied
-            // action, ack'd Denied), or an Err. `Denied` → verdict_for_status → Deny (the agent IS
-            // blocked, the blocked attempt audited). Any OTHER status would be a Gateway REGRESSION
-            // (e.g. Queued/Succeeded = an adjudication action wrongly executed); it fails CLOSED via the
-            // default verdict (only PolicyDecided/Approved → Allow), never silently allowing.
-            other => InterceptOutcome::Resolved(verdict_for_status(other)),
-        },
+        Ok(ack) => {
+            let outcome = match ack.status {
+                // risk-0 adjudication terminal → Allow (no human).
+                ActionRequestStatus::PolicyDecided => {
+                    InterceptOutcome::Resolved(MutationVerdict::Allow)
+                }
+                // a mutating tool → the human decides (the verdict comes from verdict_for_status later).
+                ActionRequestStatus::AwaitingApproval => InterceptOutcome::AwaitingApproval {
+                    action_request_id: ack.action_request_id,
+                },
+                // an adjudication submit yields PolicyDecided (risk-0) or AwaitingApproval (both handled
+                // above), or — since 043 L5 — `Denied` (the deny-rule record-then-deny commits the denied
+                // action, ack'd Denied), or an Err. `Denied` → verdict_for_status → Deny (the agent IS
+                // blocked, the blocked attempt audited). Any OTHER status would be a Gateway REGRESSION
+                // (e.g. Queued/Succeeded = an adjudication action wrongly executed); it fails CLOSED via
+                // the default verdict (only PolicyDecided/Approved → Allow), never silently allowing.
+                other => InterceptOutcome::Resolved(verdict_for_status(other)),
+            };
+            // an Ok path is never an audit-backbone fault (the audit event committed) → no §17 alarm.
+            (outcome, None)
+        }
         // a Gateway error fails CLOSED to Deny — but call 2 DISTINGUISHES the kind: a §17/§15 #5
         // AUDIT-WRITE-FAULT (the adjudication audit event could not commit) is a LOUD integrity alert,
-        // not a routine deny. The live drive loop (L2) keys a §17 `AuditWriteFailed` signal off this
+        // not a routine deny. `route_intercept_live` raises the §17 `IntegrityAlarm` keyed off this
         // kind; both still fail-closed to Deny. (A policy-deny is a SEPARATE `Ok(Denied)` path above,
-        // never an `Err` — `verdict_for_status(Denied)` → routine Deny.)
-        Err(e) => InterceptOutcome::Resolved(MutationVerdict::Deny {
-            reason: match classify_gateway_error(&e) {
-                GatewayDenyKind::AuditWriteFailed =>
-                    "AUDIT-WRITE-FAILED (§17/§15 #5 integrity alert): the adjudication audit event \
-                     could not be committed — fail-closed Deny. A loud integrity fault, NOT a routine deny."
-                        .to_string(),
-                GatewayDenyKind::Other =>
-                    "the Gateway refused the intercepted tool call (fail-closed §15 #5)".to_string(),
-            },
-        }),
+        // never an `Err` — `verdict_for_status(Denied)` → routine Deny, no alarm.)
+        Err(e) => {
+            let kind = classify_gateway_error(&e);
+            let outcome = InterceptOutcome::Resolved(MutationVerdict::Deny {
+                reason: match kind {
+                    GatewayDenyKind::AuditWriteFailed =>
+                        "AUDIT-WRITE-FAILED (§17/§15 #5 integrity alert): the adjudication audit event \
+                         could not be committed — fail-closed Deny. A loud integrity fault, NOT a routine deny."
+                            .to_string(),
+                    GatewayDenyKind::Other =>
+                        "the Gateway refused the intercepted tool call (fail-closed §15 #5)".to_string(),
+                },
+            });
+            // surface the action_type for the §17 alarm ONLY on the audit-backbone fault.
+            let audit_fault =
+                matches!(kind, GatewayDenyKind::AuditWriteFailed).then_some(action_type);
+            (outcome, audit_fault)
+        }
     }
 }
 

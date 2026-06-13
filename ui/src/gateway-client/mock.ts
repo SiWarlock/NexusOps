@@ -58,12 +58,14 @@ const diffFixture: unknown = {
       old_lines: 3,
       new_start: 1,
       new_lines: 4,
+      // content EXCLUDES the +/- origin char (mirrors the daemon's git2 line.content();
+      // the kind carries context|added|removed, and the kit DiffHunk renders the sign).
       lines: [
-        { kind: "context", content: " fn main() {\n" },
-        { kind: "removed", content: "-    println!(\"hi\");\n" },
-        { kind: "added", content: "+    println!(\"hello\");\n" },
-        { kind: "added", content: "+    log::info!(\"started\");\n" },
-        { kind: "context", content: " }\n" },
+        { kind: "context", content: "fn main() {\n" },
+        { kind: "removed", content: "    println!(\"hi\");\n" },
+        { kind: "added", content: "    println!(\"hello\");\n" },
+        { kind: "added", content: "    log::info!(\"started\");\n" },
+        { kind: "context", content: "}\n" },
       ],
     },
   ],

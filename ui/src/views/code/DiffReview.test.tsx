@@ -22,10 +22,11 @@ const DIFF: DiffResult = {
       old_lines: 4,
       new_start: 10,
       new_lines: 6,
+      // content EXCLUDES the +/- origin (daemon-faithful: git2 line.content()).
       lines: [
-        { kind: "context", content: " export function review() {\n" },
-        { kind: "removed", content: "-  return execute()\n" },
-        { kind: "added", content: "+  const dry = dryRun()\n" },
+        { kind: "context", content: "export function review() {\n" },
+        { kind: "removed", content: "  return execute()\n" },
+        { kind: "added", content: "  const dry = dryRun()\n" },
       ],
     },
   ],
@@ -81,6 +82,17 @@ describe("DiffReview L1 — diff from get_diff (§6.1)", () => {
     // spec(§11.7) — a clean file (no hunks) renders an honest "no changes", not blank/faked.
     renderReview({ diff: { hunks: [] } });
     expect(await screen.findByTestId("diff-no-changes")).toBeTruthy();
+  });
+
+  it("diff_fixture_content_excludes_origin_char", () => {
+    // spec(§6.1) — the frozen DiffLine.content mirrors the daemon's git2 line.content(): it
+    // EXCLUDES the +/- origin (the kind carries it; the kit re-adds the sign). A fixture that
+    // bakes +/- into content misrepresents the contract → doubled signs. Guard fidelity.
+    for (const hunk of DIFF.hunks)
+      for (const line of hunk.lines)
+        expect(/^[+-]/.test(line.content), `content baked an origin char: ${line.content}`).toBe(
+          false,
+        );
   });
 
   it("unexpected_get_diff_error_degrades_not_crashes", async () => {

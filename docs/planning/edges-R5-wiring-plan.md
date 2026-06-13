@@ -120,7 +120,12 @@ Ordered lowest-risk-first; reads/risk-0 before mutators; the migration foundatio
 - **edges-019** P5.1 `project.rescan` executor — LANDED `c739278` (543/0, security CLEAR). Executor + emission
   + §15 strip-at-source; read-model projector deferred (needs MIGRATION_9). Q1 ruled **B (generic
   `EmittedEvent::Namespaced{event_type, payload_json}`)** — one gateway/ edit serves all ~11 edges events.
-- **edges-020** P5.2 `git.create_worktree` executor — DISPATCHED (task #5). First real edges FS mutation.
+- **edges-020** P5.2 `git.create_worktree` executor — LANDED `7dabab5` (554/0). First real edges FS mutation
+  (git-CLI seam, `WorktreeCreated` via the Namespaced bridge, `WorktreeId::new()`, side_effect=true). **Security
+  HIGH caught + CLOSED in-slice:** git **argument-injection** (leading-`-` operand parsed as a git flag →
+  on-disk worktree diverges from the approved+audited Action — audit-integrity, INV-SEC-1-adjacent); fixed
+  fail-closed + canonical arg order + regression test. security-reviewer else PASS.
+- **edges-021** P5.2 `git.create_branch` executor — NEXT (extends `GitExecutor`; `BranchCreated`; same guards).
 
 **Slice-plan revision (orch, slice-sequencing authority):** the separate "git read executors" slice
 (Wave-A slice 2) is **DISSOLVED** — `git.status`/`git.diff` have NO consumer (reads served via
@@ -133,6 +138,17 @@ to the inner stub. Net Wave-B/C/D unchanged; one fewer slice.
   bridge through the §15 gate (SessionExecutor precedent); credential-bearing URL fields (`remote_url`)
   stripped AT THE EMIT SOURCE — authority-scoped, **last-`@`-in-authority** delimiter, ALL scheme-URL userinfo
   stripped (a token can ride the bare-username slot), scp-style intact; the Redactor is the backstop only.
+- **LESSON 31** (edges-020) — edges git mutators run via an injected git-CLI seam (forbidden #6 — never git2;
+  structural grep-pin on `git/executor.rs`+`cli.rs`, NOT the git2-read backend); `side_effect_applied: true`
+  (→ honest `ActionPartiallySucceeded` on a txn-B fault, LESSON 21); mint the `wt_` id via `WorktreeId::new()`
+  (domain-id-via-::new(), persisted-once + replay-safe); **reject leading-`-` operands fail-closed + canonical
+  option-before-operand arg order (argument-injection guard — a leading-`-` operand becomes a CLI flag → the
+  executed mutation diverges from the approved+audited Action: audit-integrity)**; STRUCTURAL failure reasons
+  (no raw git stderr → §15).
+- **STANDING REQUIREMENT (from the edges-020 arg-injection HIGH):** EVERY external mutator that takes inputs
+  (edges-021 `create_branch`; Wave-D github/linear) MUST guard against argument/parameter injection (leading-`-`
+  for CLI args; the analogous vector for octocrab/Linear params) fail-closed BEFORE the call + a regression test.
+  Fold into each mutator brief. Cross-track-relevant (the daemon's own future external mutators want it too).
 - **Arch-doc notes (edges-019):** (a) `ExecutorKind::Project` registered in production main.rs; (b)
   `ProjectRescanned` has a live edges emitter; (c) the new daemon-internal `EmittedEvent::Namespaced{event_type,
   payload_json}` generic bridge (object_ref dropped — `AppendIntent` has no generic slot; identity rides the

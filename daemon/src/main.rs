@@ -67,9 +67,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the Action Gateway (the sole mutator) runs its pipeline ON the write-actor thread (forbidden
     // #2/#3). 2.2: CatalogPolicy (the §6.3 catalog-authoritative risk engine — risk-0 auto-allows,
     // 1-3 require approval, 4 require step-approval, uncatalogued fail-closed deny). 2.3:
-    // CatalogExecutor (validates requires_resource_refs + dispatches by ExecutorKind to side-effect-
-    // free per-namespace stubs — real adapters land Phase 3/5/7/8).
-    let gateway = Gateway::new(Box::new(CatalogPolicy), Box::new(CatalogExecutor));
+    // CatalogExecutor (validates requires_resource_refs + dispatches by ExecutorKind to a registered
+    // handler else a side-effect-free per-namespace stub). R1a registers NO handler → every action
+    // stubs (production behavior unchanged; the 4.0b-1 binding condition holds — no live executor);
+    // the first real handler registers at the cat-1 4.0b-2 (+ edges' Project/Git/Github/Linear P5/P7).
+    // (The session-executor type name is deliberately absent here — `tests/session_executor.rs`
+    // #test_no_reachable_live_caller greps this file for it to prove no production session.create
+    // caller is wired; the literal lands when 4.0b-2 actually registers it.)
+    let gateway = Gateway::new(Box::new(CatalogPolicy), Box::new(CatalogExecutor::new()));
     let actor = WriteActor::spawn(store, Box::new(SystemClock), gateway);
     let handle = actor.handle();
     // the post-commit broadcast sender for the accept-loop's per-connection live subscribers (1.6d);

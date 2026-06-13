@@ -14,8 +14,11 @@
 //! in-memory inputs are gone at approve-time, possibly post-restart). Wired at the Gateway call
 //! sites; pinned by `daemon/tests/executor.rs` #12/#13.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use nexusops_shared::actions::{ActionPreview, ActionRequest, ResourceRef};
-use nexusops_shared::catalog::{self, ActionTypeCatalogEntry};
+use nexusops_shared::catalog::{self, ActionTypeCatalogEntry, ExecutorKind};
 use nexusops_shared::ids::SessionId;
 use nexusops_shared::time::Timestamp;
 
@@ -151,18 +154,50 @@ impl ActionExecutor for StubExecutor {
     }
 }
 
-/// 2.3 — the **production** executor framework. `execute` validates (Q5) then dispatches by the
-/// catalog `ExecutorKind` to a per-namespace handler; in 2.3 every handler is a **structured stub**
-/// (NO FS/git/network side effect — the owning phase swaps its handler for the real adapter:
-/// git2/octocrab/session-host/Brain, Phase 3/5/7/8). `validate` enforces the catalog
-/// `requires_resource_refs` precondition (fail-closed → `ActionFailed`).
-pub struct CatalogExecutor;
+/// 2.3 — the **production** executor framework, P4.0b-R1a — a per-`ExecutorKind` **registration
+/// registry**. `execute` validates (Q5) then dispatches by the catalog `ExecutorKind`: to the
+/// **registered handler** if one exists, **else** today's side-effect-free structured stub
+/// (behavior-preserving). A namespace goes live exactly when its owning phase calls
+/// [`register`](CatalogExecutor::register) with the real adapter (git2/octocrab/session-host/Brain,
+/// Phase 3/4/5/7/8). R1a registers NO handler in production (`main.rs` builds an empty registry →
+/// every action stubs → the 4.0b-1 binding condition holds); the first real registration is
+/// `SessionExecutor` at 4.0b-2. `validate` enforces the catalog `requires_resource_refs` precondition
+/// (fail-closed → `ActionFailed`), uniformly, registered or not. Daemon-internal seam (LESSON 20).
+pub struct CatalogExecutor {
+    /// per-namespace handlers; an unregistered kind falls back to the structured stub. `Arc` so a
+    /// handler may be shared (the trait is `Send + Sync`); the gateway holds the `CatalogExecutor`
+    /// itself as `Box<dyn ActionExecutor>`.
+    handlers: HashMap<ExecutorKind, Arc<dyn ActionExecutor>>,
+}
 
 impl CatalogExecutor {
+    /// An empty registry — every action stubs until a handler registers (the R1a production state).
+    pub fn new() -> Self {
+        Self {
+            handlers: HashMap::new(),
+        }
+    }
+
+    /// Register the real handler for an `ExecutorKind` namespace (incremental — the namespace goes
+    /// live exactly here). `register()` inserts **unconditionally**, including `Adjudication`: the
+    /// INV-SEC-1 refusal lives in `execute` (BEFORE the handler dispatch), NOT here — so an
+    /// `Adjudication` registration can never make the daemon run an agent's tool even via a routing
+    /// regression (pinned by `tests/executor.rs` #4, which registers an Adjudication handler to prove
+    /// the execute guard refuses it before dispatch). `rollback` has **no** symmetric guard: an
+    /// adjudication-only action terminates at the policy/approval verdict → never executes → never
+    /// rolls back (and there is no production rollback caller yet), and `rollback`'s default arm
+    /// fails closed — so the path is unreachable, not a gap (security-reviewer ruled NO-GAP, R1a). The
+    /// symmetric `Adjudication → Failed` guard + a pinning test land with the FIRST real rollback
+    /// caller (deferred). The first handler registration is `SessionExecutor` at 4.0b-2 (+ edges'
+    /// Project/Git/Github/Linear at P5/P7).
+    pub fn register(&mut self, kind: ExecutorKind, handler: Arc<dyn ActionExecutor>) {
+        self.handlers.insert(kind, handler);
+    }
+
     /// Resolve the catalog entry AND enforce the `requires_resource_refs` precondition — the single
     /// source of both the lookup and the validation, shared by [`CatalogExecutor::validate`] (which
     /// discards the entry) and [`CatalogExecutor::execute`] (which dispatches on it). One lookup, one
-    /// check — no redundant re-lookup, and the Phase-3 real arms reuse this resolved entry.
+    /// check — no redundant re-lookup, and the registered real arms reuse this resolved entry.
     fn resolve(&self, req: &ActionRequest) -> Result<ActionTypeCatalogEntry, ExecError> {
         let entry = catalog::lookup(&req.action_type)
             .ok_or_else(|| ExecError::Uncatalogued(req.action_type.clone()))?;
@@ -170,6 +205,12 @@ impl CatalogExecutor {
             return Err(ExecError::MissingResourceRef(req.action_type.clone()));
         }
         Ok(entry)
+    }
+}
+
+impl Default for CatalogExecutor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -185,22 +226,28 @@ impl ActionExecutor for CatalogExecutor {
             Ok(entry) => entry,
             Err(e) => return ExecutionOutcome::Failed(e.to_string()),
         };
-        // 043 defense-in-depth (INV-SEC-1): an ADJUDICATION-ONLY action must NEVER reach the executor —
-        // the pipeline terminates it at the policy/approval verdict (the agent runs the tool, not the
-        // daemon). If one ever does (a routing regression), FAIL CLOSED — never run a side effect (even
-        // a stub) for an action whose whole contract is "no daemon executor". The pipeline guarantee is
-        // code-enforced here, not comment-only (pinned by tests/claude_intercept.rs #13).
-        if entry.executor == nexusops_shared::catalog::ExecutorKind::Adjudication {
+        // 043 defense-in-depth (INV-SEC-1), BEFORE the handler dispatch: an ADJUDICATION-ONLY action
+        // must NEVER reach an executor — the pipeline terminates it at the policy/approval verdict (the
+        // agent runs the tool, not the daemon). If one ever does (a routing regression OR a
+        // mis-registered Adjudication handler — R1a #4), FAIL CLOSED here, BEFORE `handlers.get`, so no
+        // registered handler can run for it. The pipeline guarantee is code-enforced, not comment-only
+        // (pinned by tests/claude_intercept.rs #13 + tests/executor.rs R1a #4).
+        if entry.executor == ExecutorKind::Adjudication {
             return ExecutionOutcome::Failed(
                 "adjudication-only action reached the executor — refused (INV-SEC-1: the agent runs \
                  the tool, the daemon only adjudicates)"
                     .to_string(),
             );
         }
-        // dispatch by ExecutorKind → a side-effect-free per-namespace stub. The `detail` names the
-        // namespace + its owning phase, so the dispatch is observable + the stub provenance is
-        // recorded. Each phase REPLACES its namespace's arm with the real adapter (which runs the
-        // actual side effect + returns the true changed_resources + a real detail).
+        // dispatch by ExecutorKind: the registered handler for this namespace, ELSE the side-effect-free
+        // structured stub (behavior-preserving — R1a registers none in production). A namespace goes
+        // live exactly when its owning phase registers the real adapter (4.0b-2 Session; P5/P7 edges).
+        if let Some(handler) = self.handlers.get(&entry.executor) {
+            return handler.execute(req);
+        }
+        // fallback stub — the `detail` names the namespace + its owning phase, so the dispatch is
+        // observable + the stub provenance is recorded (the real adapter returns a real summary +
+        // true changed_resources after a durable change).
         ExecutionOutcome::Succeeded {
             changed_resources: req.resource_refs.clone(),
             detail: format!(
@@ -209,7 +256,7 @@ impl ActionExecutor for CatalogExecutor {
                 preview::namespace_label(entry.executor),
                 preview::owning_phase(entry.executor),
             ),
-            // 2.4 stubs apply NO durable side effect → false. Each phase's real adapter reports `true`
+            // a stub applies NO durable side effect → false. Each phase's real adapter reports `true`
             // after a durable git/FS/network/session change (so the §17 fail-closed path is exact).
             side_effect_applied: false,
             emitted_events: vec![],
@@ -234,5 +281,25 @@ impl ActionExecutor for CatalogExecutor {
                 cannot_preview_reason: Some("uncatalogued action_type".to_string()),
             },
         }
+    }
+
+    fn rollback(&self, req: &ActionRequest) -> ExecutionOutcome {
+        // Delegate to the registered handler's rollback if its namespace is live, else the fail-closed
+        // default Failed (NEVER a false "rolled back" — a caller must not infer a real rollback from the
+        // default). Keyed by `catalog::lookup` (NOT `resolve`): a rollback isn't an execute, so the
+        // `requires_resource_refs` execute-precondition doesn't apply; an uncatalogued type or an
+        // unregistered namespace → the fail-closed default. (An adjudication-only action never executes
+        // → never reaches rollback; the execute-time guard is the INV-SEC-1 pin. The symmetric
+        // Adjudication guard here is DEFERRED to the first real rollback caller — security-reviewer
+        // ruled NO-GAP for R1a: triply-unreachable + no production rollback caller + fail-closed default.)
+        if let Some(entry) = catalog::lookup(&req.action_type) {
+            if let Some(handler) = self.handlers.get(&entry.executor) {
+                return handler.rollback(req);
+            }
+        }
+        ExecutionOutcome::Failed(
+            "rollback not implemented for this executor (no registered handler — fail-closed default)"
+                .to_string(),
+        )
     }
 }

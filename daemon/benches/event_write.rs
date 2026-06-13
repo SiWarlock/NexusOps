@@ -279,7 +279,7 @@ fn run_pass(
         Box::new(PrefixRedactor),
     )
     .expect("open the event store");
-    let gateway = Gateway::new(Box::new(CatalogPolicy), Box::new(CatalogExecutor));
+    let gateway = Gateway::new(Box::new(CatalogPolicy), Box::new(CatalogExecutor::new()));
     let actor = WriteActor::spawn(store, Box::new(SystemClock), gateway);
 
     // warm-up (discarded) — prime the WAL + page cache so the measured window isn't cold-start-biased.

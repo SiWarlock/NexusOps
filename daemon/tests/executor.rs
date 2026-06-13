@@ -24,6 +24,7 @@ use nexusopsd::gateway::policy::CatalogPolicy;
 use nexusopsd::gateway::preview::generate_preview;
 use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
+use serde_json::json;
 use std::sync::{Arc, Mutex};
 
 fn temp_db() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -44,7 +45,7 @@ fn open(path: &std::path::Path) -> EventStore {
 
 /// the production Gateway (catalog policy + the catalog-driven executor framework — L3).
 fn catalog_gateway() -> Gateway {
-    Gateway::new(Box::new(CatalogPolicy), Box::new(CatalogExecutor))
+    Gateway::new(Box::new(CatalogPolicy), Box::new(CatalogExecutor::new()))
 }
 
 /// an ActionRequest fixture with a given `action_type`, optional `project`, and `inputs`.
@@ -538,7 +539,7 @@ fn catalog_executor_dispatches_by_executor_kind() {
     // spec(§6.3 ExecutorKind) — CatalogExecutor::execute routes by the catalog ExecutorKind to a
     // per-namespace stub; the (side-effect-free) Succeeded outcome NAMES the namespace (distinct per
     // namespace) + carries changed_resources from the req (Q7).
-    let ex = CatalogExecutor;
+    let ex = CatalogExecutor::new();
     let git = ex.execute(&req_with_refs("git.create_worktree", &["wt_1"])); // ExecutorKind::Git
     let gh = ex.execute(&req_with_refs("github.create_pr", &["pr_1"])); // ExecutorKind::Github
     let (git_detail, git_changed) = match git {
@@ -695,4 +696,260 @@ fn executor_only_reachable_via_gateway() {
         1,
         "the executor runs exactly once, only after the approval gate"
     );
+}
+
+// =================================================================================================
+// P4.0b-R1a — the executor REGISTRATION SEAM: CatalogExecutor unit-struct → a per-ExecutorKind
+// registry (register()-or-stub dispatch), preserving the INV-SEC-1 Adjudication guard BEFORE
+// dispatch + the §6.3 requires_resource_refs precondition. Behavior-preserving (R1a registers no
+// handler in production). Serves 4.0b-2's SessionExecutor + edges P5/P7.
+// =================================================================================================
+
+/// A spy [`ActionExecutor`] for the registration-seam tests: counts execute/rollback calls and
+/// returns DISTINCTIVE outcomes (`regspy:*` detail) so a test can tell "the registered handler ran"
+/// from "the fallback stub ran". A handler does NOT re-run the catalog precondition (the registry's
+/// `resolve` owns it — Step-2.5 #1), so `validate` is a permissive `Ok`.
+struct RegSpy {
+    executed: Arc<Mutex<u32>>,
+    rolled_back: Arc<Mutex<u32>>,
+}
+impl RegSpy {
+    fn new() -> Self {
+        Self {
+            executed: Arc::new(Mutex::new(0)),
+            rolled_back: Arc::new(Mutex::new(0)),
+        }
+    }
+    fn exec_count(&self) -> Arc<Mutex<u32>> {
+        self.executed.clone()
+    }
+    fn rollback_count(&self) -> Arc<Mutex<u32>> {
+        self.rolled_back.clone()
+    }
+}
+impl ActionExecutor for RegSpy {
+    fn validate(&self, _req: &ActionRequest) -> Result<(), ExecError> {
+        Ok(())
+    }
+    fn execute(&self, req: &ActionRequest) -> ExecutionOutcome {
+        *self.executed.lock().unwrap() += 1;
+        ExecutionOutcome::Succeeded {
+            changed_resources: req.resource_refs.clone(),
+            detail: "regspy:execute".to_string(),
+            side_effect_applied: false,
+            emitted_events: vec![],
+        }
+    }
+    fn preview(&self, req: &ActionRequest, generated_at: Timestamp) -> ActionPreview {
+        ActionPreview {
+            action_request_id: req.action_request_id.clone(),
+            generated_at,
+            risk_level: req.risk_level,
+            risk_reasons: vec![],
+            summary: "regspy".to_string(),
+            changed_resources: vec![],
+            cannot_preview_reason: None,
+        }
+    }
+    fn rollback(&self, _req: &ActionRequest) -> ExecutionOutcome {
+        *self.rolled_back.lock().unwrap() += 1;
+        ExecutionOutcome::Succeeded {
+            changed_resources: vec![],
+            detail: "regspy:rollback".to_string(),
+            side_effect_applied: false,
+            emitted_events: vec![],
+        }
+    }
+}
+
+/// the `detail` of a `Succeeded` outcome (panics on `Failed`, naming the kind under test).
+fn succeeded_detail(outcome: ExecutionOutcome, ctx: &str) -> String {
+    match outcome {
+        ExecutionOutcome::Succeeded { detail, .. } => detail,
+        ExecutionOutcome::Failed(e) => panic!("{ctx}: expected Succeeded, got Failed({e})"),
+    }
+}
+
+// ---- R1a #1 — register() then execute() dispatches to the registered handler ----------------------
+
+#[test]
+fn register_then_execute_dispatches_to_handler() {
+    // spec(§6.3) — a registered handler for the resolved ExecutorKind runs; the fallback stub does NOT.
+    let mut ex = CatalogExecutor::new();
+    let spy = Arc::new(RegSpy::new());
+    let execs = spy.exec_count();
+    ex.register(catalog::ExecutorKind::Brain, spy.clone()); // brain.ask → ExecutorKind::Brain
+
+    let detail = succeeded_detail(
+        ex.execute(&req_with("brain.ask", None, json!({}))),
+        "dispatch",
+    );
+    assert_eq!(
+        detail, "regspy:execute",
+        "the registered Brain handler ran (not the stub)"
+    );
+    assert_eq!(
+        *execs.lock().unwrap(),
+        1,
+        "the handler's execute ran exactly once"
+    );
+}
+
+// ---- R1a #2 — an unregistered kind falls back to today's structured stub (behavior-preserving) -----
+
+#[test]
+fn unregistered_kind_falls_back_to_stub() {
+    // spec(§6.3) — an empty registry reproduces today's per-namespace stub: "would execute … via the
+    // {ns} adapter …", side_effect_applied=false. Unchanged for every unregistered kind.
+    let ex = CatalogExecutor::new();
+    let out = ex.execute(&req_with("brain.ask", None, json!({})));
+    let (detail, side_effect) = match out {
+        ExecutionOutcome::Succeeded {
+            detail,
+            side_effect_applied,
+            ..
+        } => (detail, side_effect_applied),
+        ExecutionOutcome::Failed(e) => {
+            panic!("the unregistered stub should succeed, got Failed({e})")
+        }
+    };
+    assert!(
+        detail.contains("would execute"),
+        "the stub names the would-execute provenance: {detail}"
+    );
+    assert!(
+        detail.to_lowercase().contains("brain"),
+        "the stub names the namespace: {detail}"
+    );
+    assert!(!side_effect, "the stub applies NO durable side effect");
+}
+
+// ---- R1a #3 — incremental: only the registered kind is live ---------------------------------------
+
+#[test]
+fn incremental_registration_only_registered_kind_live() {
+    // spec(§6.3) — registering kind A (Brain) does NOT make kind B (Git) live; B still stubs.
+    let mut ex = CatalogExecutor::new();
+    let spy = Arc::new(RegSpy::new());
+    let execs = spy.exec_count();
+    ex.register(catalog::ExecutorKind::Brain, spy.clone());
+
+    // git.create_worktree → ExecutorKind::Git (unregistered) → stub.
+    let detail = succeeded_detail(
+        ex.execute(&req_with_refs("git.create_worktree", &["wt_1"])),
+        "git",
+    );
+    assert!(
+        detail.contains("would execute"),
+        "Git is unregistered → stub: {detail}"
+    );
+    assert_ne!(
+        detail, "regspy:execute",
+        "the Brain handler must NOT run for a Git action"
+    );
+    assert_eq!(
+        *execs.lock().unwrap(),
+        0,
+        "the Brain handler never ran for a Git action"
+    );
+}
+
+// ---- R1a #4 — the INV-SEC-1 Adjudication guard fires BEFORE dispatch, even if a handler exists -----
+
+#[test]
+fn adjudication_refused_before_dispatch_even_if_registered() {
+    // spec(§15 / LESSON 26) — the load-bearing safety pin. An adjudication-only action is fail-closed-
+    // refused BEFORE the handler lookup: even with a handler registered for ExecutorKind::Adjudication,
+    // execute returns Failed and the handler is NEVER called (the agent runs the tool, not the daemon).
+    let mut ex = CatalogExecutor::new();
+    let spy = Arc::new(RegSpy::new());
+    let execs = spy.exec_count();
+    ex.register(catalog::ExecutorKind::Adjudication, spy.clone()); // a (mis-)registered adjudication handler
+
+    let out = ex.execute(&req_with("agent.bash", None, json!({}))); // agent.bash → ExecutorKind::Adjudication
+    match out {
+        ExecutionOutcome::Failed(e) => assert!(
+            e.contains("adjudication"),
+            "the refusal names the INV-SEC-1 reason: {e}"
+        ),
+        ExecutionOutcome::Succeeded { detail, .. } => {
+            panic!("an adjudication action must be REFUSED, got Succeeded({detail})")
+        }
+    }
+    assert_eq!(
+        *execs.lock().unwrap(),
+        0,
+        "the registered Adjudication handler was NEVER called (guard fires before dispatch)"
+    );
+}
+
+// ---- R1a #5 — the requires_resource_refs precondition survives the refactor (registered or not) -----
+
+#[test]
+fn requires_resource_refs_precondition_survives() {
+    // spec(§6.3) — git.create_worktree requires_resource_refs=true; carrying NONE → Failed
+    // (MissingResourceRef), uniformly — the precondition runs BEFORE dispatch, so a registered handler
+    // is never reached and the failure is identical with or without one.
+    let no_refs = || req_with("git.create_worktree", None, json!({}));
+
+    // (a) empty registry → Failed.
+    let bare = CatalogExecutor::new();
+    match bare.execute(&no_refs()) {
+        ExecutionOutcome::Failed(e) => {
+            assert!(e.contains("resource_ref"), "names the precondition: {e}")
+        }
+        ExecutionOutcome::Succeeded { detail, .. } => {
+            panic!("missing resource_ref must Fail, got {detail}")
+        }
+    }
+
+    // (b) with a Git handler registered → STILL Failed, and the handler never ran (precondition first).
+    let mut with_handler = CatalogExecutor::new();
+    let spy = Arc::new(RegSpy::new());
+    let execs = spy.exec_count();
+    with_handler.register(catalog::ExecutorKind::Git, spy.clone());
+    match with_handler.execute(&no_refs()) {
+        ExecutionOutcome::Failed(e) => assert!(
+            e.contains("resource_ref"),
+            "precondition still fails-closed: {e}"
+        ),
+        ExecutionOutcome::Succeeded { detail, .. } => {
+            panic!("precondition must short-circuit dispatch, got {detail}")
+        }
+    }
+    assert_eq!(
+        *execs.lock().unwrap(),
+        0,
+        "the precondition runs BEFORE dispatch — the handler never ran"
+    );
+}
+
+// ---- R1a #6 — rollback delegates to the registered handler, else the fail-closed default -----------
+
+#[test]
+fn rollback_delegates_to_handler_else_default() {
+    // spec(§6.2 rollback seam) — a registered handler's rollback is delegated to; an unregistered kind
+    // returns the existing fail-closed default Failed (never a false "rolled back").
+    let req = req_with("brain.ask", None, json!({}));
+
+    // registered → the handler's rollback runs.
+    let mut ex = CatalogExecutor::new();
+    let spy = Arc::new(RegSpy::new());
+    let rbs = spy.rollback_count();
+    ex.register(catalog::ExecutorKind::Brain, spy.clone());
+    let detail = succeeded_detail(ex.rollback(&req), "rollback-delegate");
+    assert_eq!(
+        detail, "regspy:rollback",
+        "rollback delegated to the registered handler"
+    );
+    assert_eq!(*rbs.lock().unwrap(), 1, "the handler's rollback ran once");
+
+    // unregistered → the fail-closed default Failed.
+    let bare = CatalogExecutor::new();
+    match bare.rollback(&req) {
+        ExecutionOutcome::Failed(_) => {}
+        ExecutionOutcome::Succeeded { detail, .. } => {
+            panic!("an unregistered rollback must fail-close (default Failed), got Succeeded({detail})")
+        }
+    }
 }

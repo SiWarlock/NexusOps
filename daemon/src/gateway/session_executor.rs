@@ -44,7 +44,7 @@ impl SessionExecutor {
         Self {
             launcher: Mutex::new(launcher),
             supervisor,
-            inner: CatalogExecutor,
+            inner: CatalogExecutor::new(),
         }
     }
 

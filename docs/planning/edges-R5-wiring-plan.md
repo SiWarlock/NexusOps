@@ -125,7 +125,20 @@ Ordered lowest-risk-first; reads/risk-0 before mutators; the migration foundatio
   HIGH caught + CLOSED in-slice:** git **argument-injection** (leading-`-` operand parsed as a git flag →
   on-disk worktree diverges from the approved+audited Action — audit-integrity, INV-SEC-1-adjacent); fixed
   fail-closed + canonical arg order + regression test. security-reviewer else PASS.
-- **edges-021** P5.2 `git.create_branch` executor — NEXT (extends `GitExecutor`; `BranchCreated`; same guards).
+- **edges-021** P5.2 `git.create_branch` executor — LANDED `51f5586` (563/0, security CLEAR). Extends
+  `GitExecutor`; `BranchCreated`; the arg-injection guard extracted to a SHARED `reject_dash_operands` helper
+  across both git arms (repo_path exempt = cwd, not a git operand). **P5.2 git mutators complete.**
+- **edges-022** P5.2 `proj_worktree` projector — LANDED `c666dc0` (571/0, security CLEAR). Folds
+  `WorktreeCreated`→`proj_worktree`; `repo_id` via the LESSON-17 immutable sibling-read of
+  `action_requests.resource_refs` (repo_id ULID §15-allowlisted → survives redaction); `status="creating"` via
+  `wire_value` (LAYER-CORRECT — persistence-core must NOT import the `git/` edge's `DerivedWorktreeStatus`);
+  live-read cols NULL; rebuild-equivalent. **P5.2 READ VERTICAL CLOSED** (mutator→event→projection→IPC).
+
+**P5 STATUS (end of R5-so-far):** P5.1 = executor+emit done (registry projector MIGRATION_9-deferred); P5.2 =
+mutators + read vertical COMPLETE (live-read status refresh deferred — see TODO). **Remaining for the
+phase-exit:** P7.1 Wave-D (github/linear executors + proj_pull_request projector) · the MIGRATION_9-deferred
+P5.1 registry projector + Wave-C `integration_connections` · the §7.2 + subscribe-delta + live-read hardening ·
+P5.4 bench · cargo audit · `/phase-exit 5`+`7`.
 
 **Slice-plan revision (orch, slice-sequencing authority):** the separate "git read executors" slice
 (Wave-A slice 2) is **DISSOLVED** — `git.status`/`git.diff` have NO consumer (reads served via
@@ -169,8 +182,25 @@ to the inner stub. Net Wave-B/C/D unchanged; one fewer slice.
   path/operational fields from entropy redaction [§15-policy change]. **Wave-D note (lead):** the same MVP-accept
   default extends to the github/linear mutators (operational inputs = repo/PR/issue identifiers, low-entropy) —
   CONFIRM per-slice, flag if any hits a genuinely high-entropy operational field.
+- **LESSON 17 generalization (edges-022):** a gateway-event projector sources non-payload identity (repo_id)
+  from the IMMUTABLE sibling `action_requests` row via `env.action_request_id` (LESSON 17 generalized from
+  object_refs/graph to the gateway-emitted-event case); the §15 ID-allowlist (LESSON 13) lets a repo_id ULID
+  survive the redacted sibling-read; status bound via `wire_value` (the layer-correct producer — persistence-core
+  must NOT import the `git/` edge). *Process note: a Step-2.5 approval (orch) endorsed importing `git/` into
+  `projections` (layer-reverse) — impl caught it at GREEN + used `wire_value` [same output]. Step-2.5 should
+  check layer-direction for cross-module refs.*
+- **FINDING (subscribe-delta; origin edges-022; → lead cross-track ledger; CROSS-CUTTING, daemon-owned):** the
+  `emitted_events` append loop (pipeline.rs:994-996) threads NO `ProjectionDelta`, so EVERY emitted-event
+  projector write lacks a live subscribe-push — `WorktreeCreated`→`proj_worktree` AND the daemon's own
+  `SessionStarted`→`proj_session`. Reads work via `get_projection`; subscribers see it on reconnect. A
+  gateway/pipeline delta-threading fix (daemon-track-owned; benefits its own emitted events). NOT blocking.
+- **TODO (live-read status refresh; P5.2 follow-on):** `read_worktree_status` (git/reads.rs exists) →
+  `proj_worktree` dirty_state/ahead/behind/git_checked_at via `derive_worktree_status` (§7.2 live-read cache).
+  Its own slice; the projector's ON CONFLICT DO UPDATE preserves those columns on re-fold/rebuild. The
+  rebuild-compare coverage boundary (5 always-NULL columns) revisits here.
 - **Completed-work ticks (hold):** P5.1 = PARTIAL (executor + emission landed edges-019; registry projector
-  pending MIGRATION_9). P5.2 = in progress (edges-020 mutator; proj_worktree projector + create_branch pending).
+  MIGRATION_9-deferred). P5.2 = mutators (edges-020/021) + read vertical (edges-022) COMPLETE; live-read status
+  refresh deferred (TODO above).
 - **Cross-track surfaces (lead-aware):** edges touches `gateway/executor.rs` + `gateway/request.rs` (the
   `EmittedEvent::Namespaced` bridge — 1 variant + 1 arm, additive, edges-owned per the lead) + MIGRATION_9
   **deferred to the final merge (D8)** — Wave-C takes the then-next-free number after the daemon's schema settles.

@@ -1,8 +1,55 @@
 //! The policy-engine seam (§6.2/§15). 2.2 owns the real risk→decision engine; 2.1b ships a STUB
 //! so the chokepoint + its approval gate are test-first before the risk engine exists.
 
-use nexusops_shared::actions::{ActionRequest, PolicyDecision, PolicyDecisionStatus, RiskLevel};
+use nexusops_shared::actions::{
+    ActionRequest, PolicyDecision, PolicyDecisionStatus, RequesterType, RiskLevel,
+};
 use nexusops_shared::catalog;
+
+/// The session-lifecycle action types that are **UI/IPC-initiated ONLY** (PIN e, away-ruled): an
+/// agent / Brain / pack requester is DENIED (no agent/Brain session-spawn at risk-0 — agent paths
+/// stay governed by [`AgentMutationPolicy`] / the 043 interception). §15 #8.
+const SESSION_LIFECYCLE_TYPES: &[&str] = &["session.create", "session.kill"];
+
+/// The risk-0 action types PERMITTED to auto-execute (PIN d — the lead-ruled EXPLICIT allowlist,
+/// belt-and-suspenders over the catalog + the LESSON 19 re-gate). A risk-0 type NOT here fails CLOSED
+/// (`RequireApproval`) at [`CatalogPolicy`], so a future risk-0 MUTATION can never silently
+/// auto-execute — admitting an auto-executing type forces a deliberate allowlist edit. **Must stay
+/// == the catalog's risk-0 set** (a consistency test pins this).
+const RISK0_AUTO_EXECUTE_ALLOWLIST: &[&str] = &[
+    // read / inspect / propose-only (mutation-free)
+    "brain.ask",
+    "project.rescan",
+    "workflow.detect",
+    "git.status",
+    "git.diff",
+    "code.open_file",
+    // the agent-mutation read-only adjudication (governed by AgentMutationPolicy; no executor runs)
+    "agent.file_read",
+    // session-lifecycle — the away-ruled risk-0 MUTATIONS (the NARROW relaxation, PIN d)
+    "session.create",
+    "session.kill",
+];
+
+/// PIN (d) — whether a risk-0 `action_type` is on the explicit auto-execute allowlist. A non-member
+/// risk-0 fails closed at [`CatalogPolicy`]. `pub` for the §15-pin test.
+pub fn risk0_auto_execute_permitted(action_type: &str) -> bool {
+    RISK0_AUTO_EXECUTE_ALLOWLIST.contains(&action_type)
+}
+
+/// The explicit risk-0 auto-execute allowlist (PIN d). `pub` so the §15 consistency test can sweep it
+/// BOTH ways (every allowlist entry IS a catalog risk-0 type, and vice-versa) — catching a phantom /
+/// typo'd allowlist entry that the catalog→allowlist direction alone would miss.
+pub fn risk0_auto_execute_allowlist() -> &'static [&'static str] {
+    RISK0_AUTO_EXECUTE_ALLOWLIST
+}
+
+/// The UI/IPC-initiated requesters permitted to drive a session-lifecycle action (PIN e). `User` =
+/// the desktop UI; `RemoteClient` = the (deferred) remote/iOS surface. Agent/Brain/pack/system are
+/// excluded — a system-initiated kill (the §17 cascade, 4.2) would add `SystemPolicy` deliberately.
+fn is_ui_ipc_requester(requester: RequesterType) -> bool {
+    matches!(requester, RequesterType::User | RequesterType::RemoteClient)
+}
 
 /// Decides whether an action may proceed, needs approval, or is denied (§6.2 / AG §12). The
 /// Gateway holds a `Box<dyn PolicyEngine>` so 2.2 swaps in the catalog-driven risk engine without
@@ -36,10 +83,15 @@ impl PolicyEngine for StubPolicy {
 /// 2.2 — the catalog-driven policy engine (the production policy; INV-SEC-1). Resolves each action's
 /// risk from the §6.3 [`catalog`] (AUTHORITATIVE), **never** the requester-supplied `risk_level`
 /// (recorded, not trusted — §15). The risk → decision mapping (Q4, AG §7/§12):
-/// - **risk-0** → `allow` (the auto-execute-eligible read/inspect/propose-only set);
+/// - **risk-0** → `allow` ONLY when BOTH fail-closed guards pass: (i) the null-schema floor
+///   (`params_schema_present`) and (ii) the explicit [`RISK0_AUTO_EXECUTE_ALLOWLIST`] (PIN d,
+///   P4.0b-1) — else `require_approval`. The allowlisted risk-0 set = the read/inspect/propose-only
+///   types + the away-ruled session-lifecycle MUTATIONS (`session.create`/`kill`);
 /// - **risk 1/2/3** → `require_approval` (the MVP default-confirm posture);
 /// - **risk-4** (critical) → `require_step_approval` (never broad automation);
-/// - an `action_type` **absent from the catalog** → `deny` (fail-closed, §15 — never a default-allow).
+/// - an `action_type` **absent from the catalog** → `deny` (fail-closed, §15 — never a default-allow);
+/// - **PIN (e)** — a session-lifecycle (`session.create`/`kill`) action from a non-UI/IPC requester
+///   (agent/Brain/pack/system) → `deny` BEFORE risk resolution (§15 #8; away-ruled UI/IPC-only).
 ///
 /// The **null-schema floor** (§6.3/OQ-WP-5): an action whose params carry no typed schema
 /// (`params_schema_present == false`) can NEVER resolve to `allow` — defense-in-depth that holds even
@@ -61,6 +113,20 @@ impl PolicyEngine for CatalogPolicy {
                 ),
             );
         };
+        // PIN (e) — session-lifecycle (session.create/kill) is UI/IPC-initiated ONLY: an agent /
+        // Brain / pack requester is DENIED before any risk resolution (§15 #8 / away-ruled — no
+        // agent/Brain session-spawn at risk-0; agents are governed by `AgentMutationPolicy`).
+        if SESSION_LIFECYCLE_TYPES.contains(&req.action_type.as_str())
+            && !is_ui_ipc_requester(req.requester_type)
+        {
+            return decision(
+                PolicyDecisionStatus::Deny,
+                format!(
+                    "session-lifecycle '{}' is UI/IPC-initiated only — a {:?} requester is denied (§15 #8)",
+                    req.action_type, req.requester_type
+                ),
+            );
+        }
         // the §6.3/OQ-WP-5 null-schema floor: no typed params schema → never auto-allow. The floor
         // only needs to act on the `Level0` arm — `Allow` is the sole status it must suppress;
         // risk 1-3 already `require_approval` and risk-4 already `require_step_approval`, so a
@@ -69,6 +135,12 @@ impl PolicyEngine for CatalogPolicy {
         let floored = !entry.params_schema_present;
         let status = match entry.locked_risk {
             RiskLevel::Level0 if floored => PolicyDecisionStatus::RequireApproval,
+            // PIN (d) — a risk-0 type NOT on the explicit auto-execute allowlist fails CLOSED (belt-
+            // and-suspenders over the catalog + the LESSON 19 re-gate): a future risk-0 mutation can
+            // never silently auto-execute; admitting an auto-executing type forces a deliberate edit.
+            RiskLevel::Level0 if !risk0_auto_execute_permitted(&req.action_type) => {
+                PolicyDecisionStatus::RequireApproval
+            }
             RiskLevel::Level0 => PolicyDecisionStatus::Allow,
             RiskLevel::Level1 | RiskLevel::Level2 | RiskLevel::Level3 => {
                 PolicyDecisionStatus::RequireApproval

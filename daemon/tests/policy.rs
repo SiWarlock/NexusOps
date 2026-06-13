@@ -147,6 +147,155 @@ fn test_catalog_policy_decision_per_risk() {
 }
 
 // =================================================================================================
+// P4.0b-1 L2 — the risk-0 session-lifecycle relaxation + the 5 protective pins (CAT-1; away-ruled).
+// =================================================================================================
+
+/// `sample_request` with an explicit requester (PIN-e — the UI/IPC-only gate).
+fn request_from(action_type: &str, requester: RequesterType) -> ActionRequest {
+    ActionRequest {
+        requester_type: requester,
+        ..sample_request(action_type, RiskLevel::Level0)
+    }
+}
+
+#[test]
+fn test_session_create_kill_auto_allow() {
+    // spec(§6.3 away-ruled) — session.create/kill are risk-0 → Allow (audited auto-allow); a UI/User
+    // requester auto-executes (no approval). PINs (a)-(e) constrain HOW it stays safe (below).
+    let policy = CatalogPolicy;
+    assert_eq!(
+        policy
+            .decide(&sample_request("session.create", RiskLevel::Level0))
+            .status,
+        PolicyDecisionStatus::Allow
+    );
+    assert_eq!(
+        policy
+            .decide(&sample_request("session.kill", RiskLevel::Level0))
+            .status,
+        PolicyDecisionStatus::Allow
+    );
+}
+
+#[test]
+fn test_profile_change_requires_approval() {
+    // PIN (c) — spec(§15 #8) — session.profile_change is risk-2 → RequireApproval; the no-silent-
+    // account-hop gate lives on the CHANGE, never the routine start. Pin the DISCRETE PIN-c facts (the
+    // catalog risk is 2 + it's NOT on the risk-0 auto-execute allowlist → never auto-executed), not
+    // just the generic risk-2→approval arm any risk-2 type would satisfy.
+    assert_eq!(
+        nexusops_shared::catalog::lookup("session.profile_change")
+            .unwrap()
+            .locked_risk,
+        RiskLevel::Level2,
+        "session.profile_change is catalog-risk-2 (the §15 #8 account-hop gate)"
+    );
+    assert!(
+        !nexusopsd::gateway::policy::risk0_auto_execute_permitted("session.profile_change"),
+        "session.profile_change is NOT on the risk-0 auto-execute allowlist"
+    );
+    let policy = CatalogPolicy;
+    assert_eq!(
+        policy
+            .decide(&sample_request("session.profile_change", RiskLevel::Level0))
+            .status,
+        PolicyDecisionStatus::RequireApproval,
+        "profile-change is approval-gated (no silent account-hop)"
+    );
+}
+
+#[test]
+fn test_risk0_relaxation_is_narrow() {
+    // PIN (d) — spec(LESSON 19) — the risk-0 relaxation is NARROW to session-lifecycle. A non-session
+    // MUTATING type (git.create_worktree, catalog-risk-2) the requester CLAIMS is risk-0 is NOT
+    // auto-allowed (the catalog authority resolves its real risk → RequireApproval).
+    let policy = CatalogPolicy;
+    assert_eq!(
+        policy
+            .decide(&sample_request("git.create_worktree", RiskLevel::Level0))
+            .status,
+        PolicyDecisionStatus::RequireApproval,
+        "a non-session mutation can't ride the risk-0 relaxation (catalog-authoritative)"
+    );
+    // the explicit allowlist guard (lead-ruled, belt-and-suspenders over the catalog + LESSON 19
+    // re-gate): only the allowlisted risk-0 types may auto-execute; a non-allowlisted one fails closed.
+    assert!(nexusopsd::gateway::policy::risk0_auto_execute_permitted(
+        "session.create"
+    ));
+    assert!(nexusopsd::gateway::policy::risk0_auto_execute_permitted(
+        "session.kill"
+    ));
+    assert!(
+        !nexusopsd::gateway::policy::risk0_auto_execute_permitted("some.future.risk0_mutation"),
+        "a risk-0 type NOT on the allowlist fails closed — admitting one forces a deliberate edit"
+    );
+}
+
+#[test]
+fn test_risk0_allowlist_matches_catalog() {
+    // PIN (d) consistency — the explicit auto-execute allowlist MUST equal the catalog's risk-0 set:
+    // a type is allowlisted IFF it is catalog-risk-0. So (1) every catalog risk-0 type is allowlisted
+    // (else it silently fail-closes — this is the LOUD dev-time catch) and (2) the allowlist can't
+    // admit a non-risk-0 type. Admitting a NEW auto-executing type therefore forces a deliberate edit
+    // to BOTH the catalog risk AND the allowlist — a future risk-0 mutation can't silently auto-execute.
+    use nexusops_shared::catalog::{lookup, AGENT_MUTATION_ACTION_TYPES, MVP_ACTION_TYPES};
+    // forward — every catalogued type is allowlisted IFF it is catalog-risk-0.
+    for at in MVP_ACTION_TYPES.iter().chain(AGENT_MUTATION_ACTION_TYPES) {
+        let is_catalog_risk0 = lookup(at).unwrap().locked_risk == RiskLevel::Level0;
+        assert_eq!(
+            is_catalog_risk0,
+            nexusopsd::gateway::policy::risk0_auto_execute_permitted(at),
+            "the risk-0 auto-execute allowlist must EXACTLY track the catalog risk-0 set: {at}"
+        );
+    }
+    // reverse — every allowlist entry IS a catalog risk-0 type (catches a phantom / typo'd allowlist
+    // entry, e.g. `session.creat`, that the forward sweep alone would never visit).
+    for at in nexusopsd::gateway::policy::risk0_auto_execute_allowlist() {
+        assert_eq!(
+            lookup(at).map(|e| e.locked_risk),
+            Some(RiskLevel::Level0),
+            "every risk-0 allowlist entry must be a catalog risk-0 type: {at}"
+        );
+    }
+}
+
+#[test]
+fn test_session_create_rejects_agent_brain_requester() {
+    // PIN (e) — spec(§15 #8 / 043) — session.create/kill are UI/IPC-initiated only; an AgentSession /
+    // ProjectBrain / WorkflowPack requester is DENIED (agents stay governed by the 043
+    // AgentMutationPolicy, never spawning a session at risk-0).
+    let policy = CatalogPolicy;
+    for requester in [
+        RequesterType::AgentSession,
+        RequesterType::ProjectBrain,
+        RequesterType::WorkflowPack,
+    ] {
+        assert_eq!(
+            policy
+                .decide(&request_from("session.create", requester))
+                .status,
+            PolicyDecisionStatus::Deny,
+            "{requester:?} session.create is denied (UI/IPC-only)"
+        );
+        assert_eq!(
+            policy
+                .decide(&request_from("session.kill", requester))
+                .status,
+            PolicyDecisionStatus::Deny,
+            "{requester:?} session.kill is denied (UI/IPC-only)"
+        );
+    }
+    // a User (the desktop UI) is the permitted requester → auto-allows.
+    assert_eq!(
+        policy
+            .decide(&request_from("session.create", RequesterType::User))
+            .status,
+        PolicyDecisionStatus::Allow,
+        "a User (UI/IPC) session.create auto-allows"
+    );
+}
+
+// =================================================================================================
 // L3 — the risk-0 `allow` auto-execute path (the FIRST no-human-approval execution path) + the
 // §11.5 approve-all critical-exclusion migrated onto the catalog-authoritative risk. INV-SEC-1.
 // =================================================================================================

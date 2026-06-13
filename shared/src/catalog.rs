@@ -86,6 +86,8 @@ pub const MVP_ACTION_TYPES: &[&str] = &[
     "workflow.command.invoke",
     "plan.link_task",
     "session.create",
+    "session.kill",
+    "session.profile_change",
     "session.attach_terminal",
     "session.send_message",
     "session.pause",
@@ -153,6 +155,20 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
         "git.status" => entry(R::Level0, P::Git, I::None, X::Git, true, true),
         "git.diff" => entry(R::Level0, P::Diff, I::None, X::Git, true, true),
         "code.open_file" => entry(R::Level0, P::Command, I::None, X::Code, true, true),
+        // risk-0 — session-lifecycle (P4.0b-1 away-ruled): session.create/kill are MUTATIONS yet
+        // risk-0 (audited auto-allow). The relaxation is NARROW to the supervised session lifecycle
+        // (NOT a general "mutations may be risk-0") — the danger is downstream-gated by the live
+        // per-tool interception (4.0b-2); the policy enforces 5 pins (UI/IPC-only requester, the risk-0
+        // allowlist, SessionStarted-audited, profile-recorded-at-start, profile-CHANGE-approval-gated).
+        "session.create" => entry(R::Level0, P::Session, I::FromInputs, X::Session, true, true),
+        "session.kill" => entry(
+            R::Level0,
+            P::Session,
+            I::NaturalResourceRef,
+            X::Session,
+            true,
+            true,
+        ),
         // risk-1
         "session.attach_terminal" => entry(
             R::Level1,
@@ -171,7 +187,12 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
             true,
         ),
         // risk-2
-        "session.create" => entry(R::Level2, P::Session, I::FromInputs, X::Session, true, true),
+        // session.profile_change — the §15 #8 no-silent-account-hop APPROVAL gate (PIN c). The TYPE +
+        // the risk-2 gate land here (4.0b-1); the executor BODY (the actual profile swap) is a later
+        // slice — the SAFETY pin is the approval-gating, testable now.
+        "session.profile_change" => {
+            entry(R::Level2, P::Session, I::FromInputs, X::Session, true, true)
+        }
         "session.resume" => entry(
             R::Level2,
             P::Session,

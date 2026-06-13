@@ -672,19 +672,21 @@ fn reconcile_queued_orphan_clears_idempotency_key() {
     // spec(§17 / Q6 dedup-key) — a `queued` orphan (the crash happened after approve+queue but BEFORE
     // execute started → no side effect) reconciles to `failed` and CLEARS its idempotency_key: the
     // action definitively never ran, so it is safe to re-submit (clearing the key avoids the 2.3 dedup
-    // re-run lockout). session.create is FromInputs-keyed (risk-2 → approve path; no resource_ref → no L3 fence).
+    // re-run lockout). session.send_message is FromInputs-keyed (risk-2 → approve path; FromInputs →
+    // no resource-lease fence). (session.create is risk-0 since P4.0b-1, so it no longer takes the
+    // approve→queued path this orphan-reconcile test needs — any FromInputs risk-2 type works.)
     let (_d, path) = temp_db();
     let mut store = open(&path);
     let gw = catalog_gateway();
 
     gw.submit_action(
         &mut store,
-        sample_request("session.create", RiskLevel::Level2),
+        sample_request("session.send_message", RiskLevel::Level2),
     )
     .expect("submit");
     assert!(
         action_idempotency_key(&path).is_some(),
-        "session.create derives a FromInputs idempotency_key"
+        "session.send_message derives a FromInputs idempotency_key"
     );
     let appr = approval_id_of(&path);
     // §14 crash BEFORE the executing-commit → leaves the action `queued`.
@@ -722,7 +724,7 @@ fn reconcile_executing_orphan_keeps_idempotency_key() {
 
     gw.submit_action(
         &mut store,
-        sample_request("session.create", RiskLevel::Level2),
+        sample_request("session.send_message", RiskLevel::Level2),
     )
     .expect("submit");
     let key_before = action_idempotency_key(&path).expect("a FromInputs key");

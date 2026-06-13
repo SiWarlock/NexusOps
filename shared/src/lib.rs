@@ -87,4 +87,9 @@ pub mod time;
 /// `rate_limited` interactive throttle; `disabled` is the only terminal). + adds
 /// `SessionStarted.execution_profile_id` (`Option<ExecutionProfileId>`, the §15 #8 binding surface —
 /// the profile recorded at session.create). Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.24.0";
+/// 0.25.0 (P4.0b-1 L2) reclassifies the §6.3 catalog for the away-ruled risk-0 session-lifecycle:
+/// `session.create` risk-2→risk-0 + NEW `session.kill` (risk-0) + NEW `session.profile_change`
+/// (risk-2 — the §15 #8 no-silent-account-hop APPROVAL gate); `MVP_ACTION_TYPES` 22→24. The risk-0
+/// relaxation is NARROW (an explicit daemon-policy auto-execute allowlist + a UI/IPC-only requester
+/// guard). Catalog-data semantics; no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.25.0";

@@ -1428,8 +1428,8 @@ fn test_action_type_catalog_covers_mvp_set() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        22,
-        "the §6.3 LOCKED MVP set is 22 types"
+        24,
+        "the §6.3 MVP set is 24 types (22 + session.kill + session.profile_change, P4.0b-1)"
     );
     for at in MVP_ACTION_TYPES {
         let e = lookup(at).unwrap_or_else(|| panic!("catalog missing the MVP type {at}"));
@@ -1455,6 +1455,33 @@ fn test_action_type_catalog_covers_mvp_set() {
         lookup("git.status").unwrap().locked_risk,
         RiskLevel::Level0,
         "a read-only type is risk-0 (auto-execute eligible)"
+    );
+}
+
+// ---- P4.0b-1 L2 RED — the risk-0 session-lifecycle relaxation (away-ruled; cat-1) -----------
+
+#[test]
+fn test_session_lifecycle_catalog_risk() {
+    // spec(§6.3 / away-ruled risk-0) — session.create/kill = risk-0 (audited auto-allow — the
+    // faithful vehicle for "routine start, audited, no per-launch approval"; LESSON 19 made
+    // risk-1-not-approval-gated contradictory). session.profile_change = risk-2 (the §15 #8
+    // no-silent-account-hop APPROVAL gate lives on the CHANGE, not the routine start).
+    use nexusops_shared::actions::RiskLevel;
+    use nexusops_shared::catalog::lookup;
+    assert_eq!(
+        lookup("session.create").unwrap().locked_risk,
+        RiskLevel::Level0,
+        "session.create is risk-0 (away-ruled audited auto-allow)"
+    );
+    assert_eq!(
+        lookup("session.kill").unwrap().locked_risk,
+        RiskLevel::Level0,
+        "session.kill is risk-0 (the lifecycle counterpart)"
+    );
+    assert_eq!(
+        lookup("session.profile_change").unwrap().locked_risk,
+        RiskLevel::Level2,
+        "session.profile_change is approval-gated (§15 #8 no-silent-account-hop)"
     );
 }
 
@@ -1633,15 +1660,16 @@ fn test_adjudication_outcome_class() {
 fn test_agent_mutation_family_snapshot_spec_6_3() {
     // spec(§6.3) — the §2.5-seam freeze guard for the agent-mutation extension. The agent family
     // const + the per-type {executor, risk, params_schema_present} ARE the freeze; a drift fails here.
-    // The MVP set stays 22 (the agent family is a SEPARATE const — it never inflates the human-facing
-    // MVP catalog count, which other invariants pin). `params_schema_present=true` (the tool_input is
-    // a structured payload — NOT the §6.3/OQ-WP-5 null-schema floor).
+    // The human-facing MVP set is 24 (P4.0b-1 grew it by session.kill + session.profile_change); the
+    // KEY invariant this guard pins is that the agent family is a SEPARATE machine-internal const —
+    // it NEVER inflates the human-facing MVP count. `params_schema_present=true` (the tool_input is a
+    // structured payload — NOT the §6.3/OQ-WP-5 null-schema floor).
     use nexusops_shared::catalog::{lookup, AGENT_MUTATION_ACTION_TYPES, MVP_ACTION_TYPES};
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        22,
-        "the human-facing §6.3 MVP set stays 22 — the agent family is a separate machine-internal const"
+        24,
+        "the human-facing §6.3 MVP set is 24 — the agent family stays a separate machine-internal const"
     );
     assert_eq!(
         AGENT_MUTATION_ACTION_TYPES.len(),
@@ -2277,15 +2305,15 @@ fn test_action_denied_approval_id_optional() {
     );
 }
 
-// ---- P4.0b-1 L1 RED — CONTRACT_VERSION bumped to 0.24.0 (the 0.5b ExecutionProfile freeze) ----
+// ---- P4.0b-1 L2 RED — CONTRACT_VERSION bumped to 0.25.0 (the §6.3 risk-0 session-lifecycle) ----
 
 #[test]
-fn test_contract_version_bumped_0_24_0() {
+fn test_contract_version_bumped_0_25_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.23.0 =
-    // the 043 L5 / A1 `ActionDenied.approval_id`→OPTIONAL relax; **0.24.0** = the 0.5b
-    // `ExecutionProfile` runtime-state freeze (the 10th §5.1 machine, 9 values = the §5.1 8 +
-    // `credit_exhausted`) + `SessionStarted.execution_profile_id` (the §15 #8 binding surface) —
-    // additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.24.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.24.0 =
+    // the 0.5b `ExecutionProfile` freeze + `SessionStarted.execution_profile_id`; **0.25.0** = the
+    // §6.3 catalog reclassification for the away-ruled risk-0 session-lifecycle (`session.create`
+    // 2→0 + NEW `session.kill` risk-0 + NEW `session.profile_change` risk-2; MVP 22→24) — catalog-data
+    // semantics, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.25.0");
 }

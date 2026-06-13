@@ -42,22 +42,19 @@ describe("overlay surfaces", () => {
     );
   });
 
-  it("hiq_review_opens_gateway_modal_fail_safe", async () => {
+  it("hiq_review_opens_gateway_modal_wired", async () => {
     render(<Shell gateway={new MockGatewayPort()} />);
     await awaitLoaded();
     fireEvent.keyDown(window, { key: "h", metaKey: true, shiftKey: true });
     const drawer = screen.getByTestId("hiq-drawer");
     fireEvent.click(within(drawer).getByRole("button", { name: /^review$/i }));
     const modal = screen.getByTestId("gateway-modal");
-    // real approval title + frozen status pill render
-    expect(within(modal as HTMLElement).getByText("git.create_worktree")).toBeTruthy();
+    // the wired card renders the frozen status pill + the daemon policy/preview sections
     expect(modal.querySelector('[data-status="awaiting_approval"]')).not.toBeNull();
-    // the consequence preview is an honest pending note (no invented dry-run)
-    expect(screen.getByTestId("gateway-conseq-pending")).toBeTruthy();
-    // Approve/Deny/always-allow are DISABLED (first mutation path — daemon-gated)
-    expect(within(modal as HTMLElement).getByRole("button", { name: /approve/i })).toHaveProperty("disabled", true);
-    expect(within(modal as HTMLElement).getByRole("button", { name: /deny/i })).toHaveProperty("disabled", true);
-    expect(within(modal as HTMLElement).getByRole("checkbox")).toHaveProperty("disabled", true);
+    expect(within(modal as HTMLElement).getByTestId("gateway-policy")).toBeTruthy();
+    expect(within(modal as HTMLElement).getByTestId("gateway-preview")).toBeTruthy();
+    // the standing-grant "Always allow" stays DISABLED (deferred — its own cat-1 slice)
+    expect(within(modal as HTMLElement).getByTestId("always-allow")).toHaveProperty("disabled", true);
   });
 
   it("hiq_open_session_navigates_to_terminal", async () => {

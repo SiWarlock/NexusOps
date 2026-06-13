@@ -10,6 +10,7 @@ import type {
   AuditIntegrityState,
   AuditOutcomeStatus,
   FencingConflict,
+  WireError,
 } from "../contracts/index";
 
 /** The load-bearing safety-#6 promise — surfaced verbatim on the card. */
@@ -137,4 +138,86 @@ export function describeAuditIntegrity(
       ? ACTION_OUTCOME[state.status]
       : INTEGRITY[state.kind];
   return { treatment, acknowledgeParked: true, glyph: SEVERITY_GLYPH[t.severity], ...t };
+}
+
+// ─── §6.4 rejection routing → distinct §11.5 cards (Q6) ───────────────────────
+// A rejected intent (`{error: WireError}`) routes each `IpcErrorCode` to its mandated,
+// DISTINCT treatment. Collapsing them breaks rule #6 (a fencing conflict rendered as
+// re-approvable). `reapprovable` is TRUE for `precondition_stale` ALONE; an unmapped
+// (transport) code falls to an HONEST generic rejection — never swallowed, never
+// re-approvable (§6.4/§11.7). The code is carried VERBATIM for the renderer to show.
+
+export type RejectionKind =
+  | "hard_conflict" // fencing_conflict — never auto-resolved, NO retry (#6)
+  | "fail_closed" // internal_error — fail-closed integrity alert (#5)
+  | "reapprovable" // precondition_stale — regenerate preview + fresh approval
+  | "denied" // policy_denied — the deny render
+  | "generic"; // any other (transport) code — honest generic rejection
+
+export interface RejectionDescriptor {
+  /** The daemon's §6.4 code, surfaced VERBATIM (never collapsed/remapped). */
+  code: WireError["code"];
+  kind: RejectionKind;
+  /** Non-color channels (never color alone — §11.6); glyph derived from severity. */
+  glyph: string;
+  label: string;
+  severity: AuditIntegritySeverity;
+  message: string;
+  /** TRUE for `precondition_stale` ONLY — the re-approvable path. fencing / internal /
+   *  denied / generic are NEVER re-approvable (rule #6 is enforced by construction). */
+  reapprovable: boolean;
+}
+
+const REJECTION: Record<
+  RejectionKind,
+  Omit<RejectionDescriptor, "code" | "glyph" | "kind">
+> = {
+  hard_conflict: {
+    label: "Fencing conflict",
+    severity: "critical",
+    message: NEVER_AUTO_RESOLVED,
+    reapprovable: false,
+  },
+  fail_closed: {
+    label: "Audit-integrity failure",
+    severity: "critical",
+    message:
+      "An audit-required action's authoritative event could not be written — the action was failed closed (safety #5).",
+    reapprovable: false,
+  },
+  reapprovable: {
+    label: "Preview is stale",
+    severity: "warning",
+    message:
+      "The preview no longer matches reality — regenerate the preview and approve again. The action was NOT executed.",
+    reapprovable: true,
+  },
+  denied: {
+    label: "Denied by policy",
+    severity: "warning",
+    message: "The policy engine denied this action.",
+    reapprovable: false,
+  },
+  generic: {
+    label: "Action rejected",
+    severity: "warning",
+    message: "The daemon rejected this action.",
+    reapprovable: false,
+  },
+};
+
+/** Only the 4 policy/execution codes get a distinct card; everything else (the
+ *  transport set) falls to `generic` — an honest, defined default (never swallowed). */
+const CODE_TO_KIND: Partial<Record<WireError["code"], RejectionKind>> = {
+  fencing_conflict: "hard_conflict",
+  internal_error: "fail_closed",
+  precondition_stale: "reapprovable",
+  policy_denied: "denied",
+};
+
+/** A daemon rejection (`WireError`) → its distinct §11.5 treatment. */
+export function describeRejection(error: WireError): RejectionDescriptor {
+  const kind = CODE_TO_KIND[error.code] ?? "generic";
+  const t = REJECTION[kind];
+  return { code: error.code, kind, glyph: SEVERITY_GLYPH[t.severity], ...t };
 }

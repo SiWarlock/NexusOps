@@ -11,7 +11,13 @@
 // FLAG (not faked): every field here needs a daemon projection field to go live.
 // When the daemon lands them, these maps are built from the projection rows and
 // this fixture is deleted — no view-layer change.
-import type { SessionRow, UsageRow } from "../contracts/index";
+import type {
+  Approval,
+  ApprovalQueueRow,
+  PolicyDecision,
+  SessionRow,
+  UsageRow,
+} from "../contracts/index";
 
 /** Kit HarnessBadge kinds (NexusOps-ui-kit components/badges/HarnessBadge). */
 export type HarnessKind = "claude-code" | "codex-cli" | "codex-cloud" | "shell";
@@ -119,6 +125,82 @@ export const approvalDisplayFixture: Record<string, ApprovalDisplayMeta> = {
   approval_fixture_1: { risk: "medium", who: "Claude · ENG-310 · Claude Max Main" },
   approval_fixture_2: { risk: "low", who: "Claude · docs · Claude Team Work" },
 };
+
+// ─── GatewayModal enrichment (PROVISIONAL display side-map) ───────────────────
+// The GatewayModal renders the daemon's full Approval + PolicyDecision, but the
+// ApprovalQueue projection row is THIN ({approval_id, project_id, status, title?}).
+// Until the daemon enriches the projection (Carry-forward: projection-enrichment +
+// a preview/policy RPC), this side-map supplies the full shapes — fixture-driven,
+// keyed by approval_id, with a default for any unlisted row. The render path is real
+// (the modal is a pure renderer of this daemon-shaped data); only the source is a fixture.
+export interface GatewayApprovalEnrichment {
+  approval: Approval;
+  policyDecision: PolicyDecision;
+}
+
+export const gatewayApprovalEnrichment: Record<string, GatewayApprovalEnrichment> = {
+  approval_fixture_1: {
+    approval: {
+      approval_id: "approval_fixture_1",
+      required_approver: { kind: "current_user" },
+      status: "awaiting_approval",
+      scope: "single_action",
+      risk_level: 3,
+      action_request_id: "ar_fixture_1",
+    },
+    policyDecision: {
+      status: "require_approval",
+      reasons: ["Writes to a tracked file outside the session worktree."],
+      required_approvals: [{ kind: "current_user" }],
+      constraints: [],
+      safer_alt: null,
+    },
+  },
+  approval_fixture_2: {
+    approval: {
+      approval_id: "approval_fixture_2",
+      required_approver: { kind: "project_owner" },
+      status: "awaiting_approval",
+      scope: "single_action",
+      risk_level: 1,
+      action_request_id: "ar_fixture_2",
+    },
+    policyDecision: {
+      status: "require_approval",
+      reasons: ["Edits documentation."],
+      required_approvals: [{ kind: "project_owner" }],
+      constraints: [],
+      safer_alt: null,
+    },
+  },
+};
+
+/** Enrich a thin ApprovalQueue row → the full {Approval, PolicyDecision} the modal
+ *  renders. A default covers any unlisted row (still daemon-SHAPED, never UI-derived risk). */
+export function enrichApproval(row: ApprovalQueueRow): GatewayApprovalEnrichment {
+  return (
+    gatewayApprovalEnrichment[row.approval_id] ?? {
+      approval: {
+        approval_id: row.approval_id,
+        required_approver: { kind: "current_user" },
+        status: row.status,
+        scope: "single_action",
+        risk_level: 2,
+        // NULL (not the approval_id) for an unlisted row — an approval_id is NOT an
+        // action_request_id (distinct daemon namespaces); the modal suppresses the
+        // preview fetch honestly until the real daemon projection supplies the link.
+        action_request_id: null,
+      },
+      policyDecision: {
+        status: "require_approval",
+        reasons: ["This action requires human approval."],
+        required_approvals: [{ kind: "current_user" }],
+        constraints: [],
+        safer_alt: null,
+      },
+    }
+  );
+}
 
 // ─── Settings display fixtures (Integrations / Execution profiles) ──────────
 // No Integration or ExecutionProfile projection exists yet (Phase 7 connectors;

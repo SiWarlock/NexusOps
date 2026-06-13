@@ -49,7 +49,7 @@ import {
   filterByActiveProject,
   ActiveProjectProvider,
 } from "./active-project";
-import { sessionDisplayFixture } from "./display-meta";
+import { enrichApproval, sessionDisplayFixture } from "./display-meta";
 import { useViewHistory } from "./view-history";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
@@ -440,7 +440,11 @@ export function Shell({
         ) : overlay?.kind === "tasks" ? (
           <TaskInbox onClose={() => setOverlay(null)} />
         ) : overlay?.kind === "gateway" ? (
-          <GatewayModal approval={overlay.approval} onClose={() => setOverlay(null)} />
+          <GatewayModal
+            {...enrichApproval(overlay.approval)}
+            port={client}
+            onClose={() => setOverlay(null)}
+          />
         ) : overlay?.kind === "brain" ? (
           <BrainDrawer
             onClose={() => setOverlay(null)}

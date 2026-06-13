@@ -56,6 +56,12 @@ fault-injection = []
 # placeholder → the real ClaudeAdapter makes them test-only). Mirrors `fault-injection` (LESSON 21);
 # the cross-track edges resume gates its `integrations/` fakes behind it.
 test-support = []
+# P4.0b-2-smoke (brief 053) — gates the `smoke` dev-client subcommand (the 0.1-HITL "see it work" rig).
+# OFF by default (production hygiene — the smoke client isn't needed in a release build); the runbook
+# builds `cargo build --release --features dev-client`. NOTE (CI-rot residual, Step-9 flagged): the
+# default CI does not exercise this feature → a dedicated `--features dev-client` lint/build line is a
+# Future-TODO; this slice's preflight runs `clippy/build --features dev-client` to verify it.
+dev-client = []
 
 [dev-dependencies]
 tempfile = "3"

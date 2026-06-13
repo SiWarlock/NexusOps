@@ -50,6 +50,13 @@ fn main() -> ExitCode {
     if args.get(1).map(String::as_str) == Some("hook") {
         return nexusopsd::hook::run(args.get(2).map(String::as_str).unwrap_or(""));
     }
+    // P4.0b-2-smoke (brief 053) — the `nexusopsd smoke <sub>` dev-client (the 0.1-HITL "see it work"
+    // rig). Feature-gated `dev-client` (off in a release build). A synchronous UDS client like `hook`;
+    // dispatched BEFORE the daemon runtime — it must NOT start the write-actor / accept-loop.
+    #[cfg(feature = "dev-client")]
+    if args.get(1).map(String::as_str) == Some("smoke") {
+        return nexusopsd::smoke::run(&args);
+    }
     // the daemon — build the tokio runtime + run.
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,

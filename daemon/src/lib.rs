@@ -24,4 +24,8 @@ pub mod locks;
 pub mod projections;
 pub mod runtime;
 pub mod session;
+/// the `nexusopsd smoke` dev-client subcommand (P4.0b-2-smoke / brief 053) — the 0.1-HITL "see it
+/// work" rig. Feature-gated (`dev-client`): compiled out of a default/release build (prod hygiene).
+#[cfg(feature = "dev-client")]
+pub mod smoke;
 pub mod terminal;

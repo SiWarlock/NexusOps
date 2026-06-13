@@ -16,9 +16,25 @@
 
 use nexusops_shared::actions::{ActionPreview, ActionRequest, ResourceRef};
 use nexusops_shared::catalog::{self, ActionTypeCatalogEntry};
+use nexusops_shared::ids::SessionId;
 use nexusops_shared::time::Timestamp;
 
 use crate::gateway::preview;
+
+/// An additional audit/observation event an executor emits IN the action's completion txn (PIN a/b,
+/// P4.0b-1). The pipeline appends each in **txn-B**, alongside `ActionSucceeded` — ATOMIC with the
+/// terminal event (an append failure rolls txn-B back → the action stays `executing` → L5; INV-SEC-1
+/// preserved). 4.0b-1's only emitter is the session.create executor (`SessionStarted`, the §15 #8
+/// profile binding); the enum is open for the per-namespace adapters that emit lifecycle events later.
+pub enum EmittedEvent {
+    /// `SessionStarted` — the session-lifecycle record for a `session.create`. `session_id` is the
+    /// ENVELOPE identity (the `proj_session` projector reads it from the column); `payload` is the
+    /// frozen `SessionStarted` (carrying the §15 #8 `execution_profile_id`).
+    SessionStarted {
+        session_id: SessionId,
+        payload: nexusops_shared::events::SessionStarted,
+    },
+}
 
 /// Pre-execution validation failures (§6.3). 2.3 enforces only the catalog `requires_resource_refs`
 /// precondition; the structured execute-error taxonomy is 2.4 (`Failed` stays a `String` for now).
@@ -46,6 +62,9 @@ pub enum ExecutionOutcome {
         /// → L5; a `true` (a real change that can't be un-done) → `ActionPartiallySucceeded`. The 2.4
         /// stubs report `false`; the real adapters (Phase 3/5/7/8) report `true` after a durable change.
         side_effect_applied: bool,
+        /// additional audit/observation events to append IN txn-B (PIN a/b — `SessionStarted` for a
+        /// session.create). Empty for every stub + non-session executor (P4.0b-1).
+        emitted_events: Vec<EmittedEvent>,
     },
     /// the executor (or its `validate`) failed; the message is recorded on `ActionFailed`
     /// (structured taxonomy → 2.4). **A `Failed` outcome ALWAYS implies no durable side effect was
@@ -115,6 +134,7 @@ impl ActionExecutor for StubExecutor {
             changed_resources: vec![],
             detail: "stub: no side effect".to_string(),
             side_effect_applied: false,
+            emitted_events: vec![],
         }
     }
 
@@ -192,6 +212,7 @@ impl ActionExecutor for CatalogExecutor {
             // 2.4 stubs apply NO durable side effect → false. Each phase's real adapter reports `true`
             // after a durable git/FS/network/session change (so the §17 fail-closed path is exact).
             side_effect_applied: false,
+            emitted_events: vec![],
         }
     }
 

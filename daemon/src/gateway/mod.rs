@@ -21,6 +21,7 @@ pub mod precondition;
 pub mod preview;
 pub mod recovery;
 pub mod request;
+pub mod session_executor;
 
 use serde::Serialize;
 

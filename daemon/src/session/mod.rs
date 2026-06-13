@@ -20,7 +20,7 @@ pub use launcher::{FakeLauncher, LaunchedSession, NullTerminalSink, PtyLauncher,
 use std::collections::HashMap;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
 use nexusops_shared::ids::SessionId;
@@ -32,8 +32,6 @@ pub type StatusObserver = mpsc::UnboundedSender<Session>;
 
 /// The §10 supervisor reap cadence (the background task harvests terminal actors).
 const SUPERVISOR_REAP_INTERVAL: Duration = Duration::from_millis(500);
-/// The supervisor control-mailbox depth (the 4.0b session.create driver's spawn/route requests).
-const SUPERVISOR_CONTROL_CAPACITY: usize = 64;
 
 /// The opt-3 session supervisor: spawns + tracks one [`SessionActor`](actor) per session id, routes
 /// commands to a specific actor, and reaps an actor when it reaches a terminal §5.1 state — **NO
@@ -144,13 +142,15 @@ impl SessionSupervisor {
     }
 }
 
-/// A control message to the supervisor task — the **4.0b** session.create driver sends these (spawn a
-/// session through the supervisor / route a command). 4.0a wires the channel; the live driver is 4.0b.
+/// A control message to the supervisor task — the session.create executor (4.0b-1) / the live driver
+/// (4.0b-2) send these (spawn a session / route a command). The channel is **UNBOUNDED** so the sync
+/// write-actor-thread caller's `send` is a NON-BLOCKING enqueue that can never stall the single
+/// mutation path (cat-1 no-stall, P4.0b-1) — the live session count is naturally bounded, so there is
+/// no unbounded-growth concern.
 enum SupervisorControl {
     Spawn {
         launched: LaunchedSession,
         status_tx: StatusObserver,
-        reply: oneshot::Sender<SessionId>,
     },
     Route {
         session_id: SessionId,
@@ -158,41 +158,38 @@ enum SupervisorControl {
     },
 }
 
-/// The handle the **4.0b** session.create driver uses to drive the supervisor task (spawn/route).
-/// Wired + reachable in 4.0a (main.rs holds it), but NOT driven by any production caller yet — the
-/// live `session.create` executor that sends these is the cat-1 4.0b.
+/// The handle the session.create executor (4.0b-1) drives the supervisor task with (spawn/route).
+/// **Synchronous + non-blocking** over the UNBOUNDED control channel — so it is safe to call from the
+/// write-actor's dedicated `std::thread` (OFF the tokio runtime, LESSON §9) WITHOUT ever blocking the
+/// single mutation path (cat-1 no-stall, P4.0b-1; the supervisor is an edge actor — no callback into
+/// the write-actor, so no cycle). The caller already holds the `SessionId` (it is on the
+/// `LaunchedSession`), so no reply round-trip is needed.
 #[derive(Clone)]
 pub struct SupervisorHandle {
-    control: mpsc::Sender<SupervisorControl>,
+    control: mpsc::UnboundedSender<SupervisorControl>,
 }
 
 impl SupervisorHandle {
-    /// Spawn a session through the supervisor task; returns its id (`None` if the task is gone).
-    pub async fn spawn_session(
-        &self,
-        launched: LaunchedSession,
-        status_tx: StatusObserver,
-    ) -> Option<SessionId> {
-        let (reply, rx) = oneshot::channel();
-        self.control
-            .send(SupervisorControl::Spawn {
-                launched,
-                status_tx,
-                reply,
-            })
-            .await
-            .ok()?;
-        rx.await.ok()
+    /// Spawn a session through the supervisor task — a NON-BLOCKING enqueue. Returns the session id
+    /// (read off `launched`; the supervisor task picks the Spawn up on the runtime). A send failure
+    /// (the supervisor task is gone — shutdown) is benign: the id is still returned (the session is moot).
+    pub fn spawn_session(&self, launched: LaunchedSession, status_tx: StatusObserver) -> SessionId {
+        let session_id = launched.session_id.clone();
+        let _ = self.control.send(SupervisorControl::Spawn {
+            launched,
+            status_tx,
+        });
+        session_id
     }
 
-    /// Route a command to a session via the supervisor task. `false` if the task is gone.
-    pub async fn route(&self, session_id: SessionId, command: SessionCommand) -> bool {
+    /// Route a command to a session via the supervisor task — a NON-BLOCKING enqueue. `false` if the
+    /// supervisor task is gone.
+    pub fn route(&self, session_id: SessionId, command: SessionCommand) -> bool {
         self.control
             .send(SupervisorControl::Route {
                 session_id,
                 command,
             })
-            .await
             .is_ok()
     }
 }
@@ -203,7 +200,7 @@ impl SupervisorHandle {
 pub fn spawn_supervisor_task(
     mut shutdown: watch::Receiver<bool>,
 ) -> (JoinHandle<()>, SupervisorHandle) {
-    let (control_tx, mut control_rx) = mpsc::channel(SUPERVISOR_CONTROL_CAPACITY);
+    let (control_tx, mut control_rx) = mpsc::unbounded_channel();
     let join = tokio::spawn(async move {
         let mut supervisor = SessionSupervisor::new();
         let mut reaper = tokio::time::interval(SUPERVISOR_REAP_INTERVAL);
@@ -212,9 +209,8 @@ pub fn spawn_supervisor_task(
                 biased;
                 _ = shutdown.changed() => break,
                 ctrl = control_rx.recv() => match ctrl {
-                    Some(SupervisorControl::Spawn { launched, status_tx, reply }) => {
-                        let id = supervisor.spawn_session(launched, status_tx);
-                        let _ = reply.send(id);
+                    Some(SupervisorControl::Spawn { launched, status_tx }) => {
+                        supervisor.spawn_session(launched, status_tx);
                     }
                     Some(SupervisorControl::Route { session_id, command }) => {
                         let _ = supervisor.route(&session_id, command).await;

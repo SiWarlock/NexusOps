@@ -107,6 +107,7 @@ impl ActionExecutor for AppliedExecutor {
             changed_resources: req.resource_refs.clone(),
             detail: "fake: side effect APPLIED".to_string(),
             side_effect_applied: true,
+            emitted_events: vec![],
         }
     }
     fn preview(&self, req: &ActionRequest, generated_at: Timestamp) -> ActionPreview {

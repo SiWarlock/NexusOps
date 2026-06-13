@@ -979,7 +979,7 @@ impl Gateway {
             match &outcome {
                 // the executor's changed_resources/detail (Q7) are daemon-internal — recorded on the
                 // §6.2 ActionResult in a later phase; the ActionSucceeded event payload stays empty.
-                ExecutionOutcome::Succeeded { .. } => {
+                ExecutionOutcome::Succeeded { emitted_events, .. } => {
                     request::update_status(
                         gtx.tx(),
                         &act_id,
@@ -987,6 +987,13 @@ impl Gateway {
                         ARStatus::Succeeded,
                     )?;
                     gtx.append(&request::succeeded_intent(req, &now)?)?;
+                    // PIN a/b (P4.0b-1) — append the executor's additional in-txn events (the
+                    // session.create `SessionStarted`, carrying the §15 #8 `execution_profile_id`)
+                    // ATOMIC with `ActionSucceeded`: a write failure `?`-propagates → txn-B rolls back →
+                    // the action stays `executing` → L5 (INV-SEC-1 — never an unaudited session record).
+                    for ev in emitted_events {
+                        gtx.append(&request::emitted_event_intent(req, ev, &now)?)?;
+                    }
                     Ok(ActionAck {
                         action_request_id: act_id.clone(),
                         status: ARStatus::Succeeded,

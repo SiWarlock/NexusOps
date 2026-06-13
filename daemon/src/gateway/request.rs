@@ -21,6 +21,7 @@ use nexusops_shared::status::ActionRequest;
 use nexusops_shared::time::Timestamp;
 
 use crate::eventstore::{AppendIntent, GatewayTxn};
+use crate::gateway::executor::EmittedEvent;
 use crate::gateway::{db_err, enum_int, enum_wire, gateway_event_intent, GatewayError};
 
 /// Parse a stored wire value (`TEXT`/`INTEGER`) back into its frozen contract type via serde
@@ -392,6 +393,32 @@ pub(crate) fn succeeded_intent(
         occurred_at,
         None,
     ))
+}
+
+/// Build the AppendIntent for an executor's additional in-txn event (PIN a/b, P4.0b-1). A
+/// `SessionStarted` rides the action's envelope context (actor / project / correlation, via
+/// [`gateway_event_intent`]) but OVERRIDES `session_id` with the minted session id — so the session's
+/// identity lives on the ENVELOPE column the `proj_session` projector reads, AND the event stays
+/// correlatable to the audited `session.create` action (it carries both `session_id` + the action's
+/// `correlation_id`/`action_request_id`). Appended in txn-B, atomic with `ActionSucceeded`.
+pub(crate) fn emitted_event_intent(
+    ar: &ActionRequestModel,
+    event: &EmittedEvent,
+    occurred_at: &str,
+) -> Result<AppendIntent, GatewayError> {
+    match event {
+        EmittedEvent::SessionStarted {
+            session_id,
+            payload,
+        } => {
+            let payload_json = serde_json::to_string(payload)
+                .map_err(|e| GatewayError::Serialize(e.to_string()))?;
+            let mut intent =
+                gateway_event_intent(ar, "SessionStarted", payload_json, occurred_at, None);
+            intent.session_id = Some(session_id.clone());
+            Ok(intent)
+        }
+    }
 }
 
 /// Build the `ActionPartiallySucceeded` AppendIntent (§17 — a side effect was applied but its terminal

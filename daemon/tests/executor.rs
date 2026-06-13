@@ -515,6 +515,7 @@ impl ActionExecutor for RecordingExecutor {
             changed_resources: req.resource_refs.clone(),
             detail: "recorded".to_string(),
             side_effect_applied: false,
+            emitted_events: vec![],
         }
     }
     fn preview(&self, req: &ActionRequest, generated_at: Timestamp) -> ActionPreview {

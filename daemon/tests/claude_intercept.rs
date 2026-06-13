@@ -206,6 +206,7 @@ impl ActionExecutor for RecordingExecutor {
             detail: "RECORDED — an executor ran (this must NOT happen for an adjudication action)"
                 .to_string(),
             side_effect_applied: false,
+            emitted_events: vec![],
         }
     }
     fn preview(&self, req: &ActionRequest, generated_at: Timestamp) -> ActionPreview {

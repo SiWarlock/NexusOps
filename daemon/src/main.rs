@@ -19,6 +19,8 @@ use nexusopsd::eventstore::{JsonlMirror, PrefixRedactor};
 use nexusopsd::gateway::executor::CatalogExecutor;
 use nexusopsd::gateway::policy::CatalogPolicy;
 use nexusopsd::gateway::Gateway;
+use nexusopsd::git::cli::SystemGitCli;
+use nexusopsd::git::executor::GitExecutor;
 use nexusopsd::idgen::UlidGen;
 use nexusopsd::ipc::current_euid;
 use nexusopsd::project::executor::ProjectExecutor;
@@ -83,6 +85,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     catalog_executor.register(
         nexusops_shared::catalog::ExecutorKind::Project,
         Arc::new(ProjectExecutor::new(Box::new(SystemClock))),
+    );
+    // P5.2 (edges-020) — the first real edges FS/git MUTATION handler: git.create_worktree via the git
+    // CLI (forbidden #6 — never git2 for mutations). git.status/git.diff/git.create_branch delegate to
+    // the inner stub (reads via the read path; create_branch → edges-021). risk-2 (approval-gated).
+    catalog_executor.register(
+        nexusops_shared::catalog::ExecutorKind::Git,
+        Arc::new(GitExecutor::new(Box::new(SystemGitCli))),
     );
     let gateway = Gateway::new(Box::new(CatalogPolicy), Box::new(catalog_executor));
     let actor = WriteActor::spawn(store, Box::new(SystemClock), gateway);

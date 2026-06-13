@@ -7,6 +7,8 @@
 //! two-axis precedence fn. The git-CLI worktree/branch mutation executors land in the gated
 //! 5.2-remainder slice.
 
+pub mod cli;
 pub mod detect;
+pub mod executor;
 pub mod precedence;
 pub mod reads;

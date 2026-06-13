@@ -16,6 +16,7 @@ mod approval_queue;
 mod audit;
 mod graph;
 mod object_refs;
+mod pull_request;
 mod schema;
 mod session;
 mod usage;
@@ -82,6 +83,10 @@ fn projectors() -> Vec<Box<dyn Projector>> {
         // P5.2 (edges-022) — folds the edges git.create_worktree WorktreeCreated event into the
         // proj_worktree read model (sibling-reads action_requests for repo_id, LESSON 17).
         Box::new(worktree::WorktreeProjector),
+        // P7.1 (edges-025) — folds the edges github.create_pr PullRequestSynced event into the
+        // proj_pull_request read cache (§7.2; sibling-reads action_requests for repo_id, LESSON 17;
+        // pr_id = the {repo_id}#{pr_number} rebuild-safe composite). Closes the github read vertical.
+        Box::new(pull_request::PullRequestProjector),
     ]
 }
 

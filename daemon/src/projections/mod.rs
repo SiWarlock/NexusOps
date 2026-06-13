@@ -19,6 +19,7 @@ mod object_refs;
 mod schema;
 mod session;
 mod usage;
+mod worktree;
 
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde::Serialize;
@@ -78,6 +79,9 @@ fn projectors() -> Vec<Box<dyn Projector>> {
         // P3.1 — folds the §9.1 TelemetrySampled observation event into per-day usage rollups
         // (§18). Wired NOW; its branch fires once the 3.2/3.3 adapters emit the feeding events.
         Box::new(usage::UsageLedgerProjector),
+        // P5.2 (edges-022) — folds the edges git.create_worktree WorktreeCreated event into the
+        // proj_worktree read model (sibling-reads action_requests for repo_id, LESSON 17).
+        Box::new(worktree::WorktreeProjector),
     ]
 }
 

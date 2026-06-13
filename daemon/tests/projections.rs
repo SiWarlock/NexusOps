@@ -9,13 +9,27 @@
 //!   L2 (tests 4–9, 14) — in-band apply + the feedable projectors.   [added at L2]
 //!   L3 (tests 10–13) — catch-up replay / rebuild / degraded-skip.    [added at L3]
 
+use std::sync::Arc;
+
+use nexusops_shared::actions::{
+    ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
+};
 use nexusops_shared::actor::ActorType;
+use nexusops_shared::catalog::ExecutorKind;
 use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType, Visibility};
-use nexusops_shared::ids::{ProjectId, SessionId, WorkspaceId};
+use nexusops_shared::events::WorktreeCreated;
+use nexusops_shared::ids::{ActionRequestId, ProjectId, SessionId, WorkspaceId, WorktreeId};
+use nexusops_shared::status::ActionRequestStatus;
+use nexusops_shared::time::Timestamp;
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{
     AppendIntent, EventStore, EventStoreError, PrefixRedactor, RedactionOutcome, Redactor,
 };
+use nexusopsd::gateway::executor::CatalogExecutor;
+use nexusopsd::gateway::policy::CatalogPolicy;
+use nexusopsd::gateway::Gateway;
+use nexusopsd::git::cli::FakeGitCli;
+use nexusopsd::git::executor::GitExecutor;
 
 // ---- fixtures ---------------------------------------------------------------
 
@@ -1185,4 +1199,301 @@ fn test_usage_ledger_sums_deltas_utc_bucketed() {
         day, "2026-06-08",
         "bucket_day == the UTC date of occurred_at"
     );
+}
+
+// =============================================================================
+// edges-022 — the proj_worktree projector (the gated 5.2-remainder)
+// =============================================================================
+//
+// Driven Gateway-end-to-end (the proj_approval_queue sibling-read precedent): a real
+// git.create_worktree (submit → approve → execute) creates the action_requests sibling
+// row AND emits WorktreeCreated, which the projector folds in-band → proj_worktree.
+
+/// A Gateway with the real GitExecutor over a FakeGitCli (emits WorktreeCreated on approve).
+fn gw_with_git() -> Gateway {
+    let mut cat = CatalogExecutor::new();
+    cat.register(
+        ExecutorKind::Git,
+        Arc::new(GitExecutor::new(Box::new(FakeGitCli::succeeding()))),
+    );
+    Gateway::new(Box::new(CatalogPolicy), Box::new(cat))
+}
+
+/// A `git.create_worktree` request. `repo_id`: Some → a Repository resource_ref carrying it (the repo
+/// identity the projector sibling-reads); None → a non-Repo ref (satisfies requires_resource_refs but
+/// has no repo identity → the projector skips). LOW-ENTROPY inputs (the §7.2 approve-path redaction).
+fn create_worktree_req(project_id: Option<ProjectId>, repo_id: Option<&str>) -> ActionRequest {
+    let resource_refs = match repo_id {
+        Some(rid) => vec![ResourceRef {
+            resource_type: ResourceType::Repo,
+            id: rid.to_string(),
+            uri: None,
+        }],
+        None => vec![ResourceRef {
+            resource_type: ResourceType::Worktree,
+            id: "wt_other".to_string(),
+            uri: None,
+        }],
+    };
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id,
+        action_type: "git.create_worktree".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs,
+        inputs: serde_json::json!({
+            "repo_path": "/repo", "worktree_path": "/repo/wt", "branch_name": "feature",
+            "base_branch": "main"
+        }),
+        risk_level: RiskLevel::Level2,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    }
+}
+
+fn approval_id_of(path: &std::path::Path) -> String {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("ro conn");
+    // deterministic single-approval lookup (each test uses one worktree per db → one approval).
+    conn.query_row(
+        "SELECT approval_id FROM approvals ORDER BY approval_id LIMIT 1",
+        [],
+        |r| r.get(0),
+    )
+    .expect("an approval")
+}
+
+/// submit + approve a git.create_worktree → drives WorktreeCreated + the in-band proj_worktree fold.
+fn create_worktree(
+    store: &mut EventStore,
+    gw: &Gateway,
+    path: &std::path::Path,
+    req: ActionRequest,
+) {
+    gw.submit_action(store, req).expect("submit");
+    gw.approve(store, &approval_id_of(path)).expect("approve");
+}
+
+/// the proj_worktree rows (the asserted columns), ordered by worktree_id, for byte-identical compare.
+#[derive(Debug, PartialEq)]
+struct WtRow {
+    worktree_id: String,
+    project_id: String,
+    repo_id: String,
+    path: String,
+    branch_name: Option<String>,
+    base_branch: Option<String>,
+    status: String,
+    dirty_state: Option<String>,
+    ahead_count: Option<i64>,
+    behind_count: Option<i64>,
+    git_checked_at: Option<String>,
+    updated_at_seq: i64,
+}
+
+fn proj_worktree_rows(path: &std::path::Path) -> Vec<WtRow> {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("ro conn");
+    let mut stmt = conn
+        .prepare(
+            "SELECT worktree_id, project_id, repo_id, path, branch_name, base_branch, status, \
+             dirty_state, ahead_count, behind_count, git_checked_at, updated_at_seq \
+             FROM proj_worktree ORDER BY worktree_id",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(WtRow {
+                worktree_id: r.get(0)?,
+                project_id: r.get(1)?,
+                repo_id: r.get(2)?,
+                path: r.get(3)?,
+                branch_name: r.get(4)?,
+                base_branch: r.get(5)?,
+                status: r.get(6)?,
+                dirty_state: r.get(7)?,
+                ahead_count: r.get(8)?,
+                behind_count: r.get(9)?,
+                git_checked_at: r.get(10)?,
+                updated_at_seq: r.get(11)?,
+            })
+        })
+        .unwrap();
+    rows.map(|r| r.unwrap()).collect()
+}
+
+#[test]
+fn test_worktree_created_inserts_proj_worktree_row() {
+    // spec(§7.2): git.create_worktree (submit→approve→execute) → a proj_worktree row with the payload +
+    // sibling-sourced project_id/repo_id + initial status + updated_at_seq.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    create_worktree(
+        &mut store,
+        &gw,
+        &path,
+        create_worktree_req(Some(pid.clone()), Some("repo_alpha")),
+    );
+
+    let rows = proj_worktree_rows(&path);
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert!(r.worktree_id.starts_with("wt_"));
+    assert_eq!(r.project_id, pid.as_str());
+    assert_eq!(r.repo_id, "repo_alpha");
+    assert_eq!(r.path, "/repo/wt");
+    assert_eq!(r.branch_name.as_deref(), Some("feature"));
+    assert_eq!(
+        r.base_branch.as_deref(),
+        Some("main"),
+        "base_branch round-trips from the payload"
+    );
+    assert_eq!(r.status, "creating");
+    assert!(r.updated_at_seq > 0);
+}
+
+#[test]
+fn test_worktree_projector_repo_id_from_sibling() {
+    // spec(LESSON 17): repo_id is the immutable sibling read of the action's Repository resource_ref.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    create_worktree(
+        &mut store,
+        &gw,
+        &path,
+        create_worktree_req(Some(ProjectId::new()), Some("repo_beta")),
+    );
+    assert_eq!(proj_worktree_rows(&path)[0].repo_id, "repo_beta");
+}
+
+#[test]
+fn test_worktree_projector_live_read_columns_null() {
+    // spec(§7.2 split): the live-read cache columns are inserted NULL (a separate refresh populates them).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    create_worktree(
+        &mut store,
+        &gw,
+        &path,
+        create_worktree_req(Some(ProjectId::new()), Some("repo_x")),
+    );
+    let r = &proj_worktree_rows(&path)[0];
+    assert_eq!(r.dirty_state, None);
+    assert_eq!(r.ahead_count, None);
+    assert_eq!(r.behind_count, None);
+    assert_eq!(r.git_checked_at, None);
+}
+
+#[test]
+fn test_worktree_projector_skips_identity_less() {
+    // spec(healthy skip): a WorktreeCreated with no project_id OR no repo ref → no row, no error
+    // (proj_worktree.project_id/repo_id are NOT NULL; the session.rs skip precedent).
+    // (a) no project_id:
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    create_worktree(
+        &mut store,
+        &gw,
+        &path,
+        create_worktree_req(None, Some("repo_x")),
+    );
+    assert_eq!(proj_worktree_rows(&path).len(), 0, "no project_id → skip");
+
+    // (b) no repo ref (a non-Repo resource_ref):
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    let gw2 = gw_with_git();
+    create_worktree(
+        &mut store2,
+        &gw2,
+        &path2,
+        create_worktree_req(Some(ProjectId::new()), None),
+    );
+    assert_eq!(proj_worktree_rows(&path2).len(), 0, "no repo ref → skip");
+}
+
+#[test]
+fn test_worktree_projector_skips_no_action_request_id() {
+    // spec(healthy skip): a WorktreeCreated whose envelope carries project_id but NO action_request_id
+    // (structurally possible — it's Option on the envelope) → no sibling to resolve repo_id → skip,
+    // no row, no error. Direct append (the Gateway always sets action_request_id, so this exercises the
+    // other half of the identity guard).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let payload = serde_json::to_string(&WorktreeCreated {
+        worktree_id: WorktreeId::new(),
+        path: "/repo/wt".to_string(),
+        branch_name: "feature".to_string(),
+        base_branch: None,
+    })
+    .unwrap();
+    let mut i = intent(&payload);
+    i.event_type = "WorktreeCreated".to_string();
+    i.project_id = Some(ProjectId::new()); // project_id present, action_request_id stays None
+    store.append(i).unwrap();
+    assert_eq!(
+        proj_worktree_rows(&path).len(),
+        0,
+        "no action_request_id → no sibling → skip"
+    );
+}
+
+#[test]
+fn test_worktree_projector_status_binds_5_1() {
+    // spec(§5.1): status is the canonical §5.1 Worktree wire value (overlay lifecycle "creating"), not raw.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    create_worktree(
+        &mut store,
+        &gw,
+        &path,
+        create_worktree_req(Some(ProjectId::new()), Some("repo_x")),
+    );
+    assert_eq!(proj_worktree_rows(&path)[0].status, "creating");
+}
+
+#[test]
+fn test_worktree_projector_rebuild_equivalent() {
+    // spec(LESSON 4/17): rebuild() reproduces byte-identical proj_worktree rows — the immutable
+    // sibling-read (action_requests read at final state) is deterministic.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    create_worktree(
+        &mut store,
+        &gw,
+        &path,
+        create_worktree_req(Some(ProjectId::new()), Some("repo_r")),
+    );
+    let before = proj_worktree_rows(&path);
+    assert_eq!(before.len(), 1);
+    store.rebuild_projections().unwrap();
+    let after = proj_worktree_rows(&path);
+    assert_eq!(
+        before, after,
+        "rebuild reproduces the incremental proj_worktree state"
+    );
+}
+
+#[test]
+fn test_worktree_projector_ignores_other_events() {
+    // spec: the projector folds ONLY WorktreeCreated — a non-WorktreeCreated event writes no proj_worktree.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    store
+        .append(session_intent(
+            &SessionId::new(),
+            &ProjectId::new(),
+            "{\"status\":\"active\"}",
+        ))
+        .unwrap();
+    assert_eq!(proj_worktree_rows(&path).len(), 0);
 }

@@ -142,6 +142,17 @@ to the inner stub. Net Wave-B/C/D unchanged; one fewer slice.
   the **registry-projector / MIGRATION_9 slice:** a high-entropy real repo path → masked repo_root → the
   projector can't locate the repo from the event alone → re-derive identity from `project_id`, OR exempt
   path-fields from entropy masking (arch consideration). NOT blocking emit+strip.
+- **FINDING — approve-path redacts executor operational inputs (§7.2/§15; origin edges-020; lead-ENDORSED
+  MVP-accept; CATEGORY-1, on the human's return-review ledger):** the §7.2 approve-path runs an executor off
+  the DURABLE row's §15-REDACTED inputs (pipeline.rs:671-675's deferred "real-input-fidelity" concern, now
+  LIVE). `git.create_worktree`'s operational inputs are FS paths → a high-entropy component (macOS tempdir
+  hash) is masked → broken git op on the approve path. Production LOW (real paths low-entropy survive); §15
+  invariant HOLDS (over-redaction FP, not a leak). MVP-accept edges-020 (the 9a real-CLI/raw + 9b approve-path
+  low-entropy split + an in-code comment). **Cross-cutting proper-fix (human, future hardening slice, own
+  security pass):** (a) a non-redacted operational-input channel [§15 bypass → INV-SEC re-review] vs (b) exempt
+  path/operational fields from entropy redaction [§15-policy change]. **Wave-D note (lead):** the same MVP-accept
+  default extends to the github/linear mutators (operational inputs = repo/PR/issue identifiers, low-entropy) —
+  CONFIRM per-slice, flag if any hits a genuinely high-entropy operational field.
 - **Completed-work ticks (hold):** P5.1 = PARTIAL (executor + emission landed edges-019; registry projector
   pending MIGRATION_9). P5.2 = in progress (edges-020 mutator; proj_worktree projector + create_branch pending).
 - **Cross-track surfaces (lead-aware):** edges touches `gateway/executor.rs` + `gateway/request.rs` (the

@@ -21,6 +21,7 @@ use nexusopsd::gateway::policy::CatalogPolicy;
 use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
 use nexusopsd::ipc::current_euid;
+use nexusopsd::project::executor::ProjectExecutor;
 use nexusopsd::runtime::{bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor};
 use nexusopsd::session::spawn_supervisor_task;
 
@@ -74,7 +75,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // (The session-executor type name is deliberately absent here — `tests/session_executor.rs`
     // #test_no_reachable_live_caller greps this file for it to prove no production session.create
     // caller is wired; the literal lands when 4.0b-2 actually registers it.)
-    let gateway = Gateway::new(Box::new(CatalogPolicy), Box::new(CatalogExecutor::new()));
+    // P5.1 (edges-019) — register the first real edges Gateway-mutator handler: the project.rescan
+    // executor (ExecutorKind::Project). Detection is read-only; it emits ProjectRescanned in-txn
+    // through the §15 gate (SystemClock stamps scanned_at). The remaining edges namespaces
+    // (Git/Github/Linear) register here as their wiring slices land (Wave B-D).
+    let mut catalog_executor = CatalogExecutor::new();
+    catalog_executor.register(
+        nexusops_shared::catalog::ExecutorKind::Project,
+        Arc::new(ProjectExecutor::new(Box::new(SystemClock))),
+    );
+    let gateway = Gateway::new(Box::new(CatalogPolicy), Box::new(catalog_executor));
     let actor = WriteActor::spawn(store, Box::new(SystemClock), gateway);
     let handle = actor.handle();
     // the post-commit broadcast sender for the accept-loop's per-connection live subscribers (1.6d);

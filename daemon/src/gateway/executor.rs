@@ -32,10 +32,23 @@ use crate::gateway::preview;
 pub enum EmittedEvent {
     /// `SessionStarted` — the session-lifecycle record for a `session.create`. `session_id` is the
     /// ENVELOPE identity (the `proj_session` projector reads it from the column); `payload` is the
-    /// frozen `SessionStarted` (carrying the §15 #8 `execution_profile_id`).
+    /// frozen `SessionStarted` (carrying the §15 #8 `execution_profile_id`). Kept a TYPED variant
+    /// because it OVERRIDES an envelope column (`session_id`) — its genuine special case.
     SessionStarted {
         session_id: SessionId,
         payload: nexusops_shared::events::SessionStarted,
+    },
+    /// A namespaced edges lifecycle/observation event (P5/P7 — edges-019+; Q1=B). ONE variant for the
+    /// homogeneous edges family: the executor serializes its own FROZEN event struct and passes the
+    /// struct's `EVENT_TYPE` const + the JSON; the bridge ([`request::emitted_event_intent`]) appends
+    /// it via `gateway_event_intent` riding the action's envelope identity (`project_id`/
+    /// `correlation_id`/`action_request_id`), in txn-B ATOMIC with `ActionSucceeded`, through the §15
+    /// gate. NO envelope-column override — event-specific ids (worktree_id, pr_number, …) live in the
+    /// payload and projectors key off them (LESSON §10/§17). One gateway/ edit serves all ~11 edges
+    /// events (vs a typed variant per event) — the lowest cross-track contention.
+    Namespaced {
+        event_type: &'static str,
+        payload_json: String,
     },
 }
 

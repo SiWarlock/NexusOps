@@ -20,6 +20,7 @@ pub mod idgen;
 pub mod integrations;
 pub mod ipc;
 pub mod locks;
+pub mod project;
 pub mod projections;
 pub mod runtime;
 pub mod session;

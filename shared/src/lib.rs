@@ -81,14 +81,10 @@ pub mod time;
 /// (audit-integrity: never silently dropped). Additive-tolerant: a human-deny (`Some`) still serializes
 /// the field identically; a policy-deny (`None`) OMITS it (`skip_serializing_if`), and a reader uses
 /// `#[serde(default)]` to read it back as `None`. Un-consumed by ui today. §5.0.
-pub const CONTRACT_VERSION: &str = "0.23.0";
-
-/// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
-/// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,
-/// plus a possible SDK-credit-exhaustion value) are the one surface the cat-4
-/// SDK-vs-PTY decision and the ≥2026-06-15 credit-pool drain (guardrail 1) could
-/// reshape. Re-frozen in **0.5b** once cat-4 resolves. This marker makes the
-/// absence deliberate, not forgotten.
-pub const EXECUTION_PROFILE_STATUS_HELD: &str =
-    "ExecutionProfile status machine held for 0.5b pending cat-4 SDK-vs-PTY + \
-     the >=2026-06-15 credit-pool drain (guardrail 1)";
+/// 0.24.0 (P4.0b-1) freezes the **0.5b `ExecutionProfile`** runtime-state machine (the 10th §5.1
+/// machine — HELD in 0.5 pending the cat-4 SDK-vs-PTY decision, now resolved = PTY-primary): 9 values
+/// = the §5.1 8 + `credit_exhausted` (the SDK monthly credit-pool HARD-STOP, distinct from the soft
+/// `rate_limited` interactive throttle; `disabled` is the only terminal). + adds
+/// `SessionStarted.execution_profile_id` (`Option<ExecutionProfileId>`, the §15 #8 binding surface —
+/// the profile recorded at session.create). Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.24.0";

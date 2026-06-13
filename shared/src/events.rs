@@ -11,6 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::harness::TelemetrySample;
+use crate::ids::ExecutionProfileId;
 use crate::objects::{DeviceId, LocalRunnerId};
 use crate::status::Session;
 
@@ -30,6 +31,11 @@ pub struct SessionStarted {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// the §15 #8 ExecutionProfile binding — the profile RESOLVED at session.create + recorded here
+    /// (P4.0b-1). `None` until the session-create executor populates it (4.0b-1 L3); a profile CHANGE
+    /// is approval-gated (the no-silent-account-hop gate lives on the change, not this routine record).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_profile_id: Option<ExecutionProfileId>,
 }
 
 /// `DeviceRegistered` payload (§5.3 Device / §16 bootstrap). The device's `dev_` identity is

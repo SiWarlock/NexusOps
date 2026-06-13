@@ -1005,6 +1005,21 @@
       ],
       "type": "string"
     },
+    "ExecutionProfile": {
+      "description": "ExecutionProfile runtime state (9, R-7) — the §5.1 8 + **`credit_exhausted`** (the SDK monthly\ncredit-pool HARD-STOP; distinct from the soft, auto-recovering `rate_limited` interactive\nthrottle — cat-4 PTY-primary). The 10th §5.1 machine — held in 0.5 pending the cat-4 SDK-vs-PTY\ndecision, **frozen here in 0.5b** (P4.0b-1). `disabled` (the profile turned off) is the ONLY\nterminal; the rest are recoverable runtime conditions re-derived continuously\n(`execution_profiles.status`, the config-vs-runtime split).",
+      "enum": [
+        "available",
+        "active",
+        "in_use",
+        "rate_limited",
+        "auth_expired",
+        "misconfigured",
+        "disabled",
+        "unknown",
+        "credit_exhausted"
+      ],
+      "type": "string"
+    },
     "ExecutorKind": {
       "description": "Which executor adapter handles an action (§6.3). A NAME binding — the real per-namespace\nadapters (git CLI / octocrab / session host / …) land in 2.3. **`Adjudication` (3.2-part-2,\nbrief 043) is the ODD ONE OUT**: it marks the agent-mutation family as **adjudication-only** —\nthe `ActionRequest` TERMINATES at the policy/approval verdict and **no daemon executor runs the\ntool** (the agent executes the allowed tool itself; the daemon only adjudicates + audits, the\nINV-SEC-1 chokepoint). It is NOT a real-executor namespace and never reaches the executor seam.",
       "enum": [
@@ -1766,6 +1781,13 @@
             "null"
           ]
         },
+        "execution_profile_id": {
+          "description": "the §15 #8 ExecutionProfile binding — the profile RESOLVED at session.create + recorded here\n(P4.0b-1). `None` until the session-create executor populates it (4.0b-1 L3); a profile CHANGE\nis approval-gated (the no-silent-account-hop gate lives on the change, not this routine record).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "harness": {
           "type": [
             "string",
@@ -2242,6 +2264,9 @@
     "evidence_type": {
       "$ref": "#/$defs/EvidenceType"
     },
+    "execution_profile": {
+      "$ref": "#/$defs/ExecutionProfile"
+    },
     "executor_kind": {
       "$ref": "#/$defs/ExecutorKind"
     },
@@ -2416,6 +2441,7 @@
     "approval",
     "action_request",
     "agent_team",
+    "execution_profile",
     "actor_type",
     "id_kind",
     "desktop_object_kind",
@@ -2502,5 +2528,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.23.0"
+  "x-contract-version": "0.24.0"
 }

@@ -35,8 +35,8 @@ use crate::ipc::{
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
 use crate::status::{
-    ActionRequest, AgentTeam, Approval, ProjectBrain, PullRequest, Session, Task, WorkflowInstance,
-    WorktreeGit, WorktreeOverlay,
+    ActionRequest, AgentTeam, Approval, ExecutionProfile, ProjectBrain, PullRequest, Session, Task,
+    WorkflowInstance, WorktreeGit, WorktreeOverlay,
 };
 use crate::time::Timestamp;
 use crate::CONTRACT_VERSION;
@@ -56,6 +56,8 @@ struct ContractBundle {
     approval: Approval,
     action_request: ActionRequest,
     agent_team: AgentTeam,
+    // 0.5b (P4.0b-1) — the 10th §5.1 machine: ExecutionProfile runtime state (9 values).
+    execution_profile: ExecutionProfile,
     actor_type: ActorType,
     id_kind: IdKind,
     desktop_object_kind: DesktopObjectKind,

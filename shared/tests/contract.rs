@@ -215,6 +215,22 @@ fn test_every_state_machine_value_present_and_serializes() {
             "archived",
         ],
     );
+    // 0.5b (P4.0b-1) — the 10th §5.1 machine: the ExecutionProfile runtime state. The §5.1 8 +
+    // `credit_exhausted` (the SDK monthly credit-pool HARD-STOP, distinct from soft `rate_limited`).
+    check_values(
+        ExecutionProfileStatus::ALL,
+        &[
+            "available",
+            "active",
+            "in_use",
+            "rate_limited",
+            "auth_expired",
+            "misconfigured",
+            "disabled",
+            "unknown",
+            "credit_exhausted",
+        ],
+    );
 }
 
 // ---- Test 2 — terminal states marked (§5.1 bold) ----------------------------
@@ -255,6 +271,9 @@ fn test_terminal_states_marked() {
         ]
     );
     check_terminal!(AgentTeamStatus, ["completed", "failed", "archived"]);
+    // 0.5b — ExecutionProfile: `disabled` (the profile turned off) is the ONLY terminal; the rest are
+    // recoverable runtime conditions (rate_limited/credit_exhausted recover on reset; §5.1).
+    check_terminal!(ExecutionProfileStatus, ["disabled"]);
 }
 
 // ---- Test 3 — 22 IDs present, prefixes total + unique (§5.2) -----------------
@@ -427,16 +446,20 @@ fn test_desktop_objects_defined_and_deferred_marked() {
     assert_eq!(D::RemoteClient.id_prefix(), "rc_");
 }
 
-// ---- Test 6 — ExecutionProfile HELD, not frozen (guardrail 1 / cat-4) --------
+// ---- Test 6 — ExecutionProfile FROZEN at 0.5b (the 10th §5.1 machine; cat-4 resolved) --------
 
 #[test]
-fn test_execution_profile_held_not_frozen() {
-    // ExecutionProfile's runtime states could be reshaped by the cat-4 SDK-vs-PTY
-    // + ≥6/15 credit-pool drain → re-frozen in 0.5b. The hold must be DELIBERATE
-    // (a marker), not silently missing.
-    let marker = nexusops_shared::EXECUTION_PROFILE_STATUS_HELD;
-    assert!(!marker.is_empty(), "hold marker must explain itself");
-    assert!(marker.contains("0.5b"), "marker names the follow-up slice");
+fn test_execution_profile_enum_frozen_9_values() {
+    // spec(§5.1) — the 0.5b freeze (cat-4 SDK-vs-PTY resolved = PTY-primary): the ExecutionProfile
+    // runtime-state enum is the 10th frozen §5.1 machine — 9 values (the §5.1 8 + `credit_exhausted`,
+    // the SDK monthly credit-pool hard-stop). The value set + terminal({disabled}) are pinned by the
+    // check_values / check_terminal snapshots (Tests 1+2); this pins the COUNT + the freeze landmark.
+    use nexusops_shared::status::ExecutionProfileStatus;
+    assert_eq!(
+        ExecutionProfileStatus::ALL.len(),
+        9,
+        "the 0.5b ExecutionProfile freeze = the §5.1 8 + credit_exhausted"
+    );
 }
 
 // ---- Test 7 — unknown value rejected at the parse boundary (§0.5 / §15) ------
@@ -2254,14 +2277,15 @@ fn test_action_denied_approval_id_optional() {
     );
 }
 
-// ---- 043 L5 RED — CONTRACT_VERSION bumped to 0.23.0 (the ActionDenied.approval_id relax) ----
+// ---- P4.0b-1 L1 RED — CONTRACT_VERSION bumped to 0.24.0 (the 0.5b ExecutionProfile freeze) ----
 
 #[test]
-fn test_contract_version_bumped_0_23_0() {
+fn test_contract_version_bumped_0_24_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.22.0 =
-    // the 043 L1 §6.3 agent-mutation freeze; **0.23.0** = the 043 L5 / A1 relax of
-    // `ActionDenied.approval_id` to OPTIONAL (the agent deny-rule policy-deny audit event has no
-    // approval object) — additive-tolerant (the field becomes optional; un-consumed by ui, §5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.23.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.23.0 =
+    // the 043 L5 / A1 `ActionDenied.approval_id`→OPTIONAL relax; **0.24.0** = the 0.5b
+    // `ExecutionProfile` runtime-state freeze (the 10th §5.1 machine, 9 values = the §5.1 8 +
+    // `credit_exhausted`) + `SessionStarted.execution_profile_id` (the §15 #8 binding surface) —
+    // additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.24.0");
 }

@@ -65,16 +65,34 @@ Ordered lowest-risk-first; reads/risk-0 before mutators; the migration foundatio
    **`IntegrationConnectionRegistered`** + projector. **§15 carry:** `keychain_ref` = **non-secret POINTER only**
    (rule #4 — never the token).
 
-**Wave D — external sync executors (the design-choice-3a caveat is LOAD-BEARING here):**
-5. **github sync executor (`github.create_pr` / `_draft`, P7.1, X::Github, risk-2)** — `GithubExecutor` via octocrab.
-   **3a caveat:** the trait is SYNC + octocrab is async → run on a **dedicated blocking context**
-   (`spawn_blocking` + `Handle::block_on`), **never `block_on` on a tokio worker thread (panics)** — the
-   `SessionExecutor` spawn_blocking precedent (LESSON §28) is the template. → emits **`PullRequestSynced`** +
-   **`GithubSyncFailed`** (non-auth) + projector → `proj_pull_request`. **§15 carry:** `*SyncFailed.reason` =
-   redaction-safe **structural class-name**, never raw API text. §17 `AuthFailed`-branch is the deferred carry.
+**Wave D — external sync executors (the design-choice-3a mechanism is LOAD-BEARING here):**
+
+> **3a mechanism — REFINED to the as-built (R6 orch trace, lead-endorsed 2026-06-13; supersedes the pre-merge
+> "spawn_blocking + Handle::block_on, never on a worker thread" framing).** `execute()` runs on the
+> **write-actor's dedicated raw `std::thread`** (`runtime/writer.rs:273-326` → `gateway/pipeline.rs:969`) —
+> NOT a tokio worker, **no entered runtime**. So `Handle::current()` PANICS there and `spawn_blocking` is the
+> wrong tool (the OPPOSITE footgun from the ledger's worker-thread framing). **CORRECT:** inject a captured
+> `tokio::runtime::Handle` from `main.rs`'s `#[tokio::main]` runtime (`Handle::current()` works in the async
+> `run()`) → `handle.block_on(async{…})` in `execute()` (block_on from a non-runtime/non-worker thread does
+> NOT panic; the reactor runs on the runtime's workers). → **Wave-D LESSON (§32 candidate).**
+>
+> **STANDING REQUIREMENT (lead-MANDATED 2026-06-13, every external-call executor — github + linear + any
+> future):** wrap the network future in a **`tokio::time::timeout`**. The single write-actor serializes ALL
+> daemon mutations → an unbounded octocrab/Linear hang would freeze the entire mutation path (liveness).
+> NOT optional. A timeout → `Failed` (structural reason).
+
+5. **github sync executor (`github.create_pr` risk-3 / `_draft` risk-2, P7.1, X::Github)** — `GithubExecutor` via
+   octocrab over the captured-`Handle` `block_on` + timeout (above). → emits **`PullRequestSynced`** (success) +
+   **`GithubSyncFailed`** (terminal non-auth) + projector → `proj_pull_request` (projector = a separate slice).
+   **§15 carry:** `*SyncFailed.reason` = redaction-safe **structural class-name**, never raw API text. §17
+   `AuthFailed`-branch is the deferred carry. Emitting `GithubSyncFailed` on a FAILED action needs an additive
+   **`ExecutionOutcome::FailedWithEvents`** (edges-owned gateway bridge — daemon-internal, additive). Brief
+   edges-023 (spec-lint PASS). *(catalog risk: create_pr=3, create_pr_draft=2 — both approval-gated; the
+   pre-merge "r2" summary was imprecise, no functional diff.)*
 6. **linear sync executor (`linear.link_issue` / `create_issue`, P7.1, X::Linear, risk-2)** — `LinearExecutor` via
-   the reqwest GraphQL adapter; same 3a `spawn_blocking`/`block_on` discipline → emits the link/create outcome +
-   **`LinearSyncFailed`** (non-auth) + projector. Same §15 `reason`-class carry.
+   the reqwest GraphQL adapter; SAME 3a captured-`Handle` `block_on` + MANDATORY timeout + the `FailedWithEvents`
+   reuse → emits the link/create outcome + **`LinearSyncFailed`** (non-auth) + projector. Same §15 `reason`-class
+   carry. (GraphQL already uses variables, not interpolation — injection-safe.)
 
 **Wave E — phase-exit close-out (mix of small slices + orchestrator/bench rows):**
 7. **5.3 ExecutionProfile binding (H1 resolved)** — enum is frozen on main (merged); wire profile resolution at
@@ -145,6 +163,97 @@ P5.4 bench · cargo audit · `/phase-exit 5`+`7`.
 `get_projection(Worktree)→proj_worktree` + the in-lane diff backend), and `ExecutorKind::Git` is ONE handler
 for all `git.*`, so `GitExecutor` (edges-020) handles `create_worktree` + delegates status/diff/create_branch
 to the inner stub. Net Wave-B/C/D unchanged; one fewer slice.
+
+---
+
+## R6 round progress (the Wave-D external mutators) — accumulated hot-routing
+
+**R6 slice ledger:**
+- **edges-023** P7.1 **github sync executor** (Wave-D slice 5) — LANDED `498bd21`
+  (585/0; security-reviewer PASS 0 findings; code-quality 4-fixed-in-slice; reachability YES). `GithubExecutor`
+  (`ExecutorKind::Github`, registered `main.rs`) for `github.create_pr`(risk-3)/`_draft`(risk-2) → an injected
+  async octocrab WRITE-client seam (`integrations/github_write.rs`: `GithubWriteClient`/`CreatePrArgs`/domain
+  `CreatedPr`/`GithubWriteError`/`OctocrabGithubWriteClient`/`FakeGithubWriteClient`[test-support]), driven
+  from the SYNC trait over a **captured `tokio::runtime::Handle` + `handle.block_on` + a mandatory 30s
+  timeout** (the as-built 3a; execute() on the write-actor std::thread, non-worker — `Handle::current()`/
+  `spawn_blocking` is wrong). Success → `PullRequestSynced` (Namespaced bridge, §15-gated, atomic w/
+  `ActionSucceeded`, `side_effect_applied:true`); terminal-non-auth → `GithubSyncFailed` via the new
+  `FailedWithEvents`; AuthFailed/transient → plain `Failed`. §15 `reason` = structural class-name. Reuses
+  `derive_pull_request_status` + `classify_octocrab_error`(→pub(crate)) + `extract_pr_signals`.
+- **edges-024** P7.1 **linear sync executor** (Wave-D slice 6 — LAST Wave-D mutator) — LANDED
+  `f908424` (602/0; security-reviewer PASS 0 findings; code-quality 1-high+3-fixed
+  in-slice; reachability YES; **all edges-023 github tests stay green** — the extraction refactor is
+  behavior-preserving). `LinearExecutor` (`ExecutorKind::Linear`, registered `main.rs`) for
+  `linear.link_issue`(requires_resource_refs)/`linear.create_issue`(FromInputs, no ref) → an injected async
+  Linear-GraphQL WRITE-client seam (`integrations/linear_write.rs`), driven over the SAME captured-`Handle`
+  `block_on` + the SHARED 30s `NETWORK_TIMEOUT`. **Success → `Succeeded{emitted_events:[]}` — NO Linear
+  domain event** (Q1: intentional asymmetry; the frozen contract has none; Linear read on-demand via
+  `fetch_issue`, §7.3; `ActionSucceeded` is the record; `changed_resources` carries the resource_refs).
+  Terminal-non-auth → `LinearSyncFailed` via the landed `FailedWithEvents`; auth/transient → `Failed`. New
+  pure `classify_linear_write_response` (GraphQL `errors[].extensions.code` over HTTP `classify`).
+  **`classify_sync_failure`/`SyncFailure` EXTRACTED** — the §17 disposition (Auth/TerminalNonAuth/Transient)
+  now in ONE exhaustive place, used by BOTH executors (edges-023 github refactored to call it;
+  behavior-preserving). **WAVE-D EXTERNAL MUTATORS COMPLETE.**
+- **edges-025** P7.1 **`proj_pull_request` projector** (Wave-E) — LANDED `8db6cc7`
+  (612/0; code-quality 1-med-fixed; security-reviewer NOT required [read-model fold]; reachability YES).
+  `PullRequestProjector` folds `PullRequestSynced`→`proj_pull_request` (§7.2 cache); `pr_id` = the
+  rebuild-safe `{repo_id}#{pr_number}` composite (`#` ULID-safe); `repo_id` via the LESSON-17 sibling-read;
+  `status` via `wire_value(&PullRequest)`; `title` NULL (no payload field); `mergeable`/`checks_summary`
+  not projected (fed `status`); the edges-022 3-case taxonomy; rebuild-equivalent. **GITHUB READ VERTICAL
+  CLOSED** (`github.create_pr`→`PullRequestSynced`→`proj_pull_request`→`get_projection(PullRequest)`).
+  _Deferred nits (LOW, accepted): `pr_id` `#`-collision (repo_id past the Gateway trust boundary, ULID-safe);
+  no `resource_refs_json` Decode-degrade test (mirrors the edges-022 gap)._
+
+**R6 PLAN-DELTA additions (apply at the phase-exit merge; held — cross-track rule):**
+- **`classify_sync_failure`/`SyncFailure` (edges-024)** — a SHARED exhaustive §17 failure→outcome disposition
+  in `integrations/executor.rs` used by both `GithubExecutor` + `LinearExecutor` (github + linear can't
+  diverge on the Auth/TerminalNonAuth/Transient routing — a correctness guard, not just DRY). edges-023's
+  `GithubExecutor::classify_failure` refactored to call it (behavior-preserving; github #5/#6/#7/#12 confirm).
+  **Behavior-change note (MED, intentional, UNREACHABLE path):** the `Success`-input arm of the shared fn folds
+  to `Transient`, changing github's unreachable-path `Failed` message string (bespoke "unreachable" → "(transient):
+  success"); github tests unaffected (the path is unreachable). Noted for the merge ledger.
+- **Linear-success-no-event asymmetry (edges-024 Q1; arch-doc note)** — `linear.link_issue`/`create_issue`
+  success emits NO domain event (only `ActionSucceeded`), INTENTIONAL: Linear issues read on-demand via
+  `fetch_issue` (§7.3) — no write-event-fed projection, vs github's `proj_pull_request`-fed `PullRequestSynced`.
+  No §7.3/§8 gap found (impl confirmed); the architecture-as-contract rule HELD (no improvised event). §6.3
+  `linear.*` LIVE · §17 `LinearSyncFailed` emit path LIVE.
+- **SPREAD (edges-024)** — **Linear live-client mutation-payload parsing:** the live client treats 2xx +
+  no-GraphQL-`errors[]` as success (doesn't parse the mutation `success:false` payload); a soft failure would
+  mis-report `ActionSucceeded` (honest-audit: a false success is worse than a false failure). MVP-accept
+  (orch-approved; rare, the live client is the fake-covered non-deterministic edge; the deterministic mapper
+  handles errors[]/HTTP). `last-consumer-slice: a Linear live-client hardening slice`. `(origin: 2026-06-13
+  edges-024)` _(the write-actor-offload + Linear-auth-bootstrap + deferred-`auth_expired` SPREADs REUSE
+  edges-023's — same consumer markers.)_
+
+**R6 PLAN-DELTA additions (apply at the phase-exit merge; held — cross-track rule) [edges-023]:**
+- **3a mechanism REFINED (lead-endorsed 2026-06-13)** — see the Wave-D block above. The pre-merge
+  "spawn_blocking + Handle::block_on, never on a worker thread" framing is SUPERSEDED by the as-built
+  (write-actor raw std::thread, no entered runtime → captured `Handle::block_on`, never `Handle::current()`).
+- **LESSON 32 (next-free; daemon took ≤§29, edges §30/§31)** — the **external-network-mutator pattern**: a SYNC
+  `ActionExecutor` driving an async client via a CAPTURED `Handle::block_on` + a **mandatory `tokio::time::
+  timeout`** on the write-actor std::thread (never `Handle::current()` there — panic; the timeout is liveness,
+  the single write-actor serializes ALL mutations); the §17 classifier→`*SyncFailed` (terminal-non-auth ONLY,
+  structural §15 `reason`, never raw API text); auth/transient → plain `Failed`; the LESSON-31 injection guard
+  ADAPTS to fail-closed operand validation for a typed (non-CLI) API; `FailedWithEvents` for the atomic
+  failure+observation-event. **TEST-HARNESS pin:** the `execute()`-path tests are plain `#[test]` + a built
+  `Runtime` handle (NOT `#[tokio::test]` — `block_on` inside a runtime context panics).
+- **Arch-doc note (ARCHITECTURE.md §6.2 / Appendix-A-adjacent):** `ExecutionOutcome::FailedWithEvents{detail,
+  emitted_events}` — a daemon-internal gateway-contract extension (edges-owned bridge, phase-exit integration;
+  additive — existing `Failed(String)` sites untouched; pipeline txn-B records `ActionFailed` + appends the
+  events atomic; `side_effect_applied()==false`). Plus: §6.3 `github.create_pr*` LIVE; §7.2/§17
+  `PullRequestSynced`/`GithubSyncFailed` emit path LIVE.
+- **SPREADs (consumer-marked):**
+  - **write-actor execute-phase OFFLOAD** — a slow external executor blocks the single write-actor for
+    ≤NETWORK_TIMEOUT (bounded; security-reviewer info-only). `last-consumer-slice: a gateway execute-phase-
+    offload hardening slice` (daemon-core write-actor territory — routed to the lead/cross-track ledger, like
+    subscribe-delta). `(origin: 2026-06-13 edges-023)`
+  - **github auth bootstrap** — `main.rs` registers an UNAUTHENTICATED octocrab handle (a real create →
+    401→AuthFailed→Failed, no event — fail-closed-correct); the gh-token/Device-Flow + keychain slice + the
+    deferred `auth_expired` `*SyncFailed` variant. `last-consumer-slice: edges P7.1 auth slice`. `(origin:
+    2026-06-13 edges-023)`
+  - **`proj_pull_request` projector** folding `PullRequestSynced`→the §7.2 read cache — the deferred PR
+    read-vertical close (the edges-022 `proj_worktree` precedent). `last-consumer-slice: a proj_pull_request
+    projector slice (Wave-D follow-on)`. `(origin: 2026-06-13 edges-023)`
 
 **Accumulated PLAN-DELTA for the merge reconciliation:**
 - **LESSON 30** (next-free; daemon took ≤§29) — edges executors emit via the in-txn `EmittedEvent::Namespaced`

@@ -5,7 +5,7 @@
 //   (b) forbidden #4 — Codex / null context renders the literal "unknown", NEVER a
 //       number or 0% (supportsContextMetadata=false);
 //   (c) an `unavailable` usage value renders "unknown", never 0/empty.
-import type { Harness, MetricQuality, UsageRow } from "../../contracts/index";
+import type { CreditPool, Harness, MetricQuality, UsageRow } from "../../contracts/index";
 
 export type CreditPoolState = "normal" | "near_exhaustion" | "hard_stop";
 
@@ -55,12 +55,23 @@ export function buildUsageRows(rows: UsageRow[]): UsageRowVM[] {
 /** Provisional thresholds (§11.4 pins no exact numbers — reconcile at the daemon freeze). */
 const NEAR_EXHAUSTION_REMAINING_PCT = 15;
 
-export function creditPoolState(used: number, limit: number): CreditPoolState {
+/** The two billing-pool kinds (§9.1) — DERIVED from the provisional `CreditPool`
+ *  shape (single source; never re-declared — Lesson §2). */
+export type CreditPoolKind = CreditPool["kind"];
+
+export function creditPoolState(
+  used: number,
+  limit: number,
+  kind: CreditPoolKind,
+): CreditPoolState {
   // Assumes the daemon invariant 0 <= used (a negative `used` would read as
   // >100% remaining → normal, which is a meaningless input, not a real state).
-  if (limit <= 0) return "hard_stop"; // no pool == exhausted
+  // §9.1 two-pool asymmetry: ONLY the capped/no-fallback SDK pool hard-stops; the
+  // auto-resetting interactive pool's exhaustion is the recoverable near_exhaustion
+  // signal, never a hard-stop (a control plane can't let a supervised run die there).
+  const exhausted = limit <= 0 || (limit - used) / limit <= 0;
+  if (exhausted) return kind === "sdk" ? "hard_stop" : "near_exhaustion";
   const remainingPct = ((limit - used) / limit) * 100;
-  if (remainingPct <= 0) return "hard_stop";
   if (remainingPct <= NEAR_EXHAUSTION_REMAINING_PCT) return "near_exhaustion";
   return "normal";
 }

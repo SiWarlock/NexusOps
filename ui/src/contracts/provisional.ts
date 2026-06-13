@@ -209,9 +209,14 @@ export type AuditTrailPage = z.infer<typeof AuditTrailPage>;
 // metric_quality + Harness are hand-declared provisional shapes (Lesson §2); they
 // (incl. the credit-pool thresholds + enum delegation) reconcile at the daemon
 // usage-schema freeze — tracked in the MVP_TASKS Carry-forward provisional→generated
-// spread. No frozen MetricQuality/Harness enum exists yet, so these are local.
+// spread. `MetricQuality` IS frozen at 0.23.0, but as a `oneOf`-of-`const` (its
+// variants carry doc-comments), which gen-contracts.mjs (flat `.enum` only) does NOT
+// emit — so it stays a provisional SHADOW, drift-pinned against the frozen def
+// (provisional.test) until the generator gains oneOf-const support (carry-forward).
+// `Harness` has no frozen enum yet, so it stays local.
 
-/** Adapter-reported accuracy of a usage metric (§9.1 metric_quality). PROVISIONAL. */
+/** Adapter-reported accuracy of a usage metric (§9.1 metric_quality). PROVISIONAL —
+ *  frozen at 0.23.0 (oneOf-of-const) but generator-pending; drift-pinned. */
 export const MetricQuality = z.enum(["exact", "estimated", "unavailable"]);
 export type MetricQuality = z.infer<typeof MetricQuality>;
 
@@ -231,8 +236,17 @@ export const UsageRow = z.object({
 });
 export type UsageRow = z.infer<typeof UsageRow>;
 
-/** The capped Agent-SDK credit pool (hard-stops — §0.1), distinct from token spend. */
+/**
+ * A harness billing pool (§11.4/§9.1), distinct from token spend. The `kind`
+ * discriminator encodes the confirmed two-pool asymmetry: `"sdk"` is the capped
+ * monthly SDK/`-p` pool that HARD-STOPS with no fallback; `"interactive"` is the
+ * auto-resetting rolling-window pool that NEVER hard-stops. REQUIRED — every pool
+ * declares its kind (no silent default; a future interactive pool can't inherit
+ * `"sdk"` and false-alarm a hard-stop, §11 never-a-silent-false-safety-state).
+ * PROVISIONAL — the daemon has not frozen a credit-pool schema.
+ */
 export const CreditPool = z.object({
+  kind: z.enum(["sdk", "interactive"]),
   used: z.number(),
   limit: z.number(),
 });

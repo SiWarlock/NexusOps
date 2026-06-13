@@ -118,7 +118,7 @@ describe("CommandCenter triage cockpit", () => {
   });
 
   it("capacity_renders_real_credit_pool_meter", () => {
-    renderCC({ creditPool: { used: 870, limit: 1000 } });
+    renderCC({ creditPool: { kind: "sdk", used: 870, limit: 1000 } });
     expect(screen.getByText("870 / 1000")).toBeTruthy();
   });
 

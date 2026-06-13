@@ -43,6 +43,6 @@ export const usageFixture: UsageProjectionPage = {
       context_pct: null,
     },
   ],
-  creditPool: { used: 870, limit: 1000 },
+  creditPool: { kind: "sdk", used: 870, limit: 1000 },
   cursor: null,
 };

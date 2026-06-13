@@ -53,10 +53,43 @@ describe("usage view-model", () => {
 
   it("credit_pool_state_from_thresholds", () => {
     // normal / near_exhaustion (≤15% remaining) / hard_stop (exhausted); pure.
-    expect(creditPoolState(100, 1000)).toBe("normal"); // 90% remaining
-    expect(creditPoolState(900, 1000)).toBe("near_exhaustion"); // 10% remaining
-    expect(creditPoolState(850, 1000)).toBe("near_exhaustion"); // 15% remaining (boundary)
-    expect(creditPoolState(1000, 1000)).toBe("hard_stop"); // 0 remaining
-    expect(creditPoolState(1100, 1000)).toBe("hard_stop"); // over the cap
+    // Retargeted to the kind-aware signature — the SDK pool keeps the prior behavior.
+    expect(creditPoolState(100, 1000, "sdk")).toBe("normal"); // 90% remaining
+    expect(creditPoolState(900, 1000, "sdk")).toBe("near_exhaustion"); // 10% remaining
+    expect(creditPoolState(850, 1000, "sdk")).toBe("near_exhaustion"); // 15% remaining (boundary)
+    expect(creditPoolState(1000, 1000, "sdk")).toBe("hard_stop"); // 0 remaining
+    expect(creditPoolState(1100, 1000, "sdk")).toBe("hard_stop"); // over the cap
+  });
+
+  it("credit_pool_sdk_exhaustion_is_hard_stop", () => {
+    // spec(§9.1) — the capped monthly SDK/-p pool has NO fallback → hard_stop at
+    // exhaustion (incl. the degenerate no/unknown-limit input).
+    expect(creditPoolState(1000, 1000, "sdk")).toBe("hard_stop"); // 0 remaining
+    expect(creditPoolState(1100, 1000, "sdk")).toBe("hard_stop"); // over the cap
+    expect(creditPoolState(5, 0, "sdk")).toBe("hard_stop"); // no/unknown pool
+  });
+
+  it("credit_pool_interactive_exhaustion_is_never_hard_stop", () => {
+    // spec(§9.1) — the interactive pool auto-resets (rolling window) → NEVER
+    // hard_stop; exhaustion is the recoverable near_exhaustion signal.
+    expect(creditPoolState(1000, 1000, "interactive")).toBe("near_exhaustion"); // 0 remaining
+    expect(creditPoolState(1100, 1000, "interactive")).toBe("near_exhaustion"); // past the window
+    expect(creditPoolState(5, 0, "interactive")).toBe("near_exhaustion"); // no/unknown limit
+  });
+
+  it("credit_pool_near_exhaustion_both_kinds", () => {
+    // spec(§11.4) — the ≤15%-remaining warning is kind-INDEPENDENT (only hard_stop is kind-gated).
+    for (const kind of ["sdk", "interactive"] as const) {
+      expect(creditPoolState(900, 1000, kind)).toBe("near_exhaustion"); // 10% remaining
+      expect(creditPoolState(850, 1000, kind)).toBe("near_exhaustion"); // 15% boundary
+    }
+  });
+
+  it("credit_pool_normal_both_kinds", () => {
+    // spec(§11.4) — >15% remaining → normal for both kinds.
+    for (const kind of ["sdk", "interactive"] as const) {
+      expect(creditPoolState(100, 1000, kind)).toBe("normal"); // 90% remaining
+      expect(creditPoolState(840, 1000, kind)).toBe("normal"); // 16% remaining
+    }
   });
 });

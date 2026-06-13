@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { ServerFrame, WireError } from "./index";
+import { MetricQuality, ServerFrame, WireError } from "./index";
 
 // Read the FROZEN schema at test time — the §2.5-seam schema-snapshot for the
 // provisional ServerFrame frame-mux (ARCHITECTURE.md §6.4). A daemon frame-shape
@@ -108,5 +108,22 @@ describe("provisional ServerFrame (§6.4 frame-mux)", () => {
       ServerFrame.safeParse({ ...to, seq: -1 }).success,
       "terminal_output.seq is a uint64 (minimum 0) — a negative seq must be rejected",
     ).toBe(false);
+  });
+});
+
+describe("provisional MetricQuality (§9.1 — frozen-but-generator-pending shadow)", () => {
+  it("metricquality_provisional_matches_frozen_schema", () => {
+    // spec(§9.1) — MetricQuality IS frozen at 0.23.0, but as a `oneOf`-of-`const`
+    // (its variants carry doc-comments), which gen-contracts.mjs (flat `.enum` only)
+    // does NOT emit — so the ui keeps a provisional SHADOW. Drift-pin its member set
+    // against the frozen def's const set (same member-set-equality as the generated
+    // drift tests) so a daemon change fails loudly until the generator gains
+    // oneOf-const support and the provisional retires (carry-forward follow-up).
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
+      $defs: Record<string, { oneOf?: { const?: string }[] }>;
+    };
+    const frozen = (schema.$defs.MetricQuality!.oneOf ?? []).map((v) => v.const!);
+    expect(frozen.length, "frozen MetricQuality must be a oneOf-of-const").toBeGreaterThan(0);
+    expect([...MetricQuality.options].toSorted()).toEqual([...frozen].toSorted());
   });
 });

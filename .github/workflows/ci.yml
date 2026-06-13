@@ -47,15 +47,14 @@ jobs:
   # lockfileVersion 9.0); the committed ui/.npmrc (verify-deps-before-run=false) is honored.
   # `pnpm test:run` includes the §5.0 ui TS drift test (ui/src/contracts/generated.test.ts).
   #
-  # ADVISORY (continue-on-error) for now: the ui track is PAUSED at an older contract
-  # (generated.ts CONTRACT_VERSION 0.12.0) while the daemon advanced shared/ to 0.19.0 across
-  # Phase 2, so the §5.0 ui-Zod drift sentinel fires EXPECTEDLY (a known cross-track gap, not a
-  # regression). Promotes to a hard gate at the ui-track resume — the generated.ts regen that
-  # clears the drift is the resume's first step (tracked in the Carry-forward).
+  # BLOCKING merge gate: the ui-track resume re-cut generated.ts against the frozen schema
+  # (P6.2 — 040 @ 0.19.0, then 041 @ 0.23.0 at the Phase-3 boundary merge), so the §5.0 ui-Zod
+  # drift sentinel now CLEARS. The advisory `continue-on-error` window (ui paused at 0.12.0 while
+  # the daemon advanced shared/ across Phase 2/3) is closed — promoted to a hard gate at the resume
+  # as planned (Carry-forward §5.0-CI residual (i)).
   ui:
     name: ui (typecheck · oxlint · vitest)
     runs-on: ubuntu-latest
-    continue-on-error: true
     defaults:
       run:
         working-directory: ui

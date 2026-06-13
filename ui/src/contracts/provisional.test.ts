@@ -83,4 +83,30 @@ describe("provisional ServerFrame (§6.4 frame-mux)", () => {
     expect(ServerFrame.safeParse({ ...sub, id: null }).success).toBe(true);
     expect(ServerFrame.safeParse(sub).success).toBe(true);
   });
+
+  it("serverframe_terminal_output_seq_type_matches_frozen_schema", () => {
+    // spec(§6.4) — Lesson §14: a §2.5-seam type adopted AHEAD of its consumer
+    // carries a field-TYPE pin, not just a field-name pin (the name-set snapshot
+    // alone missed rpc_response.id's integer-vs-string at 040). The 0.23.0
+    // `terminal_output` frame types `seq` as a frozen uint64 INTEGER (required —
+    // the PTY chunk sequence); `terminal_id` (an opaque daemon handle) + `data`
+    // (base64 raw bytes) stay opaque strings. Pin seq's type behaviorally so a
+    // daemon seq-type change fails loudly.
+    const to = { frame_type: "terminal_output", terminal_id: "t1", data: "aGk=" };
+    expect(
+      ServerFrame.safeParse({ ...to, seq: 0 }).success,
+      "terminal_output.seq is a uint64 integer (frozen schema) — a numeric seq must parse",
+    ).toBe(true);
+    expect(ServerFrame.safeParse({ ...to, seq: 42 }).success).toBe(true);
+    expect(
+      ServerFrame.safeParse({ ...to, seq: "42" }).success,
+      "terminal_output.seq is an integer, not a string — a string seq must be rejected",
+    ).toBe(false);
+    // The frozen schema also constrains seq with `minimum: 0` (uint64) — pin the
+    // .nonnegative() bound so a future drop of it fails loudly (Lesson §14).
+    expect(
+      ServerFrame.safeParse({ ...to, seq: -1 }).success,
+      "terminal_output.seq is a uint64 (minimum 0) — a negative seq must be rejected",
+    ).toBe(false);
+  });
 });

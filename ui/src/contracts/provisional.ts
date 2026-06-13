@@ -295,8 +295,9 @@ export type WireError = z.infer<typeof WireError>;
  * push (`subscription_push`, the changed projection/kind/row). PROVISIONAL +
  * contract-ahead — adopted for the intent-seam/transport slice that actually
  * demuxes; MVP subscribe stays a dedicated single-connection `ProjectionDelta`
- * stream (no demux yet). The Terminal-Channel tag space is RESERVED (no variant —
- * a Phase-3 decision). Variant field-sets pinned to `ServerFrame.oneOf`.
+ * stream (no demux yet). The Terminal-Channel `terminal_output` variant was
+ * defined at 0.23.0 (P3.4 §6.4) — the 6.3d Session Terminal well consumes it.
+ * Variant field-sets pinned to `ServerFrame.oneOf`.
  */
 export const ServerFrame = z.discriminatedUnion("frame_type", [
   z.object({
@@ -313,6 +314,13 @@ export const ServerFrame = z.discriminatedUnion("frame_type", [
     kind: bundle.shape.DeltaKind,
     id: z.string().nullable().optional(),
     row: SessionRow.optional(),
+  }),
+  z.object({
+    frame_type: z.literal("terminal_output"),
+    // The §6.4 Terminal-Channel push (P3.4). All 4 fields REQUIRED.
+    terminal_id: z.string(), // opaque daemon-minted handle — NOT a frozen-22 ID; re-minted on resume.
+    seq: z.number().int().nonnegative(), // uint64 PTY chunk sequence (frozen: integer ≥0).
+    data: z.string(), // base64-encoded raw PTY bytes — opaque; the 6.3d well decodes, not the contract layer.
   }),
 ]);
 export type ServerFrame = z.infer<typeof ServerFrame>;

@@ -108,3 +108,24 @@ and most answers follow from that contract.
 
 ## After you rule
 I fold the rulings into the `/tdd` brief's "Cat-1 safety design" section (each invariant → a pinned test), set the scope, and dispatch with the `security-reviewer` (invariant policy). The §17 `precondition_stale` re-approvable treatment stays a parked carry-forward for the permission-card/preview slice (not the seam).
+
+---
+
+## LEAD RULINGS — `ui-team-lead`, away-authority, 2026-06-13 (logged for USER return-review)
+
+Verified each determining anchor against ARCHITECTURE.md independently. **Q1–Q6 RATIFIED (A)** — each is locked by the §4.2 laws / INV-SEC-1 / the frozen §6.4·§11.5 contract; ratifying enforces locked invariants (not a relaxation), so it is within away-authority. **Each invariant → a PINNED TEST in the brief** (these are the seam's safety contract, not prose). `security-reviewer` REQUIRED (invariant policy).
+
+- **Q1 — RATIFY (A).** Pure intent-submitter; **no UI execution path** exists (INV-SEC-1 / §4.2 law 1 / §6.1 "no authoritative state"). (B) is an INV-SEC-1 bypass — forbidden. Pin: a test that the seam exposes only `submit_*`/`approve`/`deny`, never an executor.
+- **Q2 — RATIFY (A).** `canSubmitIntent` fail-safe **FALSE on any unknown/degraded**; true only positively-confirmed connected + version-compatible (§11.1 / Lesson §4). Pin the fail-safe default. **Caveat (non-negotiable):** `canSubmitIntent` is **defense-in-depth, NEVER the sole guard — the daemon Gateway is the real chokepoint** (a UI-enable bug must still be rejected daemon-side). State that in the brief.
+- **Q3 — RATIFY (A).** **NO optimistic "done."** In-flight renders as the daemon-reported status (`ActionAck.status`); flips to done ONLY when the projection / `ActionResult` confirms (§4.2 law 2 / "no authoritative state" / §11.7). (B) shows un-audited state as real — forbidden. The pending-PRESENTATION (spinner/inline/tray) is your non-safety UX detail. Pin: no "succeeded" render without a confirming projection/result.
+- **Q4 — RATIFY (A).** The card renders the **daemon's** `PolicyDecision` + `ActionPreview`; Approve/Deny submit an `Approval` per the frozen contract. The UI **NEVER computes its own risk / approval-requirement** — the daemon's policy engine is authoritative (§6.2 / the 2.2 catalog-authoritative-risk ruling). Pin: the card's risk/approval-requirement is read from `PolicyDecision`, never UI-derived.
+- **Q5 — RATIFY (A).** Render the daemon's `ActionPreview` consequences only; honest pending / `cannot_preview_reason`; **NEVER fabricate "what will happen"** (forbidden #2). Pin: no synthesized consequences.
+- **Q6 — RATIFY (A).** Each `IpcErrorCode` → its mandated §11.5 card; **`fencing_conflict` stays the never-auto-resolved hard-conflict card (rule #6)** — no generic collapse (B breaks #6 at the UI). `internal_error` → fail-closed integrity alert (rule #5). `precondition_stale` re-approvable stays the **parked carry-forward** (permission-card/preview slice, NOT the seam). Pin: distinct rejection cards; fencing is never re-approvable.
+
+- **Q7 (OPEN) — RULE (A) FOR THE SEAM NOW + PARK (B)/(C) FOR THE USER.**
+  - **(A) ruled for the seam:** no caching / no auto-retry — the fail-safe do-nothing baseline; no held mutation state (consistent with "UI holds no authoritative state"); zero added risk; forward-compatible (adding (C) later is non-breaking). The seam ships with (A). Ruling the *absence of a speculative feature* is within away-authority.
+  - **PARK (B)/(C) for the user** as a product/UX enhancement decision (cache + replay a disconnected intent). **My recorded lean to steer that decision:** if ANY retry is ever added it must be **(C) — a MANUAL, explicit user resubmit — NOT (B) auto-replay.** `idempotency_key` makes a resubmit *dedup-safe* but **not consent-fresh**: auto-acting on the user's behalf after a connectivity gap (replaying a possibly-stale mutation intent the user may no longer want) is against the human-gated-mutation spirit (INV-SEC-1's whole point is a human in the loop per mutation). (B) is the sharp trust concern; (C) preserves explicit consent. **Not decided — parked for the user.**
+
+- **Scope — ENDORSE (A) Foundation-first** (your orchestration call; I endorse for the cleaner safety-review surface). Build + `security-reviewer` the INV-SEC-1 seam in **isolation** (GatewayModal stays disabled), wire `GatewayModal`-real in slice 2. Smaller, independently-reviewable, bisectable safety regressions — the right shape for a cat-1 surface; the one-slice exposed-ahead-of-consumer is the benign 040/041 pattern.
+
+**Proceed:** fold these into the brief's "Cat-1 safety design" section (each invariant → a pinned test), Scope (A), dispatch WITH `security-reviewer`. Note in the brief that Q7-(B)/(C) is PARKED-for-user (not dropped) + my manual-not-auto lean. All rulings → user return-review + next `/arch-finalize`.

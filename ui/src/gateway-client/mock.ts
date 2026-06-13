@@ -15,10 +15,14 @@ import type {
   SubscribeParams,
 } from "./types";
 import type {
+  ActionAck,
+  ActionPreview,
+  ActionRequest,
   Capabilities,
   ProjectionDelta,
   ProjectionName,
   ProjectionPageByName,
+  WireError,
 } from "../contracts/index";
 import { CONTRACT_VERSION } from "../contracts/index";
 import type { ConnectionState } from "../connection/state";
@@ -50,16 +54,21 @@ export interface MockGatewayOptions {
   connection?: ConnectionState;
   /** Handshake protocol_version — set out of range to simulate version-skew. */
   protocolVersion?: number;
+  /** When set, the mutation methods REJECT with this `WireError` (the daemon's §6.4
+   *  error path) instead of resolving — so the seam's verbatim-error pin is exercised. */
+  mutationError?: WireError;
 }
 
 export class MockGatewayPort implements GatewayPort {
   private connection: ConnectionState;
   private readonly protocolVersion: number;
+  private readonly mutationError?: WireError;
   private readonly listeners = new Set<(state: ConnectionState) => void>();
 
   constructor(options: MockGatewayOptions = {}) {
     this.connection = options.connection ?? "connected";
     this.protocolVersion = options.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
+    this.mutationError = options.mutationError;
   }
 
   async get_projection<K extends ProjectionName>(
@@ -89,6 +98,40 @@ export class MockGatewayPort implements GatewayPort {
       protocol_version: this.protocolVersion,
       contract_version: CONTRACT_VERSION,
     };
+  }
+
+  // §6.1 mutation-intent surface — deterministic fixtures. The daemon mints the
+  // `action_request_id` + reports a lifecycle `status`. submit_action returns the
+  // NON-terminal `submitted` (NEVER a synthesized `succeeded`) so the seam's
+  // no-optimism pin has a real daemon-reported value to surface; approve/deny return
+  // the daemon-reported decision status (`approved`/`denied`). `mutationError` rejects
+  // with the daemon's `WireError` (the §6.4 error path).
+  async submit_action(_request: ActionRequest): Promise<ActionAck> {
+    if (this.mutationError) throw this.mutationError;
+    return { action_request_id: "ar_mock_0001", status: "submitted" };
+  }
+
+  async preview_action(_action_request_id: string): Promise<ActionPreview> {
+    if (this.mutationError) throw this.mutationError;
+    return {
+      action_request_id: "ar_mock_0001",
+      generated_at: "2026-06-13T00:00:00Z",
+      risk_level: 2,
+      risk_reasons: ["touches tracked files"],
+      summary: "Would modify 1 file in the worktree.",
+      changed_resources: [{ type: "file", id: "src/main.rs" }],
+      cannot_preview_reason: null,
+    };
+  }
+
+  async approve(_approval_id: string, _step_id?: string): Promise<ActionAck> {
+    if (this.mutationError) throw this.mutationError;
+    return { action_request_id: "ar_mock_0001", status: "approved" };
+  }
+
+  async deny(_approval_id: string, _reason: string): Promise<ActionAck> {
+    if (this.mutationError) throw this.mutationError;
+    return { action_request_id: "ar_mock_0001", status: "denied" };
   }
 
   getConnectionState(): ConnectionState {

@@ -31,6 +31,8 @@ function makeBoundaryError(): BoundaryValidationError {
   if (res.success) throw new Error("test setup: expected a parse failure");
   return new BoundaryValidationError("Session", res.error);
 }
+const notExercised = () =>
+  Promise.reject(new Error("rejectingGateway: mutation methods not exercised here"));
 const rejectingGateway: GatewayPort = {
   get_projection: () => Promise.reject(makeBoundaryError()),
   // eslint-disable-next-line require-yield
@@ -39,6 +41,11 @@ const rejectingGateway: GatewayPort = {
   },
   get_capabilities: () =>
     Promise.resolve({ protocol_version: 1, contract_version: "0.5.0" }),
+  // §6.1 mutation surface (unused in this read-path test — the seam has its own suite).
+  submit_action: notExercised,
+  preview_action: notExercised,
+  approve: notExercised,
+  deny: notExercised,
   getConnectionState: () => "connected",
   onConnectionChange: () => () => {},
   reconnect: () => {},

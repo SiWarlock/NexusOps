@@ -7,6 +7,9 @@
 // All daemon access in the UI flows through a single implementation of this
 // interface (ui/CLAUDE.md forbidden #3).
 import type {
+  ActionAck,
+  ActionPreview,
+  ActionRequest,
   Capabilities,
   ProjectionDelta,
   ProjectionName,
@@ -40,6 +43,18 @@ export interface GatewayPort {
   ): Promise<ProjectionPageByName[K]>;
   subscribe(params: SubscribeParams): AsyncIterable<ProjectionDelta>;
   get_capabilities(): Promise<Capabilities>;
+
+  // §6.1 mutation-intent surface (daemon/src/ipc/methods.rs:169-211). INV-SEC-1 /
+  // §4.2 law 1: the UI SUBMITS intents only — the daemon's Action Gateway is the
+  // single executor + DB writer; the daemon mints `action_request_id`. The wire
+  // params are IDs (not objects) for preview/approve/deny (the daemon owns the
+  // record). Each method REJECTS with a `WireError` (the daemon's §6.4
+  // `IpcErrorCode`) on the daemon error path; the intent seam surfaces that code
+  // VERBATIM (never collapsed/remapped). There is NO execution method here.
+  submit_action(request: ActionRequest): Promise<ActionAck>;
+  preview_action(action_request_id: string): Promise<ActionPreview>;
+  approve(approval_id: string, step_id?: string): Promise<ActionAck>;
+  deny(approval_id: string, reason: string): Promise<ActionAck>;
 
   // Connection management (transport liveness; §11.4). These are UI-client
   // transport concerns, NOT part of the frozen §6.1 RPC method surface.

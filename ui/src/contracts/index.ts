@@ -54,3 +54,4 @@ export const validators: Record<string, EnumValidator> = shape;
 
 export { CONTRACT_VERSION } from "./generated";
 export * from "./provisional";
+export * from "./intent-contracts";

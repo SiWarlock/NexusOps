@@ -296,10 +296,16 @@ export type ProjectionDelta = z.infer<typeof ProjectionDelta>;
 // shapes are pinned to the frozen schema by the provisional.test §2.5-seam snapshot.
 
 /** A structured daemon→client error frame (§6.4) — carries one closed
- *  [`IpcErrorCode`]. Frozen §6.4 $def, hand-modeled; field-set == {code}. */
-export const WireError = z.object({
-  code: bundle.shape.IpcErrorCode,
-});
+ *  [`IpcErrorCode`]. Frozen §6.4 $def (`additionalProperties:false`), hand-modeled;
+ *  field-set == {code}. `.strict()` MATCHES the frozen closed shape and is
+ *  security-load-bearing for the intent seam: a thrown runtime/transport `Error`
+ *  that happens to carry a colliding `code` (plus `message`/`stack`) is REJECTED, so
+ *  the seam re-throws it as a real bug instead of misclassifying it as a daemon error. */
+export const WireError = z
+  .object({
+    code: bundle.shape.IpcErrorCode,
+  })
+  .strict();
 export type WireError = z.infer<typeof WireError>;
 
 /**

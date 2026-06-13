@@ -92,4 +92,14 @@ pub mod time;
 /// (risk-2 — the §15 #8 no-silent-account-hop APPROVAL gate); `MVP_ACTION_TYPES` 22→24. The risk-0
 /// relaxation is NARROW (an explicit daemon-policy auto-execute allowlist + a UI/IPC-only requester
 /// guard). Catalog-data semantics; no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.25.0";
+/// 0.26.0 (P4.0b-R1b) freezes the edges-R1 **Phase-5/7 wiring EventTypeRegistry payloads** (§7.1) — the
+/// events edges' dormant executors emit (via `EmittedEvent`) + its projectors consume, in ONE batched
+/// additive bump (edges regenerates once): P5.1 `ProjectRescanned` (one coarse event; `remote_url`
+/// carries the §15 strip-userinfo-at-source contract); P5.2 `WorktreeCreated`/`BranchCreated` + the 4
+/// empty-payload overlay transitions (`WorktreeMerged`/`WorktreePrunable`/`WorktreeDeleted`/
+/// `WorktreeLocked`); P7.1 `PullRequestSynced` (reuses the §5.1 `PullRequest` enum) /
+/// `IntegrationConnectionRegistered` (`keychain_ref` = a §15 pointer, never the secret) /
+/// `GithubSyncFailed` + `LinearSyncFailed` (non-auth variant only; `reason` = a structural class-name) +
+/// the closed `Provider` enum (`github`|`linear`). `shared/`-only — NO daemon emission (edges' P5/P7
+/// executors emit later). Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.26.0";

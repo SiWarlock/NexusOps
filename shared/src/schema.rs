@@ -21,8 +21,11 @@ use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceT
 use crate::events::{
     ActionApprovalRequested, ActionApproved, ActionDenied, ActionExpired, ActionFailed,
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
-    AuditIntegrityViolation, DeviceRegistered, LocalRunnerRegistered, SensitiveOutputRedacted,
-    SessionStarted, TelemetrySampled, TerminalProcessExited,
+    AuditIntegrityViolation, BranchCreated, DeviceRegistered, GithubSyncFailed,
+    IntegrationConnectionRegistered, LinearSyncFailed, LocalRunnerRegistered, ProjectRescanned,
+    Provider, PullRequestSynced, SensitiveOutputRedacted, SessionStarted, TelemetrySampled,
+    TerminalProcessExited, WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged,
+    WorktreePrunable,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::harness::{HarnessCapabilities, MetricQuality, TelemetrySample, TranscriptRef};
@@ -167,6 +170,22 @@ struct ContractBundle {
     terminal_control_frame: TerminalControlFrame,
     terminal_control_kind: TerminalControlKind,
     terminal_process_exited: TerminalProcessExited,
+    // P4.0b-R1b (CONTRACT 0.26.0) — the Phase-5/7 wiring EventTypeRegistry payloads (edges-R1
+    // §2.5-seam): P5.1 project detection, P5.2 worktree/branch lifecycle (+ 4 empty-payload overlay
+    // transitions), P7.1 integration reads + non-auth sync failures + the closed `Provider` enum
+    // (github|linear, flat enum → 3-way verify exact). shared/-only; edges emits at P5/P7. Additive.
+    project_rescanned: ProjectRescanned,
+    worktree_created: WorktreeCreated,
+    branch_created: BranchCreated,
+    worktree_merged: WorktreeMerged,
+    worktree_prunable: WorktreePrunable,
+    worktree_deleted: WorktreeDeleted,
+    worktree_locked: WorktreeLocked,
+    provider: Provider,
+    pull_request_synced: PullRequestSynced,
+    integration_connection_registered: IntegrationConnectionRegistered,
+    github_sync_failed: GithubSyncFailed,
+    linear_sync_failed: LinearSyncFailed,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

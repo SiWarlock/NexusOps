@@ -11,9 +11,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::harness::TelemetrySample;
-use crate::ids::ExecutionProfileId;
+use crate::ids::{ExecutionProfileId, WorktreeId};
 use crate::objects::{DeviceId, LocalRunnerId};
-use crate::status::Session;
+use crate::status::{PullRequest, Session};
+use crate::time::Timestamp;
 
 /// `SessionStarted` payload. The session's **identity** (`session_id`/`project_id`)
 /// lives on the [`crate::event_envelope::EventEnvelope`] typed fields (so projectors
@@ -281,4 +282,214 @@ pub struct TerminalProcessExited {
 impl TerminalProcessExited {
     /// The EventTypeRegistry name — ONE home (the 3.4 terminal-host emit path; §7.1 single-home).
     pub const EVENT_TYPE: &'static str = "TerminalProcessExited";
+}
+
+// =================================================================================================
+// P4.0b-R1b (CONTRACT 0.26.0) — the Phase-5/7 wiring EventTypeRegistry payloads (edges-R1 §2.5-seam).
+// `shared/`-only: edges' (dormant) Project/Git/Github/Linear executors EMIT these via `EmittedEvent`
+// when each namespace lands at P5/P7; edges' projectors CONSUME them. Identity (actor/project_id/
+// resource_refs) on the envelope; payload = delta; `deny_unknown_fields`; optionals = explicit `null`
+// (no `skip_serializing_if`) for a stable §2.5-seam field-name snapshot (LESSON §15 trap 3). No daemon
+// emission here — these are the consumable + emittable shapes (the §5.0 mechanism + snapshots bind them).
+// =================================================================================================
+
+/// `ProjectRescanned` payload (§7.1; P5.1 — edges' project-detection wiring). Emitted by edges'
+/// `project.rescan` executor after its detection engine runs; consumed by `proj_project_activity` + the
+/// project graph + a private `projects`/`repositories` registry (the projector splits this ONE coarse
+/// event into rows — lead-ruled coarse: a rescan is atomic). The project IDENTITY (`project_id`/actor)
+/// lives on the [`crate::event_envelope::EventEnvelope`] columns; this payload carries the detection delta.
+///
+/// **§15 `remote_url` (rule #5/#3/#4) — load-bearing:** the git remote URL can embed credentials
+/// (`https://user:token@host`). A generic URL password has NO key-prefix → it is OUTSIDE the §15
+/// prefix+entropy Redactor's recall envelope (LESSON §13), so the Redactor is the **backstop**, not the
+/// primary control. The `user:token@` userinfo MUST be stripped **at the emit source** (edges' project
+/// executor, BEFORE this event is constructed). The strip-at-source enforcement + its test are edges'
+/// P5.1 emission slice — R1b ships the contract, no emitter.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ProjectRescanned {
+    pub is_git: bool,
+    pub repo_root: Option<String>,
+    /// the git remote URL. **§15:** userinfo (`user:token@`) MUST be stripped at the emit source (edges)
+    /// — the Redactor is the backstop only (a generic URL password has no prefix; LESSON §13).
+    pub remote_url: Option<String>,
+    pub branch: Option<String>,
+    pub detached: bool,
+    pub is_dirty: bool,
+    pub workflow_pack: bool,
+    pub cc_crew: bool,
+    pub plan_file: Option<String>,
+    pub brain: bool,
+    pub scanned_at: Timestamp,
+}
+
+impl ProjectRescanned {
+    /// The EventTypeRegistry name — ONE home (edges' project executor emit path + its projectors).
+    pub const EVENT_TYPE: &'static str = "ProjectRescanned";
+}
+
+/// `WorktreeCreated` payload (§7.1; P5.2 — from edges' `git.create_worktree`). Feeds `proj_worktree`
+/// (status via edges' `derive_worktree_status`). Identity on the envelope; payload = the creation delta.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct WorktreeCreated {
+    pub worktree_id: WorktreeId,
+    pub path: String,
+    pub branch_name: String,
+    pub base_branch: Option<String>,
+}
+
+impl WorktreeCreated {
+    /// The EventTypeRegistry name — ONE home (edges' git executor emit path + `proj_worktree`).
+    pub const EVENT_TYPE: &'static str = "WorktreeCreated";
+}
+
+/// `BranchCreated` payload (§7.1; P5.2 — from edges' `git.create_branch`).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct BranchCreated {
+    pub branch_name: String,
+    pub base: Option<String>,
+}
+
+impl BranchCreated {
+    /// The EventTypeRegistry name — ONE home (edges' git executor emit path).
+    pub const EVENT_TYPE: &'static str = "BranchCreated";
+}
+
+/// `WorktreeMerged` payload (§7.1; P5.2 overlay-axis transition). EMPTY payload — the worktree identity
+/// is on the envelope `resource_refs`, the transition IS the `event_type` (the `ActionStarted{}`
+/// precedent); feeds the overlay axis of edges' `derive_worktree_status`.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct WorktreeMerged {}
+
+impl WorktreeMerged {
+    /// The EventTypeRegistry name — ONE home (edges' git executor emit path + the overlay axis).
+    pub const EVENT_TYPE: &'static str = "WorktreeMerged";
+}
+
+/// `WorktreePrunable` payload (§7.1; P5.2 overlay-axis transition). EMPTY payload — see [`WorktreeMerged`].
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct WorktreePrunable {}
+
+impl WorktreePrunable {
+    /// The EventTypeRegistry name — ONE home (edges' git executor emit path + the overlay axis).
+    pub const EVENT_TYPE: &'static str = "WorktreePrunable";
+}
+
+/// `WorktreeDeleted` payload (§7.1; P5.2 overlay-axis transition). EMPTY payload — see [`WorktreeMerged`].
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct WorktreeDeleted {}
+
+impl WorktreeDeleted {
+    /// The EventTypeRegistry name — ONE home (edges' git executor emit path + the overlay axis).
+    pub const EVENT_TYPE: &'static str = "WorktreeDeleted";
+}
+
+/// `WorktreeLocked` payload (§7.1; P5.2 overlay-axis transition). EMPTY payload — see [`WorktreeMerged`].
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct WorktreeLocked {}
+
+impl WorktreeLocked {
+    /// The EventTypeRegistry name — ONE home (edges' git executor emit path + the overlay axis).
+    pub const EVENT_TYPE: &'static str = "WorktreeLocked";
+}
+
+/// The integration provider (§7.2 — `github` | `linear`). A NEW closed wire enum: snake_case,
+/// reject-unknown (§5.0/§15); a flat `enum` schema so the §5.0 3-way verify stays exact (LESSON §15
+/// trap 2 — string enums emit as flat `enum`, not a discriminated union).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    Github,
+    Linear,
+}
+
+impl Provider {
+    /// Every variant, declaration order.
+    pub const ALL: &'static [Self] = &[Self::Github, Self::Linear];
+}
+
+/// `PullRequestSynced` payload (§7.1; P7.1 — from edges' github PR-sync executor). Feeds
+/// `proj_pull_request` (the GitHub-authoritative cache, §7.2). `status` REUSES the frozen §5.1
+/// [`PullRequest`] machine (no fork — adapters map INTO it). `pr_number` is the GitHub-native PR id
+/// (external integer, not a frozen-22 ID). Identity on the envelope; payload = the synced-PR delta.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct PullRequestSynced {
+    /// the GitHub-native PR number — a non-negative EXTERNAL natural (edges parses it from API
+    /// responses; `u64` rejects a negative at the parse boundary; NOT a frozen-22 ID).
+    pub pr_number: u64,
+    pub status: PullRequest,
+    pub branch: String,
+    pub base: String,
+    pub mergeable: Option<bool>,
+    pub checks_summary: Option<String>,
+    pub pr_checked_at: Timestamp,
+}
+
+impl PullRequestSynced {
+    /// The EventTypeRegistry name — ONE home (edges' github sync executor emit path + `proj_pull_request`).
+    pub const EVENT_TYPE: &'static str = "PullRequestSynced";
+}
+
+/// `IntegrationConnectionRegistered` payload (§7.1; P7.1 — from connecting GitHub/Linear). Feeds a
+/// private `integration_connections` registry. `connection_id` is an edges-private id (NOT a frozen-22
+/// `IdKind` — the `terminal_id`/`out_` bare-String precedent). **§15 rule #4 — load-bearing:**
+/// `keychain_ref` is a NON-SECRET POINTER into the OS keychain (the entry name/ref), NEVER the token
+/// itself — the secret stays in the keychain; events hold pointers only.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct IntegrationConnectionRegistered {
+    pub connection_id: String,
+    pub provider: Provider,
+    /// **§15 rule #4:** a NON-SECRET keychain POINTER (the keychain entry name/ref), NEVER the token.
+    pub keychain_ref: String,
+    pub account: Option<String>,
+}
+
+impl IntegrationConnectionRegistered {
+    /// The EventTypeRegistry name — ONE home (edges' connect executor emit path + the connections registry).
+    pub const EVENT_TYPE: &'static str = "IntegrationConnectionRegistered";
+}
+
+/// `GithubSyncFailed` payload (§7.1/§17; P7.1 — the **non-auth** `*SyncFailed`). Driven by edges'
+/// integration classifier's TERMINAL non-auth class (a `ClientError` sync failure, NO profile
+/// mutation). **§15 — load-bearing:** `reason` is a redaction-safe STRUCTURAL class-name (the
+/// classifier's terminal class), NEVER raw API response text. The `auth_expired` variant (the
+/// classifier's `AuthFailed` class → `ExecutionProfile→auth_expired`) is **DEFERRED** — its 0.5b
+/// ExecutionProfile gate + a §17/INV-SEC re-review; R1b is the non-auth variant ONLY.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct GithubSyncFailed {
+    pub provider: Provider,
+    /// **§15:** a STRUCTURAL class-name (the classifier's terminal class), NEVER raw API text.
+    pub reason: String,
+    pub failed_at: Timestamp,
+}
+
+impl GithubSyncFailed {
+    /// The EventTypeRegistry name — ONE home (edges' github sync executor emit path).
+    pub const EVENT_TYPE: &'static str = "GithubSyncFailed";
+}
+
+/// `LinearSyncFailed` payload (§7.1/§17; P7.1 — the **non-auth** `*SyncFailed`, Linear). Same contract
+/// as [`GithubSyncFailed`] — see its doc for the §15 `reason` structural-class-name discipline + the
+/// deferred `auth_expired` variant.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct LinearSyncFailed {
+    pub provider: Provider,
+    /// **§15:** a STRUCTURAL class-name (the classifier's terminal class), NEVER raw API text.
+    pub reason: String,
+    pub failed_at: Timestamp,
+}
+
+impl LinearSyncFailed {
+    /// The EventTypeRegistry name — ONE home (edges' linear sync executor emit path).
+    pub const EVENT_TYPE: &'static str = "LinearSyncFailed";
 }

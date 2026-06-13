@@ -2305,15 +2305,260 @@ fn test_action_denied_approval_id_optional() {
     );
 }
 
-// ---- P4.0b-1 L2 RED — CONTRACT_VERSION bumped to 0.25.0 (the §6.3 risk-0 session-lifecycle) ----
+// ---- P4.0b-R1b RED — CONTRACT_VERSION bumped to 0.26.0 (the Phase-5/7 wiring event types) ----
 
 #[test]
-fn test_contract_version_bumped_0_25_0() {
+fn test_contract_version_bumped_0_26_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.24.0 =
-    // the 0.5b `ExecutionProfile` freeze + `SessionStarted.execution_profile_id`; **0.25.0** = the
-    // §6.3 catalog reclassification for the away-ruled risk-0 session-lifecycle (`session.create`
-    // 2→0 + NEW `session.kill` risk-0 + NEW `session.profile_change` risk-2; MVP 22→24) — catalog-data
-    // semantics, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.25.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.25.0 =
+    // the §6.3 catalog reclassification for the away-ruled risk-0 session-lifecycle; **0.26.0** = the
+    // edges-R1 Phase-5/7 wiring event-type freeze (~11 new EventTypeRegistry payloads + the `Provider`
+    // enum, ONE batched additive bump — edges regenerates once). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.26.0");
+}
+
+// =================================================================================================
+// P4.0b-R1b — the Phase-5/7 wiring event-type contract freeze (edges-R1 §2.5-seam; CONTRACT 0.26.0).
+// ~11 new EventTypeRegistry payloads + the `Provider` enum, shared/-only (edges' executors emit at
+// P5/P7 via EmittedEvent). identity on the envelope; payload = delta; deny_unknown_fields; ONE bump.
+// =================================================================================================
+
+/// assert a deny_unknown_fields struct rejects an extra key (reject-unknown end-to-end, §5.0/§15).
+fn assert_rejects_unknown<T: serde::Serialize + serde::de::DeserializeOwned>(v: &T, name: &str) {
+    let mut rogue = serde_json::to_value(v)
+        .unwrap()
+        .as_object()
+        .expect("an event payload serializes to a JSON object")
+        .clone();
+    rogue.insert("rogue_xyz".to_string(), serde_json::json!(1));
+    assert!(
+        serde_json::from_value::<T>(serde_json::Value::Object(rogue)).is_err(),
+        "{name}: an unknown field must be rejected (deny_unknown_fields, §5.0/§15)"
+    );
+}
+
+fn sample_project_rescanned() -> nexusops_shared::events::ProjectRescanned {
+    use nexusops_shared::events::ProjectRescanned;
+    use nexusops_shared::time::Timestamp;
+    ProjectRescanned {
+        is_git: true,
+        repo_root: Some("/Users/x/repo".to_string()),
+        remote_url: Some("https://github.com/acme/repo.git".to_string()),
+        branch: Some("main".to_string()),
+        detached: false,
+        is_dirty: true,
+        workflow_pack: true,
+        cc_crew: true,
+        plan_file: Some("IMPLEMENTATION_PLAN.md".to_string()),
+        brain: false,
+        scanned_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
+    }
+}
+
+fn sample_pull_request_synced() -> nexusops_shared::events::PullRequestSynced {
+    use nexusops_shared::events::PullRequestSynced;
+    use nexusops_shared::status::PullRequest;
+    use nexusops_shared::time::Timestamp;
+    PullRequestSynced {
+        pr_number: 42,
+        status: PullRequest::Open,
+        branch: "feature/x".to_string(),
+        base: "main".to_string(),
+        mergeable: Some(true),
+        checks_summary: Some("3/3 passing".to_string()),
+        pr_checked_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
+    }
+}
+
+// ---- R1b RED #1 — ProjectRescanned (§7.1/§2.5-seam) ----
+
+#[test]
+fn test_projectrescanned_snapshot() {
+    // spec(§7.1) — the §2.5-seam field-name freeze for the P5.1 project-detection event; identity is
+    // on the envelope (project_id/actor), payload = the detection delta. `remote_url` carries the §15
+    // strip-at-source contract (see the field doc); EVENT_TYPE single-home.
+    use nexusops_shared::events::ProjectRescanned;
+    expect_fields(
+        &sample_project_rescanned(),
+        &[
+            "is_git",
+            "repo_root",
+            "remote_url",
+            "branch",
+            "detached",
+            "is_dirty",
+            "workflow_pack",
+            "cc_crew",
+            "plan_file",
+            "brain",
+            "scanned_at",
+        ],
+    );
+    assert_eq!(ProjectRescanned::EVENT_TYPE, "ProjectRescanned");
+}
+
+// ---- R1b RED #2 — worktree/branch lifecycle (§7.1) ----
+
+#[test]
+fn test_worktree_lifecycle_snapshots() {
+    // spec(§7.1) — WorktreeCreated/BranchCreated carry their creation delta; the 4 overlay-axis
+    // transitions are EMPTY-payload events (identity on the envelope resource_refs; the transition IS
+    // the event_type — the ActionStarted{}/ActionSucceeded{} precedent). EVENT_TYPE single-home each.
+    use nexusops_shared::events::{
+        BranchCreated, WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged,
+        WorktreePrunable,
+    };
+    use nexusops_shared::ids::WorktreeId;
+    let wc = WorktreeCreated {
+        worktree_id: WorktreeId::parse("wt_01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
+        path: "/Users/x/repo/.worktrees/feat".to_string(),
+        branch_name: "feature/x".to_string(),
+        base_branch: Some("main".to_string()),
+    };
+    expect_fields(&wc, &["worktree_id", "path", "branch_name", "base_branch"]);
+    let bc = BranchCreated {
+        branch_name: "feature/x".to_string(),
+        base: Some("main".to_string()),
+    };
+    expect_fields(&bc, &["branch_name", "base"]);
+    // the 4 overlay transitions — empty payload (the transition is the event_type).
+    expect_fields(&WorktreeMerged {}, &[]);
+    expect_fields(&WorktreePrunable {}, &[]);
+    expect_fields(&WorktreeDeleted {}, &[]);
+    expect_fields(&WorktreeLocked {}, &[]);
+
+    assert_eq!(WorktreeCreated::EVENT_TYPE, "WorktreeCreated");
+    assert_eq!(BranchCreated::EVENT_TYPE, "BranchCreated");
+    assert_eq!(WorktreeMerged::EVENT_TYPE, "WorktreeMerged");
+    assert_eq!(WorktreePrunable::EVENT_TYPE, "WorktreePrunable");
+    assert_eq!(WorktreeDeleted::EVENT_TYPE, "WorktreeDeleted");
+    assert_eq!(WorktreeLocked::EVENT_TYPE, "WorktreeLocked");
+}
+
+// ---- R1b RED #3 — P7.1 integration reads + sync failures (§7.1) ----
+
+#[test]
+fn test_p7_integration_snapshots() {
+    // spec(§7.1) — PullRequestSynced reuses the frozen §5.1 `PullRequest` enum as its status; the
+    // §15-sensitive fields carry their contract in the field docs (`keychain_ref` = a pointer NOT the
+    // secret; `*SyncFailed.reason` = a structural class name, NOT raw API text). EVENT_TYPE single-home.
+    use nexusops_shared::events::{
+        GithubSyncFailed, IntegrationConnectionRegistered, LinearSyncFailed, Provider,
+        PullRequestSynced,
+    };
+    use nexusops_shared::time::Timestamp;
+    expect_fields(
+        &sample_pull_request_synced(),
+        &[
+            "pr_number",
+            "status",
+            "branch",
+            "base",
+            "mergeable",
+            "checks_summary",
+            "pr_checked_at",
+        ],
+    );
+    let icr = IntegrationConnectionRegistered {
+        connection_id: "conn_gh_1".to_string(),
+        provider: Provider::Github,
+        keychain_ref: "nexusops/github/acme".to_string(),
+        account: Some("acme".to_string()),
+    };
+    expect_fields(
+        &icr,
+        &["connection_id", "provider", "keychain_ref", "account"],
+    );
+    let gh = GithubSyncFailed {
+        provider: Provider::Github,
+        reason: "client_error".to_string(),
+        failed_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
+    };
+    let ln = LinearSyncFailed {
+        provider: Provider::Linear,
+        reason: "rate_limited".to_string(),
+        failed_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
+    };
+    expect_fields(&gh, &["provider", "reason", "failed_at"]);
+    expect_fields(&ln, &["provider", "reason", "failed_at"]);
+
+    assert_eq!(PullRequestSynced::EVENT_TYPE, "PullRequestSynced");
+    assert_eq!(
+        IntegrationConnectionRegistered::EVENT_TYPE,
+        "IntegrationConnectionRegistered"
+    );
+    assert_eq!(GithubSyncFailed::EVENT_TYPE, "GithubSyncFailed");
+    assert_eq!(LinearSyncFailed::EVENT_TYPE, "LinearSyncFailed");
+}
+
+// ---- R1b RED #4 — the Provider enum (closed; reject-unknown) (§5.0/§15, LESSON 15 trap 2) ----
+
+#[test]
+fn test_provider_enum_closed_reject_unknown() {
+    // spec(§5.0/§15) — `provider` is a NEW closed wire enum (github|linear); snake_case; reject-unknown
+    // (a flat `enum` schema → the §5.0 3-way verify stays exact). An unknown value fails closed.
+    use nexusops_shared::events::Provider;
+    check_values(Provider::ALL, &["github", "linear"]);
+    assert!(serde_json::from_value::<Provider>(serde_json::json!("gitlab")).is_err());
+}
+
+// ---- R1b RED #5 — deny_unknown_fields on every new payload (§5.0/§15 reject-unknown surface) ----
+
+#[test]
+fn test_deny_unknown_fields_on_new_types() {
+    // spec(§5.0/§15) — every new event payload rejects an extra key (fail-closed reject-unknown).
+    use nexusops_shared::events::{
+        BranchCreated, GithubSyncFailed, IntegrationConnectionRegistered, LinearSyncFailed,
+        Provider, WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged,
+        WorktreePrunable,
+    };
+    use nexusops_shared::ids::WorktreeId;
+    use nexusops_shared::time::Timestamp;
+    assert_rejects_unknown(&sample_project_rescanned(), "ProjectRescanned");
+    assert_rejects_unknown(&sample_pull_request_synced(), "PullRequestSynced");
+    assert_rejects_unknown(
+        &WorktreeCreated {
+            worktree_id: WorktreeId::parse("wt_01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
+            path: "/p".to_string(),
+            branch_name: "b".to_string(),
+            base_branch: None,
+        },
+        "WorktreeCreated",
+    );
+    assert_rejects_unknown(
+        &BranchCreated {
+            branch_name: "b".to_string(),
+            base: None,
+        },
+        "BranchCreated",
+    );
+    assert_rejects_unknown(&WorktreeMerged {}, "WorktreeMerged");
+    assert_rejects_unknown(&WorktreePrunable {}, "WorktreePrunable");
+    assert_rejects_unknown(&WorktreeDeleted {}, "WorktreeDeleted");
+    assert_rejects_unknown(&WorktreeLocked {}, "WorktreeLocked");
+    assert_rejects_unknown(
+        &IntegrationConnectionRegistered {
+            connection_id: "c".to_string(),
+            provider: Provider::Github,
+            keychain_ref: "k".to_string(),
+            account: None,
+        },
+        "IntegrationConnectionRegistered",
+    );
+    assert_rejects_unknown(
+        &GithubSyncFailed {
+            provider: Provider::Github,
+            reason: "client_error".to_string(),
+            failed_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
+        },
+        "GithubSyncFailed",
+    );
+    assert_rejects_unknown(
+        &LinearSyncFailed {
+            provider: Provider::Linear,
+            reason: "client_error".to_string(),
+            failed_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
+        },
+        "LinearSyncFailed",
+    );
 }

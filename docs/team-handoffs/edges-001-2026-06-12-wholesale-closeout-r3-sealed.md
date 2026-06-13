@@ -4,7 +4,7 @@
 **Track:** edges (P5 git/worktrees/Execution Profiles ∥ P7.1 GitHub/Linear, daemon-side; modules `daemon/src/{git,integrations,workflow,profiles}/`)
 **Worktree:** `../NexusOps-edges` (branch `track/edges`) — **leave in place** (team is pausing, not done; restart resumes here)
 **Predecessor handoff:** first edges team-handoff (running decision log: `docs/team-handoffs/edges-lead-decision-log.md`)
-**Successor handoff:** _(filled when the next /team-end runs)_
+**Successor handoff:** `docs/team-handoffs/edges-002-2026-06-13-r4-sealed-pause.md` (R4 §D round sealed `a993d2b` → pause)
 **Round-seal commit at handoff:** `1580069` (R3 seal) · branch tip, tree clean, **LOCAL — unpushed, unmerged** (based `a40ac00`)
 
 ## Why this handoff exists

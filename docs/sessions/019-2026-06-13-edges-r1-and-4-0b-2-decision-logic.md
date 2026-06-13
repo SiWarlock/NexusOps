@@ -3,7 +3,7 @@
 - **Date:** 2026-06-13
 - **Phase:** Phase 4 (the live drive loop) — daemon track, `main` (single-track)
 - **Predecessor:** [018](018-2026-06-13-session-create-executor-and-execution-profile-freeze.md)
-- **Successor:** _(next session — the fresh impl owns the 4.0b-2 atomic live co-land)_
+- **Successor:** [020 — the live INV-SEC-1 drive loop (the cat-1 capstone)](020-2026-06-13-live-inv-sec-1-drive-loop-cat1.md)
 
 ## Why this session existed
 

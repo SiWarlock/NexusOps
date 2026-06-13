@@ -103,3 +103,26 @@ When edges reaches **5.3 (Execution Profiles)**, the ExecutionProfile-enum re-fr
 ## Cross-track awareness (background; verify on return — NOT edges decisions)
 - **Daemon track now at Phase 3.4** (CONTRACT 0.20.0 → **0.21.0**, Terminal Channel / `TerminalProcessExited` — disjoint from edges' `git/`+`integrations/`). Edges absorbs the 0.20→0.21 contract bump harmlessly at its next rebase-merge to main (regen).
 - **H1 outlook:** per current daemon-track state, the **0.5b ExecutionProfile enum freeze is being resolved by the daemon track at Phase 3.2** (freezing `rate_limited` + `credit_exhausted`; the CAT-4 SDK-vs-PTY drain was dissolved → PTY-primary, daemon-lead away-ruled). So **H1 has a resolution path** — when daemon 3.2 freezes the enum + merges to main, edges regens the frozen enum and 5.3 (+ the `auth_expired` sync variant) unblocks **without a separate user ruling**. Until that merge lands, H1 stays deferred (edges does not author 5.3 against an unfrozen-on-`track/edges` enum).
+
+---
+
+## Round 4 (post-restart, FRESH LEAD) — away/automated mode · 2026-06-12 (~20:30Z+)
+
+**Fresh team session** after the wholesale closeout (user exited iTerm). Lead re-stood-up team `nexusops-edges`, spawned fresh orch `edges-daemon-orchestrator` + impl `edges-daemon-implementer` from the handoff's ready-made R4 prompts; both read-backs verified clean (correct start cmds, registries written, edges- prefixes, cycle-gate protocol baked in). **User present at R4 open → made 4 decisions, then went AWAY MODE (~21:15Z)** — lead resumes automated authority (decide best-practice · defer HITL · log all · surface on return).
+
+**User decisions at R4 open (4):**
+1. **R1 → prep packet, USER routes.** Packet written: `docs/planning/edges-R1-routing-packet.md` (one-pager condensing the seam shape + Part-2 event specs + the 3 daemon-owned design choices; §15 points flagged) + the test-support addendum (#3 below). **PARKED for user return** — cross-track; only the user can route it to the daemon track.
+2. **R4 shape → FULL §D refinement round.**
+3. **D5 → Option A CONFIRMED** (defer ALL edges eventstore migrations to the coordinated phase-exit; daemon owns the schema sequence).
+4. **Push → backup pushed.** `git push -u origin track/edges` → `origin/track/edges` (22 commits; NO merge to main).
+
+**Scope finding (orch, code-level) — the "full §D round" is thinner than 6 clean slices:**
+- edges-016 §17 Linear error-taxonomy (NotFound terminal variant + epoch-ms parse_rate_limit_reset) — **LANDED `70a7196`** (387/0; orch ADD pinned the Q2 precedence fallback).
+- open_diff DRY refactor — **clean slice, DISPATCHED** (extract shared diff-construction from read_diff/read_file_hunks; 28 git_diff_log tests guard the behavior-preserving refactor).
+- richer LinearIssue fields — orch rec'd YAGNI-defer (no specified consumer; LinearIssue's own doc-comment says it's a later §7.3 refinement); **USER OVERRODE → BUILD** (wants completeness). In-lane integrations/, daemon-internal, no CONTRACT bump.
+- test-support cargo-feature — **cross-track FINDING** (needs shared daemon/Cargo.toml `[features]` + FakeHarness is daemon-track-owned → can't ship cleanly in-lane). **USER → FOLD INTO R1** (addendum asks the daemon track to add `[features] test-support` covering FakeHarness + edges' 2 fakes; edges consumes). NOT a separate in-lane slice.
+- copy-detection — **structurally impossible in-lane** (git2 0.21 can't; real impl needs git-CLI = gated wiring R1). **Finding-doc + deferred.**
+
+**Net R4 in-lane:** edges-016 ✅ + open_diff + richer-LinearIssue (2 remaining slices) → copy-detection finding-doc → **phase-exit-readiness assessment**. Edges CANNOT truly complete P5/P7.1 (R1-gated wiring + D5-deferred migration). After the in-lane round exhausts, lead holds the seal/cycle gate; auto-cycles at ACTION per the tier table. **True phase-exit + R1 routing await user return + the daemon track delivering R1.**
+
+**Carried-forward for user return:** route the R1 packet (+test-support addendum) to the daemon track [the real critical-path unblock] · confirm phase-exit posture · H1 (5.3 ExecutionProfile / auth_expired) still expected to auto-resolve via daemon Phase-3.2 enum-freeze merge · 5.4 §18 bench at phase-exit (baseline 1.029 ms PASS).

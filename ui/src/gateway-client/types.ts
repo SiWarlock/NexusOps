@@ -14,6 +14,7 @@ import type {
   ProjectionDelta,
   ProjectionName,
   ProjectionPageByName,
+  TerminalOutputFrame,
 } from "../contracts/index";
 import type { ConnectionState } from "../connection/state";
 
@@ -42,6 +43,16 @@ export interface GatewayPort {
     page?: ProjectionPageParams,
   ): Promise<ProjectionPageByName[K]>;
   subscribe(params: SubscribeParams): AsyncIterable<ProjectionDelta>;
+
+  // §6.4 Terminal-Channel display READ: subscribe to a terminal's output stream.
+  // A READ (NOT a mutation — qualified to build provisionally, unlike the 043
+  // intent path). Yields frozen `terminal_output` frames, OUTPUT ONLY (the §17
+  // PTY-death is a daemon event→projection, never pushed over this channel — the
+  // well's ended-state reads `session.status`). DISPLAY-ONLY #9: the UI renders
+  // these bytes and never sends keystroke input to the PTY (no input method here).
+  // The real UdsGatewayPort demux of `ServerFrame.terminal_output` is a transport/P4 spread.
+  subscribe_terminal(terminal_id: string): AsyncIterable<TerminalOutputFrame>;
+
   get_capabilities(): Promise<Capabilities>;
 
   // §6.1 mutation-intent surface (daemon/src/ipc/methods.rs:169-211). INV-SEC-1 /

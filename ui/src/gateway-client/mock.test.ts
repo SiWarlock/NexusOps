@@ -1,7 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { MockGatewayPort } from "./mock";
 import { parseDelta } from "./boundary";
-import { Session, type ProjectionDelta } from "../contracts/index";
+import {
+  Session,
+  TerminalOutputFrame,
+  type ProjectionDelta,
+} from "../contracts/index";
 
 describe("MockGatewayPort read surface (§14 mandate)", () => {
   it("mock_get_projection_returns_contract_valid_fixtures", async () => {
@@ -30,6 +34,22 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     expect(delta.row?.session_id).toBeTruthy();
     // and confirm it still round-trips the boundary parser end-to-end
     expect(() => parseDelta(delta)).not.toThrow();
+  });
+
+  it("mock_subscribe_terminal_yields_contract_valid_stream", async () => {
+    // spec(§6.4 / §14): subscribe_terminal yields a deterministic fixture terminal
+    // stream of frozen `terminal_output` frames (output ONLY — maps 1:1 to the
+    // §6.4 terminal channel; the §17 exit is a daemon event→projection, NOT pushed
+    // here). Every frame round-trips its frozen shadow (parse-don't-trust dogfood),
+    // and the stream terminates.
+    const mock = new MockGatewayPort();
+    const frames: unknown[] = [];
+    for await (const frame of mock.subscribe_terminal("t1")) frames.push(frame);
+
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
+      expect(() => TerminalOutputFrame.parse(frame)).not.toThrow();
+    }
   });
 
   it("mock_get_capabilities_reports_contract_version", async () => {

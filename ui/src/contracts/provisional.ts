@@ -309,15 +309,33 @@ export const WireError = z
 export type WireError = z.infer<typeof WireError>;
 
 /**
+ * The §6.4 Terminal-Channel OUTPUT frame (P3.4) — the daemon→client raw PTY output
+ * push, the `terminal_output` `ServerFrame` variant EXTRACTED so the 6.3d Session
+ * Terminal well + its `subscribe_terminal` consumer take it directly (one source;
+ * still a `ServerFrame` member below). DISPLAY-ONLY #9: `data` is opaque base64 the
+ * well DECODES for display, NEVER scraped for state. All 4 fields REQUIRED;
+ * field-set drift-pinned to the frozen `ServerFrame.terminal_output`
+ * (provisional.test.ts). Output ONLY — the §17 PTY-death is a daemon
+ * event→projection (`TerminalProcessExited`), not pushed over this channel.
+ */
+export const TerminalOutputFrame = z.object({
+  frame_type: z.literal("terminal_output"),
+  terminal_id: z.string(), // opaque daemon-minted handle — NOT a frozen-22 ID; re-minted on resume.
+  seq: z.number().int().nonnegative(), // uint64 PTY chunk sequence (frozen: integer ≥0).
+  data: z.string(), // base64-encoded raw PTY bytes — opaque; the 6.3d well decodes, not the contract layer.
+});
+export type TerminalOutputFrame = z.infer<typeof TerminalOutputFrame>;
+
+/**
  * The server→client multiplexed frame envelope (§6.4 `frame_type` tag). The
  * internally-tagged discriminant demuxes one connection: an RPC response
  * (`rpc_response`, correlated by `id`, one of result/error) vs a subscription
  * push (`subscription_push`, the changed projection/kind/row). PROVISIONAL +
  * contract-ahead — adopted for the intent-seam/transport slice that actually
  * demuxes; MVP subscribe stays a dedicated single-connection `ProjectionDelta`
- * stream (no demux yet). The Terminal-Channel `terminal_output` variant was
- * defined at 0.23.0 (P3.4 §6.4) — the 6.3d Session Terminal well consumes it.
- * Variant field-sets pinned to `ServerFrame.oneOf`.
+ * stream (no demux yet). The Terminal-Channel `terminal_output` variant
+ * (`TerminalOutputFrame` above) was defined at 0.23.0 (P3.4 §6.4) — the 6.3d
+ * Session Terminal well consumes it. Variant field-sets pinned to `ServerFrame.oneOf`.
  */
 export const ServerFrame = z.discriminatedUnion("frame_type", [
   z.object({
@@ -335,13 +353,7 @@ export const ServerFrame = z.discriminatedUnion("frame_type", [
     id: z.string().nullable().optional(),
     row: SessionRow.optional(),
   }),
-  z.object({
-    frame_type: z.literal("terminal_output"),
-    // The §6.4 Terminal-Channel push (P3.4). All 4 fields REQUIRED.
-    terminal_id: z.string(), // opaque daemon-minted handle — NOT a frozen-22 ID; re-minted on resume.
-    seq: z.number().int().nonnegative(), // uint64 PTY chunk sequence (frozen: integer ≥0).
-    data: z.string(), // base64-encoded raw PTY bytes — opaque; the 6.3d well decodes, not the contract layer.
-  }),
+  TerminalOutputFrame,
 ]);
 export type ServerFrame = z.infer<typeof ServerFrame>;
 

@@ -22,9 +22,11 @@ import type {
   ProjectionDelta,
   ProjectionName,
   ProjectionPageByName,
+  TerminalOutputFrame,
   WireError,
 } from "../contracts/index";
-import { CONTRACT_VERSION } from "../contracts/index";
+import { CONTRACT_VERSION, TerminalOutputFrame as TerminalOutputFrameSchema } from "../contracts/index";
+import { terminalOutputFixture } from "./terminal-fixture";
 import type { ConnectionState } from "../connection/state";
 import { approvalQueueFixture } from "../projections/fixtures/proj_approval_queue";
 import { auditTrailFixture } from "../projections/fixtures/proj_audit_trail";
@@ -91,6 +93,18 @@ export class MockGatewayPort implements GatewayPort {
       );
     }
     yield parseDelta(sessionDeltaFixture);
+  }
+
+  async *subscribe_terminal(
+    _terminal_id: string,
+  ): AsyncIterable<TerminalOutputFrame> {
+    // Yield the canned fixture frames THROUGH the frozen shadow (parse-don't-trust,
+    // symmetric with subscribe/get_projection — the mock can never emit a frame the
+    // real boundary would reject). Output ONLY: the §17 PTY-death is a daemon
+    // event→projection, not a terminal-channel frame, so it's never yielded here.
+    for (const frame of terminalOutputFixture) {
+      yield TerminalOutputFrameSchema.parse(frame);
+    }
   }
 
   async get_capabilities(): Promise<Capabilities> {

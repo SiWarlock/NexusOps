@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { MetricQuality, ServerFrame, WireError } from "./index";
+import {
+  MetricQuality,
+  ServerFrame,
+  TerminalOutputFrame,
+  WireError,
+} from "./index";
 
 // Read the FROZEN schema at test time — the §2.5-seam schema-snapshot for the
 // provisional ServerFrame frame-mux (ARCHITECTURE.md §6.4). A daemon frame-shape
@@ -125,5 +130,25 @@ describe("provisional MetricQuality (§9.1 — frozen-but-generator-pending shad
     const frozen = (schema.$defs.MetricQuality!.oneOf ?? []).map((v) => v.const!);
     expect(frozen.length, "frozen MetricQuality must be a oneOf-of-const").toBeGreaterThan(0);
     expect([...MetricQuality.options].toSorted()).toEqual([...frozen].toSorted());
+  });
+});
+
+describe("provisional terminal shadow (§6.4 — the 6.3d well consumes this)", () => {
+  it("terminal_output_frame_shadow_matches_frozen_serverframe_variant", () => {
+    // spec(§6.4) — the exported TerminalOutputFrame (the consumer's input shape) IS
+    // the frozen ServerFrame.terminal_output variant, extracted for reuse. Field-set
+    // drift-pinned both directions against the frozen schema (Lesson §2/§14).
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
+      $defs: Record<
+        string,
+        { oneOf?: { properties: Record<string, { const?: string }> }[] }
+      >;
+    };
+    const frozenVariant = schema.$defs.ServerFrame!.oneOf!.find(
+      (v) => v.properties.frame_type!.const === "terminal_output",
+    )!;
+    expect(Object.keys(TerminalOutputFrame.shape).toSorted()).toEqual(
+      Object.keys(frozenVariant.properties).toSorted(),
+    );
   });
 });

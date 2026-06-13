@@ -39,6 +39,10 @@ const rejectingGateway: GatewayPort = {
   subscribe: async function* () {
     return;
   },
+  // eslint-disable-next-line require-yield
+  subscribe_terminal: async function* () {
+    return;
+  },
   get_capabilities: () =>
     Promise.resolve({ protocol_version: 1, contract_version: "0.5.0" }),
   // §6.1 mutation surface (unused in this read-path test — the seam has its own suite).

@@ -51,17 +51,19 @@
     },
     "ActionDenied": {
       "additionalProperties": false,
-      "description": "`ActionDenied` payload (§6.2/§7.1; AG §17.1) — the action was denied (terminal). Carries the\n`approval_id` + the denial `reason` (the audit record of WHY).",
+      "description": "`ActionDenied` payload (§6.2/§7.1; AG §17.1) — the action was denied (terminal). Carries the\ndenial `reason` (the audit record of WHY) + an **OPTIONAL** `approval_id`. A HUMAN-deny carries\n`Some(appr_…)`; a 043/A1 agent deny-rule **policy-deny** (denied at submit, BEFORE any approval\nobject) carries `None` (the record-then-deny forensic event — there is no approval to reference).",
       "properties": {
         "approval_id": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "reason": {
           "type": "string"
         }
       },
       "required": [
-        "approval_id",
         "reason"
       ],
       "type": "object"
@@ -729,6 +731,25 @@
       ],
       "type": "object"
     },
+    "BranchCreated": {
+      "additionalProperties": false,
+      "description": "`BranchCreated` payload (§7.1; P5.2 — from edges' `git.create_branch`).",
+      "properties": {
+        "base": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "branch_name"
+      ],
+      "type": "object"
+    },
     "Capabilities": {
       "additionalProperties": false,
       "description": "`get_capabilities` / `HelloAck` capabilities (§6.4). Matches the ui's pinned `Capabilities`\n(`protocol_version` + `contract_version`).",
@@ -1003,8 +1024,23 @@
       ],
       "type": "string"
     },
+    "ExecutionProfile": {
+      "description": "ExecutionProfile runtime state (9, R-7) — the §5.1 8 + **`credit_exhausted`** (the SDK monthly\ncredit-pool HARD-STOP; distinct from the soft, auto-recovering `rate_limited` interactive\nthrottle — cat-4 PTY-primary). The 10th §5.1 machine — held in 0.5 pending the cat-4 SDK-vs-PTY\ndecision, **frozen here in 0.5b** (P4.0b-1). `disabled` (the profile turned off) is the ONLY\nterminal; the rest are recoverable runtime conditions re-derived continuously\n(`execution_profiles.status`, the config-vs-runtime split).",
+      "enum": [
+        "available",
+        "active",
+        "in_use",
+        "rate_limited",
+        "auth_expired",
+        "misconfigured",
+        "disabled",
+        "unknown",
+        "credit_exhausted"
+      ],
+      "type": "string"
+    },
     "ExecutorKind": {
-      "description": "Which executor adapter handles an action (§6.3). A NAME binding — the real per-namespace\nadapters (git CLI / octocrab / session host / …) land in 2.3.",
+      "description": "Which executor adapter handles an action (§6.3). A NAME binding — the real per-namespace\nadapters (git CLI / octocrab / session host / …) land in 2.3. **`Adjudication` (3.2-part-2,\nbrief 043) is the ODD ONE OUT**: it marks the agent-mutation family as **adjudication-only** —\nthe `ActionRequest` TERMINATES at the policy/approval verdict and **no daemon executor runs the\ntool** (the agent executes the allowed tool itself; the daemon only adjudicates + audits, the\nINV-SEC-1 chokepoint). It is NOT a real-executor namespace and never reaches the executor seam.",
       "enum": [
         "brain",
         "project",
@@ -1015,7 +1051,8 @@
         "github",
         "linear",
         "code",
-        "review"
+        "review",
+        "adjudication"
       ],
       "type": "string"
     },
@@ -1048,6 +1085,28 @@
       },
       "required": [
         "name"
+      ],
+      "type": "object"
+    },
+    "GithubSyncFailed": {
+      "additionalProperties": false,
+      "description": "`GithubSyncFailed` payload (§7.1/§17; P7.1 — the **non-auth** `*SyncFailed`). Driven by edges'\nintegration classifier's TERMINAL non-auth class (a `ClientError` sync failure, NO profile\nmutation). **§15 — load-bearing:** `reason` is a redaction-safe STRUCTURAL class-name (the\nclassifier's terminal class), NEVER raw API response text. The `auth_expired` variant (the\nclassifier's `AuthFailed` class → `ExecutionProfile→auth_expired`) is **DEFERRED** — its 0.5b\nExecutionProfile gate + a §17/INV-SEC re-review; R1b is the non-auth variant ONLY.",
+      "properties": {
+        "failed_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "reason": {
+          "description": "**§15:** a STRUCTURAL class-name (the classifier's terminal class), NEVER raw API text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "reason",
+        "failed_at"
       ],
       "type": "object"
     },
@@ -1183,6 +1242,34 @@
       ],
       "type": "string"
     },
+    "IntegrationConnectionRegistered": {
+      "additionalProperties": false,
+      "description": "`IntegrationConnectionRegistered` payload (§7.1; P7.1 — from connecting GitHub/Linear). Feeds a\nprivate `integration_connections` registry. `connection_id` is an edges-private id (NOT a frozen-22\n`IdKind` — the `terminal_id`/`out_` bare-String precedent). **§15 rule #4 — load-bearing:**\n`keychain_ref` is a NON-SECRET POINTER into the OS keychain (the entry name/ref), NEVER the token\nitself — the secret stays in the keychain; events hold pointers only.",
+      "properties": {
+        "account": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "connection_id": {
+          "type": "string"
+        },
+        "keychain_ref": {
+          "description": "**§15 rule #4:** a NON-SECRET keychain POINTER (the keychain entry name/ref), NEVER the token.",
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        }
+      },
+      "required": [
+        "connection_id",
+        "provider",
+        "keychain_ref"
+      ],
+      "type": "object"
+    },
     "IpcErrorCode": {
       "description": "The §6.4 structured wire error codes (closed set; reject-unknown). snake_case wire values.\n`protocol_error` (a bad-first-frame / handshake-required / malformed-frame violation, distinct\nfrom `unknown_method`) was added in 1.5 per the lead-ratified §6.4 gap resolution (Option B).\n`fencing_conflict` + `internal_error` were added in 2.4 L1 (lead-ruled Option A, away-authority):\nthe §17 failure modes need honest codes that drive the THREE distinct §11.5 safety cards with\nDIFFERENT resolution semantics — `fencing_conflict` → the **never-auto-resolved** hard-conflict\ncard (rule #6); `precondition_stale` → the **re-approvable** stale card; `internal_error` → the\n**fail-closed** integrity alert (`AuditWriteFailed`/`UnknownOutcome`). Collapsing them to\n`precondition_stale` would render a fencing conflict as re-approvable → break rule #6 at the UI.",
       "enum": [
@@ -1197,6 +1284,28 @@
         "internal_error"
       ],
       "type": "string"
+    },
+    "LinearSyncFailed": {
+      "additionalProperties": false,
+      "description": "`LinearSyncFailed` payload (§7.1/§17; P7.1 — the **non-auth** `*SyncFailed`, Linear). Same contract\nas [`GithubSyncFailed`] — see its doc for the §15 `reason` structural-class-name discipline + the\ndeferred `auth_expired` variant.",
+      "properties": {
+        "failed_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "reason": {
+          "description": "**§15:** a STRUCTURAL class-name (the classifier's terminal class), NEVER raw API text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "reason",
+        "failed_at"
+      ],
+      "type": "object"
     },
     "LocalRunnerId": {
       "description": "`lr_<ULID>` — a daemon execution surface (§5.3 LocalRunner), minted per daemon start.",
@@ -1377,6 +1486,68 @@
       ],
       "type": "string"
     },
+    "ProjectRescanned": {
+      "additionalProperties": false,
+      "description": "`ProjectRescanned` payload (§7.1; P5.1 — edges' project-detection wiring). Emitted by edges'\n`project.rescan` executor after its detection engine runs; consumed by `proj_project_activity` + the\nproject graph + a private `projects`/`repositories` registry (the projector splits this ONE coarse\nevent into rows — lead-ruled coarse: a rescan is atomic). The project IDENTITY (`project_id`/actor)\nlives on the [`crate::event_envelope::EventEnvelope`] columns; this payload carries the detection delta.\n\n**§15 `remote_url` (rule #5/#3/#4) — load-bearing:** the git remote URL can embed credentials\n(`https://user:token@host`). A generic URL password has NO key-prefix → it is OUTSIDE the §15\nprefix+entropy Redactor's recall envelope (LESSON §13), so the Redactor is the **backstop**, not the\nprimary control. The `user:token@` userinfo MUST be stripped **at the emit source** (edges' project\nexecutor, BEFORE this event is constructed). The strip-at-source enforcement + its test are edges'\nP5.1 emission slice — R1b ships the contract, no emitter.",
+      "properties": {
+        "brain": {
+          "type": "boolean"
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cc_crew": {
+          "type": "boolean"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "is_dirty": {
+          "type": "boolean"
+        },
+        "is_git": {
+          "type": "boolean"
+        },
+        "plan_file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remote_url": {
+          "description": "the git remote URL. **§15:** userinfo (`user:token@`) MUST be stripped at the emit source (edges)\n— the Redactor is the backstop only (a generic URL password has no prefix; LESSON §13).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scanned_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "workflow_pack": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "is_git",
+        "detached",
+        "is_dirty",
+        "workflow_pack",
+        "cc_crew",
+        "brain",
+        "scanned_at"
+      ],
+      "type": "object"
+    },
     "ProjectionDelta": {
       "additionalProperties": false,
       "description": "A streamed projection delta (§6.1 subscribe) — matches the ui's `ProjectionDelta`: the changed\nprojection, the change kind, and the row (on upsert) or just the id (on remove).",
@@ -1431,6 +1602,14 @@
       },
       "type": "object"
     },
+    "Provider": {
+      "description": "The integration provider (§7.2 — `github` | `linear`). A NEW closed wire enum: snake_case,\nreject-unknown (§5.0/§15); a flat `enum` schema so the §5.0 3-way verify stays exact (LESSON §15\ntrap 2 — string enums emit as flat `enum`, not a discriminated union).",
+      "enum": [
+        "github",
+        "linear"
+      ],
+      "type": "string"
+    },
     "PullRequest": {
       "description": "PullRequest (11) — GitHub-authoritative cache (§7.2).",
       "enum": [
@@ -1447,6 +1626,50 @@
         "closed"
       ],
       "type": "string"
+    },
+    "PullRequestSynced": {
+      "additionalProperties": false,
+      "description": "`PullRequestSynced` payload (§7.1; P7.1 — from edges' github PR-sync executor). Feeds\n`proj_pull_request` (the GitHub-authoritative cache, §7.2). `status` REUSES the frozen §5.1\n[`PullRequest`] machine (no fork — adapters map INTO it). `pr_number` is the GitHub-native PR id\n(external integer, not a frozen-22 ID). Identity on the envelope; payload = the synced-PR delta.",
+      "properties": {
+        "base": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "checks_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mergeable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "pr_checked_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "pr_number": {
+          "description": "the GitHub-native PR number — a non-negative EXTERNAL natural (edges parses it from API\nresponses; `u64` rejects a negative at the parse boundary; NOT a frozen-22 ID).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/PullRequest"
+        }
+      },
+      "required": [
+        "pr_number",
+        "status",
+        "branch",
+        "base",
+        "pr_checked_at"
+      ],
+      "type": "object"
     },
     "RedactionStatus": {
       "description": "§15 redaction state. The single-writer GATE refuses to persist any event\nthat is not `redacted`. A quarantined (unredactable) event is diverted —\nnot persisted — and a `SensitiveOutputRedacted` event recorded instead, so\nonly these 2 values ever reach the `events` table.",
@@ -1635,7 +1858,7 @@
       "type": "string"
     },
     "ServerFrame": {
-      "description": "The server→client **multiplexed frame envelope** (§6.4 frame-type tag). The internally-tagged\n`frame_type` discriminant lets the client demultiplex one connection: an RPC response vs a\nsubscription push. The **Terminal-Channel tag space is RESERVED** — raw PTY frames are a\nPhase-3 decision (JSON-base64 vs a binary fast-path, made with throughput data); no variant yet.",
+      "description": "The server→client **multiplexed frame envelope** (§6.4 frame-type tag). The internally-tagged\n`frame_type` discriminant lets the client demultiplex one connection: an RPC response, a\nsubscription push, or raw terminal output. **AS-BUILT (3.4):** the reserved Terminal-Channel slot\nis filled with the **JSON-base64 MVP** `TerminalOutput` variant (`data` base64 over the unchanged\ncodec, LESSON §7); the **binary fast-path stays a deferred 3.5 decision**, made with the\nterminal-attach throughput benchmark (additive — a future variant + a CONTRACT bump, not a reshape).",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -1697,6 +1920,36 @@
             "kind"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "raw terminal output (§6.4 Terminal Channel) — the reserved slot, filled 3.4 (JSON-base64 MVP).",
+          "properties": {
+            "data": {
+              "description": "base64-encoded raw PTY output bytes.",
+              "type": "string"
+            },
+            "frame_type": {
+              "const": "terminal_output",
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "terminal_id": {
+              "description": "the opaque daemon-minted terminal runtime handle (NOT a frozen-22 ID; re-minted on resume).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "frame_type",
+            "terminal_id",
+            "seq",
+            "data"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -1728,6 +1981,13 @@
       "description": "`SessionStarted` payload. The session's **identity** (`session_id`/`project_id`)\nlives on the [`crate::event_envelope::EventEnvelope`] typed fields (so projectors\nderive `object_refs` + read-models from columns that survive a rebuild); this\npayload carries the type-specific session attributes the `proj_session` projector\nfolds. `status` binds to the frozen §5.1 [`Session`] machine — an unknown wire\nvalue fails closed at the parse boundary (reject-unknown, §15).",
       "properties": {
         "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_profile_id": {
+          "description": "the §15 #8 ExecutionProfile binding — the profile RESOLVED at session.create + recorded here\n(P4.0b-1). `None` until the session-create executor populates it (4.0b-1 L3); a profile CHANGE\nis approval-gated (the no-silent-account-hop gate lives on the change, not this routine record).",
           "type": [
             "string",
             "null"
@@ -1874,6 +2134,103 @@
       ],
       "type": "object"
     },
+    "TerminalControlFrame": {
+      "additionalProperties": false,
+      "description": "A terminal **control** frame (§6.4): the explicit app-level flow-control signal (pause/resume).",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/TerminalControlKind"
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "TerminalControlKind": {
+      "description": "The kind of explicit app-level **flow-control** frame in a [`TerminalControlFrame`] (§6.4\nbackpressure). snake_case wire values. The client emits `pause`/`resume` to throttle a chatty\nPTY; the L3 watermark pump also produces these as its flow-control decision (display-only #9).",
+      "enum": [
+        "pause",
+        "resume"
+      ],
+      "type": "string"
+    },
+    "TerminalInputFrame": {
+      "additionalProperties": false,
+      "description": "A client→daemon terminal **input** frame (§6.4): keystrokes/paste for the PTY child. `data` base64.",
+      "properties": {
+        "data": {
+          "description": "base64-encoded raw input bytes written to the PTY child.",
+          "type": "string"
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "data"
+      ],
+      "type": "object"
+    },
+    "TerminalOutputFrame": {
+      "additionalProperties": false,
+      "description": "A daemon→client terminal **output** frame (§6.4). `data` = base64 raw PTY output bytes. `seq`\nincrements per emitted frame (the L3 ~30 fps batch pump assigns it) so a gap is client-detectable.",
+      "properties": {
+        "data": {
+          "description": "base64-encoded raw PTY output bytes.",
+          "type": "string"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "terminal_id": {
+          "description": "the opaque daemon-minted terminal runtime handle (NOT a frozen-22 ID; re-minted on resume).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "seq",
+        "data"
+      ],
+      "type": "object"
+    },
+    "TerminalProcessExited": {
+      "additionalProperties": false,
+      "description": "The §17 PTY-death record (3.4): a terminal child process exited. A **non-mutation OBSERVATION\nevent** — the daemon WITNESSES the child exit (via portable-pty waitpid / reader EOF) and records\nit; it follows the System/supervisor-actor non-mutation-event precedent (`DeviceRegistered`/\n`TelemetrySampled`, LESSON §10/§23): written via the single write-actor through the §15 redaction\ngate (#2/#3 hold), NEVER through the Gateway pipeline (INV-SEC-1 governs state *mutations*; a\nprocess-exit notification is none). **Safety #9** — `exit_code`/`signal` come from the OS exit\nstatus, NEVER inferred by parsing terminal output (the PTY is display-only). The session identity\n(`session_id`/`occurred_at`) lives on the [`crate::event_envelope::EventEnvelope`] columns; this\npayload carries only `terminal_id` + the OS exit detail. The §17 SessionFailed → ActionFailed →\nlease-release cascade is **Phase 4** (it CONSUMES this event). Optionals serialize as explicit\n`null` (no `skip_serializing_if`) for a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).",
+      "properties": {
+        "exit_code": {
+          "description": "the child's exit code (None when killed by a signal, or unavailable).",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "signal": {
+          "description": "the terminating signal name (None when it exited normally).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "terminal_id": {
+          "description": "the opaque daemon-minted terminal runtime handle (NOT a frozen-22 ID; matches the wire frames).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id"
+      ],
+      "type": "object"
+    },
     "Timestamp": {
       "format": "date-time",
       "type": "string"
@@ -1967,6 +2324,38 @@
       ],
       "type": "string"
     },
+    "WorktreeCreated": {
+      "additionalProperties": false,
+      "description": "`WorktreeCreated` payload (§7.1; P5.2 — from edges' `git.create_worktree`). Feeds `proj_worktree`\n(status via edges' `derive_worktree_status`). Identity on the envelope; payload = the creation delta.",
+      "properties": {
+        "base_branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch_name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "worktree_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "worktree_id",
+        "path",
+        "branch_name"
+      ],
+      "type": "object"
+    },
+    "WorktreeDeleted": {
+      "additionalProperties": false,
+      "description": "`WorktreeDeleted` payload (§7.1; P5.2 overlay-axis transition). EMPTY payload — see [`WorktreeMerged`].",
+      "type": "object"
+    },
     "WorktreeGit": {
       "description": "Worktree git-sync axis (R-7). No terminal states (the overlay axis carries\nthe terminal `deleted`).",
       "enum": [
@@ -1979,6 +2368,16 @@
       ],
       "type": "string"
     },
+    "WorktreeLocked": {
+      "additionalProperties": false,
+      "description": "`WorktreeLocked` payload (§7.1; P5.2 overlay-axis transition). EMPTY payload — see [`WorktreeMerged`].",
+      "type": "object"
+    },
+    "WorktreeMerged": {
+      "additionalProperties": false,
+      "description": "`WorktreeMerged` payload (§7.1; P5.2 overlay-axis transition). EMPTY payload — the worktree identity\nis on the envelope `resource_refs`, the transition IS the `event_type` (the `ActionStarted{}`\nprecedent); feeds the overlay axis of edges' `derive_worktree_status`.",
+      "type": "object"
+    },
     "WorktreeOverlay": {
       "description": "Worktree lifecycle-overlay axis (R-7).",
       "enum": [
@@ -1990,6 +2389,11 @@
         "deleted"
       ],
       "type": "string"
+    },
+    "WorktreePrunable": {
+      "additionalProperties": false,
+      "description": "`WorktreePrunable` payload (§7.1; P5.2 overlay-axis transition). EMPTY payload — see [`WorktreeMerged`].",
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2085,6 +2489,9 @@
     "audit_integrity_violation": {
       "$ref": "#/$defs/AuditIntegrityViolation"
     },
+    "branch_created": {
+      "$ref": "#/$defs/BranchCreated"
+    },
     "capabilities": {
       "$ref": "#/$defs/Capabilities"
     },
@@ -2112,6 +2519,9 @@
     "evidence_type": {
       "$ref": "#/$defs/EvidenceType"
     },
+    "execution_profile": {
+      "$ref": "#/$defs/ExecutionProfile"
+    },
     "executor_kind": {
       "$ref": "#/$defs/ExecutorKind"
     },
@@ -2120,6 +2530,9 @@
     },
     "get_projection_params": {
       "$ref": "#/$defs/GetProjectionParams"
+    },
+    "github_sync_failed": {
+      "$ref": "#/$defs/GithubSyncFailed"
     },
     "harness_capabilities": {
       "$ref": "#/$defs/HarnessCapabilities"
@@ -2136,8 +2549,14 @@
     "idempotency_formula": {
       "$ref": "#/$defs/IdempotencyFormula"
     },
+    "integration_connection_registered": {
+      "$ref": "#/$defs/IntegrationConnectionRegistered"
+    },
     "ipc_error_code": {
       "$ref": "#/$defs/IpcErrorCode"
+    },
+    "linear_sync_failed": {
+      "$ref": "#/$defs/LinearSyncFailed"
     },
     "local_runner_id": {
       "$ref": "#/$defs/LocalRunnerId"
@@ -2166,6 +2585,9 @@
     "project_brain": {
       "$ref": "#/$defs/ProjectBrain"
     },
+    "project_rescanned": {
+      "$ref": "#/$defs/ProjectRescanned"
+    },
     "projection_delta": {
       "$ref": "#/$defs/ProjectionDelta"
     },
@@ -2175,8 +2597,14 @@
     "projection_scope": {
       "$ref": "#/$defs/ProjectionScope"
     },
+    "provider": {
+      "$ref": "#/$defs/Provider"
+    },
     "pull_request": {
       "$ref": "#/$defs/PullRequest"
+    },
+    "pull_request_synced": {
+      "$ref": "#/$defs/PullRequestSynced"
     },
     "redaction_status": {
       "$ref": "#/$defs/RedactionStatus"
@@ -2235,6 +2663,21 @@
     "telemetry_sampled": {
       "$ref": "#/$defs/TelemetrySampled"
     },
+    "terminal_control_frame": {
+      "$ref": "#/$defs/TerminalControlFrame"
+    },
+    "terminal_control_kind": {
+      "$ref": "#/$defs/TerminalControlKind"
+    },
+    "terminal_input_frame": {
+      "$ref": "#/$defs/TerminalInputFrame"
+    },
+    "terminal_output_frame": {
+      "$ref": "#/$defs/TerminalOutputFrame"
+    },
+    "terminal_process_exited": {
+      "$ref": "#/$defs/TerminalProcessExited"
+    },
     "timestamp": {
       "$ref": "#/$defs/Timestamp"
     },
@@ -2253,11 +2696,26 @@
     "workflow_instance": {
       "$ref": "#/$defs/WorkflowInstance"
     },
+    "worktree_created": {
+      "$ref": "#/$defs/WorktreeCreated"
+    },
+    "worktree_deleted": {
+      "$ref": "#/$defs/WorktreeDeleted"
+    },
     "worktree_git": {
       "$ref": "#/$defs/WorktreeGit"
     },
+    "worktree_locked": {
+      "$ref": "#/$defs/WorktreeLocked"
+    },
+    "worktree_merged": {
+      "$ref": "#/$defs/WorktreeMerged"
+    },
     "worktree_overlay": {
       "$ref": "#/$defs/WorktreeOverlay"
+    },
+    "worktree_prunable": {
+      "$ref": "#/$defs/WorktreePrunable"
     }
   },
   "required": [
@@ -2271,6 +2729,7 @@
     "approval",
     "action_request",
     "agent_team",
+    "execution_profile",
     "actor_type",
     "id_kind",
     "desktop_object_kind",
@@ -2348,9 +2807,26 @@
     "metric_quality",
     "transcript_ref",
     "harness_capabilities",
-    "telemetry_sampled"
+    "telemetry_sampled",
+    "terminal_output_frame",
+    "terminal_input_frame",
+    "terminal_control_frame",
+    "terminal_control_kind",
+    "terminal_process_exited",
+    "project_rescanned",
+    "worktree_created",
+    "branch_created",
+    "worktree_merged",
+    "worktree_prunable",
+    "worktree_deleted",
+    "worktree_locked",
+    "provider",
+    "pull_request_synced",
+    "integration_connection_registered",
+    "github_sync_failed",
+    "linear_sync_failed"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.20.0"
+  "x-contract-version": "0.26.0"
 }

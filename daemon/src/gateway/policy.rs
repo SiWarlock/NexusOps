@@ -1,8 +1,55 @@
 //! The policy-engine seam (§6.2/§15). 2.2 owns the real risk→decision engine; 2.1b ships a STUB
 //! so the chokepoint + its approval gate are test-first before the risk engine exists.
 
-use nexusops_shared::actions::{ActionRequest, PolicyDecision, PolicyDecisionStatus, RiskLevel};
+use nexusops_shared::actions::{
+    ActionRequest, PolicyDecision, PolicyDecisionStatus, RequesterType, RiskLevel,
+};
 use nexusops_shared::catalog;
+
+/// The session-lifecycle action types that are **UI/IPC-initiated ONLY** (PIN e, away-ruled): an
+/// agent / Brain / pack requester is DENIED (no agent/Brain session-spawn at risk-0 — agent paths
+/// stay governed by [`AgentMutationPolicy`] / the 043 interception). §15 #8.
+const SESSION_LIFECYCLE_TYPES: &[&str] = &["session.create", "session.kill"];
+
+/// The risk-0 action types PERMITTED to auto-execute (PIN d — the lead-ruled EXPLICIT allowlist,
+/// belt-and-suspenders over the catalog + the LESSON 19 re-gate). A risk-0 type NOT here fails CLOSED
+/// (`RequireApproval`) at [`CatalogPolicy`], so a future risk-0 MUTATION can never silently
+/// auto-execute — admitting an auto-executing type forces a deliberate allowlist edit. **Must stay
+/// == the catalog's risk-0 set** (a consistency test pins this).
+const RISK0_AUTO_EXECUTE_ALLOWLIST: &[&str] = &[
+    // read / inspect / propose-only (mutation-free)
+    "brain.ask",
+    "project.rescan",
+    "workflow.detect",
+    "git.status",
+    "git.diff",
+    "code.open_file",
+    // the agent-mutation read-only adjudication (governed by AgentMutationPolicy; no executor runs)
+    "agent.file_read",
+    // session-lifecycle — the away-ruled risk-0 MUTATIONS (the NARROW relaxation, PIN d)
+    "session.create",
+    "session.kill",
+];
+
+/// PIN (d) — whether a risk-0 `action_type` is on the explicit auto-execute allowlist. A non-member
+/// risk-0 fails closed at [`CatalogPolicy`]. `pub` for the §15-pin test.
+pub fn risk0_auto_execute_permitted(action_type: &str) -> bool {
+    RISK0_AUTO_EXECUTE_ALLOWLIST.contains(&action_type)
+}
+
+/// The explicit risk-0 auto-execute allowlist (PIN d). `pub` so the §15 consistency test can sweep it
+/// BOTH ways (every allowlist entry IS a catalog risk-0 type, and vice-versa) — catching a phantom /
+/// typo'd allowlist entry that the catalog→allowlist direction alone would miss.
+pub fn risk0_auto_execute_allowlist() -> &'static [&'static str] {
+    RISK0_AUTO_EXECUTE_ALLOWLIST
+}
+
+/// The UI/IPC-initiated requesters permitted to drive a session-lifecycle action (PIN e). `User` =
+/// the desktop UI; `RemoteClient` = the (deferred) remote/iOS surface. Agent/Brain/pack/system are
+/// excluded — a system-initiated kill (the §17 cascade, 4.2) would add `SystemPolicy` deliberately.
+fn is_ui_ipc_requester(requester: RequesterType) -> bool {
+    matches!(requester, RequesterType::User | RequesterType::RemoteClient)
+}
 
 /// Decides whether an action may proceed, needs approval, or is denied (§6.2 / AG §12). The
 /// Gateway holds a `Box<dyn PolicyEngine>` so 2.2 swaps in the catalog-driven risk engine without
@@ -36,10 +83,15 @@ impl PolicyEngine for StubPolicy {
 /// 2.2 — the catalog-driven policy engine (the production policy; INV-SEC-1). Resolves each action's
 /// risk from the §6.3 [`catalog`] (AUTHORITATIVE), **never** the requester-supplied `risk_level`
 /// (recorded, not trusted — §15). The risk → decision mapping (Q4, AG §7/§12):
-/// - **risk-0** → `allow` (the auto-execute-eligible read/inspect/propose-only set);
+/// - **risk-0** → `allow` ONLY when BOTH fail-closed guards pass: (i) the null-schema floor
+///   (`params_schema_present`) and (ii) the explicit [`RISK0_AUTO_EXECUTE_ALLOWLIST`] (PIN d,
+///   P4.0b-1) — else `require_approval`. The allowlisted risk-0 set = the read/inspect/propose-only
+///   types + the away-ruled session-lifecycle MUTATIONS (`session.create`/`kill`);
 /// - **risk 1/2/3** → `require_approval` (the MVP default-confirm posture);
 /// - **risk-4** (critical) → `require_step_approval` (never broad automation);
-/// - an `action_type` **absent from the catalog** → `deny` (fail-closed, §15 — never a default-allow).
+/// - an `action_type` **absent from the catalog** → `deny` (fail-closed, §15 — never a default-allow);
+/// - **PIN (e)** — a session-lifecycle (`session.create`/`kill`) action from a non-UI/IPC requester
+///   (agent/Brain/pack/system) → `deny` BEFORE risk resolution (§15 #8; away-ruled UI/IPC-only).
 ///
 /// The **null-schema floor** (§6.3/OQ-WP-5): an action whose params carry no typed schema
 /// (`params_schema_present == false`) can NEVER resolve to `allow` — defense-in-depth that holds even
@@ -61,6 +113,20 @@ impl PolicyEngine for CatalogPolicy {
                 ),
             );
         };
+        // PIN (e) — session-lifecycle (session.create/kill) is UI/IPC-initiated ONLY: an agent /
+        // Brain / pack requester is DENIED before any risk resolution (§15 #8 / away-ruled — no
+        // agent/Brain session-spawn at risk-0; agents are governed by `AgentMutationPolicy`).
+        if SESSION_LIFECYCLE_TYPES.contains(&req.action_type.as_str())
+            && !is_ui_ipc_requester(req.requester_type)
+        {
+            return decision(
+                PolicyDecisionStatus::Deny,
+                format!(
+                    "session-lifecycle '{}' is UI/IPC-initiated only — a {:?} requester is denied (§15 #8)",
+                    req.action_type, req.requester_type
+                ),
+            );
+        }
         // the §6.3/OQ-WP-5 null-schema floor: no typed params schema → never auto-allow. The floor
         // only needs to act on the `Level0` arm — `Allow` is the sole status it must suppress;
         // risk 1-3 already `require_approval` and risk-4 already `require_step_approval`, so a
@@ -69,6 +135,12 @@ impl PolicyEngine for CatalogPolicy {
         let floored = !entry.params_schema_present;
         let status = match entry.locked_risk {
             RiskLevel::Level0 if floored => PolicyDecisionStatus::RequireApproval,
+            // PIN (d) — a risk-0 type NOT on the explicit auto-execute allowlist fails CLOSED (belt-
+            // and-suspenders over the catalog + the LESSON 19 re-gate): a future risk-0 mutation can
+            // never silently auto-execute; admitting an auto-executing type forces a deliberate edit.
+            RiskLevel::Level0 if !risk0_auto_execute_permitted(&req.action_type) => {
+                PolicyDecisionStatus::RequireApproval
+            }
             RiskLevel::Level0 => PolicyDecisionStatus::Allow,
             RiskLevel::Level1 | RiskLevel::Level2 | RiskLevel::Level3 => {
                 PolicyDecisionStatus::RequireApproval
@@ -95,4 +167,105 @@ fn decision(status: PolicyDecisionStatus, reason: String) -> PolicyDecision {
         constraints: vec![],
         safer_alt: None,
     }
+}
+
+/// 043 (L4) — the agent-mutation policy: wraps [`CatalogPolicy`] with the O-13 **params-sensitive
+/// deny-rules**. For an agent-mutation action (`agent.*`) whose params match a known-dangerous pattern
+/// ([`deny_rule_match`]) it returns `Deny` OUTRIGHT — never reaching approval (the REDUNDANT O-13 layer
+/// over the PRIMARY require-approval-by-default control). For every other action (the non-agent MVP
+/// types AND a non-dangerous agent mutation) it DELEGATES to [`CatalogPolicy`] unchanged — the catalog-authoritative
+/// base risk is the floor; the deny-rules only RAISE to a deny, never lower (the §15 catalog-risk
+/// invariant holds). This is the Gateway's production policy when supervising agents.
+pub struct AgentMutationPolicy;
+
+impl PolicyEngine for AgentMutationPolicy {
+    fn decide(&self, req: &ActionRequest) -> PolicyDecision {
+        if is_agent_mutation(&req.action_type) {
+            if let Some(reason) = deny_rule_match(&req.action_type, &req.inputs) {
+                return decision(
+                    PolicyDecisionStatus::Deny,
+                    format!("agent-mutation deny-rule: {reason}"),
+                );
+            }
+        }
+        CatalogPolicy.decide(req)
+    }
+}
+
+/// Whether an `action_type` is an agent-mutation family member (043 — the `agent.*` adjudication set).
+fn is_agent_mutation(action_type: &str) -> bool {
+    catalog::AGENT_MUTATION_ACTION_TYPES.contains(&action_type)
+}
+
+/// The O-13 params-sensitive deny-rule predicate (043 L4) — a CONSERVATIVE, PURE starter set, NOT a
+/// complete sandbox (the PRIMARY control is require-approval-by-default; this is the REDUNDANT O-13
+/// layer that denies the OBVIOUS catastrophic patterns OUTRIGHT, before they reach the human). Returns
+/// `Some(reason)` on a match. **Errs toward NO false-positives** — a benign command must NOT be denied
+/// (it falls through to require-approval); a missed dangerous variant is acceptable (the human still
+/// sees it via approval). Today only `agent.bash` (the unbounded-blast-radius tool) has rules; the
+/// `agent.file_edit`/`file_read` path-based rules (secret-file / out-of-tree write) are a flagged
+/// extension. Extensible — pin every addition with a test.
+pub fn deny_rule_match(action_type: &str, inputs: &serde_json::Value) -> Option<String> {
+    if action_type != "agent.bash" {
+        return None;
+    }
+    let command = inputs.get("command").and_then(|c| c.as_str())?;
+    bash_deny_rule(command)
+}
+
+/// The Bash-command deny-rule patterns (pure; token/substring heuristics). Conservative — matches the
+/// clear catastrophic SHAPES only (broad-path `rm -rf`, force-push, `curl|sh`, `--dangerously-*`).
+fn bash_deny_rule(command: &str) -> Option<String> {
+    let c = command.trim();
+    if rm_rf_broad(c) {
+        return Some(
+            "recursive force-delete of a broad path (rm -rf /, ~, /*, $HOME, *)".to_string(),
+        );
+    }
+    if c.contains("git push") && (c.contains("--force") || has_short_flag(c, 'f')) {
+        return Some("git force-push (remote history overwrite)".to_string());
+    }
+    if (c.contains("curl") || c.contains("wget")) && pipes_to_shell(c) {
+        return Some("piping a downloaded script into a shell (curl|sh)".to_string());
+    }
+    if c.contains("--dangerously") {
+        return Some("a --dangerously-* flag".to_string());
+    }
+    None
+}
+
+/// A recursive+force `rm` targeting a BROAD path (catastrophic). Token-precise to avoid a false-positive
+/// on a SCOPED delete (`rm -rf ./build` → no broad token → not matched).
+fn rm_rf_broad(c: &str) -> bool {
+    if !c.split_whitespace().any(|t| t == "rm") {
+        return false;
+    }
+    // recursive AND force, in ANY flag form: short (`-r`/`-f`/combined `-rf`/`-fr`) or long
+    // (`--recursive`/`--force`) — so `rm -rf /`, `rm -r --force /`, `rm --recursive --force /` all match.
+    let recursive = has_short_flag(c, 'r') || c.contains("--recursive");
+    let force = has_short_flag(c, 'f') || c.contains("--force");
+    if !(recursive && force) {
+        return false;
+    }
+    if c.contains("--no-preserve-root") {
+        return true;
+    }
+    // a broad target as a whitespace-delimited token (NOT a scoped path like ./build or /abs/specific).
+    c.split_whitespace()
+        .any(|t| matches!(t, "/" | "/*" | "~" | "~/" | "$HOME" | "*"))
+}
+
+/// Whether the command pipes into a shell interpreter (`… | sh` / `… | bash` / `… | zsh`). Strips
+/// spaces so `curl x | sh` and `curl x|sh` both match. Imprecise toward FALSE-POSITIVES (e.g. a pipe
+/// into a `sh*`-prefixed program name) — acceptable: a false-positive is a safe deny, and a missed
+/// interpreter (`| python`, process-substitution) still reaches require-approval (the primary control).
+fn pipes_to_shell(c: &str) -> bool {
+    let norm = c.replace(' ', "");
+    norm.contains("|sh") || norm.contains("|bash") || norm.contains("|zsh")
+}
+
+/// Whether a short flag char appears in any `-…` (NOT `--…`) token (e.g. `-f`, or combined `-rf`).
+fn has_short_flag(c: &str, flag: char) -> bool {
+    c.split_whitespace()
+        .any(|t| t.starts_with('-') && !t.starts_with("--") && t.contains(flag))
 }

@@ -256,13 +256,71 @@ pub struct ProjectionDelta {
     pub id: Option<String>,
 }
 
+// ---- the §6.4 Terminal Channel frames (3.4 — the reserved slot filled, JSON-base64 MVP) --------
+//
+// Raw PTY bytes ride the EXISTING 4-byte-len+JSON codec by carrying `data` as base64 (LESSON §7 —
+// no new framing machinery; the binary fast-path is a deferred 3.5 decision, made with throughput
+// data). `terminal_id` is an opaque daemon-minted runtime handle (a `String` on the wire — NOT one
+// of the frozen-22 IDs; re-minted per attach/resume, the `subscription_id` precedent — lead-ratified
+// 3.4). The PTY is **display-only** (safety #9): these frames move bytes + an OS-derived exit signal,
+// never a status the UI infers from output.
+
+/// The kind of explicit app-level **flow-control** frame in a [`TerminalControlFrame`] (§6.4
+/// backpressure). snake_case wire values. The client emits `pause`/`resume` to throttle a chatty
+/// PTY; the L3 watermark pump also produces these as its flow-control decision (display-only #9).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalControlKind {
+    Pause,
+    Resume,
+}
+
+impl TerminalControlKind {
+    /// every variant — the contract value-set guard (`check_values`).
+    pub const ALL: &'static [TerminalControlKind] =
+        &[TerminalControlKind::Pause, TerminalControlKind::Resume];
+}
+
+/// A daemon→client terminal **output** frame (§6.4). `data` = base64 raw PTY output bytes. `seq`
+/// increments per emitted frame (the L3 ~30 fps batch pump assigns it) so a gap is client-detectable.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalOutputFrame {
+    /// the opaque daemon-minted terminal runtime handle (NOT a frozen-22 ID; re-minted on resume).
+    pub terminal_id: String,
+    pub seq: u64,
+    /// base64-encoded raw PTY output bytes.
+    pub data: String,
+}
+
+/// A client→daemon terminal **input** frame (§6.4): keystrokes/paste for the PTY child. `data` base64.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalInputFrame {
+    pub terminal_id: String,
+    /// base64-encoded raw input bytes written to the PTY child.
+    pub data: String,
+}
+
+/// A terminal **control** frame (§6.4): the explicit app-level flow-control signal (pause/resume).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalControlFrame {
+    pub terminal_id: String,
+    pub kind: TerminalControlKind,
+}
+
 /// The server→client **multiplexed frame envelope** (§6.4 frame-type tag). The internally-tagged
-/// `frame_type` discriminant lets the client demultiplex one connection: an RPC response vs a
-/// subscription push. The **Terminal-Channel tag space is RESERVED** — raw PTY frames are a
-/// Phase-3 decision (JSON-base64 vs a binary fast-path, made with throughput data); no variant yet.
+/// `frame_type` discriminant lets the client demultiplex one connection: an RPC response, a
+/// subscription push, or raw terminal output. **AS-BUILT (3.4):** the reserved Terminal-Channel slot
+/// is filled with the **JSON-base64 MVP** `TerminalOutput` variant (`data` base64 over the unchanged
+/// codec, LESSON §7); the **binary fast-path stays a deferred 3.5 decision**, made with the
+/// terminal-attach throughput benchmark (additive — a future variant + a CONTRACT bump, not a reshape).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "frame_type", rename_all = "snake_case")]
 pub enum ServerFrame {
     RpcResponse(RpcResponse),
     SubscriptionPush(ProjectionDelta),
+    /// raw terminal output (§6.4 Terminal Channel) — the reserved slot, filled 3.4 (JSON-base64 MVP).
+    TerminalOutput(TerminalOutputFrame),
 }

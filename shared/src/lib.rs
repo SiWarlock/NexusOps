@@ -60,14 +60,46 @@ pub mod time;
 /// reshaped. `NormalizedStatus` re-exports the frozen §5.1 `Session` (not a new type/$def). The
 /// `HarnessAdapter` trait + `MutationIntercept` + the mutation-coverage matrix + `ResumeResult` are
 /// DAEMON-INTERNAL (not a `shared/` wire contract); `ResumeResult`/survival freezes in Phase 4 (§8/§17).
-pub const CONTRACT_VERSION: &str = "0.20.0";
-
-/// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
-/// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,
-/// plus a possible SDK-credit-exhaustion value) are the one surface the cat-4
-/// SDK-vs-PTY decision and the ≥2026-06-15 credit-pool drain (guardrail 1) could
-/// reshape. Re-frozen in **0.5b** once cat-4 resolves. This marker makes the
-/// absence deliberate, not forgotten.
-pub const EXECUTION_PROFILE_STATUS_HELD: &str =
-    "ExecutionProfile status machine held for 0.5b pending cat-4 SDK-vs-PTY + \
-     the >=2026-06-15 credit-pool drain (guardrail 1)";
+/// 0.21.0 (3.4) freezes the §6.4 Terminal Channel wire contract (`shared/src/ipc.rs`): the 3 terminal
+/// frames (`TerminalOutputFrame`/`TerminalInputFrame`/`TerminalControlFrame`) + the `TerminalControlKind`
+/// (pause|resume) flow-control enum + the §7.1 `TerminalProcessExited` PTY-death observation event.
+/// `ServerFrame` gains the `TerminalOutput` variant — the reserved Terminal slot filled with the
+/// JSON-base64 MVP (raw PTY bytes base64 over the unchanged codec, LESSON §7); the binary fast-path is
+/// a deferred 3.5 decision (additive — a future variant + bump, not a reshape). Additive, no frozen
+/// type reshaped (§5.0). `terminal_id` = an opaque daemon runtime handle (`String` wire), NOT a 23rd
+/// `IdKind`; the PTY host + backpressure pump are DAEMON-INTERNAL (`daemon/src/terminal/`).
+/// 0.22.0 (3.2-part-2 / brief 043) extends the §6.3 ActionTypeCatalog for the Claude
+/// `MutationIntercept`→Gateway interception (INV-SEC-1): a new `ExecutorKind::Adjudication` value (the
+/// adjudication-only marker — the ActionRequest terminates at the verdict; no daemon executor runs the
+/// tool) + the 4 `agent.*` catalog entries (`AGENT_MUTATION_ACTION_TYPES`, a SEPARATE machine-internal
+/// const — the locked MVP-22 set is UNTOUCHED). Additive (a new enum value + a new action-type const;
+/// no frozen type reshaped, §5.0). The `tool_name → agent.*` mapping + the params deny-rules + the
+/// adjudication verdict are DAEMON-INTERNAL (`daemon/src/harness/claude/intercept.rs`).
+/// 0.23.0 (043 L5 / A1) relaxes `ActionDenied.approval_id` `String`→`Option<String>` (`skip_serializing_if`):
+/// a HUMAN-deny carries `Some(appr_…)`, an agent deny-rule **policy-deny** (denied at submit, before any
+/// approval) carries `None` — the record-then-deny forensic event for a blocked dangerous agent attempt
+/// (audit-integrity: never silently dropped). Additive-tolerant: a human-deny (`Some`) still serializes
+/// the field identically; a policy-deny (`None`) OMITS it (`skip_serializing_if`), and a reader uses
+/// `#[serde(default)]` to read it back as `None`. Un-consumed by ui today. §5.0.
+/// 0.24.0 (P4.0b-1) freezes the **0.5b `ExecutionProfile`** runtime-state machine (the 10th §5.1
+/// machine — HELD in 0.5 pending the cat-4 SDK-vs-PTY decision, now resolved = PTY-primary): 9 values
+/// = the §5.1 8 + `credit_exhausted` (the SDK monthly credit-pool HARD-STOP, distinct from the soft
+/// `rate_limited` interactive throttle; `disabled` is the only terminal). + adds
+/// `SessionStarted.execution_profile_id` (`Option<ExecutionProfileId>`, the §15 #8 binding surface —
+/// the profile recorded at session.create). Additive, no frozen type reshaped (§5.0).
+/// 0.25.0 (P4.0b-1 L2) reclassifies the §6.3 catalog for the away-ruled risk-0 session-lifecycle:
+/// `session.create` risk-2→risk-0 + NEW `session.kill` (risk-0) + NEW `session.profile_change`
+/// (risk-2 — the §15 #8 no-silent-account-hop APPROVAL gate); `MVP_ACTION_TYPES` 22→24. The risk-0
+/// relaxation is NARROW (an explicit daemon-policy auto-execute allowlist + a UI/IPC-only requester
+/// guard). Catalog-data semantics; no frozen type reshaped (§5.0).
+/// 0.26.0 (P4.0b-R1b) freezes the edges-R1 **Phase-5/7 wiring EventTypeRegistry payloads** (§7.1) — the
+/// events edges' dormant executors emit (via `EmittedEvent`) + its projectors consume, in ONE batched
+/// additive bump (edges regenerates once): P5.1 `ProjectRescanned` (one coarse event; `remote_url`
+/// carries the §15 strip-userinfo-at-source contract); P5.2 `WorktreeCreated`/`BranchCreated` + the 4
+/// empty-payload overlay transitions (`WorktreeMerged`/`WorktreePrunable`/`WorktreeDeleted`/
+/// `WorktreeLocked`); P7.1 `PullRequestSynced` (reuses the §5.1 `PullRequest` enum) /
+/// `IntegrationConnectionRegistered` (`keychain_ref` = a §15 pointer, never the secret) /
+/// `GithubSyncFailed` + `LinearSyncFailed` (non-auth variant only; `reason` = a structural class-name) +
+/// the closed `Provider` enum (`github`|`linear`). `shared/`-only — NO daemon emission (edges' P5/P7
+/// executors emit later). Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.26.0";

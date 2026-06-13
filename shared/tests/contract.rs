@@ -215,6 +215,22 @@ fn test_every_state_machine_value_present_and_serializes() {
             "archived",
         ],
     );
+    // 0.5b (P4.0b-1) — the 10th §5.1 machine: the ExecutionProfile runtime state. The §5.1 8 +
+    // `credit_exhausted` (the SDK monthly credit-pool HARD-STOP, distinct from soft `rate_limited`).
+    check_values(
+        ExecutionProfileStatus::ALL,
+        &[
+            "available",
+            "active",
+            "in_use",
+            "rate_limited",
+            "auth_expired",
+            "misconfigured",
+            "disabled",
+            "unknown",
+            "credit_exhausted",
+        ],
+    );
 }
 
 // ---- Test 2 — terminal states marked (§5.1 bold) ----------------------------
@@ -255,6 +271,9 @@ fn test_terminal_states_marked() {
         ]
     );
     check_terminal!(AgentTeamStatus, ["completed", "failed", "archived"]);
+    // 0.5b — ExecutionProfile: `disabled` (the profile turned off) is the ONLY terminal; the rest are
+    // recoverable runtime conditions (rate_limited/credit_exhausted recover on reset; §5.1).
+    check_terminal!(ExecutionProfileStatus, ["disabled"]);
 }
 
 // ---- Test 3 — 22 IDs present, prefixes total + unique (§5.2) -----------------
@@ -427,16 +446,20 @@ fn test_desktop_objects_defined_and_deferred_marked() {
     assert_eq!(D::RemoteClient.id_prefix(), "rc_");
 }
 
-// ---- Test 6 — ExecutionProfile HELD, not frozen (guardrail 1 / cat-4) --------
+// ---- Test 6 — ExecutionProfile FROZEN at 0.5b (the 10th §5.1 machine; cat-4 resolved) --------
 
 #[test]
-fn test_execution_profile_held_not_frozen() {
-    // ExecutionProfile's runtime states could be reshaped by the cat-4 SDK-vs-PTY
-    // + ≥6/15 credit-pool drain → re-frozen in 0.5b. The hold must be DELIBERATE
-    // (a marker), not silently missing.
-    let marker = nexusops_shared::EXECUTION_PROFILE_STATUS_HELD;
-    assert!(!marker.is_empty(), "hold marker must explain itself");
-    assert!(marker.contains("0.5b"), "marker names the follow-up slice");
+fn test_execution_profile_enum_frozen_9_values() {
+    // spec(§5.1) — the 0.5b freeze (cat-4 SDK-vs-PTY resolved = PTY-primary): the ExecutionProfile
+    // runtime-state enum is the 10th frozen §5.1 machine — 9 values (the §5.1 8 + `credit_exhausted`,
+    // the SDK monthly credit-pool hard-stop). The value set + terminal({disabled}) are pinned by the
+    // check_values / check_terminal snapshots (Tests 1+2); this pins the COUNT + the freeze landmark.
+    use nexusops_shared::status::ExecutionProfileStatus;
+    assert_eq!(
+        ExecutionProfileStatus::ALL.len(),
+        9,
+        "the 0.5b ExecutionProfile freeze = the §5.1 8 + credit_exhausted"
+    );
 }
 
 // ---- Test 7 — unknown value rejected at the parse boundary (§0.5 / §15) ------
@@ -715,15 +738,6 @@ fn test_sensitive_output_redacted_wire_contract() {
         SensitiveOutputRedacted::EVENT_TYPE,
         "SensitiveOutputRedacted"
     );
-}
-
-#[test]
-fn test_contract_version_bumped_for_sensitive_output_redacted() {
-    // 0.15.0 = the 2.1a action-contract freeze (§6.2 models + 9 enums + gateway IDs + Timestamp);
-    // 0.16.0 = the 2.1b ActionExecution* event family + ActionAck; 0.17.0 = the 2.1c PlanAck
-    // submit_action_plan wire type (O-3); 0.18.0 = the 2.2 ActionTypeCatalog + PolicyDecision
-    // extension — all additive (§5.0). (The canonical version pin is `test_contract_version_bumped_0_20_0`.)
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.20.0");
 }
 
 // ---- P2.1c L2 — the §6.1 PlanAck wire type (§2.5-seam snapshot, O-3) -----------------------
@@ -1414,8 +1428,8 @@ fn test_action_type_catalog_covers_mvp_set() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        22,
-        "the §6.3 LOCKED MVP set is 22 types"
+        24,
+        "the §6.3 MVP set is 24 types (22 + session.kill + session.profile_change, P4.0b-1)"
     );
     for at in MVP_ACTION_TYPES {
         let e = lookup(at).unwrap_or_else(|| panic!("catalog missing the MVP type {at}"));
@@ -1441,6 +1455,33 @@ fn test_action_type_catalog_covers_mvp_set() {
         lookup("git.status").unwrap().locked_risk,
         RiskLevel::Level0,
         "a read-only type is risk-0 (auto-execute eligible)"
+    );
+}
+
+// ---- P4.0b-1 L2 RED — the risk-0 session-lifecycle relaxation (away-ruled; cat-1) -----------
+
+#[test]
+fn test_session_lifecycle_catalog_risk() {
+    // spec(§6.3 / away-ruled risk-0) — session.create/kill = risk-0 (audited auto-allow — the
+    // faithful vehicle for "routine start, audited, no per-launch approval"; LESSON 19 made
+    // risk-1-not-approval-gated contradictory). session.profile_change = risk-2 (the §15 #8
+    // no-silent-account-hop APPROVAL gate lives on the CHANGE, not the routine start).
+    use nexusops_shared::actions::RiskLevel;
+    use nexusops_shared::catalog::lookup;
+    assert_eq!(
+        lookup("session.create").unwrap().locked_risk,
+        RiskLevel::Level0,
+        "session.create is risk-0 (away-ruled audited auto-allow)"
+    );
+    assert_eq!(
+        lookup("session.kill").unwrap().locked_risk,
+        RiskLevel::Level0,
+        "session.kill is risk-0 (the lifecycle counterpart)"
+    );
+    assert_eq!(
+        lookup("session.profile_change").unwrap().locked_risk,
+        RiskLevel::Level2,
+        "session.profile_change is approval-gated (§15 #8 no-silent-account-hop)"
     );
 }
 
@@ -1500,12 +1541,168 @@ fn test_catalog_and_policy_decision_field_snapshot() {
     );
 }
 
+// =====================================================================================
+// Phase 3.2-part-2 (brief 043) L1 — the §6.3 agent-mutation catalog family + the
+// adjudication-only outcome class (freeze; CONTRACT 0.21.0 → 0.22.0; §2.5-seam):
+//   • a new `ExecutorKind::Adjudication` — the adjudication-only marker: an agent-mutation
+//     ActionRequest TERMINATES at the verdict, NO daemon executor runs (the agent runs the
+//     tool; the daemon adjudicates + audits). INV-SEC-1 (the harness mutation chokepoint).
+//   • the 4 `agent.*` action types routed through the EXISTING catalog `lookup` (Option A —
+//     one chokepoint), each `executor == Adjudication`, with the Q2-conservative base risk:
+//     read-only `agent.file_read` = risk-0 (auto-allow — read-only ≠ mutation); the mutating
+//     `agent.bash`/`agent.file_edit`/`agent.mcp_tool` = risk-2 (→ require_approval by default).
+// BINDING: ARCHITECTURE §6.3 (ActionTypeCatalog) + §9.1 (the Claude adapter interception) + §15
+// (INV-SEC-1 #1/#5/#10). The MVP set stays 22 (the agent family is a SEPARATE machine-internal
+// const, AGENT_MUTATION_ACTION_TYPES); the params-sensitive deny-rules live in the policy (L4),
+// NOT the static catalog risk.
+// =====================================================================================
+
+// ---- 043 L1 RED #1 — the agent-mutation catalog family + the conservative base risk ----
+
 #[test]
-fn test_contract_version_bumped_0_18_0() {
-    // 0.17.0 = the 2.1c PlanAck; 0.18.0 = the 2.2 ActionTypeCatalog (+ its enums) + the
-    // PolicyDecision extension (required_approvals/constraints/safer_alt) — additive (§5.0).
-    // (The CURRENT canonical version pin is `test_contract_version_bumped_0_20_0`.)
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.20.0");
+fn test_agent_mutation_catalog_family() {
+    // spec(§6.3) — the 4 agent-mutation action types are catalogued (routed through the existing
+    // closed `lookup`, Option A), each `executor == Adjudication` (adjudication-only). The
+    // Q2-conservative base risk: read-only = risk-0 (auto-allow — read-only ≠ mutation); every
+    // MUTATING tool = risk-2 (→ require_approval by default, BEFORE the L4 params-sensitive deny-rules).
+    use nexusops_shared::actions::RiskLevel;
+    use nexusops_shared::catalog::{lookup, ExecutorKind, AGENT_MUTATION_ACTION_TYPES};
+
+    // the family is exactly the 4 named tools (the §9.1 matrix's interceptable Claude channels).
+    assert_eq!(
+        AGENT_MUTATION_ACTION_TYPES,
+        &[
+            "agent.bash",
+            "agent.file_edit",
+            "agent.file_read",
+            "agent.mcp_tool",
+        ],
+        "the agent-mutation family is the 4 §9.1 interceptable tool categories"
+    );
+
+    // every family member is catalogued + adjudication-only (NOT a real-executor namespace).
+    for at in AGENT_MUTATION_ACTION_TYPES {
+        let e =
+            lookup(at).unwrap_or_else(|| panic!("catalog missing the agent-mutation type {at}"));
+        assert_eq!(
+            e.executor,
+            ExecutorKind::Adjudication,
+            "{at} is adjudication-only (the daemon decides; no executor runs the tool)"
+        );
+    }
+
+    // the Q2-conservative base risk (read-only ≠ mutation): the read tool auto-allows (risk-0);
+    // every mutating tool requires approval by default (risk-2 — the deny-rules raise, never lower).
+    assert_eq!(
+        lookup("agent.file_read").unwrap().locked_risk,
+        RiskLevel::Level0,
+        "agent.file_read is read-only → risk-0 auto-allow (read-only ≠ mutation)"
+    );
+    for mutating in ["agent.bash", "agent.file_edit", "agent.mcp_tool"] {
+        assert_eq!(
+            lookup(mutating).unwrap().locked_risk,
+            RiskLevel::Level2,
+            "{mutating} mutates → risk-2 (require_approval by default; the L4 deny-rules raise/deny)"
+        );
+    }
+}
+
+// ---- 043 L1 RED #2 — the Adjudication outcome class (a distinct ExecutorKind; no executor binding) ----
+
+#[test]
+fn test_adjudication_outcome_class() {
+    // spec(§6.3) — `ExecutorKind::Adjudication` is a distinct, frozen catalog value (wire =
+    // `adjudication`). It marks the adjudication-only family: the ActionRequest terminates at the
+    // verdict, no daemon executor runs (pinned BEHAVIORALLY in L3 `tests/claude_intercept.rs` —
+    // no `queued`→`executing` for an Adjudication action). Here we pin the value exists + round-trips
+    // + is NOT one of the real-executor namespaces (Git/Github/Session/… run side effects; this does not).
+    use nexusops_shared::catalog::ExecutorKind;
+
+    assert!(
+        ExecutorKind::ALL.contains(&ExecutorKind::Adjudication),
+        "Adjudication is a frozen ExecutorKind value"
+    );
+    // wire value is the contract (LESSON §2): the snake_case `adjudication`.
+    assert_eq!(
+        serde_json::to_value(ExecutorKind::Adjudication).unwrap(),
+        serde_json::json!("adjudication"),
+        "ExecutorKind::Adjudication wire value = `adjudication`"
+    );
+    assert_eq!(
+        serde_json::from_value::<ExecutorKind>(serde_json::json!("adjudication")).unwrap(),
+        ExecutorKind::Adjudication,
+        "round-trips from the wire value"
+    );
+    // distinct from every real-executor namespace (those run side effects; adjudication never does).
+    for real in [
+        ExecutorKind::Brain,
+        ExecutorKind::Project,
+        ExecutorKind::Workflow,
+        ExecutorKind::Plan,
+        ExecutorKind::Session,
+        ExecutorKind::Git,
+        ExecutorKind::Github,
+        ExecutorKind::Linear,
+        ExecutorKind::Code,
+        ExecutorKind::Review,
+    ] {
+        assert_ne!(
+            real,
+            ExecutorKind::Adjudication,
+            "Adjudication is its own class, not a real-executor namespace"
+        );
+    }
+}
+
+// ---- 043 L1 RED #3 — the agent-mutation family snapshot (§2.5-seam: the catalog is line-138) ----
+
+#[test]
+fn test_agent_mutation_family_snapshot_spec_6_3() {
+    // spec(§6.3) — the §2.5-seam freeze guard for the agent-mutation extension. The agent family
+    // const + the per-type {executor, risk, params_schema_present} ARE the freeze; a drift fails here.
+    // The human-facing MVP set is 24 (P4.0b-1 grew it by session.kill + session.profile_change); the
+    // KEY invariant this guard pins is that the agent family is a SEPARATE machine-internal const —
+    // it NEVER inflates the human-facing MVP count. `params_schema_present=true` (the tool_input is a
+    // structured payload — NOT the §6.3/OQ-WP-5 null-schema floor).
+    use nexusops_shared::catalog::{lookup, AGENT_MUTATION_ACTION_TYPES, MVP_ACTION_TYPES};
+
+    assert_eq!(
+        MVP_ACTION_TYPES.len(),
+        24,
+        "the human-facing §6.3 MVP set is 24 — the agent family stays a separate machine-internal const"
+    );
+    assert_eq!(
+        AGENT_MUTATION_ACTION_TYPES.len(),
+        4,
+        "the agent-mutation family is the 4 §9.1 interceptable Claude tool categories"
+    );
+    // the agent family is DISJOINT from the MVP set (no name collision — distinct namespaces).
+    for at in AGENT_MUTATION_ACTION_TYPES {
+        assert!(
+            !MVP_ACTION_TYPES.contains(at),
+            "the agent-mutation type {at} is its own namespace, never in the human MVP set"
+        );
+        assert!(
+            lookup(at).unwrap().params_schema_present,
+            "{at} carries a structured tool_input schema (not the null-schema OQ-WP-5 floor)"
+        );
+    }
+    // §15 fail-closed for the agent namespace: an un-listed `agent.*` tool (a stray `lookup` arm
+    // with NO const entry, or a brand-new Claude tool the daemon hasn't classified) resolves to
+    // None → the policy DENIES it (never default-allows). Pins the closed domain in BOTH directions:
+    // the loop above checks every const member IS catalogued; this checks NON-members are NOT.
+    for unlisted in [
+        "agent.network",
+        "agent.write_file",
+        "agent.kill",
+        "agent.",
+        "agent.unknown",
+    ] {
+        assert!(
+            lookup(unlisted).is_none(),
+            "an un-listed agent tool `{unlisted}` must fail closed (None) — never a stray catalog entry"
+        );
+    }
 }
 
 // =====================================================================================
@@ -1682,16 +1879,6 @@ fn test_action_failure_family_field_snapshot() {
     expect_fields(&ActionError::AuditWriteFailed, &["kind"]);
 }
 
-// ---- 2.4 L1 RED #5 — CONTRACT_VERSION bumped to 0.19.0 (the additive event/taxonomy change) ----
-
-#[test]
-fn test_contract_version_bumped_0_19_0() {
-    // 0.18.0 = the 2.2 catalog + PolicyDecision extension; 0.19.0 = the 2.4 §17 contract additions
-    // (the ActionPartiallySucceeded event + the structured ActionError on ActionFailed) — additive (§5.0).
-    // (The CURRENT canonical version pin is `test_contract_version_bumped_0_20_0`.)
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.20.0");
-}
-
 // =====================================================================================
 // Phase 3.1 L1 — §9.1 HarnessAdapter contract freeze (NEW: shared/src/harness.rs) +
 // the §7.1 TelemetrySampled event. The next §2.5-seam shared-contract freeze (line 138
@@ -1845,16 +2032,6 @@ fn test_normalized_status_is_session() {
     assert_eq!(NormalizedStatus::ALL, Session::ALL);
 }
 
-// ---- 3.1 L1 RED #5 — CONTRACT_VERSION bumped to 0.20.0 (the additive §9.1 freeze) ----
-
-#[test]
-fn test_contract_version_bumped_0_20_0() {
-    // 0.19.0 = the 2.4 §17 additions; 0.20.0 = the 3.1 §9.1 HarnessAdapter normalized-type freeze
-    // (TelemetrySample/MetricQuality/TranscriptRef/HarnessCapabilities + the TelemetrySampled event)
-    // — additive, no frozen type reshaped (§5.0). (ResumeResult is daemon-internal — NOT frozen here.)
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.20.0");
-}
-
 // ---- 3.1 L1 RED #7 — HarnessCapabilities pins exactly the 10 PRD HARN-5 fields ----
 
 #[test]
@@ -1881,5 +2058,507 @@ fn test_harness_capabilities_ten_fields() {
         field_names(&caps).len(),
         10,
         "exactly 10 capability fields (PRD HARN-5)"
+    );
+}
+
+// ==== 3.4 L1 — the §6.4 Terminal Channel wire-contract freeze (CONTRACT 0.21.0) ================
+//
+// The §2.5-seam terminal frames (the GatewayPort/§6.4 wire surface is on the line-138 list): the
+// daemon→client output frame + the client→daemon input/control frames + the TerminalProcessExited
+// observation event. `data` is base64 (raw PTY bytes ride the unchanged 4-byte-len+JSON codec —
+// LESSON §7, no new framing). `terminal_id` is a wire String (an opaque daemon-minted runtime
+// handle — NOT one of the frozen-22 IDs; the L2 daemon newtype is internal; Step-2.5 Q1).
+
+fn sample_terminal_output_frame() -> nexusops_shared::ipc::TerminalOutputFrame {
+    use nexusops_shared::ipc::TerminalOutputFrame;
+    TerminalOutputFrame {
+        terminal_id: "term_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        seq: 7,
+        data: "aGVsbG8=".to_string(), // base64("hello") — raw PTY bytes, base64 over the JSON codec
+    }
+}
+
+fn sample_terminal_input_frame() -> nexusops_shared::ipc::TerminalInputFrame {
+    use nexusops_shared::ipc::TerminalInputFrame;
+    TerminalInputFrame {
+        terminal_id: "term_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        data: "bHMK".to_string(), // base64("ls\n")
+    }
+}
+
+fn sample_terminal_control_frame() -> nexusops_shared::ipc::TerminalControlFrame {
+    use nexusops_shared::ipc::{TerminalControlFrame, TerminalControlKind};
+    TerminalControlFrame {
+        terminal_id: "term_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        kind: TerminalControlKind::Pause,
+    }
+}
+
+fn sample_terminal_process_exited() -> nexusops_shared::events::TerminalProcessExited {
+    use nexusops_shared::events::TerminalProcessExited;
+    // The semantically-honest NORMAL-exit case (exit_code XOR signal — a signal kill is the mirror:
+    // exit_code:None, signal:Some). The field-name snapshot still sees every key because the struct
+    // has NO `skip_serializing_if` (LESSON §15 trap 3) — `signal:None` serializes as explicit `null`,
+    // so the key is present regardless of the value.
+    TerminalProcessExited {
+        terminal_id: "term_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        exit_code: Some(0),
+        signal: None,
+    }
+}
+
+// ---- 3.4 L1 RED #1 — the §2.5-seam terminal-frame field-name snapshot (§6.4) ----
+
+#[test]
+fn test_terminal_frame_field_names_snapshot() {
+    // spec(§6.4) — §2.5-seam freeze guard (line-138 lists the GatewayPort/§6.4 wire surface as a
+    // shared-contract model). A field added/removed/renamed on any terminal frame or the exit event
+    // fails this snapshot. The expected sets ARE the checked-in freeze.
+    expect_fields(
+        &sample_terminal_output_frame(),
+        &["terminal_id", "seq", "data"],
+    );
+    expect_fields(&sample_terminal_input_frame(), &["terminal_id", "data"]);
+    expect_fields(&sample_terminal_control_frame(), &["terminal_id", "kind"]);
+    // the PTY-death observation event: identity (session_id/occurred_at) is on the envelope columns;
+    // the payload carries only terminal_id + the OS-derived exit_code/signal (never output-parsed, #9).
+    expect_fields(
+        &sample_terminal_process_exited(),
+        &["terminal_id", "exit_code", "signal"],
+    );
+}
+
+// ---- 3.4 L1 RED #1b — the client→daemon input/control frames round-trip + reject-unknown (§6.4) ----
+
+#[test]
+fn test_terminal_input_control_frames_reject_unknown() {
+    // spec(§6.4) — `TerminalInputFrame` is the UNTRUSTED client→daemon ingress direction (keystrokes
+    // for the PTY child) → its fail-closed reject-unknown is the most security-relevant of the frames
+    // (#5.0/§15). `TerminalControlFrame` (pause/resume) is the same direction. Both carry
+    // `deny_unknown_fields`; pin round-trip + an extra-key rejection (the TerminalOutputFrame form).
+    use nexusops_shared::ipc::{TerminalControlFrame, TerminalInputFrame};
+    for (name, j) in [
+        (
+            "input",
+            serde_json::to_value(sample_terminal_input_frame()).unwrap(),
+        ),
+        (
+            "control",
+            serde_json::to_value(sample_terminal_control_frame()).unwrap(),
+        ),
+    ] {
+        // round-trip
+        if name == "input" {
+            let back: TerminalInputFrame = serde_json::from_value(j.clone()).unwrap();
+            assert_eq!(
+                back,
+                sample_terminal_input_frame(),
+                "input frame round-trips"
+            );
+        } else {
+            let back: TerminalControlFrame = serde_json::from_value(j.clone()).unwrap();
+            assert_eq!(
+                back,
+                sample_terminal_control_frame(),
+                "control frame round-trips"
+            );
+        }
+        // an extra key fails closed (deny_unknown_fields, §5.0/§15)
+        let mut rogue = j.as_object().unwrap().clone();
+        rogue.insert("rogue".to_string(), serde_json::json!(1));
+        let rogue = serde_json::Value::Object(rogue);
+        let rejected = match name {
+            "input" => serde_json::from_value::<TerminalInputFrame>(rogue).is_err(),
+            _ => serde_json::from_value::<TerminalControlFrame>(rogue).is_err(),
+        };
+        assert!(
+            rejected,
+            "{name} frame rejects an unknown field (fail-closed)"
+        );
+    }
+}
+
+// ---- 3.4 L1 RED #2 — TerminalControlKind wire values + reject-unknown (§6.4) ----
+
+#[test]
+fn test_terminal_control_kind_wire_values() {
+    // spec(§6.4) — the explicit app-level backpressure control frames §6.4 mandates: snake_case
+    // `pause`/`resume`, reject-unknown both ways (a typo'd control verb can't deserialize).
+    use nexusops_shared::ipc::TerminalControlKind;
+    check_values(TerminalControlKind::ALL, &["pause", "resume"]);
+    assert!(serde_json::from_value::<TerminalControlKind>(serde_json::json!("stop")).is_err());
+}
+
+// ---- 3.4 L1 RED #3 — ServerFrame::TerminalOutput fills the reserved §6.4 mux slot ----
+
+#[test]
+fn test_server_frame_terminal_output_tag() {
+    // spec(§6.4) — the reserved Terminal tag slot (the §6.4 `ServerFrame` mux) is filled additively:
+    // the internally-tagged `frame_type` discriminant serializes to "terminal_output" and the frame
+    // round-trips through the ServerFrame mux. (deny_unknown_fields reject-unknown is pinned on the
+    // bare TerminalOutputFrame below — the established `test_telemetry_sampled_wire_contract` form —
+    // not through the internally-tagged wrapper, which buffers content and is not a reliable
+    // deny_unknown surface.)
+    use nexusops_shared::ipc::{ServerFrame, TerminalOutputFrame};
+    let frame = ServerFrame::TerminalOutput(sample_terminal_output_frame());
+    let j = serde_json::to_value(&frame).unwrap();
+    assert_eq!(
+        j.get("frame_type").and_then(|v| v.as_str()),
+        Some("terminal_output"),
+        "the reserved §6.4 Terminal slot serializes as frame_type:\"terminal_output\""
+    );
+    // the inner frame's fields are flattened alongside the tag (internally-tagged newtype variant).
+    assert_eq!(
+        j.get("terminal_id").and_then(|v| v.as_str()),
+        Some("term_01ARZ3NDEKTSV4RRFFQ69G5FAV")
+    );
+    assert_eq!(j.get("seq").and_then(|v| v.as_u64()), Some(7));
+    // round-trips through the mux
+    match serde_json::from_value::<ServerFrame>(j).unwrap() {
+        ServerFrame::TerminalOutput(f) => assert_eq!(f, sample_terminal_output_frame()),
+        other => panic!("expected TerminalOutput, got {other:?}"),
+    }
+    // reject-unknown on the bare frame (fail-closed, §5.0/§15)
+    let mut rogue = serde_json::to_value(sample_terminal_output_frame())
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    rogue.insert("rogue".to_string(), serde_json::json!(1));
+    assert!(
+        serde_json::from_value::<TerminalOutputFrame>(serde_json::Value::Object(rogue)).is_err(),
+        "unknown field rejected on TerminalOutputFrame (deny_unknown_fields)"
+    );
+}
+
+// ---- 3.4 L1 RED #4 — the TerminalProcessExited event wire contract (§7.1/§5.0/§15) ----
+
+#[test]
+fn test_terminal_process_exited_wire_contract() {
+    // spec(§7.1) — EventTypeRegistry single-home + reject-unknown (the TelemetrySampled precedent).
+    // A non-mutation OBSERVATION event (the §17 PTY-death record; write-actor, NOT the Gateway).
+    use nexusops_shared::events::TerminalProcessExited;
+    let v = sample_terminal_process_exited();
+    let j = serde_json::to_value(&v).unwrap();
+    assert_eq!(
+        serde_json::from_value::<TerminalProcessExited>(j).unwrap(),
+        v,
+        "TerminalProcessExited round-trips"
+    );
+    let mut rogue = serde_json::to_value(&v)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    rogue.insert("rogue".to_string(), serde_json::json!(1));
+    assert!(
+        serde_json::from_value::<TerminalProcessExited>(serde_json::Value::Object(rogue)).is_err(),
+        "unknown field rejected (deny_unknown_fields, §5.0/§15)"
+    );
+    assert_eq!(TerminalProcessExited::EVENT_TYPE, "TerminalProcessExited");
+}
+
+// ---- 043 L5 RED — ActionDenied.approval_id is OPTIONAL (the A1 record-then-deny forensic event) ----
+
+#[test]
+fn test_action_denied_approval_id_optional() {
+    // spec(§7.1) — 043 L5 / A1: `ActionDenied.approval_id` is OPTIONAL. A HUMAN-deny carries
+    // `Some(appr_…)`; an agent deny-rule POLICY-deny (fired at submit, before any approval) carries
+    // `None`. Both round-trip; `None` OMITS the field (skip_serializing_if); deny_unknown_fields holds.
+    use nexusops_shared::events::ActionDenied;
+    // the policy-deny (no approval object): None omits the field.
+    let policy = ActionDenied {
+        approval_id: None,
+        reason: "agent-mutation deny-rule: rm -rf on a broad path".to_string(),
+    };
+    let j = serde_json::to_value(&policy).unwrap();
+    assert!(
+        j.get("approval_id").is_none(),
+        "a policy-deny (None) omits approval_id (skip_serializing_if)"
+    );
+    assert_eq!(
+        serde_json::from_value::<ActionDenied>(j).unwrap(),
+        policy,
+        "the policy-deny round-trips"
+    );
+    // the human-deny still carries Some(approval_id).
+    let human = ActionDenied {
+        approval_id: Some("appr_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        reason: "operator declined".to_string(),
+    };
+    let j2 = serde_json::to_value(&human).unwrap();
+    assert_eq!(
+        j2.get("approval_id").and_then(|v| v.as_str()),
+        Some("appr_01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+        "a human-deny carries Some(approval_id)"
+    );
+    assert_eq!(
+        serde_json::from_value::<ActionDenied>(j2).unwrap(),
+        human,
+        "the human-deny round-trips"
+    );
+    // reject-unknown holds.
+    assert!(
+        serde_json::from_value::<ActionDenied>(serde_json::json!({ "reason": "x", "extra": true }))
+            .is_err(),
+        "unknown field rejected (deny_unknown_fields, §5.0/§15)"
+    );
+}
+
+// ---- P4.0b-R1b RED — CONTRACT_VERSION bumped to 0.26.0 (the Phase-5/7 wiring event types) ----
+
+#[test]
+fn test_contract_version_bumped_0_26_0() {
+    // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.25.0 =
+    // the §6.3 catalog reclassification for the away-ruled risk-0 session-lifecycle; **0.26.0** = the
+    // edges-R1 Phase-5/7 wiring event-type freeze (~11 new EventTypeRegistry payloads + the `Provider`
+    // enum, ONE batched additive bump — edges regenerates once). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.26.0");
+}
+
+// =================================================================================================
+// P4.0b-R1b — the Phase-5/7 wiring event-type contract freeze (edges-R1 §2.5-seam; CONTRACT 0.26.0).
+// ~11 new EventTypeRegistry payloads + the `Provider` enum, shared/-only (edges' executors emit at
+// P5/P7 via EmittedEvent). identity on the envelope; payload = delta; deny_unknown_fields; ONE bump.
+// =================================================================================================
+
+/// assert a deny_unknown_fields struct rejects an extra key (reject-unknown end-to-end, §5.0/§15).
+fn assert_rejects_unknown<T: serde::Serialize + serde::de::DeserializeOwned>(v: &T, name: &str) {
+    let mut rogue = serde_json::to_value(v)
+        .unwrap()
+        .as_object()
+        .expect("an event payload serializes to a JSON object")
+        .clone();
+    rogue.insert("rogue_xyz".to_string(), serde_json::json!(1));
+    assert!(
+        serde_json::from_value::<T>(serde_json::Value::Object(rogue)).is_err(),
+        "{name}: an unknown field must be rejected (deny_unknown_fields, §5.0/§15)"
+    );
+}
+
+fn sample_project_rescanned() -> nexusops_shared::events::ProjectRescanned {
+    use nexusops_shared::events::ProjectRescanned;
+    use nexusops_shared::time::Timestamp;
+    ProjectRescanned {
+        is_git: true,
+        repo_root: Some("/Users/x/repo".to_string()),
+        remote_url: Some("https://github.com/acme/repo.git".to_string()),
+        branch: Some("main".to_string()),
+        detached: false,
+        is_dirty: true,
+        workflow_pack: true,
+        cc_crew: true,
+        plan_file: Some("IMPLEMENTATION_PLAN.md".to_string()),
+        brain: false,
+        scanned_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
+    }
+}
+
+fn sample_pull_request_synced() -> nexusops_shared::events::PullRequestSynced {
+    use nexusops_shared::events::PullRequestSynced;
+    use nexusops_shared::status::PullRequest;
+    use nexusops_shared::time::Timestamp;
+    PullRequestSynced {
+        pr_number: 42,
+        status: PullRequest::Open,
+        branch: "feature/x".to_string(),
+        base: "main".to_string(),
+        mergeable: Some(true),
+        checks_summary: Some("3/3 passing".to_string()),
+        pr_checked_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
+    }
+}
+
+// ---- R1b RED #1 — ProjectRescanned (§7.1/§2.5-seam) ----
+
+#[test]
+fn test_projectrescanned_snapshot() {
+    // spec(§7.1) — the §2.5-seam field-name freeze for the P5.1 project-detection event; identity is
+    // on the envelope (project_id/actor), payload = the detection delta. `remote_url` carries the §15
+    // strip-at-source contract (see the field doc); EVENT_TYPE single-home.
+    use nexusops_shared::events::ProjectRescanned;
+    expect_fields(
+        &sample_project_rescanned(),
+        &[
+            "is_git",
+            "repo_root",
+            "remote_url",
+            "branch",
+            "detached",
+            "is_dirty",
+            "workflow_pack",
+            "cc_crew",
+            "plan_file",
+            "brain",
+            "scanned_at",
+        ],
+    );
+    assert_eq!(ProjectRescanned::EVENT_TYPE, "ProjectRescanned");
+}
+
+// ---- R1b RED #2 — worktree/branch lifecycle (§7.1) ----
+
+#[test]
+fn test_worktree_lifecycle_snapshots() {
+    // spec(§7.1) — WorktreeCreated/BranchCreated carry their creation delta; the 4 overlay-axis
+    // transitions are EMPTY-payload events (identity on the envelope resource_refs; the transition IS
+    // the event_type — the ActionStarted{}/ActionSucceeded{} precedent). EVENT_TYPE single-home each.
+    use nexusops_shared::events::{
+        BranchCreated, WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged,
+        WorktreePrunable,
+    };
+    use nexusops_shared::ids::WorktreeId;
+    let wc = WorktreeCreated {
+        worktree_id: WorktreeId::parse("wt_01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
+        path: "/Users/x/repo/.worktrees/feat".to_string(),
+        branch_name: "feature/x".to_string(),
+        base_branch: Some("main".to_string()),
+    };
+    expect_fields(&wc, &["worktree_id", "path", "branch_name", "base_branch"]);
+    let bc = BranchCreated {
+        branch_name: "feature/x".to_string(),
+        base: Some("main".to_string()),
+    };
+    expect_fields(&bc, &["branch_name", "base"]);
+    // the 4 overlay transitions — empty payload (the transition is the event_type).
+    expect_fields(&WorktreeMerged {}, &[]);
+    expect_fields(&WorktreePrunable {}, &[]);
+    expect_fields(&WorktreeDeleted {}, &[]);
+    expect_fields(&WorktreeLocked {}, &[]);
+
+    assert_eq!(WorktreeCreated::EVENT_TYPE, "WorktreeCreated");
+    assert_eq!(BranchCreated::EVENT_TYPE, "BranchCreated");
+    assert_eq!(WorktreeMerged::EVENT_TYPE, "WorktreeMerged");
+    assert_eq!(WorktreePrunable::EVENT_TYPE, "WorktreePrunable");
+    assert_eq!(WorktreeDeleted::EVENT_TYPE, "WorktreeDeleted");
+    assert_eq!(WorktreeLocked::EVENT_TYPE, "WorktreeLocked");
+}
+
+// ---- R1b RED #3 — P7.1 integration reads + sync failures (§7.1) ----
+
+#[test]
+fn test_p7_integration_snapshots() {
+    // spec(§7.1) — PullRequestSynced reuses the frozen §5.1 `PullRequest` enum as its status; the
+    // §15-sensitive fields carry their contract in the field docs (`keychain_ref` = a pointer NOT the
+    // secret; `*SyncFailed.reason` = a structural class name, NOT raw API text). EVENT_TYPE single-home.
+    use nexusops_shared::events::{
+        GithubSyncFailed, IntegrationConnectionRegistered, LinearSyncFailed, Provider,
+        PullRequestSynced,
+    };
+    use nexusops_shared::time::Timestamp;
+    expect_fields(
+        &sample_pull_request_synced(),
+        &[
+            "pr_number",
+            "status",
+            "branch",
+            "base",
+            "mergeable",
+            "checks_summary",
+            "pr_checked_at",
+        ],
+    );
+    let icr = IntegrationConnectionRegistered {
+        connection_id: "conn_gh_1".to_string(),
+        provider: Provider::Github,
+        keychain_ref: "nexusops/github/acme".to_string(),
+        account: Some("acme".to_string()),
+    };
+    expect_fields(
+        &icr,
+        &["connection_id", "provider", "keychain_ref", "account"],
+    );
+    let gh = GithubSyncFailed {
+        provider: Provider::Github,
+        reason: "client_error".to_string(),
+        failed_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
+    };
+    let ln = LinearSyncFailed {
+        provider: Provider::Linear,
+        reason: "rate_limited".to_string(),
+        failed_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
+    };
+    expect_fields(&gh, &["provider", "reason", "failed_at"]);
+    expect_fields(&ln, &["provider", "reason", "failed_at"]);
+
+    assert_eq!(PullRequestSynced::EVENT_TYPE, "PullRequestSynced");
+    assert_eq!(
+        IntegrationConnectionRegistered::EVENT_TYPE,
+        "IntegrationConnectionRegistered"
+    );
+    assert_eq!(GithubSyncFailed::EVENT_TYPE, "GithubSyncFailed");
+    assert_eq!(LinearSyncFailed::EVENT_TYPE, "LinearSyncFailed");
+}
+
+// ---- R1b RED #4 — the Provider enum (closed; reject-unknown) (§5.0/§15, LESSON 15 trap 2) ----
+
+#[test]
+fn test_provider_enum_closed_reject_unknown() {
+    // spec(§5.0/§15) — `provider` is a NEW closed wire enum (github|linear); snake_case; reject-unknown
+    // (a flat `enum` schema → the §5.0 3-way verify stays exact). An unknown value fails closed.
+    use nexusops_shared::events::Provider;
+    check_values(Provider::ALL, &["github", "linear"]);
+    assert!(serde_json::from_value::<Provider>(serde_json::json!("gitlab")).is_err());
+}
+
+// ---- R1b RED #5 — deny_unknown_fields on every new payload (§5.0/§15 reject-unknown surface) ----
+
+#[test]
+fn test_deny_unknown_fields_on_new_types() {
+    // spec(§5.0/§15) — every new event payload rejects an extra key (fail-closed reject-unknown).
+    use nexusops_shared::events::{
+        BranchCreated, GithubSyncFailed, IntegrationConnectionRegistered, LinearSyncFailed,
+        Provider, WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged,
+        WorktreePrunable,
+    };
+    use nexusops_shared::ids::WorktreeId;
+    use nexusops_shared::time::Timestamp;
+    assert_rejects_unknown(&sample_project_rescanned(), "ProjectRescanned");
+    assert_rejects_unknown(&sample_pull_request_synced(), "PullRequestSynced");
+    assert_rejects_unknown(
+        &WorktreeCreated {
+            worktree_id: WorktreeId::parse("wt_01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
+            path: "/p".to_string(),
+            branch_name: "b".to_string(),
+            base_branch: None,
+        },
+        "WorktreeCreated",
+    );
+    assert_rejects_unknown(
+        &BranchCreated {
+            branch_name: "b".to_string(),
+            base: None,
+        },
+        "BranchCreated",
+    );
+    assert_rejects_unknown(&WorktreeMerged {}, "WorktreeMerged");
+    assert_rejects_unknown(&WorktreePrunable {}, "WorktreePrunable");
+    assert_rejects_unknown(&WorktreeDeleted {}, "WorktreeDeleted");
+    assert_rejects_unknown(&WorktreeLocked {}, "WorktreeLocked");
+    assert_rejects_unknown(
+        &IntegrationConnectionRegistered {
+            connection_id: "c".to_string(),
+            provider: Provider::Github,
+            keychain_ref: "k".to_string(),
+            account: None,
+        },
+        "IntegrationConnectionRegistered",
+    );
+    assert_rejects_unknown(
+        &GithubSyncFailed {
+            provider: Provider::Github,
+            reason: "client_error".to_string(),
+            failed_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
+        },
+        "GithubSyncFailed",
+    );
+    assert_rejects_unknown(
+        &LinearSyncFailed {
+            provider: Provider::Linear,
+            reason: "client_error".to_string(),
+            failed_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
+        },
+        "LinearSyncFailed",
     );
 }

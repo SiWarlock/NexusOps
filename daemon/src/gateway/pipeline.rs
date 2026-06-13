@@ -37,6 +37,16 @@ enum Routed {
     Execute(Box<ActionRequest>),
 }
 
+/// The outcome of an `approve_single` decision txn (2.4 + 043): an EXPIRED approval (lapsed past
+/// `expires_at`, never executes); an ADJUDICATED action (043 — an adjudication-only action that rests
+/// at `Approved`, the verdict, with NO daemon execution); or a QUEUED action (the normal path — the
+/// executor runs after commit).
+enum ApproveOutcome {
+    Expired,
+    Adjudicated,
+    Queued,
+}
+
 /// The shape of an approval the gateway is about to resolve (the 2.1c approve/deny dispatch).
 enum ApprovalTarget {
     /// a single-action or per-step approval (`action_request_id` set) → the 2.1b single path.
@@ -49,6 +59,17 @@ enum ApprovalTarget {
 /// the well-known approver for the 2.1b stub decisions (RequiredApprover::current_user). 2.2/the
 /// real auth surface resolves the actual `decided_by` from the IPC peer identity.
 const STUB_DECIDER: &str = "current_user";
+
+/// Whether an `action_type` is an **adjudication-only** agent mutation (043): its §6.3 catalog
+/// executor is [`ExecutorKind::Adjudication`]. Such an action TERMINATES at the policy/approval
+/// verdict — the daemon adjudicates + audits, the **agent** runs the tool; NO daemon executor ever
+/// runs (the verdict is the side-effect, gated on the audit event, §15 #5 / INV-SEC-1). Both
+/// `submit_action` (a risk-0 `allow` rests at `PolicyDecided`) and `approve` (a human-approved action
+/// rests at `Approved`) consult this to skip the `queued`→`executing` execution path. An uncatalogued
+/// type is NOT adjudication-only (it is denied upstream); fail-closed (`None` → false).
+fn is_adjudication(action_type: &str) -> bool {
+    catalog::lookup(action_type).map(|e| e.executor) == Some(catalog::ExecutorKind::Adjudication)
+}
 
 /// The `proj_approval_queue` subscribe-delta for a touched approval row (§6.1 subscribe, Q6): a
 /// "something changed" Upsert nudge keyed by `approval_id` (the subscriber re-reads the row via
@@ -169,9 +190,45 @@ impl Gateway {
                         status: ARStatus::AwaitingApproval,
                     }))
                 }
-                // a policy `deny` is a ROUTED outcome (an uncatalogued type → fail-closed deny):
-                // surface the honest PolicyDenied (→ §6.4 policy_denied), never the misleading
-                // UnsupportedPolicyDecision. Terminal — nothing executes.
+                // a policy `deny` is a ROUTED outcome. **043 L5 / A1 — record-then-deny:** a blocked
+                // AGENT-MUTATION attempt (a deny-rule hit, e.g. `rm -rf /`) is AUDITED, never silently
+                // rolled back (audit-integrity — the forensic record of a blocked dangerous attempt).
+                // It COMMITS Submitted→PolicyDecided→Denied + an `ActionDenied{approval_id: None,
+                // reason}` (no approval object — the policy denied at submit), then the Deny verdict
+                // (the agent is blocked regardless). **GATED via `is_adjudication`, which is the
+                // agent-mutation set** (the `agent.*` family is the ONLY `ExecutorKind::Adjudication`
+                // catalog group — the lead's A1 boundary). A NON-agent / uncatalogued deny keeps the
+                // existing fail-closed `Err(PolicyDenied)`-rollback (no behavior change beyond the agent
+                // path). (If a future non-agent adjudication type is ever catalogued, re-evaluate this
+                // guard — auditing its denial is harmless, but the boundary should stay intentional.)
+                // A denial-audit-write fault rolls the whole txn back → `Err` → Deny (fail-closed).
+                PolicyDecisionStatus::Deny if is_adjudication(&req.action_type) => {
+                    request::update_status(
+                        gtx.tx(),
+                        &act_id,
+                        ARStatus::Submitted,
+                        ARStatus::PolicyDecided,
+                    )?;
+                    request::update_status(
+                        gtx.tx(),
+                        &act_id,
+                        ARStatus::PolicyDecided,
+                        ARStatus::Denied,
+                    )?;
+                    let reason = decision
+                        .reasons
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("policy denied");
+                    gtx.append(&approval::policy_denied_intent(&req, reason, &now)?)?;
+                    Ok(Routed::Done(ActionAck {
+                        action_request_id: act_id,
+                        status: ARStatus::Denied,
+                    }))
+                }
+                // a non-agent / uncatalogued policy `deny`: surface the honest PolicyDenied (→ §6.4
+                // policy_denied), never the misleading UnsupportedPolicyDecision. Terminal — nothing
+                // executes; the txn rolls back (the existing behavior, unchanged).
                 PolicyDecisionStatus::Deny => Err(GatewayError::PolicyDenied),
                 // 2.2 INV-SEC-1 — the FIRST no-human-approval execution path: a risk-0 `allow` action
                 // auto-executes (submitted → policy_decided → queued → … → succeeded) with NO approval
@@ -187,13 +244,25 @@ impl Gateway {
                             req.risk_level as u8, req.action_type
                         )));
                     }
-                    // submitted → policy_decided → queued (NO approval; the auto-execute edge).
+                    // submitted → policy_decided (the auto-allow decision; NO approval object).
                     request::update_status(
                         gtx.tx(),
                         &act_id,
                         ARStatus::Submitted,
                         ARStatus::PolicyDecided,
                     )?;
+                    // 043 adjudication-only: an agent-mutation action TERMINATES at the verdict — the
+                    // daemon adjudicated `allow`, the AGENT runs the tool; NO daemon executor. The risk-0
+                    // `allow` rests at PolicyDecided (the audit ActionRequested, already appended above,
+                    // gates the Allow verdict — §15 #5). It NEVER enters queued→executing (the
+                    // `CatalogExecutor` fail-safe Adjudication arm is the defense-in-depth backstop).
+                    if is_adjudication(&req.action_type) {
+                        return Ok(Routed::Done(ActionAck {
+                            action_request_id: act_id,
+                            status: ARStatus::PolicyDecided,
+                        }));
+                    }
+                    // policy_decided → queued (the non-adjudication risk-0 auto-execute edge).
                     request::update_status(
                         gtx.tx(),
                         &act_id,
@@ -495,9 +564,9 @@ impl Gateway {
         approval_id: &str,
         deltas: &mut Vec<ProjectionDelta>,
     ) -> Result<ActionAck, GatewayError> {
-        // --- decision txn: returns (the loaded action, queued?) — queued=false means expired ---
-        let (req, queued) =
-            store.gateway_txn(|gtx| -> Result<(ActionRequest, bool), GatewayError> {
+        // --- decision txn: returns (the loaded action, the ApproveOutcome) ---
+        let (req, outcome) = store.gateway_txn(
+            |gtx| -> Result<(ActionRequest, ApproveOutcome), GatewayError> {
                 let now = gtx.now_rfc3339();
                 let appr = approval::load(gtx.tx(), approval_id)?;
                 // the approval must still be awaiting a decision — re-deciding a resolved approval
@@ -540,10 +609,10 @@ impl Gateway {
                     )?;
                     gtx.append(&approval::expired_intent(&req, approval_id, &now)?)?;
                     deltas.push(approval_queue_delta(approval_id)); // queue row → expired
-                    return Ok((req, false));
+                    return Ok((req, ApproveOutcome::Expired));
                 }
 
-                // approve: stamp the decision, transition both machines, emit ActionApproved, queue.
+                // approve: stamp the decision, transition both machines, emit ActionApproved.
                 approval::update_status(
                     gtx.tx(),
                     approval_id,
@@ -563,16 +632,33 @@ impl Gateway {
                     Some(STUB_DECIDER),
                     &now,
                 )?)?;
-                request::update_status(gtx.tx(), &act_id, ARStatus::Approved, ARStatus::Queued)?;
                 deltas.push(approval_queue_delta(approval_id)); // queue row → approved
-                Ok((req, true))
-            })?;
+                                                                // 043 adjudication-only: an agent-mutation action TERMINATES at Approved (the verdict) —
+                                                                // the daemon adjudicated `approve`, the AGENT runs the tool; NO daemon executor, NO
+                                                                // Approved→Queued. The ActionApproved (committed above) gates the Allow verdict (§15 #5).
+                if is_adjudication(&req.action_type) {
+                    return Ok((req, ApproveOutcome::Adjudicated));
+                }
+                request::update_status(gtx.tx(), &act_id, ARStatus::Approved, ARStatus::Queued)?;
+                Ok((req, ApproveOutcome::Queued))
+            },
+        )?;
 
-        if !queued {
-            return Ok(ActionAck {
-                action_request_id: req.action_request_id.as_str().to_string(),
-                status: ARStatus::Expired,
-            });
+        match outcome {
+            ApproveOutcome::Expired => {
+                return Ok(ActionAck {
+                    action_request_id: req.action_request_id.as_str().to_string(),
+                    status: ARStatus::Expired,
+                })
+            }
+            // an adjudication-only action rests at Approved (the Allow verdict) — NO daemon executor.
+            ApproveOutcome::Adjudicated => {
+                return Ok(ActionAck {
+                    action_request_id: req.action_request_id.as_str().to_string(),
+                    status: ARStatus::Approved,
+                })
+            }
+            ApproveOutcome::Queued => {}
         }
         // --- execute step (structurally separate; the executor runs OFF the txn) ---
         // NOTE (Q6 corollary, →2.4): the decision txn above ALREADY committed the queue-row status
@@ -893,7 +979,7 @@ impl Gateway {
             match &outcome {
                 // the executor's changed_resources/detail (Q7) are daemon-internal — recorded on the
                 // §6.2 ActionResult in a later phase; the ActionSucceeded event payload stays empty.
-                ExecutionOutcome::Succeeded { .. } => {
+                ExecutionOutcome::Succeeded { emitted_events, .. } => {
                     request::update_status(
                         gtx.tx(),
                         &act_id,
@@ -901,6 +987,13 @@ impl Gateway {
                         ARStatus::Succeeded,
                     )?;
                     gtx.append(&request::succeeded_intent(req, &now)?)?;
+                    // PIN a/b (P4.0b-1) — append the executor's additional in-txn events (the
+                    // session.create `SessionStarted`, carrying the §15 #8 `execution_profile_id`)
+                    // ATOMIC with `ActionSucceeded`: a write failure `?`-propagates → txn-B rolls back →
+                    // the action stays `executing` → L5 (INV-SEC-1 — never an unaudited session record).
+                    for ev in emitted_events {
+                        gtx.append(&request::emitted_event_intent(req, ev, &now)?)?;
+                    }
                     Ok(ActionAck {
                         action_request_id: act_id.clone(),
                         status: ARStatus::Succeeded,

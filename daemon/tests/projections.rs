@@ -1116,3 +1116,73 @@ fn test_usage_projector_rejects_unbinding_payload() {
     );
     assert_eq!(store.read_all().unwrap().len(), 1, "raw event intact");
 }
+
+// ---- Test 24 (brief 044) — the adapter's DELTAS, SUMmed by the REAL projector, == the cumulative;
+//      bucket_day == the UTC date. Proves delta-not-cumulative AND UTC-Z bucketing end-to-end. ----
+
+#[test]
+fn test_usage_ledger_sums_deltas_utc_bucketed() {
+    // spec(§18) + LESSON §5 — append the two DELTA TelemetrySampled events the adapter's pure
+    // `telemetry_sample` produces (from cumulative readings 100/20/0.01 then 250/60/0.03) through the
+    // REAL write-actor → the proj_usage_ledger row SUMs to the cumulative total (250/60/0.03) and
+    // buckets by the UTC-Z occurred_at. If the adapter emitted cumulative (not deltas), the SUM would
+    // double-count to 350/80. If context_pct were deltaed (not a gauge), the MAX would be 30 not 55.
+    use nexusopsd::harness::claude::telemetry::{telemetry_sample, UsageReading};
+
+    let ur = |tokens_in, tokens_out, context_pct, cost| UsageReading {
+        tokens_in,
+        tokens_out,
+        context_pct,
+        cost,
+        model: Some("claude-opus-4-8".to_string()),
+    };
+
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+
+    let r1 = ur(100, 20, Some(30.0), 0.01);
+    let r2 = ur(250, 60, Some(55.0), 0.03);
+    let deltas = [
+        telemetry_sample(None, &r1),
+        telemetry_sample(Some(&r1), &r2),
+    ];
+
+    for sample in deltas {
+        let ev = TelemetrySampled {
+            sample,
+            model: Some("claude-opus-4-8".to_string()),
+            execution_profile_id: Some("prof_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        };
+        store
+            .append(telemetry_intent(&sid, &pid, "2026-06-08T12:00:00Z", &ev))
+            .unwrap();
+    }
+
+    // same dims (session/project/profile/model/day) → ONE rollup row, SUM-of-deltas.
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_usage_ledger"),
+        1,
+        "two deltas, same dims → one rollup row"
+    );
+    let (ti, to, ctx, cost, _q, day) = usage_row(&path, sid.as_str());
+    assert_eq!(
+        (ti, to),
+        (250, 60),
+        "SUM-of-deltas == cumulative total (delta-not-cumulative; cumulative would be 350/80)"
+    );
+    assert!(
+        (cost - 0.03).abs() < 1e-9,
+        "cost SUM-of-deltas == cumulative 0.03"
+    );
+    assert_eq!(
+        ctx,
+        Some(55.0),
+        "context_pct_max = MAX gauge 55 (a deltaed context would be 25 → MAX 30)"
+    );
+    assert_eq!(
+        day, "2026-06-08",
+        "bucket_day == the UTC date of occurred_at"
+    );
+}

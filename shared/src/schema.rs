@@ -21,8 +21,11 @@ use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceT
 use crate::events::{
     ActionApprovalRequested, ActionApproved, ActionDenied, ActionExpired, ActionFailed,
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
-    AuditIntegrityViolation, DeviceRegistered, LocalRunnerRegistered, SensitiveOutputRedacted,
-    SessionStarted, TelemetrySampled,
+    AuditIntegrityViolation, BranchCreated, DeviceRegistered, GithubSyncFailed,
+    IntegrationConnectionRegistered, LinearSyncFailed, LocalRunnerRegistered, ProjectRescanned,
+    Provider, PullRequestSynced, SensitiveOutputRedacted, SessionStarted, TelemetrySampled,
+    TerminalProcessExited, WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged,
+    WorktreePrunable,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::harness::{HarnessCapabilities, MetricQuality, TelemetrySample, TranscriptRef};
@@ -30,12 +33,13 @@ use crate::ids::IdKind;
 use crate::ipc::{
     ActionAck, Capabilities, DeltaKind, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode,
     PlanAck, PlanStepAck, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest,
-    RpcResponse, ServerFrame, SubscribeParams, VersionSkewError, WireError,
+    RpcResponse, ServerFrame, SubscribeParams, TerminalControlFrame, TerminalControlKind,
+    TerminalInputFrame, TerminalOutputFrame, VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
 use crate::status::{
-    ActionRequest, AgentTeam, Approval, ProjectBrain, PullRequest, Session, Task, WorkflowInstance,
-    WorktreeGit, WorktreeOverlay,
+    ActionRequest, AgentTeam, Approval, ExecutionProfile, ProjectBrain, PullRequest, Session, Task,
+    WorkflowInstance, WorktreeGit, WorktreeOverlay,
 };
 use crate::time::Timestamp;
 use crate::CONTRACT_VERSION;
@@ -55,6 +59,8 @@ struct ContractBundle {
     approval: Approval,
     action_request: ActionRequest,
     agent_team: AgentTeam,
+    // 0.5b (P4.0b-1) — the 10th §5.1 machine: ExecutionProfile runtime state (9 values).
+    execution_profile: ExecutionProfile,
     actor_type: ActorType,
     id_kind: IdKind,
     desktop_object_kind: DesktopObjectKind,
@@ -155,6 +161,31 @@ struct ContractBundle {
     transcript_ref: TranscriptRef,
     harness_capabilities: HarnessCapabilities,
     telemetry_sampled: TelemetrySampled,
+    // 3.4 — the §6.4 Terminal Channel wire contract (shared/src/ipc.rs): the 3 terminal frames +
+    // the TerminalControlKind flow-control enum + the §7.1 TerminalProcessExited observation event.
+    // ServerFrame (already registered above) gains the TerminalOutput variant — the reserved slot
+    // filled (JSON-base64 MVP; binary fast-path deferred to 3.5). Additive (CONTRACT 0.21.0).
+    terminal_output_frame: TerminalOutputFrame,
+    terminal_input_frame: TerminalInputFrame,
+    terminal_control_frame: TerminalControlFrame,
+    terminal_control_kind: TerminalControlKind,
+    terminal_process_exited: TerminalProcessExited,
+    // P4.0b-R1b (CONTRACT 0.26.0) — the Phase-5/7 wiring EventTypeRegistry payloads (edges-R1
+    // §2.5-seam): P5.1 project detection, P5.2 worktree/branch lifecycle (+ 4 empty-payload overlay
+    // transitions), P7.1 integration reads + non-auth sync failures + the closed `Provider` enum
+    // (github|linear, flat enum → 3-way verify exact). shared/-only; edges emits at P5/P7. Additive.
+    project_rescanned: ProjectRescanned,
+    worktree_created: WorktreeCreated,
+    branch_created: BranchCreated,
+    worktree_merged: WorktreeMerged,
+    worktree_prunable: WorktreePrunable,
+    worktree_deleted: WorktreeDeleted,
+    worktree_locked: WorktreeLocked,
+    provider: Provider,
+    pull_request_synced: PullRequestSynced,
+    integration_connection_registered: IntegrationConnectionRegistered,
+    github_sync_failed: GithubSyncFailed,
+    linear_sync_failed: LinearSyncFailed,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

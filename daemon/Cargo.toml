@@ -50,13 +50,20 @@ portable-pty = "0.9"
 # a real SIGKILL. Compiled OUT of `cargo build`/`cargo run`/release (no production fault surface); the
 # self-dev-dependency below enables it ONLY for the daemon's own test/bench targets.
 fault-injection = []
+# P4.0b-R1a — gates daemon-internal TEST-SUPPORT items (fakes / test doubles) so they compile ONLY for
+# test/bench targets, never `cargo build`/release. R1a introduces the MECHANISM only — it gates nothing
+# yet (FakeHarness/FakePty/FakeLauncher stay ungated until 4.0b-2, when `PtyLauncher`'s FakeHarness
+# placeholder → the real ClaudeAdapter makes them test-only). Mirrors `fault-injection` (LESSON 21);
+# the cross-track edges resume gates its `integrations/` fakes behind it.
+test-support = []
 
 [dev-dependencies]
 tempfile = "3"
-# enable the `fault-injection` feature for the daemon's OWN integration tests (which link the lib as a
-# normal dependency, WITHOUT cfg(test)). Standard self-dev-dependency idiom: ON for test targets, OFF
-# for `cargo build`/release. Lets daemon/tests/recovery.rs arm §14 faults; the hook stays out of prod.
-nexusopsd = { path = ".", features = ["fault-injection"] }
+# enable the daemon's own gated features for its OWN integration tests (which link the lib as a normal
+# dependency, WITHOUT cfg(test)). Standard self-dev-dependency idiom: ON for test/bench targets, OFF
+# for `cargo build`/release. `fault-injection` lets daemon/tests/recovery.rs arm §14 faults;
+# `test-support` (R1a) gates test-only fakes (none yet — the mechanism). Both stay out of prod.
+nexusopsd = { path = ".", features = ["fault-injection", "test-support"] }
 # integration tests inject corrupt/future-version rows directly to exercise the
 # read-path degrade/quarantine (§17) without a pub test-backdoor in the API.
 rusqlite = { version = "0.34", features = ["bundled"] }

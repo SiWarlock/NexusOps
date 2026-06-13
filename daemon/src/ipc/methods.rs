@@ -29,7 +29,7 @@ use crate::gateway::GatewayError;
 use crate::harness::claude::decision::resolve_verdict;
 use crate::harness::claude::intercept::{HookPayload, InterceptOutcome};
 use crate::harness::MutationVerdict;
-use crate::runtime::WriteHandle;
+use crate::runtime::{InterceptWaitClass, WriteHandle};
 
 /// The §6.2 wall-clock approval-wait for an intercepted mutating agent tool (call 1, LOCKED default
 /// ~5 min; fail-closed on timeout/cancel/death). The agent's `PreToolUse` hook blocks for up to this
@@ -63,6 +63,7 @@ pub(crate) fn dispatch(
     db_path: &Path,
     write: &WriteHandle,
     registry: &DecisionRegistry,
+    wait_class: &InterceptWaitClass,
 ) -> Result<RpcResponse, IpcError> {
     let outcome: Result<serde_json::Value, IpcErrorCode> = match req.method.as_str() {
         "get_capabilities" => Ok(capabilities_value()),
@@ -86,7 +87,7 @@ pub(crate) fn dispatch(
         // per-session decision_sink wait). These make a live agent reachable WITH the interception
         // (the call-5 atomicity is at the main.rs register/swap; pinned by the inverted guard).
         "session.create" => session_create(&req.params, write)?,
-        "intercept" => intercept(&req.params, write, registry)?,
+        "intercept" => intercept(&req.params, write, registry, wait_class)?,
         _ => Err(IpcErrorCode::UnknownMethod),
     };
     Ok(match outcome {
@@ -330,6 +331,7 @@ fn intercept(
     params: &serde_json::Value,
     write: &WriteHandle,
     registry: &DecisionRegistry,
+    wait_class: &InterceptWaitClass,
 ) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
     let payload: HookPayload = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
@@ -340,50 +342,83 @@ fn intercept(
     // can only Deny another session's pendings, never Allow — the wait keys on `action_request_id`).
     let session_id = payload.session_id.clone();
 
-    // route on the write-actor (the adjudication commits; the §17 alarm fires there on audit-fault).
+    // route on the write-actor (the adjudication commits + is audited FIRST — audit-before-verdict,
+    // §15 #5; the §17 alarm fires there on an audit-fault). The wait-class gate is AFTER this, so an
+    // exhausted-class intercept's attempt is still AUDITED, then fail-closed-denied (F2).
     let outcome = match write.intercept_blocking(payload) {
         Ok(o) => o,
         // the write-actor being gone is infra failure → disconnect (the hook then fails closed).
         Err(_) => return Err(IpcError::Read("write-actor unavailable".to_string())),
     };
 
-    let verdict = match outcome {
-        // the verdict is known NOW (a risk-0 auto-allow, or any fail-closed deny).
+    // F2 — the wait-class permit class (§6.4/§10). A `Resolved` verdict (risk-0 auto-allow / any deny)
+    // returns immediately, touching no permit. An `AwaitingApproval` mutating tool tries to PARK in the
+    // intercept-wait class: saturated → fail-closed Deny WITHOUT entering the wait (no register, no
+    // bridge); a slot acquired → register the per-session decision_sink + WAIT for the human (the
+    // permit held across the wait, released on EVERY terminal — verdict/timeout/cancel/death/bridge-drop).
+    let verdict = intercept_verdict_with_wait_class(outcome, wait_class, |action_request_id| {
+        // the runtime to spawn the async `resolve_verdict` wait on. The production serve thread is a
+        // `spawn_blocking` task → the runtime context IS present. If absent (off the accept loop) there
+        // is no safe way to wait → fail closed (Deny). `try_current` never panics.
+        let rt = match tokio::runtime::Handle::try_current() {
+            Ok(h) => h,
+            Err(_) => {
+                return MutationVerdict::Deny {
+                    reason: "no async runtime for the approval wait — fail-closed".to_string(),
+                }
+            }
+        };
+        let decision = registry.register(action_request_id.clone(), session_id);
+        let (vtx, vrx) = std::sync::mpsc::sync_channel::<MutationVerdict>(1);
+        rt.spawn(async move {
+            let v = resolve_verdict(decision, APPROVAL_WAIT).await;
+            let _ = vtx.send(v);
+        });
+        // block this serve thread on the bridge; a dropped bridge sender (the spawned task died)
+        // fails closed to Deny. The waiter then REMOVES its registry entry (carry-forward b — a late
+        // approve/deny finds nothing, no re-deliver).
+        let v = vrx.recv().unwrap_or_else(|_| MutationVerdict::Deny {
+            reason: "decision bridge dropped — fail-closed".to_string(),
+        });
+        registry.remove(&action_request_id);
+        v
+    });
+    Ok(Ok(verdict_response(&verdict)))
+}
+
+/// The fail-closed reason on intercept-wait class exhaustion (§6.4/§10, F2) — content-free + DISTINCT
+/// from the timeout Deny so the operator can tell "saturated" from "timed out".
+pub const INTERCEPT_SATURATED_REASON: &str =
+    "approval capacity saturated — fail-closed (try again)";
+
+/// The F2 wait-class decision (the pure, testable core of [`intercept`]). A `Resolved` verdict touches
+/// NO wait-class permit (the gate semantics are unchanged). An `AwaitingApproval` mutating tool tries
+/// to PARK: saturated (`try_park`→None) → fail-closed Deny ([`INTERCEPT_SATURATED_REASON`], **the wait
+/// is NEVER entered** — `register_and_wait` is not called, no bypass); a slot acquired → hold the permit
+/// across `register_and_wait(action_request_id)` (the real register+bridge+remove), released on the
+/// return (every terminal path) via the `OwnedSemaphorePermit` RAII. INV-SEC-1 preserved (fail-safe).
+pub fn intercept_verdict_with_wait_class<F>(
+    outcome: InterceptOutcome,
+    wait_class: &InterceptWaitClass,
+    register_and_wait: F,
+) -> MutationVerdict
+where
+    F: FnOnce(String) -> MutationVerdict,
+{
+    match outcome {
         InterceptOutcome::Resolved(v) => v,
-        // a mutating tool rests at awaiting_approval — register the per-session decision_sink + WAIT
-        // for the human. The async `resolve_verdict` (5-min wall-clock + cancel/death) is bridged to
-        // this sync handler via a tokio task + a std channel — NO `block_on` (this runs on a blocking
-        // serve thread; `block_on` from one is unsound). The connection (+ its semaphore permit) is
-        // held for the wait, bounded by MAX_CONNECTIONS (the dedicated-connection pattern, like subscribe).
         InterceptOutcome::AwaitingApproval { action_request_id } => {
-            // the runtime to spawn the async `resolve_verdict` wait on. The production serve thread is
-            // a `spawn_blocking` task → the runtime context IS present. If absent (off the accept loop)
-            // there is no safe way to wait → fail closed (Deny). `try_current` never panics.
-            let rt = match tokio::runtime::Handle::try_current() {
-                Ok(h) => h,
-                Err(_) => {
-                    return Ok(Ok(verdict_response(&MutationVerdict::Deny {
-                        reason: "no async runtime for the approval wait — fail-closed".to_string(),
-                    })))
+            let _permit = match wait_class.try_park() {
+                Some(p) => p,
+                None => {
+                    return MutationVerdict::Deny {
+                        reason: INTERCEPT_SATURATED_REASON.to_string(),
+                    }
                 }
             };
-            let decision = registry.register(action_request_id.clone(), session_id);
-            let (vtx, vrx) = std::sync::mpsc::sync_channel::<MutationVerdict>(1);
-            rt.spawn(async move {
-                let v = resolve_verdict(decision, APPROVAL_WAIT).await;
-                let _ = vtx.send(v);
-            });
-            // block this serve thread on the bridge; a dropped bridge sender (the spawned task died)
-            // fails closed to Deny. The waiter then REMOVES its registry entry (carry-forward b — a
-            // late approve/deny finds nothing, no re-deliver).
-            let v = vrx.recv().unwrap_or_else(|_| MutationVerdict::Deny {
-                reason: "decision bridge dropped — fail-closed".to_string(),
-            });
-            registry.remove(&action_request_id);
-            v
+            register_and_wait(action_request_id)
         }
-    };
-    Ok(Ok(verdict_response(&verdict)))
+    }
 }
 
 /// The `intercept` verdict as the JSON the `nexusopsd hook` subcommand consumes + translates to

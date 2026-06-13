@@ -61,6 +61,12 @@ pub fn spawn_accept_loop(
     mut shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     let permits = Arc::new(Semaphore::new(max_connections));
+    // P4.0b-2-F2 — the intercept-wait permit class (§6.4/§10): a reserved sub-bound
+    // (`wait_cap = max − max/4`) DERIVED from the SAME `max_connections` as the general pool (so the
+    // two are consistent, no duplicated constant). A waiting `intercept` parks here for the approval-
+    // wait; because `wait_cap < max_connections`, the reserved general headroom (`max/4`) is NEVER held
+    // by waits → the UI `approve`/`deny` + reads can't be starved. Shared (cloned per connection).
+    let wait_class = super::InterceptWaitClass::new(max_connections, max_connections / 4);
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -89,6 +95,8 @@ pub fn spawn_accept_loop(
                     let write = write.clone();
                     // a per-connection clone of the C2 decision_sink registry (Arc, cheap).
                     let registry = Arc::clone(&registry);
+                    // a per-connection clone of the F2 intercept-wait permit class (cheap — Arc inside).
+                    let wait_class = wait_class.clone();
                     tokio::task::spawn_blocking(move || {
                         // the permit is held for the connection's lifetime; it RELEASES when this
                         // closure ends (connection closed) — no leak / self-DoS.
@@ -124,6 +132,7 @@ pub fn spawn_accept_loop(
                             deltas,
                             &write,
                             &registry,
+                            &wait_class,
                         ) {
                             eprintln!("nexusopsd: connection closed: {e}");
                         }

@@ -130,6 +130,7 @@ fn test_unauthorized_peer_disconnects_unserved() {
         no_deltas(),
         &nexusopsd::runtime::WriteHandle::disconnected(),
         &decision_registry(),
+        &wait_class(),
     );
     assert!(
         matches!(outcome, Err(IpcError::UnauthorizedPeer { .. })),
@@ -176,6 +177,12 @@ fn decision_registry() -> nexusopsd::decisions::DecisionRegistry {
     nexusopsd::decisions::DecisionRegistry::new()
 }
 
+/// the F2 intercept-wait permit class for the `serve_connection` `wait_class` param — these tests
+/// don't exercise the `intercept` wait, so it's plumbing (the production default; never parked here).
+fn wait_class() -> nexusopsd::runtime::InterceptWaitClass {
+    nexusopsd::runtime::InterceptWaitClass::production_default()
+}
+
 // ---- Test 5 — handshake: in-range HelloFrame → HelloAck (§6.4) ---------------
 
 #[test]
@@ -202,6 +209,7 @@ fn test_handshake_hello_ack() {
         no_deltas(),
         &nexusopsd::runtime::WriteHandle::disconnected(),
         &decision_registry(),
+        &wait_class(),
     )
     .expect("authorized in-range handshake succeeds");
 
@@ -243,6 +251,7 @@ fn test_version_skew_disconnects() {
         no_deltas(),
         &nexusopsd::runtime::WriteHandle::disconnected(),
         &decision_registry(),
+        &wait_class(),
     );
     assert!(
         matches!(outcome, Err(IpcError::VersionSkew { .. })),
@@ -288,6 +297,7 @@ fn test_method_before_handshake_rejected() {
         no_deltas(),
         &nexusopsd::runtime::WriteHandle::disconnected(),
         &decision_registry(),
+        &wait_class(),
     );
     assert!(
         matches!(outcome, Err(IpcError::Protocol(_))),
@@ -425,6 +435,7 @@ fn test_get_projection_returns_rows() {
             no_deltas(),
             &nexusopsd::runtime::WriteHandle::disconnected(),
             &decision_registry(),
+            &wait_class(),
         )
         .expect("serve get_projection");
         h.join().unwrap()
@@ -511,6 +522,7 @@ fn test_submit_action_reachable_through_ipc_dispatch() {
             no_deltas(),
             &handle,
             &decision_registry(),
+            &wait_class(),
         )
         .expect("serve submit");
         h.join().unwrap()
@@ -561,6 +573,7 @@ fn test_get_projection_unfed_is_empty_not_error() {
             no_deltas(),
             &nexusopsd::runtime::WriteHandle::disconnected(),
             &decision_registry(),
+            &wait_class(),
         )
         .expect("serve unfed projection");
         h.join().unwrap()
@@ -607,6 +620,7 @@ fn test_unknown_method_and_get_capabilities() {
             no_deltas(),
             &nexusopsd::runtime::WriteHandle::disconnected(),
             &decision_registry(),
+            &wait_class(),
         )
         .expect("serve capabilities + unknown");
         h.join().unwrap()
@@ -656,6 +670,7 @@ fn test_get_projection_scope_not_yet_enforced() {
             no_deltas(),
             &nexusopsd::runtime::WriteHandle::disconnected(),
             &decision_registry(),
+            &wait_class(),
         )
         .expect("serve scoped projection");
         h.join().unwrap()
@@ -777,6 +792,7 @@ fn test_subscribe_method_recognized() {
             no_deltas(),
             &nexusopsd::runtime::WriteHandle::disconnected(),
             &decision_registry(),
+            &wait_class(),
         )
         .expect("serve subscribe ack");
         h.join().unwrap()
@@ -873,6 +889,7 @@ fn test_subscriber_receives_delta_frame() {
                 deltas_serve,
                 &nexusopsd::runtime::WriteHandle::disconnected(),
                 &decision_registry(),
+                &wait_class(),
             );
         });
         let client_h = s.spawn(move || {
@@ -958,6 +975,7 @@ fn test_subscribe_connection_is_dedicated() {
                 deltas_serve,
                 &nexusopsd::runtime::WriteHandle::disconnected(),
                 &decision_registry(),
+                &wait_class(),
             );
         });
         let client_h = s.spawn(move || {

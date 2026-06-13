@@ -26,7 +26,9 @@ use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
 use nexusopsd::integrity::{FileIntegrityAlarm, IntegrityAlarm};
 use nexusopsd::ipc::current_euid;
-use nexusopsd::runtime::{bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor};
+use nexusopsd::runtime::{
+    bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor, MAX_CONNECTIONS,
+};
 use nexusopsd::session::{spawn_supervisor_task, PtyLauncher};
 use nexusopsd::terminal::PortablePtySpawner;
 
@@ -40,8 +42,9 @@ const EVENTS_MIRROR_FILE: &str = "events.jsonl";
 const SOCKET_FILE: &str = "gateway.sock";
 /// the §17 durable integrity-incident file within the app-support dir (call-2 — the off-DB alarm).
 const INTEGRITY_INCIDENTS_FILE: &str = "integrity-incidents.jsonl";
-/// max concurrent live GatewayPort connections (anti-DoS bound, §6.4).
-const MAX_CONNECTIONS: usize = 64;
+// the general GatewayPort connection cap + the F2 intercept-wait reserved sub-bound are the canonical
+// `nexusopsd::runtime::{MAX_CONNECTIONS, RESERVED_GENERAL}` (the accept loop derives the wait class
+// from the `max_connections` it is passed — `wait_cap = MAX_CONNECTIONS − MAX_CONNECTIONS/4`).
 
 fn main() -> ExitCode {
     // C2 — the `nexusopsd hook <event>` subcommand: the live PreToolUse interception ingress (a

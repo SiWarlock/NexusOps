@@ -52,6 +52,15 @@ for when the daemon surfaces rate-limit data.
       the fixture + the dashboard pass `kind="sdk"` (Q4: no visual reframe this slice).
 - [ ] All `model.test.ts` credit-pool tests pass (existing retargeted to pass `kind`
       + the new kind-aware cases); **whole suite green** (217 → 217+N).
+- [ ] **(LEAD ADD — required, was Q3 "optional") MetricQuality provisional is
+      drift-pinned to the now-frozen def:** a test asserts the provisional
+      `MetricQuality.options` set == the frozen schema's `MetricQuality` `oneOf`-of-`const`
+      value set (same member-set-equality pattern as `generated.test.ts`/`provisional.test.ts`;
+      read the frozen schema at test time). **AND** the stale `provisional.ts:215`
+      comment ("No frozen MetricQuality/Harness enum exists yet") is corrected:
+      MetricQuality **IS** frozen at 0.23.0 (`oneOf`-of-`const`, generator-pending →
+      stays a drift-pinned provisional shadow); `Harness` remains unfrozen. No generator
+      change — closes the §5.0 drift class for a newly-frozen contract enum.
 - [ ] `/preflight` clean (oxlint + tsc + test:run).
 - [ ] Cross-doc invariant flagged at Step 9: the `CreditPool` provisional is now
       kind-discriminated + the §9.1 two-pool semantics are encoded; **MetricQuality
@@ -77,6 +86,10 @@ rate_limits.{five_hour,seven_day}`. Flag at 7.5 as **expected, not a wiring miss
 - `ui/src/views/usage/UsageDashboard.tsx` — pass `kind` (the existing meter →
   `kind="sdk"`); no visual change (Q4).
 - `ui/src/projections/fixtures/proj_usage.ts` — `creditPool` fixture gains `kind: "sdk"`.
+- `ui/src/contracts/provisional.ts` — **(lead ADD)** correct the stale `:215` comment
+  (MetricQuality is frozen at 0.23.0, generator-pending; Harness still unfrozen).
+- `ui/src/contracts/provisional.test.ts` — **(lead ADD)** the MetricQuality drift-pin
+  (provisional `.options` == frozen `oneOf`-const set; reads the schema at test time).
 
 If implementation needs files beyond this list, **flag at Step 2.5** before GREEN.
 
@@ -98,6 +111,12 @@ Tests in `ui/src/views/usage/model.test.ts`:
    - Asserts: the baseline state.
    - Why: §11.4 the meter's non-warning band.
 5. **(retarget)** the existing `creditPoolState` tests pass the `kind` arg (SDK).
+6. **`metricquality_provisional_matches_frozen_schema`** *(LEAD ADD — required)* — in
+   `ui/src/contracts/provisional.test.ts`.
+   - Asserts: the provisional `MetricQuality.options` set == the frozen schema's
+     `MetricQuality` `oneOf`-of-`const` value set (read the schema at test time).
+   - Why: §5.0 drift — a newly-frozen contract enum (0.23.0) must not sit as an
+     un-pinned hand-declared shadow (the drift class 040/041 cleared); tagged `spec(§9.1)`.
 
 ## Cross-doc invariant impact (implementer flags at Step 9; orchestrator writes the docs)
 - **Model field changes:** `CreditPool` provisional gains `kind` (**UI-provisional** —
@@ -127,14 +146,15 @@ Tests in `ui/src/views/usage/model.test.ts`:
    for no current consumer). **Default vote: reuse `near_exhaustion`** — the `kind`
    gates `hard_stop`, and `near_exhaustion` already means "watch this"; add a distinct
    state only if you judge the rolling-reset semantics need their own label NOW.
-3. **MetricQuality reconcile.** It's frozen at 0.23.0 (`oneOf`-of-`const`) but the
-   generator (`gen-contracts.mjs:38`) only handles `Array.isArray(def.enum)`. **Default:
-   DEFER** — a separate "generator: `oneOf`-of-`const` support + reconcile
-   MetricQuality" follow-up (carry-forward); do **NOT** bundle generator work into a
-   §11.4 logic slice. **Optional in-slice (cheap):** a drift-pin test asserting the
-   provisional `MetricQuality` members == the frozen schema's `MetricQuality` `oneOf`
-   const set (so the provisional is drift-caught against the now-frozen def, **without**
-   the generator change). Flag if you want that pin in 042.
+3. **MetricQuality — SETTLED by the lead (no longer optional).** It's frozen at 0.23.0
+   (`oneOf`-of-`const`) but the generator (`gen-contracts.mjs:38`) only handles
+   `Array.isArray(def.enum)`. **Two-part ruling (lead away-authority, logged for
+   return-review):** (a) **DEFER** the generator-extension (`oneOf`-of-`const` support +
+   the full provisional→generated reconcile) to a tracked carry-forward follow-up — no
+   generator-capability work inside a §11.4 logic slice; **(b) REQUIRED in-slice:** the
+   cheap **drift-pin** test (RED-outline #6) + the `provisional.ts:215` comment
+   correction. A newly-frozen contract enum must not sit un-drift-caught (the §5.0 drift
+   class 040/041 cleared). No generator change; does not block the kind-aware core.
 4. **Rendering scope.** **Default: model + the deterministic VM only** — the SDK meter
    renders unchanged (`kind="sdk"`); the section's `aria-label="Agent-SDK credit pool"`
    stays accurate. No visual gate needed (no rendering change). Flip to "generalize the

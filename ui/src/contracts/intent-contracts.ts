@@ -59,6 +59,20 @@ export const ActionPreview = z.object({
 });
 export type ActionPreview = z.infer<typeof ActionPreview>;
 
+/** §6.2 PolicyDecision — the policy engine's decision. The daemon owns the
+ *  risk/approval-requirement; the UI renders this, never computes its own (Q4).
+ *  `.strict()` matches the frozen `additionalProperties:false`. */
+export const PolicyDecision = z
+  .object({
+    status: bundle.shape.PolicyDecisionStatus,
+    reasons: z.array(z.string()),
+    required_approvals: z.array(RequiredApprover),
+    constraints: z.array(z.string()),
+    safer_alt: z.string().nullable().optional(),
+  })
+  .strict();
+export type PolicyDecision = z.infer<typeof PolicyDecision>;
+
 /** §6.2 Approval — the human/policy decision. The UI submits it; the daemon's policy
  *  engine owns the risk/requirement (Q4 — no UI-derived risk). */
 export const Approval = z.object({

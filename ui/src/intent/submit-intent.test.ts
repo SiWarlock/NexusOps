@@ -9,6 +9,7 @@ import {
   ActionRequest,
   ActorRefBody,
   Approval,
+  PolicyDecision,
   RequiredApprover,
   ResourceRef,
 } from "../contracts/index";
@@ -201,6 +202,7 @@ describe("intent contracts — frozen-shadow drift pin (§2.5-seam)", () => {
       ["ResourceRef", ResourceRef],
       ["RequiredApprover", RequiredApprover],
       ["ActorRefBody", ActorRefBody],
+      ["PolicyDecision", PolicyDecision],
     ];
     for (const [name, zod] of cases) {
       const frozen = Object.keys(schema.$defs[name]!.properties ?? {}).toSorted();

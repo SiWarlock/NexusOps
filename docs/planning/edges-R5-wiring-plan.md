@@ -110,7 +110,11 @@ Ordered lowest-risk-first; reads/risk-0 before mutators; the migration foundatio
 > Edges does NOT edit the shared root docs (`IMPLEMENTATION_PLAN.md`/`ARCHITECTURE.md`/`daemon/CLAUDE.md`/
 > `daemon/LESSONS.md`) in-worktree mid-round (cross-track rule). Doc-deltas accumulate here + apply at the
 > phase-exit merge reconciliation. Lead rulings (R5 open): slice granularity = orch's call (atomic mutators,
-> bundle reads); `auth_expired` defer CONFIRMED; MIGRATION_9 = lead routing to user (Wave-A/B don't need it).
+> bundle reads); `auth_expired` defer CONFIRMED; **MIGRATION_9 = D8 DEFER** to the final edges→main merge
+> (daemon's in-flight 4.0b-2 may hold v9 → claiming now risks a hard collision; consumer-less forward-laying →
+> deferral is free, D5-aligned; Wave-C takes the then-next-free number, and whether to build+test against a
+> test-schema now vs. defer the connection slice is orch's call); **bridge gateway/ edits = edges OWNS them**
+> as phase-exit integration (lead-confirmed; variant shape = orch's call, ruled B).
 
 **Slice ledger:**
 - **edges-019** P5.1 `project.rescan` executor — LANDED `c739278` (543/0, security CLEAR). Executor + emission
@@ -141,5 +145,6 @@ to the inner stub. Net Wave-B/C/D unchanged; one fewer slice.
 - **Completed-work ticks (hold):** P5.1 = PARTIAL (executor + emission landed edges-019; registry projector
   pending MIGRATION_9). P5.2 = in progress (edges-020 mutator; proj_worktree projector + create_branch pending).
 - **Cross-track surfaces (lead-aware):** edges touches `gateway/executor.rs` + `gateway/request.rs` (the
-  `EmittedEvent::Namespaced` bridge — 1 variant + 1 arm, additive, resolved at minimal surface) + will claim
-  MIGRATION_9 (Wave-C). Both flagged to the lead alongside the daemon track's concurrent gateway/ + migration edits.
+  `EmittedEvent::Namespaced` bridge — 1 variant + 1 arm, additive, edges-owned per the lead) + MIGRATION_9
+  **deferred to the final merge (D8)** — Wave-C takes the then-next-free number after the daemon's schema settles.
+  Both lead-ruled + logged to the cross-track ledger for the final merge.

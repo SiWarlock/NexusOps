@@ -88,16 +88,29 @@ pub enum ExecutionOutcome {
     /// irreversible change (such a half-applied change is a `Succeeded { side_effect_applied: true }`
     /// the executor could not complete cleanly, OR a future rollback concern — never a `Failed`).
     Failed(String),
+    /// the executor FAILED but also emitted structured observation event(s) to record ATOMIC with
+    /// `ActionFailed` (P7.1 edges-023 — a TERMINAL non-auth external sync failure: `GithubSyncFailed`/
+    /// `LinearSyncFailed`). The pipeline's txn-B records `ActionFailed { ExecutorError { detail } }` AND
+    /// appends each `emitted_events` in the SAME txn — so the §17 sync-failure record is durable iff the
+    /// failure itself is (a write fault rolls the whole txn-B back). Like every `Failed`, **NO durable
+    /// side effect was applied** (`side_effect_applied()` is `false` → a txn-B fault rolls back cleanly,
+    /// the action stays `executing` → L5; never `ActionPartiallySucceeded`). The existing `Failed(String)`
+    /// sites are untouched (purely additive). Edges-owned daemon-internal gateway extension (R5).
+    FailedWithEvents {
+        detail: String,
+        emitted_events: Vec<EmittedEvent>,
+    },
 }
 
 impl ExecutionOutcome {
     /// Whether a **durable external side effect was applied** — the signal the 2.4 fail-closed path
     /// keys off (a terminal-event write that fails after a real change → `ActionPartiallySucceeded`,
     /// else a clean rollback that stays `executing`). `true` ONLY for `Succeeded { side_effect_applied:
-    /// true }`; `false` for a side-effect-free `Succeeded` AND for every `Failed` (a `Failed` never
-    /// applied a durable change — see the variant doc). Centralizing it here keeps the fail-closed
-    /// contract in ONE place, so a future `Failed`-with-detail variant can't silently skip the partial
-    /// path by being matched only against `Succeeded`.
+    /// true }`; `false` for a side-effect-free `Succeeded`, for every `Failed`, AND for
+    /// `FailedWithEvents` (neither a `Failed` nor a `FailedWithEvents` ever applied a durable change —
+    /// see the variant docs). Centralizing it here keeps the fail-closed contract in ONE place, so the
+    /// `FailedWithEvents` variant (and any future `Failed`-with-detail variant) can't silently skip the
+    /// partial path by being matched only against `Succeeded`.
     pub fn side_effect_applied(&self) -> bool {
         matches!(
             self,

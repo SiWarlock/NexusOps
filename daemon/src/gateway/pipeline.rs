@@ -1020,6 +1020,37 @@ impl Gateway {
                         status: ARStatus::Failed,
                     })
                 }
+                // P7.1 (edges-023) — a FAILED action that ALSO emits structured observation events (a
+                // TERMINAL non-auth `*SyncFailed`). Record `ActionFailed` (the terminal event — the action
+                // IS a failure) AND append the emitted_events in the SAME txn-B, ATOMIC: a §17 sync-failure
+                // record is durable iff the failure is. A write failure `?`-propagates → txn-B rolls back →
+                // the action stays `executing` → L5 (and `side_effect_applied()` is false for this variant
+                // → the outer Err arm rolls back cleanly, never `ActionPartiallySucceeded`).
+                ExecutionOutcome::FailedWithEvents {
+                    detail,
+                    emitted_events,
+                } => {
+                    request::update_status(
+                        gtx.tx(),
+                        &act_id,
+                        ARStatus::Executing,
+                        ARStatus::Failed,
+                    )?;
+                    gtx.append(&request::failed_intent(
+                        req,
+                        ActionError::ExecutorError {
+                            message: detail.clone(),
+                        },
+                        &now,
+                    )?)?;
+                    for ev in emitted_events {
+                        gtx.append(&request::emitted_event_intent(req, ev, &now)?)?;
+                    }
+                    Ok(ActionAck {
+                        action_request_id: act_id.clone(),
+                        status: ARStatus::Failed,
+                    })
+                }
             }
         });
 

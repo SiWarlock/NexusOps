@@ -7,6 +7,8 @@
 //! Linear executor arms + auth bootstrap + the §17 `SyncFailed`/`auth_expired` wiring are gated/later.
 
 pub mod classifier;
+pub mod executor;
 pub mod github;
+pub mod github_write;
 pub mod linear;
 pub mod pull_request;

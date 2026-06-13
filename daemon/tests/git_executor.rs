@@ -217,6 +217,9 @@ fn test_create_worktree_emits_worktree_created() {
             }
         }
         ExecutionOutcome::Failed(e) => panic!("expected Succeeded, got Failed: {e}"),
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("git executor never returns FailedWithEvents, got: {detail}")
+        }
     };
     assert_eq!(payload.path, "/repo/wt");
     assert_eq!(payload.branch_name, "feature");
@@ -241,6 +244,9 @@ fn test_create_worktree_side_effect_applied_true() {
             ..
         } => assert!(side_effect_applied, "a real FS worktree was created"),
         ExecutionOutcome::Failed(e) => panic!("expected Succeeded, got Failed: {e}"),
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("git executor never returns FailedWithEvents, got: {detail}")
+        }
     }
 }
 
@@ -254,6 +260,9 @@ fn test_create_worktree_cli_failure_is_failed_no_event() {
         let exec = GitExecutor::new(Box::new(cli));
         match exec.execute(&worktree_req("/repo", "/repo/wt", "feature", None, true)) {
             ExecutionOutcome::Failed(_) => {} // expected
+            ExecutionOutcome::FailedWithEvents { detail, .. } => {
+                panic!("git executor never returns FailedWithEvents, got: {detail}")
+            }
             ExecutionOutcome::Succeeded { emitted_events, .. } => panic!(
                 "expected Failed; got Succeeded with {} events",
                 emitted_events.len()
@@ -307,6 +316,9 @@ fn test_create_worktree_rejects_dash_leading_operand() {
     ] {
         match exec.execute(&worktree_req(repo, wt, branch, base, true)) {
             ExecutionOutcome::Failed(_) => {}
+            ExecutionOutcome::FailedWithEvents { detail, .. } => {
+                panic!("git executor never returns FailedWithEvents, got: {detail}")
+            }
             ExecutionOutcome::Succeeded { .. } => {
                 panic!("a dash-leading operand ({wt:?},{branch:?},{base:?}) must fail closed")
             }
@@ -364,6 +376,9 @@ fn test_git_status_diff_still_delegate_to_stub() {
                 assert!(emitted_events.is_empty(), "{verb} emits no event (stub)");
             }
             ExecutionOutcome::Failed(e) => panic!("{verb} should stub-succeed, got Failed: {e}"),
+            ExecutionOutcome::FailedWithEvents { detail, .. } => {
+                panic!("{verb} should stub-succeed, got FailedWithEvents: {detail}")
+            }
         }
     }
 }
@@ -543,6 +558,9 @@ fn test_create_branch_emits_branch_created() {
             }
         }
         ExecutionOutcome::Failed(e) => panic!("expected Succeeded, got Failed: {e}"),
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("git executor never returns FailedWithEvents, got: {detail}")
+        }
     };
     assert_eq!(payload.branch_name, "feature");
     assert_eq!(payload.base.as_deref(), Some("main"));
@@ -559,6 +577,9 @@ fn test_create_branch_side_effect_applied_true() {
             ..
         } => assert!(side_effect_applied, "a real branch was created"),
         ExecutionOutcome::Failed(e) => panic!("expected Succeeded, got Failed: {e}"),
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("git executor never returns FailedWithEvents, got: {detail}")
+        }
     }
 }
 
@@ -572,6 +593,9 @@ fn test_create_branch_cli_failure_is_failed_no_event() {
         let exec = GitExecutor::new(Box::new(fake));
         match exec.execute(&branch_req("/repo", "feature", None, true)) {
             ExecutionOutcome::Failed(_) => {}
+            ExecutionOutcome::FailedWithEvents { detail, .. } => {
+                panic!("git executor never returns FailedWithEvents, got: {detail}")
+            }
             ExecutionOutcome::Succeeded { emitted_events, .. } => panic!(
                 "expected Failed; got Succeeded with {} events",
                 emitted_events.len()
@@ -618,6 +642,9 @@ fn test_create_branch_rejects_dash_leading_operand() {
     for (branch, base) in [("--force", None), ("feature", Some("--orphan"))] {
         match exec.execute(&branch_req("/repo", branch, base, true)) {
             ExecutionOutcome::Failed(_) => {}
+            ExecutionOutcome::FailedWithEvents { detail, .. } => {
+                panic!("git executor never returns FailedWithEvents, got: {detail}")
+            }
             ExecutionOutcome::Succeeded { .. } => {
                 panic!("a dash-leading operand ({branch:?},{base:?}) must fail closed")
             }
@@ -643,6 +670,9 @@ fn test_create_branch_repo_path_dash_not_guarded() {
         ExecutionOutcome::Succeeded { .. } => {}
         ExecutionOutcome::Failed(e) => {
             panic!("repo_path is exempt from the operand guard; got Failed: {e}")
+        }
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("git executor never returns FailedWithEvents, got: {detail}")
         }
     }
     assert_eq!(

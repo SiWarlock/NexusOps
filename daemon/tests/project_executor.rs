@@ -300,6 +300,9 @@ fn test_project_rescan_payload_maps_all_fields() {
             }
         }
         ExecutionOutcome::Failed(e) => panic!("expected Succeeded, got Failed: {e}"),
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("project.rescan never returns FailedWithEvents, got: {detail}")
+        }
     };
     // detect_git → 6
     assert!(ev.is_git);
@@ -481,5 +484,8 @@ fn test_project_rescan_side_effect_applied_false() {
             );
         }
         ExecutionOutcome::Failed(e) => panic!("expected Succeeded, got Failed: {e}"),
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("project.rescan never returns FailedWithEvents, got: {detail}")
+        }
     }
 }

@@ -259,7 +259,7 @@ fn to_read_error(err: &octocrab::Error) -> GithubReadError {
 /// `#[non_exhaustive]` (not externally constructible → unit-tested via `classify` itself, edges-003);
 /// the remaining variants (serde/uri/...) conservatively classify as a transient `ServerError` (retry,
 /// never dead-letter). `retry_after` is unreachable from the typed error (no raw headers) → `None`.
-fn classify_octocrab_error(err: &octocrab::Error) -> IntegrationOutcomeClass {
+pub(crate) fn classify_octocrab_error(err: &octocrab::Error) -> IntegrationOutcomeClass {
     match err {
         octocrab::Error::GitHub { source, .. } => {
             classify(Some(source.status_code.as_u16()), None, false)

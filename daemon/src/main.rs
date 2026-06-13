@@ -22,6 +22,8 @@ use nexusopsd::gateway::Gateway;
 use nexusopsd::git::cli::SystemGitCli;
 use nexusopsd::git::executor::GitExecutor;
 use nexusopsd::idgen::UlidGen;
+use nexusopsd::integrations::executor::GithubExecutor;
+use nexusopsd::integrations::github_write::OctocrabGithubWriteClient;
 use nexusopsd::ipc::current_euid;
 use nexusopsd::project::executor::ProjectExecutor;
 use nexusopsd::runtime::{bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor};
@@ -92,6 +94,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     catalog_executor.register(
         nexusops_shared::catalog::ExecutorKind::Git,
         Arc::new(GitExecutor::new(Box::new(SystemGitCli))),
+    );
+    // P7.1 (edges-023) — the first real edges EXTERNAL-NETWORK mutator: github.create_pr/_draft via
+    // octocrab. 3a: the SYNC executor drives the async write-client via the CAPTURED tokio Handle
+    // (`Handle::current()` is valid HERE — `run()` is async; `execute()` later `block_on`s it on the
+    // write-actor's dedicated std::thread, where `Handle::current()` would panic). The
+    // OctocrabGithubWriteClient takes an injected octocrab handle; auth bootstrap (gh-token/Device Flow)
+    // is deferred → a default unauthenticated handle for now (a real create needs the deferred auth
+    // slice). The proj_pull_request projector folding PullRequestSynced is a follow-on slice.
+    catalog_executor.register(
+        nexusops_shared::catalog::ExecutorKind::Github,
+        Arc::new(GithubExecutor::new(
+            Box::new(OctocrabGithubWriteClient::new(octocrab::Octocrab::default())),
+            tokio::runtime::Handle::current(),
+            Box::new(SystemClock),
+        )),
     );
     let gateway = Gateway::new(Box::new(CatalogPolicy), Box::new(catalog_executor));
     let actor = WriteActor::spawn(store, Box::new(SystemClock), gateway);

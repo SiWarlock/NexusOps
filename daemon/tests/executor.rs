@@ -549,10 +549,16 @@ fn catalog_executor_dispatches_by_executor_kind() {
             ..
         } => (detail, changed_resources),
         ExecutionOutcome::Failed(e) => panic!("the git stub should succeed, got {e}"),
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("the git stub never returns FailedWithEvents, got: {detail}")
+        }
     };
     let gh_detail = match gh {
         ExecutionOutcome::Succeeded { detail, .. } => detail,
         ExecutionOutcome::Failed(e) => panic!("the github stub should succeed, got {e}"),
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("the github stub never returns FailedWithEvents, got: {detail}")
+        }
     };
     assert_ne!(git_detail, gh_detail, "distinct per-namespace dispatch");
     assert!(
@@ -767,6 +773,9 @@ fn succeeded_detail(outcome: ExecutionOutcome, ctx: &str) -> String {
     match outcome {
         ExecutionOutcome::Succeeded { detail, .. } => detail,
         ExecutionOutcome::Failed(e) => panic!("{ctx}: expected Succeeded, got Failed({e})"),
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("{ctx}: expected Succeeded, got FailedWithEvents({detail})")
+        }
     }
 }
 
@@ -811,6 +820,9 @@ fn unregistered_kind_falls_back_to_stub() {
         } => (detail, side_effect_applied),
         ExecutionOutcome::Failed(e) => {
             panic!("the unregistered stub should succeed, got Failed({e})")
+        }
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("the unregistered stub never returns FailedWithEvents, got: {detail}")
         }
     };
     assert!(
@@ -872,6 +884,9 @@ fn adjudication_refused_before_dispatch_even_if_registered() {
             e.contains("adjudication"),
             "the refusal names the INV-SEC-1 reason: {e}"
         ),
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("an adjudication action must be a plain Failed refusal, got FailedWithEvents({detail})")
+        }
         ExecutionOutcome::Succeeded { detail, .. } => {
             panic!("an adjudication action must be REFUSED, got Succeeded({detail})")
         }
@@ -898,6 +913,9 @@ fn requires_resource_refs_precondition_survives() {
         ExecutionOutcome::Failed(e) => {
             assert!(e.contains("resource_ref"), "names the precondition: {e}")
         }
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("the precondition fails as a plain Failed, got FailedWithEvents({detail})")
+        }
         ExecutionOutcome::Succeeded { detail, .. } => {
             panic!("missing resource_ref must Fail, got {detail}")
         }
@@ -913,6 +931,9 @@ fn requires_resource_refs_precondition_survives() {
             e.contains("resource_ref"),
             "precondition still fails-closed: {e}"
         ),
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("the precondition fails as a plain Failed, got FailedWithEvents({detail})")
+        }
         ExecutionOutcome::Succeeded { detail, .. } => {
             panic!("precondition must short-circuit dispatch, got {detail}")
         }
@@ -948,6 +969,9 @@ fn rollback_delegates_to_handler_else_default() {
     let bare = CatalogExecutor::new();
     match bare.rollback(&req) {
         ExecutionOutcome::Failed(_) => {}
+        ExecutionOutcome::FailedWithEvents { detail, .. } => {
+            panic!("rollback's default is a plain Failed, never FailedWithEvents, got: {detail}")
+        }
         ExecutionOutcome::Succeeded { detail, .. } => {
             panic!("an unregistered rollback must fail-close (default Failed), got Succeeded({detail})")
         }

@@ -381,6 +381,7 @@ export function Shell({
               sessions={filterByActiveProject(data.sessions, activeProjectId)}
               projects={data.projects}
               usage={data.usage}
+              gateway={client}
             />
           ) : contentView === "settings" ? (
             // Settings folds the Usage dashboard into its Usage tab (§11.2).

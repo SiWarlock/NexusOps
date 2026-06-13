@@ -22,10 +22,11 @@ import type {
   ProjectionDelta,
   ProjectionName,
   ProjectionPageByName,
-  TerminalOutputFrame,
   WireError,
 } from "../contracts/index";
-import { CONTRACT_VERSION, TerminalOutputFrame as TerminalOutputFrameSchema } from "../contracts/index";
+// TerminalOutputFrame imported as a VALUE (the Zod shadow) — used both as the
+// parse validator below and as the AsyncIterable<TerminalOutputFrame> element type.
+import { CONTRACT_VERSION, TerminalOutputFrame } from "../contracts/index";
 import { terminalOutputFixture } from "./terminal-fixture";
 import type { ConnectionState } from "../connection/state";
 import { approvalQueueFixture } from "../projections/fixtures/proj_approval_queue";
@@ -103,7 +104,7 @@ export class MockGatewayPort implements GatewayPort {
     // real boundary would reject). Output ONLY: the §17 PTY-death is a daemon
     // event→projection, not a terminal-channel frame, so it's never yielded here.
     for (const frame of terminalOutputFixture) {
-      yield TerminalOutputFrameSchema.parse(frame);
+      yield TerminalOutputFrame.parse(frame);
     }
   }
 

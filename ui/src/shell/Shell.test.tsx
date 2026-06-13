@@ -1,6 +1,30 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { act, cleanup, render, screen, fireEvent, within } from "@testing-library/react";
+
+// xterm is a canvas lib (not jsdom-renderable) — mock it so opening a live session
+// (fixture_2 has a terminalId → TerminalDisplay) doesn't boot real xterm. Its
+// appearance is visual-gate territory (Lesson 10); these tests assert Shell wiring.
+vi.mock("@xterm/xterm", () => ({
+  Terminal: class {
+    open() {}
+    write() {}
+    loadAddon() {}
+    dispose() {}
+    onData() {
+      return { dispose() {} };
+    }
+    resize() {}
+  },
+}));
+vi.mock("@xterm/addon-fit", () => ({
+  FitAddon: class {
+    fit() {}
+    activate() {}
+    dispose() {}
+  },
+}));
+
 import { Shell } from "./Shell";
 import { MockGatewayPort } from "../gateway-client/mock";
 import { BoundaryValidationError } from "../gateway-client/boundary";

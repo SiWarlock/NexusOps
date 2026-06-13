@@ -7,6 +7,9 @@ import { RiskBadge } from "../../design-system/kit";
 import { sessionDisplayFixture } from "../../shell/display-meta";
 import { SessionsTable } from "../sessions/SessionsTable";
 import { Eyebrow } from "../cockpit";
+import type { GatewayPort } from "../../gateway-client/types";
+import { TerminalDisplay } from "./TerminalDisplay";
+import { isEndedSession } from "./session-lifecycle";
 
 /**
  * The Session Terminal view (ported from kit-views2.jsx SessionTerminal).
@@ -23,11 +26,13 @@ export function SessionTerminal({
   session,
   sessions,
   projects,
+  gateway,
 }: {
   session: SessionRow | null;
   sessions: SessionRow[];
   projects: ProjectActivityRow[];
   usage?: UsageRow[];
+  gateway: GatewayPort;
 }) {
   if (!session) {
     return (
@@ -47,6 +52,11 @@ export function SessionTerminal({
   const descriptor = describeStatus("Session", session.status);
   const display = sessionDisplayFixture[session.session_id];
   const waitingPermission = session.status === "waiting_on_permission";
+  // The well state is driven by the Session PROJECTION + the (fixture) terminal
+  // handle — NEVER by the output bytes (#9). Ended → honest ended state; a live
+  // terminal handle → the xterm well; otherwise the honest placeholder.
+  const terminalId = display?.terminalId;
+  const ended = isEndedSession(session.status);
 
   return (
     <section
@@ -97,11 +107,14 @@ export function SessionTerminal({
           {display?.pr ? <MetaChip tone="pr">{display.pr}</MetaChip> : null}
         </div>
       </div>
-      {/* terminal well — daemon-gated (§9.1 PTY display-only; 6.3d/e) */}
+      {/* terminal well — daemon-gated (§9.1 PTY display-only; 6.3d/e). Flex column so
+          a live xterm fills the space ABOVE a still-visible permission card. */}
       <div
         style={{
           flex: 1,
-          overflowY: "auto",
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
           padding: "12px 16px",
           background: "var(--surface-sunken)",
           boxShadow: "var(--elev-inset)",
@@ -109,23 +122,45 @@ export function SessionTerminal({
           fontSize: "var(--fs-body)",
         }}
       >
-        <div
-          data-testid="terminal-well-pending"
-          style={{ color: "var(--text-faint)", lineHeight: "22px" }}
-        >
-          <div>· terminal channel pending — the live PTY stream lands with the</div>
-          <div>  daemon terminal contract (6.3d/e). Status above is real;</div>
-          <div>  transcript lines are never invented.</div>
-          {display?.current ? (
-            <div style={{ marginTop: 12, color: "var(--text-muted)" }}>
-              last reported activity: <span style={{ color: "var(--text-secondary)" }}>{display.current}</span>
-            </div>
-          ) : null}
-        </div>
+        {ended ? (
+          // ENDED: an honest end-state sourced from session.status (the projection),
+          // never a faked "still running". exit_code/signal detail has no frozen
+          // UI-readable source yet → deferred (P4 projection wiring).
+          <div
+            data-testid="terminal-ended"
+            style={{ color: "var(--text-faint)", lineHeight: "22px" }}
+          >
+            <div>· session {descriptor.label.toLowerCase()} — the terminal process has ended.</div>
+            <div>  exit detail (code / signal) arrives with the daemon projection (P4).</div>
+          </div>
+        ) : terminalId ? (
+          // LIVE: the xterm well, fed the daemon's §6.4 terminal_output stream
+          // (display-only #9 — see TerminalDisplay). flex:1 + minHeight:0 so xterm
+          // fills the space + scrolls internally, leaving the card below visible.
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <TerminalDisplay gateway={gateway} terminalId={terminalId} />
+          </div>
+        ) : (
+          // NO live terminal handle: the honest placeholder (never invent a transcript).
+          <div
+            data-testid="terminal-well-pending"
+            style={{ color: "var(--text-faint)", lineHeight: "22px" }}
+          >
+            <div>· no live terminal stream for this session.</div>
+            <div>  the well attaches when the daemon reports a terminal handle (P4).</div>
+            <div>  status above is real; transcript lines are never invented.</div>
+            {display?.current ? (
+              <div style={{ marginTop: 12, color: "var(--text-muted)" }}>
+                last reported activity: <span style={{ color: "var(--text-secondary)" }}>{display.current}</span>
+              </div>
+            ) : null}
+          </div>
+        )}
         {waitingPermission ? (
           <div
             style={{
               marginTop: 12,
+              flexShrink: 0, // stay visible below a flex:1 live terminal
               border: "1px solid var(--attention-line)",
               background: "var(--attention-surface)",
               borderRadius: "var(--r-3)",

@@ -1,6 +1,29 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { cleanup, render, screen, fireEvent, within } from "@testing-library/react";
+
+// xterm is a canvas lib (not jsdom-renderable) — mock it so the HIQ "open session"
+// flow (fixture_2 has a terminalId → TerminalDisplay) doesn't boot real xterm.
+vi.mock("@xterm/xterm", () => ({
+  Terminal: class {
+    open() {}
+    write() {}
+    loadAddon() {}
+    dispose() {}
+    onData() {
+      return { dispose() {} };
+    }
+    resize() {}
+  },
+}));
+vi.mock("@xterm/addon-fit", () => ({
+  FitAddon: class {
+    fit() {}
+    activate() {}
+    dispose() {}
+  },
+}));
+
 import { Shell } from "../shell/Shell";
 import { MockGatewayPort } from "../gateway-client/mock";
 

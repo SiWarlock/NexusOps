@@ -19,6 +19,9 @@ import "./theme/components.css";
 // Global :focus-visible ring on every interactive control (§11.6) — uses the kit
 // ring tokens; must load after the kit tokens so the custom properties resolve.
 import "./a11y/focus.css";
+// xterm.js base stylesheet for the §6.4 Session Terminal well (6.3d). Global, like
+// the other CSS above — keeps TerminalDisplay import-free of CSS (test-clean).
+import "@xterm/xterm/css/xterm.css";
 import { Shell } from "./shell/Shell";
 
 // 6.1b: mount the shell as the production entry point. <Shell/> instantiates the

@@ -39,6 +39,14 @@ export interface SessionDisplayMeta {
   activity?: string;
   /** Session is an agent-team lead (AgentTeam projection not wired yet). */
   team?: boolean;
+  /**
+   * The §6.4 terminal runtime handle for a session that has a LIVE terminal stream
+   * (6.3d). FIXTURE STAND-IN — the real handle is the opaque daemon-minted
+   * `terminal_id` (re-minted on resume); the daemon will surface it on the session
+   * projection at P4, and this side-map entry is built from it then (Lesson §8).
+   * Absent → the well shows the honest placeholder (no live terminal).
+   */
+  terminalId?: string;
 }
 
 export interface ProjectDisplayMeta {
@@ -71,6 +79,10 @@ export const sessionDisplayFixture: Record<string, SessionDisplayMeta> = {
     worktree: "~/wt/rate-limit",
     current: "$ npm test — awaiting permission",
     activity: "2m ago",
+    // Live terminal + a pending permission card (the real cockpit's "streaming
+    // output behind an approval" case): the well renders the xterm stream AND the
+    // permission prompt. Sidebar-reachable (the openable demo of TerminalDisplay).
+    terminalId: "term_fixture_2", // fixture stand-in for the P4 daemon handle
   },
   session_fixture_3: {
     harness: "codex-cli",
@@ -81,6 +93,7 @@ export const sessionDisplayFixture: Record<string, SessionDisplayMeta> = {
     worktree: "~/wt/flaky-it",
     current: "diff ready for review",
     activity: "6m ago",
+    terminalId: "term_fixture_3", // live terminal (fixture stand-in for the P4 daemon handle)
   },
   session_fixture_4: {
     harness: "claude-code",
@@ -100,6 +113,7 @@ export const sessionDisplayFixture: Record<string, SessionDisplayMeta> = {
     worktree: "~/wt/migration",
     current: "needs a decision on plan step 2",
     activity: "1m ago",
+    terminalId: "term_fixture_5", // live terminal (fixture stand-in for the P4 daemon handle)
   },
 };
 

@@ -40,6 +40,23 @@ describe("terminal-stream consumer (§6.4 Terminal Channel, display-only #9)", (
     expect(st.lastSeq).toBe(0);
   });
 
+  it("skips_undecodable_frame_without_throwing", () => {
+    // spec(§6.4): a corrupt/undecodable base64 frame is SKIPPED (display-degrade) —
+    // never thrown (which would crash the well's stream loop) and never invented;
+    // seq still advances so subsequent frames keep their order.
+    const { writes, sink } = recordingSink();
+    let st = initTerminalState();
+    const bad = { frame_type: "terminal_output", terminal_id: "t1", seq: 0, data: "@@@@" } as const;
+    expect(() => {
+      st = consumeTerminalFrame(st, bad, sink);
+    }).not.toThrow();
+    expect(writes.length).toBe(0); // nothing written — couldn't decode
+    expect(st.lastSeq).toBe(0); // seq still tracked
+    // a following valid frame still writes
+    st = consumeTerminalFrame(st, out(1, "aGk="), sink);
+    expect(writes.length).toBe(1);
+  });
+
   it("tracks_seq_writes_in_arrival_order_no_gap_fill", () => {
     // spec(§6.4): monotonic `seq` is ASSUMED; the consumer writes what it receives
     // in arrival order + tracks lastSeq. A gap (0 then 5) is NOT gap-filled or

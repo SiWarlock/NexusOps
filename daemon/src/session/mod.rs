@@ -15,7 +15,9 @@ pub mod actor;
 pub mod launcher;
 
 pub use actor::{spawn_session_actor, SessionActorHandle, SessionCommand};
-pub use launcher::{FakeLauncher, LaunchedSession, NullTerminalSink, PtyLauncher, SessionLauncher};
+#[cfg(any(test, feature = "test-support"))]
+pub use launcher::FakeLauncher;
+pub use launcher::{LaunchedSession, NullTerminalSink, PtyLauncher, SessionLauncher};
 
 use std::collections::HashMap;
 use std::sync::Arc;

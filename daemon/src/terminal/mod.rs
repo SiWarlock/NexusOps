@@ -25,7 +25,10 @@
 //! the write-actor (forbidden #3 / LESSON §9).
 
 use std::io::{self, Read, Write};
+// Arc + Mutex are used only by the `test-support`-gated `FakePty` (its recorded-input handle).
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
 
 use base64::engine::general_purpose::STANDARD;
@@ -93,6 +96,19 @@ pub trait Pty: Send {
     fn exit_status(&mut self) -> ExitStatus;
     /// Kill the child.
     fn kill(&mut self) -> io::Result<()>;
+    /// A cross-thread [`PtyKiller`] handle for this PTY's child (P4.0b-2 L3). EXTRACTED BEFORE the
+    /// blocking read-pump takes ownership of the `Pty`, so the `SessionActor` can break the pump's
+    /// BLOCKED `read` on Kill/shutdown: a `spawn_blocking` read can't be `abort()`ed, so killing the
+    /// child is what makes the read return EOF (a live long-running agent never EOFs on its own → the
+    /// pump would hang forever without this, blocking daemon shutdown).
+    fn killer(&self) -> Box<dyn PtyKiller>;
+}
+
+/// A cross-thread handle that kills a [`Pty`]'s child (P4.0b-2 L3 — the live-agent shutdown-bounding
+/// path). `Send + Sync` + `kill(&self)` so the `SessionActor` holds it WHILE the read-pump owns the
+/// `Pty` on a `spawn_blocking` thread, and kills the child to unblock the pump's blocked `read`.
+pub trait PtyKiller: Send + Sync {
+    fn kill(&self);
 }
 
 // ---- the event-emission seam (daemon-internal; production binds the write-actor at 3.2/3.3) ------
@@ -223,6 +239,13 @@ impl TerminalSession {
 
     pub fn is_exited(&self) -> bool {
         self.exited
+    }
+
+    /// A cross-thread [`PtyKiller`] for this session's PTY child (P4.0b-2 L3) — grab it BEFORE moving
+    /// the session into the (blocking) read-pump, so the actor can break the pump's blocked `read` on
+    /// Kill/shutdown (a live agent never EOFs on its own; killing the child makes the read return EOF).
+    pub fn killer(&self) -> Box<dyn PtyKiller> {
+        self.pty.killer()
     }
 
     /// Bytes currently buffered (read but not yet flushed) — the backpressure level. Bounded by the
@@ -478,6 +501,30 @@ impl Pty for PortablePtyHost {
     fn kill(&mut self) -> io::Result<()> {
         self.child.kill()
     }
+
+    fn killer(&self) -> Box<dyn PtyKiller> {
+        // portable-pty's `clone_killer()` is the cross-thread kill handle — it kills the SAME child
+        // from another thread (the actor) while the pump owns this `Pty`. Wrapped in a Mutex because
+        // `ChildKiller::kill` takes `&mut self` but `PtyKiller::kill` is `&self` (a shared handle).
+        Box::new(PortableKiller(std::sync::Mutex::new(
+            self.child.clone_killer(),
+        )))
+    }
+}
+
+/// The production [`PtyKiller`] — a `portable-pty` `ChildKiller` (cross-thread kill of the live child).
+struct PortableKiller(std::sync::Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>);
+
+impl PtyKiller for PortableKiller {
+    fn kill(&self) {
+        // best-effort: the child may already have exited (a benign kill error); the point is to break
+        // the pump's blocked read. Recover a poisoned lock rather than panic (no new failure mode).
+        let _ = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .kill();
+    }
 }
 
 /// Map a `portable-pty` exit status to our OS-derived [`ExitStatus`] — `signal` wins (exit_code XOR
@@ -574,19 +621,48 @@ impl PtySpawner for PortablePtySpawner {
 // ---- FakePty — the §14 deterministic test double ------------------------------------------------
 
 /// A scripted PTY for deterministic tests (§14): a fixed sequence of [`PtyRead`]s ending in EOF + a
-/// scripted exit status. Records writes into an `input_sink` the test can assert on.
+/// scripted exit status. Records writes into an `input_sink` the test can assert on. **`test-support`-
+/// gated (P4.0b-2 L3)** — test-only (the production PTY is `PortablePtyHost`); excluded from release.
+#[cfg(any(test, feature = "test-support"))]
 pub struct FakePty {
     reads: std::collections::VecDeque<PtyRead>,
     exit: ExitStatus,
     input: Arc<Mutex<Vec<u8>>>,
+    /// when true, an EXHAUSTED script makes `read` BLOCK (idle, no output, no EOF) until `killed` —
+    /// modeling a live long-running agent whose read never returns on its own (P4.0b-2 L3 kill-path).
+    /// Default false (the existing scripted-then-EOF behavior).
+    loop_until_killed: bool,
+    /// set by the [`PtyKiller`] this `FakePty` hands out (or by `kill`) — once set, a blocked/looping
+    /// `read` returns EOF (the kill broke the read), so the actor's pump terminates.
+    killed: Arc<std::sync::atomic::AtomicBool>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl FakePty {
     pub fn new(reads: Vec<PtyRead>, exit: ExitStatus) -> Self {
         Self {
             reads: reads.into(),
             exit,
             input: Arc::new(Mutex::new(Vec::new())),
+            loop_until_killed: false,
+            killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// A NON-self-terminating `FakePty` (P4.0b-2 L3): once its (empty) script is exhausted, `read`
+    /// BLOCKS forever — modeling a live agent whose PTY read never EOFs on its own. The actor's
+    /// kill-path ([`PtyKiller::kill`]) is what unblocks it (→ EOF → the pump terminates). Without the
+    /// kill-path the actor would hang on `pump.await` here.
+    pub fn looping() -> Self {
+        Self {
+            reads: std::collections::VecDeque::new(),
+            exit: ExitStatus {
+                exit_code: None,
+                signal: Some("SIGKILL".to_string()),
+            },
+            input: Arc::new(Mutex::new(Vec::new())),
+            loop_until_killed: true,
+            killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -596,10 +672,34 @@ impl FakePty {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Pty for FakePty {
     fn read(&mut self) -> io::Result<PtyRead> {
-        // an exhausted script is EOF (a child that closed its PTY).
-        Ok(self.reads.pop_front().unwrap_or(PtyRead::Eof))
+        use std::sync::atomic::Ordering;
+        // a looping FakePty must not ALSO carry scripted reads — they'd be delivered first, so the
+        // blocking loop (and thus the kill-path) is never reached. `looping()` guarantees empty reads;
+        // this catches a module-internal misuse (the fields are private — unreachable from test crates).
+        debug_assert!(
+            !self.loop_until_killed || self.reads.is_empty(),
+            "a looping FakePty must not carry scripted reads (they defeat the kill-path)"
+        );
+        if self.killed.load(Ordering::SeqCst) {
+            return Ok(PtyRead::Eof); // the killer broke the read.
+        }
+        match self.reads.pop_front() {
+            Some(r) => Ok(r),
+            // a looping FakePty's exhausted read BLOCKS (idle) until killed — then EOF (the kill broke
+            // the blocked read). This is what makes the kill-path test meaningful: without the actor
+            // killing the child, this read never returns and the pump hangs.
+            None if self.loop_until_killed => {
+                while !self.killed.load(Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Ok(PtyRead::Eof)
+            }
+            // an exhausted script is EOF (a child that closed its PTY).
+            None => Ok(PtyRead::Eof),
+        }
     }
 
     fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
@@ -616,7 +716,24 @@ impl Pty for FakePty {
     }
 
     fn kill(&mut self) -> io::Result<()> {
+        self.killed.store(true, std::sync::atomic::Ordering::SeqCst);
         self.reads.clear();
         Ok(())
+    }
+
+    fn killer(&self) -> Box<dyn PtyKiller> {
+        Box::new(FakeKiller(self.killed.clone()))
+    }
+}
+
+/// The [`FakePty`]'s cross-thread killer — sets the shared `killed` flag so a blocked/looping `read`
+/// EOFs (the test analog of `portable-pty`'s `ChildKiller`). `test-support`-gated with `FakePty`.
+#[cfg(any(test, feature = "test-support"))]
+struct FakeKiller(Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl PtyKiller for FakeKiller {
+    fn kill(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }

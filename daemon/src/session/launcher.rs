@@ -12,14 +12,19 @@ use std::io;
 use std::path::PathBuf;
 
 use nexusops_shared::events::TerminalProcessExited;
-use nexusops_shared::harness::HarnessCapabilities;
 use nexusops_shared::ids::SessionId;
 
 use crate::harness::claude::{ClaudeAdapter, ClaudeLaunchSpec};
-use crate::harness::{FakeHarness, HarnessAdapter};
-use crate::terminal::{
-    ExitStatus, FakePty, PtyRead, PtySpawner, TerminalEventSink, TerminalId, TerminalSession,
-};
+use crate::harness::HarnessAdapter;
+use crate::terminal::{PtySpawner, TerminalEventSink, TerminalId, TerminalSession};
+
+// test-only imports — the `FakeLauncher` fake is `test-support`-gated (P4.0b-2 L3).
+#[cfg(any(test, feature = "test-support"))]
+use crate::harness::FakeHarness;
+#[cfg(any(test, feature = "test-support"))]
+use crate::terminal::{ExitStatus, FakePty, PtyRead};
+#[cfg(any(test, feature = "test-support"))]
+use nexusops_shared::harness::HarnessCapabilities;
 
 /// The daemon-owned PTY window size for a launched session (the UI resizes via the §6.4 control path).
 const ROWS: u16 = 24;
@@ -56,16 +61,20 @@ fn terminal_id_for(session_id: &SessionId) -> TerminalId {
 }
 
 /// A [`SessionLauncher`] that yields a [`FakeHarness`] + [`FakePty`] session (deterministic tests).
+/// **`test-support`-gated (P4.0b-2 L3)** — test-only (production launches via `PtyLauncher`).
+#[cfg(any(test, feature = "test-support"))]
 pub struct FakeLauncher {
     caps: HarnessCapabilities,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl FakeLauncher {
     pub fn new(caps: HarnessCapabilities) -> Self {
         Self { caps }
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl SessionLauncher for FakeLauncher {
     fn launch_session(&self) -> io::Result<LaunchedSession> {
         let session_id = SessionId::new();

@@ -108,16 +108,16 @@ impl IntegrityAlarm for FileIntegrityAlarm {
 }
 
 /// A recording [`IntegrityAlarm`] test double — collects raised incidents so C2's wiring tests can
-/// assert `route_intercept` fired the alarm on an audit-write fault. **`#[doc(hidden)]`** + slated to
-/// be `#[cfg(feature = "test-support")]`-gated at C3 (alongside `FakeHarness`/`FakePty`): a test
-/// double that SILENTLY SWALLOWS incidents must never be bound in production by accident — production
-/// binds [`FileIntegrityAlarm`].
-#[doc(hidden)]
+/// assert `route_intercept` fired the alarm on an audit-write fault. **`test-support`-gated (P4.0b-2
+/// L3)** — a test double that SILENTLY SWALLOWS incidents must never be bound in production by
+/// accident (excluded from `cargo build`/release; production binds [`FileIntegrityAlarm`]).
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct RecordingIntegrityAlarm {
     incidents: std::sync::Mutex<Vec<IntegrityIncident>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl RecordingIntegrityAlarm {
     pub fn new() -> Self {
         Self::default()
@@ -132,6 +132,7 @@ impl RecordingIntegrityAlarm {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl IntegrityAlarm for RecordingIntegrityAlarm {
     fn raise(&self, incident: IntegrityIncident) {
         self.incidents

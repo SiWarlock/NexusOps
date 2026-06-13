@@ -95,6 +95,12 @@ async fn run(
         }
     }
 
+    // P4.0b-2 L3 — grab the cross-thread PTY killer BEFORE the pump takes ownership of the terminal,
+    // so we can break the pump's BLOCKED read on Kill/shutdown (below). A `spawn_blocking` read can't
+    // be `abort()`ed; a live long-running agent never EOFs on its own → without this the pump (and the
+    // actor's `pump.await`) would hang forever, blocking daemon shutdown.
+    let killer = terminal.killer();
+
     // the terminal read-pump on a blocking thread (`read_step` blocks on the PTY read; LESSON §9).
     // 4.0a DROPS the display output frames (no client; the UDS forward is 6.3d) and lets the pump's
     // own injected sink record the OS exit. Held to abort/await on actor exit → no orphan task.
@@ -140,13 +146,12 @@ async fn run(
         }
     }
 
-    // await the read-pump's completion (LESSON §9 await-on-shutdown: no orphan task). NOTE:
-    // `spawn_blocking` tasks CANNOT be aborted — `abort()` is a no-op on a started blocking closure —
-    // so we await the pump's NATURAL termination. For 4.0a's benign / EOF-terminating programs
-    // (FakePty, /bin/echo) the pump returns promptly. A live long-running agent needs a
-    // kill-to-unblock-the-blocking-read path (`pty.kill()` to break the pump's blocked `read`) BEFORE
-    // its pump ends on `Kill` — that kill-path is the cat-1 4.0b / 4.2 concern (the live drive loop
-    // owns it). In 4.0a the supervisor holds no live sessions, so daemon shutdown drains an empty set.
+    // P4.0b-2 L3 — break the pump's BLOCKED read so its task can terminate (`spawn_blocking` can't be
+    // `abort()`ed). Kill the PTY child: the blocked `read` returns EOF → the pump's loop ends → the
+    // await below completes promptly even for a LIVE long-running agent (daemon shutdown stays
+    // time-bounded). Idempotent + best-effort (the child may have already exited on a self-terminating
+    // run). THEN await the pump's natural termination (LESSON §9 await-on-shutdown: no orphan task).
+    killer.kill();
     let _ = pump.await;
     (session_id, current)
 }

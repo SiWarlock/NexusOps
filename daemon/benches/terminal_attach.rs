@@ -222,7 +222,7 @@ fn measure_one_attach() -> Duration {
 
     let t0 = Instant::now();
     let pty = spawner
-        .spawn("/bin/echo", &["ready".to_string()], &cwd, 24, 80)
+        .spawn("/bin/echo", &["ready".to_string()], &cwd, 24, 80, &[])
         .expect("spawn /bin/echo in a PTY");
     let mut session =
         TerminalSession::new(TerminalId::from_raw("term_bench"), pty, Box::new(BenchSink));

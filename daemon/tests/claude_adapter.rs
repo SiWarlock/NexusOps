@@ -102,6 +102,37 @@ fn test_launch_spec_is_o13_compliant() {
     );
 }
 
+// ---- P4.0b-2 env hygiene + session correlation (note-1; §15 #8) — the spec's env policy ----------
+
+#[test]
+fn test_claude_spec_env_mutations_strip_api_key_and_carry_session() {
+    // spec(§15 #8 / P4.0b-2 note-1) — the live `claude` is spawned with a HYGIENIC env: REMOVE
+    // `ANTHROPIC_API_KEY` (so it rides subscription/OAuth auth, not the API-key billing pool the
+    // PTY-primary design avoids), and SET `NEXUSOPS_SESSION_ID` = the daemon session id (the hook
+    // subprocess inherits it → the daemon correlates a `PreToolUse` interception to the session it
+    // belongs to, so a dead session's pending decisions are cancel_session-swept → Deny). The
+    // per-profile `CLAUDE_CODE_OAUTH_TOKEN` set is the HITL-parked profile-config (a forward note).
+    let spec = ClaudeLaunchSpec::build(
+        &PathBuf::from("/Users/x/proj"),
+        "sess_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "/usr/local/bin/nexusops-hook",
+    );
+    let muts = spec.env_mutations();
+
+    // ANTHROPIC_API_KEY is REMOVED (value None) — the §15 #8 account-auth hygiene.
+    assert!(
+        muts.iter()
+            .any(|m| m.key == "ANTHROPIC_API_KEY" && m.value.is_none()),
+        "ANTHROPIC_API_KEY is stripped from the spawned env: {muts:?}"
+    );
+    // NEXUSOPS_SESSION_ID is SET to the daemon session id — the hook→session correlation key.
+    assert!(
+        muts.iter().any(|m| m.key == "NEXUSOPS_SESSION_ID"
+            && m.value.as_deref() == Some("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+        "NEXUSOPS_SESSION_ID carries the daemon session id: {muts:?}"
+    );
+}
+
 // ---- launch() = the Creating→Starting marker only (the launcher owns the spawn — Option A) --------
 //
 // (The former `test_launch_spawns_via_injected_pty_returns_starting` + `test_launch_spawn_failure_*`

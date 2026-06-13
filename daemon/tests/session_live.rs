@@ -13,14 +13,16 @@ use std::sync::{Arc, Mutex};
 
 use nexusops_shared::status::Session;
 use nexusopsd::session::{PtyLauncher, SessionLauncher};
-use nexusopsd::terminal::{ExitStatus, FakePty, Pty, PtyRead, PtySpawner};
+use nexusopsd::terminal::{EnvMutation, ExitStatus, FakePty, Pty, PtyRead, PtySpawner};
 
-/// a recording `PtySpawner` test double — records the spawn call (program/args) + returns a scripted
-/// `FakePty` (no real process). The launcher's ONE spawn is the only thing that should ever call it.
+/// a recording `PtySpawner` test double — records the spawn call (program/args/env) + returns a
+/// scripted `FakePty` (no real process). The launcher's ONE spawn is the only thing that should ever
+/// call it.
 #[derive(Clone)]
 struct SpawnCall {
     program: String,
     args: Vec<String>,
+    env: Vec<EnvMutation>,
 }
 
 #[derive(Clone, Default)]
@@ -36,10 +38,12 @@ impl PtySpawner for RecordingSpawner {
         _cwd: &Path,
         _rows: u16,
         _cols: u16,
+        env: &[EnvMutation],
     ) -> std::io::Result<Box<dyn Pty>> {
         self.calls.lock().unwrap().push(SpawnCall {
             program: program.to_string(),
             args: args.to_vec(),
+            env: env.to_vec(),
         });
         Ok(Box::new(FakePty::new(
             vec![PtyRead::Eof],
@@ -62,6 +66,7 @@ impl PtySpawner for FailingSpawner {
         _cwd: &Path,
         _rows: u16,
         _cols: u16,
+        _env: &[EnvMutation],
     ) -> std::io::Result<Box<dyn Pty>> {
         Err(std::io::Error::other("spawn refused (test)"))
     }
@@ -105,6 +110,25 @@ fn test_only_launcher_spawns_live_claude_pty() {
                 .any(|a| a == "-p" || a.starts_with("--dangerously")),
             "no `-p` / no `--dangerously-*` (the #10 spec, content-preserved at the launcher): {:?}",
             calls[0].args
+        );
+        // env hygiene + correlation (note-1): the spawn STRIPS ANTHROPIC_API_KEY (so the live claude
+        // rides subscription/OAuth auth, §15 #8) and CARRIES NEXUSOPS_SESSION_ID (the hook→session
+        // correlation key the daemon cancel_session-sweeps on a dead session → Deny).
+        assert!(
+            calls[0]
+                .env
+                .iter()
+                .any(|m| m.key == "ANTHROPIC_API_KEY" && m.value.is_none()),
+            "the spawn strips ANTHROPIC_API_KEY: {:?}",
+            calls[0].env
+        );
+        assert!(
+            calls[0]
+                .env
+                .iter()
+                .any(|m| m.key == "NEXUSOPS_SESSION_ID" && m.value.is_some()),
+            "the spawn carries NEXUSOPS_SESSION_ID (hook→session correlation): {:?}",
+            calls[0].env
         );
     }
     // the adapter does NOT spawn — `launch()` is the lifecycle marker; the spawn count STAYS 1.

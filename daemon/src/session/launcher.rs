@@ -129,9 +129,16 @@ impl SessionLauncher for PtyLauncher {
         // (never a live agent without its `PreToolUse` hook — INV-SEC-1).
         let spec = ClaudeLaunchSpec::build(&self.cwd, session_id.as_str(), &self.hook_receiver);
         spec.write_settings()?;
-        let pty = self
-            .spawner
-            .spawn(spec.program(), spec.args(), &self.cwd, ROWS, COLS)?;
+        // env hygiene + correlation (note-1): strip ANTHROPIC_API_KEY (subscription/OAuth auth, §15 #8)
+        // + carry NEXUSOPS_SESSION_ID (the hook→session correlation key) into the spawned child.
+        let pty = self.spawner.spawn(
+            spec.program(),
+            spec.args(),
+            &self.cwd,
+            ROWS,
+            COLS,
+            &spec.env_mutations(),
+        )?;
         let terminal = TerminalSession::new(
             terminal_id_for(&session_id),
             pty,

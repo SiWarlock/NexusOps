@@ -386,13 +386,17 @@ pub struct PortablePtyHost {
 }
 
 impl PortablePtyHost {
-    /// Spawn `program` (with `args`) in a fresh PTY at `cwd`, sized `rows`×`cols`.
+    /// Spawn `program` (with `args`) in a fresh PTY at `cwd`, sized `rows`×`cols`, applying `env`
+    /// mutations on top of the INHERITED environment (P4.0b-2: the live `claude` launch removes
+    /// `ANTHROPIC_API_KEY` + sets `NEXUSOPS_SESSION_ID`). `CommandBuilder::new` captures the parent
+    /// env, so `env_remove` strips a single var while PATH/HOME/… are preserved.
     pub fn spawn(
         program: &str,
         args: &[String],
         cwd: &std::path::Path,
         rows: u16,
         cols: u16,
+        env: &[EnvMutation],
     ) -> io::Result<Self> {
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
@@ -409,6 +413,14 @@ impl PortablePtyHost {
             builder.arg(a);
         }
         builder.cwd(cwd);
+        // env hygiene: applied on top of the inherited base env (`new` captures the parent's).
+        // `Some` overrides; `None` removes the inherited var (PATH/HOME/… untouched).
+        for m in env {
+            match &m.value {
+                Some(v) => builder.env(&m.key, v),
+                None => builder.env_remove(&m.key),
+            }
+        }
 
         let child = pair.slave.spawn_command(builder).map_err(to_io)?;
         let reader = pair.master.try_clone_reader().map_err(to_io)?;
@@ -493,10 +505,40 @@ fn to_io(e: impl std::fmt::Display) -> io::Error {
 
 // ---- PtySpawner — the object-safe factory seam (a harness `launch()` injects this) ---------------
 
+/// One environment mutation applied to a spawned child PTY (P4.0b-2 env hygiene + correlation):
+/// `value = Some(v)` SETS `key=v` (overriding any inherited value); `value = None` REMOVES `key` from
+/// the inherited env. The live `claude` launch strips `ANTHROPIC_API_KEY` (so it rides
+/// subscription/OAuth auth, not the API-key billing pool — §15 #8) and sets `NEXUSOPS_SESSION_ID` (so
+/// the `PreToolUse` hook subprocess, inheriting it, reports the daemon session it belongs to).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvMutation {
+    pub key: String,
+    pub value: Option<String>,
+}
+
+impl EnvMutation {
+    /// REMOVE `key` from the child's inherited env.
+    pub fn remove(key: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: None,
+        }
+    }
+
+    /// SET `key=value` in the child's env (overriding any inherited value).
+    pub fn set(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: Some(value.into()),
+        }
+    }
+}
+
 /// A factory that spawns a fresh [`Pty`] from a launch spec. Object-safe (it produces a
 /// `Box<dyn Pty>`) — unlike [`PortablePtyHost::spawn`], which returns `Self` and so cannot live on a
 /// `dyn` trait. This is the §14 seam a harness adapter's `launch()` injects: [`PortablePtySpawner`]
-/// in production, a recording / fake spawner in tests (returning a [`FakePty`]).
+/// in production, a recording / fake spawner in tests (returning a [`FakePty`]). The `env` slice is
+/// the P4.0b-2 env-hygiene mutations applied to the spawned child (see [`EnvMutation`]).
 pub trait PtySpawner: Send {
     fn spawn(
         &self,
@@ -505,6 +547,7 @@ pub trait PtySpawner: Send {
         cwd: &std::path::Path,
         rows: u16,
         cols: u16,
+        env: &[EnvMutation],
     ) -> io::Result<Box<dyn Pty>>;
 }
 
@@ -520,9 +563,10 @@ impl PtySpawner for PortablePtySpawner {
         cwd: &std::path::Path,
         rows: u16,
         cols: u16,
+        env: &[EnvMutation],
     ) -> io::Result<Box<dyn Pty>> {
         Ok(Box::new(PortablePtyHost::spawn(
-            program, args, cwd, rows, cols,
+            program, args, cwd, rows, cols, env,
         )?))
     }
 }

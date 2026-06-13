@@ -22,6 +22,7 @@ use nexusops_shared::harness::{
 use nexusops_shared::status::Session;
 
 use crate::harness::{HarnessAdapter, MutationIntercept, ResumeResult};
+use crate::terminal::EnvMutation;
 
 pub mod decision;
 pub mod intercept;
@@ -224,6 +225,9 @@ pub struct ClaudeLaunchSpec {
     cwd: PathBuf,
     settings: ClaudeSettings,
     settings_path: PathBuf,
+    /// the daemon session id — carried into the spawned env as `NEXUSOPS_SESSION_ID` so the
+    /// `PreToolUse` hook subprocess reports the session a mutation interception belongs to.
+    session_id: String,
 }
 
 impl ClaudeLaunchSpec {
@@ -248,7 +252,21 @@ impl ClaudeLaunchSpec {
             cwd: cwd.to_path_buf(),
             settings,
             settings_path,
+            session_id: session_id.to_string(),
         }
+    }
+
+    /// The P4.0b-2 env-hygiene + correlation mutations applied to the spawned `claude` child (note-1):
+    /// REMOVE `ANTHROPIC_API_KEY` (so it rides subscription/OAuth auth, not the API-key billing pool
+    /// the PTY-primary design avoids — §15 #8) and SET `NEXUSOPS_SESSION_ID` = the daemon session id
+    /// (inherited by the `PreToolUse` hook subprocess → the daemon correlates an interception to the
+    /// session it belongs to, so a dead session's pending decisions are cancel_session-swept → Deny).
+    /// The per-profile `CLAUDE_CODE_OAUTH_TOKEN` set is the HITL-parked profile-config (a forward note).
+    pub fn env_mutations(&self) -> Vec<EnvMutation> {
+        vec![
+            EnvMutation::remove("ANTHROPIC_API_KEY"),
+            EnvMutation::set("NEXUSOPS_SESSION_ID", &self.session_id),
+        ]
     }
 
     pub fn program(&self) -> &str {

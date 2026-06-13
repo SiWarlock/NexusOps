@@ -17,6 +17,7 @@ pub mod fault;
 pub mod gateway;
 pub mod harness;
 pub mod idgen;
+pub mod integrity;
 pub mod ipc;
 pub mod locks;
 pub mod projections;

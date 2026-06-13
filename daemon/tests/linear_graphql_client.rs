@@ -57,6 +57,29 @@ fn build_issue_query_uses_typed_variable() {
     );
 }
 
+#[test]
+fn build_issue_query_selects_richer_fields() {
+    // spec(§9/edges-018): the query↔mapping sync guard. extract_issue reads description/priority/team/
+    // createdAt/updatedAt off the response, but Linear only RETURNS a field the query REQUESTS — the
+    // canned fixtures carry the fields regardless of the query, so they can't catch an omission (the
+    // field would silently always-None in production). ISSUE_QUERY is a deterministic const → pin that
+    // each richer field is actually selected, alongside the existing id/identifier/title/url/state/assignee.
+    let body = build_issue_query("BLA-123");
+    let query = body["query"].as_str().expect("query is a string");
+    for field in [
+        "description",
+        "priority",
+        "team { id name key }",
+        "createdAt",
+        "updatedAt",
+    ] {
+        assert!(
+            query.contains(field),
+            "ISSUE_QUERY must select `{field}` (else extract_issue's mapping is silently always-None)"
+        );
+    }
+}
+
 // ---- map_linear_response — the deterministic response mapper -------------------------------------
 
 #[test]

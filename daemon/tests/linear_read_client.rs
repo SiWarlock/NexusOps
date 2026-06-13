@@ -16,9 +16,10 @@
 //! (triage/backlog/unstarted/started/completed/canceled — edges-013); `assignee` nullable.
 
 use nexusops_shared::status::Task;
+use nexusops_shared::time::Timestamp;
 use nexusopsd::integrations::classifier::IntegrationOutcomeClass;
 use nexusopsd::integrations::linear::{
-    extract_issue, FakeLinearReadClient, LinearReadClient, LinearReadError,
+    extract_issue, FakeLinearReadClient, LinearReadClient, LinearReadError, LinearTeam,
 };
 
 // ---- recorded public-shape Linear GraphQL responses (inline const — hermetic, no fixture-file IO) -
@@ -35,6 +36,13 @@ const ISSUE_NO_ASSIGNEE: &str = r#"{"data":{"issue":{"id":"a1b2c3d4-0000-0000-00
 const ISSUE_WEIRD_STATE: &str = r#"{"data":{"issue":{"id":"a1b2c3d4-0000-0000-0000-000000000004","identifier":"BLA-126","title":"Mystery state","url":"https://linear.app/acme/issue/BLA-126","state":{"type":"intergalactic","name":"Custom State"},"assignee":null}}}"#;
 // data.issue null (issue not found / empty) → the None arm of the Option return.
 const ISSUE_NULL: &str = r#"{"data":{"issue":null}}"#;
+// edges-018 richer fields — a full issue with description, priority 2, a team {id,name,key}, and
+// ISO-8601 created/updated timestamps, alongside the existing selection.
+const ISSUE_RICH: &str = r#"{"data":{"issue":{"id":"a1b2c3d4-0000-0000-0000-000000000010","identifier":"ENG-200","title":"Rich issue","url":"https://linear.app/acme/issue/ENG-200","state":{"type":"started","name":"In Progress"},"assignee":{"id":"u_001","name":"Ada Lovelace"},"description":"A detailed issue body.","priority":2,"team":{"id":"team_eng","name":"Engineering","key":"ENG"},"createdAt":"2026-06-01T10:00:00.000Z","updatedAt":"2026-06-02T11:30:00.000Z"}}}"#;
+// priority 9 (outside the 0–4 range) → priority maps to None; the rest of the issue still maps.
+const ISSUE_BAD_PRIORITY: &str = r#"{"data":{"issue":{"id":"a1b2c3d4-0000-0000-0000-000000000011","identifier":"ENG-201","title":"Bad priority","url":"https://linear.app/acme/issue/ENG-201","state":{"type":"backlog","name":"Backlog"},"assignee":null,"priority":9}}}"#;
+// createdAt is not ISO-8601 → created_at None; updatedAt is valid → Some (per-field parse degradation).
+const ISSUE_BAD_TIMESTAMP: &str = r#"{"data":{"issue":{"id":"a1b2c3d4-0000-0000-0000-000000000012","identifier":"ENG-202","title":"Bad timestamp","url":"https://linear.app/acme/issue/ENG-202","state":{"type":"started","name":"Doing"},"assignee":null,"createdAt":"yesterday","updatedAt":"2026-06-02T11:30:00Z"}}}"#;
 
 // ---- extraction fixtures → derived §5.1 status (the deterministic core) -------------------------
 
@@ -100,6 +108,73 @@ fn extract_absent_issue_is_none() {
         None // GraphQL-errors body (no data key) — edges-015 owns the errors[] classification
     );
     assert_eq!(extract_issue("not json"), None);
+}
+
+// ---- edges-018 richer secondary signals (description/priority/team/timestamps) -------------------
+
+#[test]
+fn extract_issue_maps_richer_fields() {
+    // spec(§9): the user-directed completeness mapping — description/priority/team/created+updated all
+    // populate from a full fixture; status stays state.type-derived (edges-013, the single authority).
+    let issue = extract_issue(ISSUE_RICH).expect("a well-formed issue node");
+    assert_eq!(issue.status, Task::InProgress); // edges-013, unchanged
+    assert_eq!(issue.description.as_deref(), Some("A detailed issue body."));
+    assert_eq!(issue.priority, Some(2));
+    assert_eq!(
+        issue.team,
+        Some(LinearTeam {
+            id: "team_eng".to_owned(),
+            key: "ENG".to_owned(),
+            name: "Engineering".to_owned(),
+        })
+    );
+    assert_eq!(
+        issue.created_at,
+        Some(Timestamp::parse("2026-06-01T10:00:00.000Z").expect("a valid ts"))
+    );
+    assert_eq!(
+        issue.updated_at,
+        Some(Timestamp::parse("2026-06-02T11:30:00.000Z").expect("a valid ts"))
+    );
+}
+
+#[test]
+fn extract_issue_richer_fields_absent_are_none() {
+    // spec(§8 backward-compat): an OLD minimal fixture (no new fields) STILL deserializes — the tolerant
+    // wire (Option + serde-default) reads the new fields as None, and the existing fields
+    // (status/state_name/assignee) are UNCHANGED.
+    let issue = extract_issue(ISSUE_STARTED).expect("a well-formed issue node");
+    assert_eq!(issue.description, None);
+    assert_eq!(issue.priority, None);
+    assert_eq!(issue.team, None);
+    assert_eq!(issue.created_at, None);
+    assert_eq!(issue.updated_at, None);
+    // existing fields unchanged:
+    assert_eq!(issue.status, Task::InProgress);
+    assert_eq!(issue.state_name, "In Review");
+    assert_eq!(issue.assignee.as_deref(), Some("Ada Lovelace"));
+}
+
+#[test]
+fn extract_issue_priority_out_of_range_is_none() {
+    // spec(§8 total mapping): priority 9 (outside 0–4) → None — total/no-panic over an unexpected wire
+    // value; the rest of the issue still maps (status via edges-013).
+    let issue = extract_issue(ISSUE_BAD_PRIORITY).expect("a well-formed issue node");
+    assert_eq!(issue.priority, None);
+    assert_eq!(issue.status, Task::Queued); // backlog → Queued, unaffected
+}
+
+#[test]
+fn extract_issue_malformed_timestamp_is_none() {
+    // spec(§8): a non-ISO-8601 createdAt → created_at None (Timestamp::parse failure degrades to None,
+    // mirrors CommitInfo.timestamp; never panics); a valid updatedAt alongside still maps to Some.
+    let issue = extract_issue(ISSUE_BAD_TIMESTAMP).expect("a well-formed issue node");
+    assert_eq!(issue.created_at, None);
+    // the valid updatedAt (millisecond-free `Z` form) alongside still parses to its exact instant:
+    assert_eq!(
+        issue.updated_at,
+        Some(Timestamp::parse("2026-06-02T11:30:00Z").expect("a valid ts"))
+    );
 }
 
 // ---- the trait seam (the gated tasks projector / §7.3 Task Inbox consume this) -------------------

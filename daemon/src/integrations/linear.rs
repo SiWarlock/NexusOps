@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use nexusops_shared::status::Task;
+use nexusops_shared::time::Timestamp;
 
 use super::classifier::{
     classify, parse_rate_limit_reset, parse_retry_after, IntegrationOutcomeClass,
@@ -85,9 +86,11 @@ pub fn derive_task_status_from_linear(state_type: LinearStateType) -> Task {
 /// The fetched Linear issue (daemon-internal). A Linear issue is an **external_task** (§5.1 R-8):
 /// `status` is the derived §5.1 `Task` (via edges-013 — the single status authority), `state_name` is
 /// the team's free-form workflow-state NAME (display only, NOT the status source), `assignee` is the
-/// optional assignee display name (`None` = unassigned). The minimal MVP-chip field set (§7.3 Task
-/// Inbox needs identifier/title/url/status); richer fields (description/team/priority/timestamps) are
-/// a later refinement.
+/// optional assignee display name (`None` = unassigned). The minimal MVP-chip set (identifier/title/
+/// url/status) plus the richer secondary signals the gated §7.3 Task Inbox consumes — `description`,
+/// `priority` (0–4 urgency), `team`, and `created_at`/`updated_at` (edges-018). Every richer field is
+/// `Option` (absent / unparseable → `None`; tolerant of the minimal fixtures); `status` stays
+/// `state.type`-derived regardless.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinearIssue {
     pub id: String,
@@ -97,6 +100,26 @@ pub struct LinearIssue {
     pub status: Task,
     pub state_name: String,
     pub assignee: Option<String>,
+    /// The issue body (markdown); `None` if absent.
+    pub description: Option<String>,
+    /// Linear's urgency 0–4 (0 = none … 4 = urgent); `None` if absent or out-of-range.
+    pub priority: Option<u8>,
+    /// The owning team's identity; `None` if absent.
+    pub team: Option<LinearTeam>,
+    /// Issue creation time (RFC3339-Z); `None` only for an absent/unparseable instant.
+    pub created_at: Option<Timestamp>,
+    /// Last-update time (RFC3339-Z); `None` only for an absent/unparseable instant.
+    pub updated_at: Option<Timestamp>,
+}
+
+/// A Linear issue's owning team (daemon-internal). The nested identity (`key` is the human prefix,
+/// e.g. `ENG`; `name` the display name) the gated §7.3 Task Inbox groups + labels by. Present iff the
+/// issue carries a team.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinearTeam {
+    pub id: String,
+    pub name: String,
+    pub key: String,
 }
 
 // Private wire structs — the Linear GraphQL issue response (`{ data: { issue: {...} } }`). Tolerant
@@ -121,6 +144,20 @@ struct IssueNode {
     url: String,
     state: StateNode,
     assignee: Option<AssigneeNode>,
+    // edges-018 richer signals — tolerant (`Option` + `#[serde(default)]`) so the minimal fixtures
+    // (which omit these) still deserialize → the field reads `None`.
+    #[serde(default)]
+    description: Option<String>,
+    // Linear's `priority` is a `Float` (an integer 0–4); mapped to `Option<u8>` in `extract_issue`
+    // (keeps `LinearIssue: Eq` — `f64` isn't `Eq`).
+    #[serde(default)]
+    priority: Option<f64>,
+    #[serde(default)]
+    team: Option<TeamNode>,
+    #[serde(default, rename = "createdAt")]
+    created_at: Option<String>,
+    #[serde(default, rename = "updatedAt")]
+    updated_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -136,13 +173,22 @@ struct AssigneeNode {
     name: String,
 }
 
+#[derive(Deserialize)]
+struct TeamNode {
+    id: String,
+    name: String,
+    key: String,
+}
+
 /// Parse a Linear GraphQL issue response (`{ data: { issue: {...} } }`) → `LinearIssue`, deriving the
 /// §5.1 `Task` status from `state.type` via edges-013 (`derive_task_status_from_linear ∘
 /// parse_linear_state_type` — the single status authority; the free-form `state.name` is preserved but
 /// never the status source). Pure + total over the input string: a malformed body, an absent `data`,
 /// or a null/absent `issue` all yield `None` (the gated edges-015 client classifies a GraphQL-errors
 /// body separately); within a valid node, an absent assignee → `None` and an unknown `state.type` →
-/// the edges-013 conservative floor.
+/// the edges-013 conservative floor. The richer secondary signals (edges-018) each map total/no-panic:
+/// `description` passthrough, `priority` via `map_priority` (out-of-range → `None`), `team` → `LinearTeam`,
+/// and the timestamps via `Timestamp::parse` (unparseable/absent → `None`, mirroring `CommitInfo.timestamp`).
 pub fn extract_issue(response_json: &str) -> Option<LinearIssue> {
     let node = serde_json::from_str::<IssueResponse>(response_json)
         .ok()?
@@ -157,7 +203,31 @@ pub fn extract_issue(response_json: &str) -> Option<LinearIssue> {
         status,
         state_name: node.state.name,
         assignee: node.assignee.map(|a| a.name),
+        description: node.description,
+        priority: node.priority.and_then(map_priority),
+        team: node.team.map(|t| LinearTeam {
+            id: t.id,
+            key: t.key,
+            name: t.name,
+        }),
+        created_at: node
+            .created_at
+            .as_deref()
+            .and_then(|s| Timestamp::parse(s).ok()),
+        updated_at: node
+            .updated_at
+            .as_deref()
+            .and_then(|s| Timestamp::parse(s).ok()),
     })
+}
+
+/// Map Linear's `priority` Float (an integer 0–4) → `u8`; out-of-range → `None` (total/no-panic — keeps
+/// `LinearIssue.priority` an `Option<u8>` so `LinearIssue: Eq` holds). A JSON number is always finite
+/// (no NaN/Inf), and Linear emits an integral 0–4, so the truncating `as i64` is exact for real data;
+/// the range check rejects anything else.
+fn map_priority(p: f64) -> Option<u8> {
+    let n = p as i64; // float→int `as` saturates (no UB on a huge value); range-checked next
+    (0..=4).contains(&n).then_some(n as u8)
 }
 
 /// A read-failure carrying the §17 `IntegrationOutcomeClass` (NOT the collapsed `DeliveryOutcome`) so
@@ -206,7 +276,7 @@ impl LinearReadClient for FakeLinearReadClient {
 
 /// The GraphQL query for one issue. The id is a TYPED variable (`$id`) — never interpolated into the
 /// query text (injection-safe, edges-010). The `id` arg accepts the `BLA-123` identifier or the UUID.
-const ISSUE_QUERY: &str = "query Issue($id: String!) { issue(id: $id) { id identifier title url state { type name } assignee { id name } } }";
+const ISSUE_QUERY: &str = "query Issue($id: String!) { issue(id: $id) { id identifier title url state { type name } assignee { id name } description priority team { id name key } createdAt updatedAt } }";
 
 /// Build the Linear GraphQL request body `{ query, variables: { id } }` for `fetch_issue`. The
 /// `issue_id` is a typed variable (injection-safe — never interpolated into the query, edges-010).

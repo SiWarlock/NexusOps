@@ -1,16 +1,25 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Brain,
-  Check,
   ChevronRight,
   FileCode,
   FolderGit2,
   GitCommitHorizontal,
   GitMerge,
   GitPullRequest,
+  Minus,
   Plus,
+  Trash2,
 } from "lucide-react";
-import type { PullRequestRow } from "../../contracts/index";
+import type {
+  ActionAck,
+  DiffLine,
+  DiffResult,
+  Hunk,
+  PerHunkGitActionType,
+  PullRequestRow,
+} from "../../contracts/index";
+import { WireError } from "../../contracts/index";
 import {
   Badge,
   Button,
@@ -22,107 +31,227 @@ import {
 } from "../../design-system/kit";
 import { StatusPill } from "../../status/StatusPill";
 import { Eyebrow } from "../cockpit";
-import { diffFixture, prDisplayFixture, worktreesFixture } from "../display-fixtures";
+import { prDisplayFixture, worktreesFixture, diffReviewContext } from "../display-fixtures";
+import type { GatewayPort } from "../../gateway-client/types";
+import { useSubmitIntent, type IntentResult } from "../../intent/submit-intent";
+import { useCanSubmitIntent } from "../../connection/read-only";
+import { buildHunkActionRequest } from "../../intent/hunk-resource-ref";
+import {
+  enrichHunkAction,
+  type GatewayApprovalEnrichment,
+} from "../../shell/display-meta";
+import { GatewayModal, ResultNotice } from "../../overlays/GatewayModal";
 
-type Tab = "Review" | "Worktrees" | "Pull requests";
+/** DiffLineKind → the kit DiffHunk line `type`. */
+const KIT_LINE_TYPE: Record<DiffLine["kind"], "ctx" | "add" | "del"> = {
+  context: "ctx",
+  added: "add",
+  removed: "del",
+};
 
-/** Review tab — kit DiffHunk over the diff DISPLAY FIXTURE (the worktree/diff
- *  contract is daemon-gated; accept/approve/fix are disabled, not faked). */
-function ReviewTab() {
+type DiffState =
+  | { kind: "loading" }
+  | { kind: "ready"; diff: DiffResult }
+  | { kind: "error"; code?: string };
+
+/** The per-hunk git-action bar (6.3e, cat-1). stage/unstage/discard are PURE SUBMITTERS
+ *  over the seam (Q1); disabled when !canSubmitIntent (Q2 fail-safe); discard is the
+ *  destructive (risk-3 daemon-side), explicitly labeled + danger-toned. Each button's
+ *  accessible name carries the hunk header (unique per hunk; §11.6). */
+function HunkGitActions({
+  hunk,
+  canSubmit,
+  onAction,
+}: {
+  hunk: Hunk;
+  canSubmit: boolean;
+  onAction: (actionType: PerHunkGitActionType, hunk: Hunk) => void;
+}) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", height: "100%", background: "var(--surface-canvas)" }}>
-      <aside
-        style={{
-          borderRight: "1px solid var(--border-default)",
-          background: "var(--surface-panel)",
-          overflowY: "auto",
-          padding: "12px 8px",
-        }}
+    <div
+      role="group"
+      aria-label={`Hunk actions ${hunk.header}`}
+      style={{ display: "flex", gap: 6, padding: "6px 0 2px" }}
+    >
+      <Button
+        size="sm"
+        variant="secondary"
+        icon={<Plus size={13} />}
+        disabled={!canSubmit}
+        aria-label={`Stage hunk ${hunk.header}`}
+        onClick={() => onAction("git.stage_hunk", hunk)}
       >
-        <Eyebrow style={{ padding: "0 8px 10px" }}>Changed files</Eyebrow>
-        {diffFixture.map((f, i) => (
-          <div
-            key={f.file}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 7,
-              padding: "6px 8px",
-              borderRadius: "var(--r-2)",
-              background: i === 0 ? "var(--surface-active)" : "transparent",
-              marginBottom: 2,
-            }}
-          >
-            <FileCode size={13} aria-hidden="true" style={{ color: "var(--text-faint)", flex: "none" }} />
-            <span
-              style={{
-                flex: 1,
-                font: "var(--fs-meta) var(--font-mono)",
-                color: "var(--text-secondary)",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {f.file.split("/").pop()}
-            </span>
-            {f.comments > 0 ? (
-              <Badge tone="review" size="xs" mono>
-                {f.comments}
-              </Badge>
-            ) : null}
-          </div>
-        ))}
-        <div style={{ marginTop: "auto", padding: "10px 8px 0", display: "flex", gap: 6 }}>
-          <Badge tone="success" variant="dot">
-            +476
-          </Badge>
-          <Badge tone="danger" variant="dot">
-            −110
-          </Badge>
-        </div>
-      </aside>
-      <div style={{ overflowY: "auto", padding: "14px 16px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-          <h1 style={{ margin: 0, font: "var(--fw-semibold) var(--fs-h3)/1 var(--font-sans)" }}>
-            Review · PR #101
-          </h1>
-          <MetaChip tone="pr">#101</MetaChip>
-          <Badge mono style={{ color: "var(--text-faint)" }}>
-            display fixture — diff contract pending
-          </Badge>
-          <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-            <span title="Brain co-pilot arrives with the sidecar contract (Phase 8)">
-              <Button variant="secondary" size="sm" icon={<Brain size={14} />} disabled>
-                Ask Brain
-              </Button>
-            </span>
-            <span title="PR approval is a Gateway mutation (intent seam — daemon-gated)">
-              <Button variant="primary" size="sm" icon={<Check size={14} />} disabled>
-                Approve PR
-              </Button>
-            </span>
-          </div>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {/* actions={false}: the kit's per-hunk Accept/Reject bar has no
-              disabled mode — until review intents land, rendering it would be
-              dead clicks (§11.6 wire-or-disable). */}
-          {diffFixture.map((f) => (
-            <DiffHunk
-              key={f.file}
-              file={f.file}
-              header={f.header}
-              lines={f.lines}
-              comments={f.comments}
-              actions={false}
-            />
-          ))}
-        </div>
-      </div>
+        Stage
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        icon={<Minus size={13} />}
+        disabled={!canSubmit}
+        aria-label={`Unstage hunk ${hunk.header}`}
+        onClick={() => onAction("git.unstage_hunk", hunk)}
+      >
+        Unstage
+      </Button>
+      <Button
+        size="sm"
+        variant="danger"
+        icon={<Trash2 size={13} />}
+        disabled={!canSubmit}
+        aria-label={`Discard hunk ${hunk.header}`}
+        onClick={() => onAction("git.discard_hunk", hunk)}
+      >
+        Discard
+      </Button>
     </div>
   );
 }
+
+type Tab = "Review" | "Worktrees" | "Pull requests";
+
+/** Review tab (6.3e, cat-1) — sources the diff from the `get_diff` READ RPC and wires
+ *  the per-hunk stage/unstage/discard buttons to the 043/044 intent seam. The UI NEVER
+ *  mutates: a click submits a typed `git.*` ActionRequest (resource_ref targets the EXACT
+ *  displayed hunk) → the daemon adjudicates → the GatewayModal renders the daemon's
+ *  policy/preview → the human approves/denies. No optimistic "done"; a get_diff error/
+ *  not_found renders an honest unavailable state (never a fabricated diff, forbidden #2). */
+function ReviewTab({ gateway }: { gateway: GatewayPort }) {
+  const seam = useSubmitIntent(gateway);
+  const canSubmit = useCanSubmitIntent();
+  const { worktreeId, file } = diffReviewContext;
+  const [state, setState] = useState<DiffState>({ kind: "loading" });
+  const [pendingApproval, setPendingApproval] =
+    useState<GatewayApprovalEnrichment | null>(null);
+  const [submitResult, setSubmitResult] = useState<IntentResult<ActionAck> | null>(null);
+
+  // Source the diff LIVE from get_diff (no static fixture). An error/not_found → an
+  // honest unavailable state (the code carried verbatim), never a fabricated diff.
+  useEffect(() => {
+    let active = true;
+    setState({ kind: "loading" });
+    gateway.get_diff(worktreeId, file).then(
+      (diff) => {
+        if (active) setState({ kind: "ready", diff });
+      },
+      (e: unknown) => {
+        if (!active) return;
+        const parsed = WireError.safeParse(e);
+        if (parsed.success) {
+          // A daemon-reported read error (e.g. not_found) — honest unavailable, code verbatim.
+          setState({ kind: "error", code: parsed.data.code });
+        } else {
+          // A non-WireError (a real transport/JS Error) — DEGRADE honestly (a read failure
+          // must not crash the cockpit, §11.7; re-throw would be an unhandled rejection) but
+          // surface the unexpected failure for diagnosis: never SILENTLY swallow a bug
+          // (LESSON §16's spirit, adapted to a READ — degrade + log, the GatewayModal-preview
+          // read pattern, not the mutation seam's re-throw).
+          console.error("get_diff failed unexpectedly", e);
+          setState({ kind: "error" });
+        }
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [gateway, worktreeId, file]);
+
+  // A per-hunk button → a typed ActionRequest over the seam (Q1 pure submitter). On a
+  // daemon-recorded ack, open the approval card (Q3 — its daemon-reported pending status,
+  // never optimistic "done"); a rejection routes through ResultNotice → describeRejection.
+  async function onAction(actionType: PerHunkGitActionType, hunk: Hunk) {
+    const request = buildHunkActionRequest(
+      actionType,
+      worktreeId,
+      file,
+      hunk,
+      new Date().toISOString(),
+    );
+    const r = await seam.submitAction(request);
+    if ("ok" in r) {
+      setSubmitResult(null);
+      setPendingApproval(enrichHunkAction(actionType, r.ok));
+    } else {
+      setSubmitResult(r);
+    }
+  }
+
+  return (
+    <div style={{ height: "100%", overflowY: "auto", padding: "14px 16px", background: "var(--surface-canvas)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <span aria-hidden="true" style={{ color: "var(--text-faint)", display: "inline-flex" }}>
+          <FileCode size={15} />
+        </span>
+        <h1 style={{ margin: 0, font: "var(--fw-semibold) var(--fs-h3)/1 var(--font-mono)" }}>
+          {file}
+        </h1>
+        <Badge mono style={{ color: "var(--text-faint)" }}>
+          changed-files list pending worktree projection
+        </Badge>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          <span title="Brain co-pilot arrives with the sidecar contract (Phase 8)">
+            <Button variant="secondary" size="sm" icon={<Brain size={14} />} disabled>
+              Ask Brain
+            </Button>
+          </span>
+        </div>
+      </div>
+
+      {submitResult ? (
+        <div style={{ marginBottom: 12 }}>
+          <ResultNotice result={submitResult} onReapprove={() => setSubmitResult(null)} />
+        </div>
+      ) : null}
+
+      {state.kind === "loading" ? (
+        <div data-testid="diff-loading" style={NOTE}>
+          Loading the diff…
+        </div>
+      ) : state.kind === "error" ? (
+        <div data-testid="diff-unavailable" style={NOTE}>
+          Diff unavailable{state.code ? ` (the daemon reported ${state.code})` : ""} — no
+          changes are shown.
+        </div>
+      ) : state.diff.hunks.length === 0 ? (
+        <div data-testid="diff-no-changes" style={NOTE}>
+          No changes in this file.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {state.diff.hunks.map((hunk, i) => (
+            // key on the hunk position identity (unique per hunk in a diff — the same
+            // identity the resource_ref encodes), stable across get_diff re-reads.
+            <div key={`${hunk.old_start}:${hunk.new_start}:${i}`}>
+              <DiffHunk
+                file={file}
+                header={hunk.header}
+                lines={hunk.lines.map((l) => ({ type: KIT_LINE_TYPE[l.kind], text: l.content }))}
+                actions={false}
+              />
+              <HunkGitActions hunk={hunk} canSubmit={canSubmit} onAction={onAction} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {pendingApproval ? (
+        <GatewayModal
+          approval={pendingApproval.approval}
+          policyDecision={pendingApproval.policyDecision}
+          port={gateway}
+          onClose={() => setPendingApproval(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+const NOTE: React.CSSProperties = {
+  font: "var(--fs-label)/1.5 var(--font-sans)",
+  color: "var(--text-muted)",
+  padding: "12px 14px",
+  border: "1px dashed var(--border-subtle)",
+  borderRadius: "var(--r-2)",
+};
 
 // worktree status → kit pill kind + label (prototype WT_STATUS; "dirty" has no
 // kit kind — the prototype falls to idle visuals with the "Dirty" label).
@@ -357,7 +486,13 @@ function PRsTab({ prs }: { prs: PullRequestRow[] }) {
  * prototype treatment over DISPLAY FIXTURES until the worktree/diff contracts
  * land (flagged). All mutations disabled, not faked (§11.6).
  */
-export function DiffReview({ prs }: { prs: PullRequestRow[] }) {
+export function DiffReview({
+  prs,
+  gateway,
+}: {
+  prs: PullRequestRow[];
+  gateway: GatewayPort;
+}) {
   const [tab, setTab] = useState<Tab>("Review");
   const tabs: Tab[] = ["Review", "Worktrees", "Pull requests"];
   const counts: Partial<Record<Tab, number>> = {
@@ -407,7 +542,7 @@ export function DiffReview({ prs }: { prs: PullRequestRow[] }) {
         ))}
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
-        {tab === "Review" ? <ReviewTab /> : tab === "Worktrees" ? <WorktreesTab /> : <PRsTab prs={prs} />}
+        {tab === "Review" ? <ReviewTab gateway={gateway} /> : tab === "Worktrees" ? <WorktreesTab /> : <PRsTab prs={prs} />}
       </div>
     </div>
   );

@@ -402,7 +402,7 @@ export function Shell({
           ) : contentView === "editor" ? (
             <EditorView />
           ) : contentView === "code" ? (
-            <DiffReview prs={filterByActiveProject(data.pullRequests, activeProjectId)} />
+            <DiffReview prs={filterByActiveProject(data.pullRequests, activeProjectId)} gateway={client} />
           ) : contentView === "team" ? (
             <AgentTeamView />
           ) : contentView === "packs" ? (

@@ -26,6 +26,17 @@ export interface DiffFileFx {
   lines: DiffLineFx[];
 }
 
+/**
+ * The worktree/file context the Review tab passes to `get_diff` (6.3e). A FIXTURE for now
+ * — the real `worktree_id` source is the worktree projection (`proj_worktree`), a flagged
+ * follow-on that rides the worktree-projection consumption + the live `UdsGatewayPort`
+ * transport (both parked). Not built here (scope creep). The `wt_…` id is a frozen-22 id.
+ */
+export const diffReviewContext = {
+  worktreeId: "wt_demo_0001",
+  file: "src/gateway/review.ts",
+} as const;
+
 export const diffFixture: DiffFileFx[] = [
   {
     file: "src/gateway/review.ts",

@@ -12,8 +12,10 @@
 // When the daemon lands them, these maps are built from the projection rows and
 // this fixture is deleted — no view-layer change.
 import type {
+  ActionAck,
   Approval,
   ApprovalQueueRow,
+  PerHunkGitActionType,
   PolicyDecision,
   SessionRow,
   UsageRow,
@@ -214,6 +216,46 @@ export function enrichApproval(row: ApprovalQueueRow): GatewayApprovalEnrichment
       },
     }
   );
+}
+
+// ─── Per-hunk git-action enrichment (PROVISIONAL — the 6.3e submit→card stand-in) ──
+// After the UI SUBMITS a per-hunk git ActionRequest, the daemon mints an Approval +
+// PolicyDecision (its policy engine is authoritative). Until the real daemon projection +
+// preview/policy RPC land, this supplies a daemon-SHAPED {Approval, PolicyDecision} keyed
+// off the just-returned ActionAck — the SAME 044 `gatewayApprovalEnrichment` pattern + the
+// SAME [med] carry-forward: ⚠️ SWAP for the REAL daemon projection/policy BEFORE any real
+// human approves against these fixture values. The component RENDERS this PolicyDecision
+// (never recomputes risk — Q4); the modal fetches the ActionPreview via `preview_action` (Q5).
+export function enrichHunkAction(
+  actionType: PerHunkGitActionType,
+  ack: ActionAck,
+): GatewayApprovalEnrichment {
+  const destructive = actionType === "git.discard_hunk";
+  return {
+    approval: {
+      approval_id: `appr_for_${ack.action_request_id}`,
+      required_approver: { kind: "current_user" },
+      status: "awaiting_approval",
+      // single_action ONLY — a per-hunk action is never standing-/bulk-granted here
+      // (git.discard_hunk is non-standing-grantable daemon-side regardless; LESSON §32).
+      scope: "single_action",
+      // daemon-SHAPED risk (the stand-in): discard = risk-3 (destructive), stage/unstage =
+      // risk-2. The UI never DERIVES this — the card reads it from here (the daemon's role).
+      risk_level: destructive ? 3 : 2,
+      action_request_id: ack.action_request_id,
+    },
+    policyDecision: {
+      status: "require_approval",
+      reasons: [
+        destructive
+          ? "Discards a hunk — irreversible content loss; always requires per-action approval."
+          : "Applies a hunk change to the git index.",
+      ],
+      required_approvals: [{ kind: "current_user" }],
+      constraints: [],
+      safer_alt: null,
+    },
+  };
 }
 
 // ─── Settings display fixtures (Integrations / Execution profiles) ──────────

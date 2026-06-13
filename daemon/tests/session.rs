@@ -20,12 +20,11 @@ use nexusops_shared::ids::SessionId;
 use nexusops_shared::status::Session;
 use nexusopsd::harness::{FakeHarness, HarnessAdapter, MutationIntercept, ResumeResult};
 use nexusopsd::session::{
-    spawn_session_actor, FakeLauncher, LaunchedSession, PtyLauncher, SessionCommand,
-    SessionLauncher, SessionSupervisor,
+    spawn_session_actor, FakeLauncher, LaunchedSession, SessionCommand, SessionLauncher,
+    SessionSupervisor,
 };
 use nexusopsd::terminal::{
-    ExitStatus, FakePty, PortablePtySpawner, PtyRead, TerminalEventSink, TerminalId,
-    TerminalSession,
+    ExitStatus, FakePty, PtyRead, TerminalEventSink, TerminalId, TerminalSession,
 };
 
 // ---- test doubles -------------------------------------------------------------------------------
@@ -251,24 +250,9 @@ async fn test_launcher_seam_fake_and_pty() {
         "the FakeLauncher seam produced a drivable session"
     );
 
-    // PtyLauncher (daemon-owned PTY) constructs + produces a LaunchedSession over a REAL PTY running a
-    // BENIGN program (`/bin/echo`, NEVER a real claude/codex — a live un-intercepted agent is the
-    // INV-SEC-1 gap the cat-1 4.0b closes). Smoke: it launches + drives to a terminal state.
-    let pty_launcher = PtyLauncher::new(
-        Box::new(PortablePtySpawner),
-        "/bin/echo",
-        vec!["ready".to_string()],
-        std::env::temp_dir(),
-        full_caps(),
-    );
-    let launched = pty_launcher
-        .launch_session()
-        .expect("daemon-owned-PTY launch (benign /bin/echo)");
-    assert_eq!(
-        drive_to_kill(launched).await,
-        Session::Killed,
-        "the PtyLauncher seam produced a drivable real-PTY session (benign program)"
-    );
+    // (The `PtyLauncher` spawn-seam smoke MOVED to `tests/session_live.rs`: P4.0b-2 Option A makes the
+    // launcher spawn the live `claude` via the O-13 #10 spec, so it's pinned there over a FAKE spawner
+    // — never a real `claude` in CI, never an un-intercepted live agent in this seam test.)
 }
 
 // ---- L3: the SessionSupervisor (tests 2, 3, 6, 7) -----------------------------------------------

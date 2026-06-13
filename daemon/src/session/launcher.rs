@@ -15,6 +15,7 @@ use nexusops_shared::events::TerminalProcessExited;
 use nexusops_shared::harness::HarnessCapabilities;
 use nexusops_shared::ids::SessionId;
 
+use crate::harness::claude::{ClaudeAdapter, ClaudeLaunchSpec};
 use crate::harness::{FakeHarness, HarnessAdapter};
 use crate::terminal::{
     ExitStatus, FakePty, PtyRead, PtySpawner, TerminalEventSink, TerminalId, TerminalSession,
@@ -89,32 +90,32 @@ impl SessionLauncher for FakeLauncher {
     }
 }
 
-/// A [`SessionLauncher`] that spawns a **daemon-owned PTY** via the §14 [`PtySpawner`] seam (the 3.4
-/// `PortablePtySpawner` in production). **4.0a runs a benign program** (the live agent + interception
-/// are 4.0b); the adapter is a [`FakeHarness`] placeholder until the real `ClaudeAdapter` lands at
-/// 4.0b. **TODO(4.1):** the B2-strict survival broker swaps in here as a drop-in `SessionLauncher`.
+/// A [`SessionLauncher`] that spawns the **single live-`claude` PTY** via the §14 [`PtySpawner`] seam
+/// (the 3.4 `PortablePtySpawner` in production). **P4.0b-2 Option A (lead-ruled): the launcher OWNS
+/// the spawn site + the O-13 #10 enforcement surface** — it builds the [`ClaudeLaunchSpec`] (default
+/// mode · no `-p` · no bg · 0600 generated settings), writes the settings **fail-closed** (a write
+/// error → no session, never an un-hooked live agent), spawns the ONE claude PTY into the
+/// [`TerminalSession`] (display), and constructs a [`ClaudeAdapter`] that does NOT spawn (status from
+/// hook signals only, safety #9). The live interception is wired atomically at the same 4.0b-2 commit.
+/// **TODO(4.1):** the B2-strict survival broker swaps in here as a drop-in `SessionLauncher`.
 pub struct PtyLauncher {
     spawner: Box<dyn PtySpawner>,
-    program: String,
-    args: Vec<String>,
     cwd: PathBuf,
-    caps: HarnessCapabilities,
+    /// the hook-receiver command the generated `ClaudeSettings` wires the `PreToolUse` hook to (the
+    /// `nexusopsd` hook-subcommand that bridges Claude's hook protocol ↔ the daemon's UDS `intercept`).
+    hook_receiver: String,
 }
 
 impl PtyLauncher {
     pub fn new(
         spawner: Box<dyn PtySpawner>,
-        program: impl Into<String>,
-        args: Vec<String>,
         cwd: PathBuf,
-        caps: HarnessCapabilities,
+        hook_receiver: impl Into<String>,
     ) -> Self {
         Self {
             spawner,
-            program: program.into(),
-            args,
             cwd,
-            caps,
+            hook_receiver: hook_receiver.into(),
         }
     }
 }
@@ -122,19 +123,27 @@ impl PtyLauncher {
 impl SessionLauncher for PtyLauncher {
     fn launch_session(&self) -> io::Result<LaunchedSession> {
         let session_id = SessionId::new();
-        // the daemon owns the PTY. 4.0a runs the configured BENIGN program — NEVER a real
-        // claude/codex (a live un-intercepted agent is the INV-SEC-1 gap the cat-1 4.0b closes).
+        // Option A — the launcher is the SINGLE live-claude spawn site + the O-13 #10 enforcement
+        // surface. Build the spec (default-mode/no-`-p`/no-bg by construction) + write the 0600
+        // per-session settings FAIL-CLOSED: a settings-write error returns `Err` → NO session spawned
+        // (never a live agent without its `PreToolUse` hook — INV-SEC-1).
+        let spec = ClaudeLaunchSpec::build(&self.cwd, session_id.as_str(), &self.hook_receiver);
+        spec.write_settings()?;
         let pty = self
             .spawner
-            .spawn(&self.program, &self.args, &self.cwd, ROWS, COLS)?;
+            .spawn(spec.program(), spec.args(), &self.cwd, ROWS, COLS)?;
         let terminal = TerminalSession::new(
             terminal_id_for(&session_id),
             pty,
             Box::new(NullTerminalSink),
         );
-        // placeholder adapter — the LIVE ClaudeAdapter (the real agent) lands at the cat-1 4.0b,
-        // WITH the interception. The daemon-owned-PTY transport + the seam are what 4.0a proves.
-        let adapter = Box::new(FakeHarness::new(self.caps.clone()));
+        // the LIVE ClaudeAdapter — it does NOT spawn (the launcher just did); status derives from the
+        // live hook signals via `push_signal` (safety #9), never the PTY. `session_id` is a best-effort
+        // transcript-path default (the live hook input carries the authoritative `transcript_path`).
+        let adapter = Box::new(ClaudeAdapter::new(
+            self.cwd.clone(),
+            session_id.as_str().to_string(),
+        ));
         Ok(LaunchedSession {
             session_id,
             adapter,

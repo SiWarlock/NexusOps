@@ -18,12 +18,13 @@ use nexusopsd::bootstrap::{cold_start, BootstrapConfig, DB_FILENAME};
 use nexusopsd::clock::SystemClock;
 use nexusopsd::decisions::DecisionRegistry;
 use nexusopsd::eventstore::{JsonlMirror, PrefixRedactor};
+use nexusopsd::gateway::circuit_breaker::AuditBackboneBreaker;
 use nexusopsd::gateway::executor::CatalogExecutor;
 use nexusopsd::gateway::policy::AgentMutationPolicy;
 use nexusopsd::gateway::session_executor::SessionExecutor;
 use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
-use nexusopsd::integrity::FileIntegrityAlarm;
+use nexusopsd::integrity::{FileIntegrityAlarm, IntegrityAlarm};
 use nexusopsd::ipc::current_euid;
 use nexusopsd::runtime::{bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor};
 use nexusopsd::session::{spawn_supervisor_task, PtyLauncher};
@@ -134,11 +135,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let gateway = Gateway::new(Box::new(AgentMutationPolicy), Box::new(catalog_exec));
 
     // the durable independent §17 integrity alarm (call-2) — an agent-mutation adjudication's
-    // audit-WRITE-fault raises it on the off-DB channel; bound at the write-actor.
-    let alarm = Box::new(FileIntegrityAlarm::new(
+    // audit-WRITE-fault raises it on the off-DB channel; bound at the write-actor. Shared (`Arc`)
+    // with the audit-backbone breaker below so BOTH the per-incident alarm AND the systemic-failure
+    // alarm append to the same durable incident file.
+    let alarm: Arc<dyn IntegrityAlarm> = Arc::new(FileIntegrityAlarm::new(
         base_dir.join(INTEGRITY_INCIDENTS_FILE),
     ));
-    let actor = WriteActor::spawn_with_alarm(store, Box::new(SystemClock), gateway, alarm);
+    // P4.0b-2c (§17/§15 #5, RULED B) — the daemon-wide audit-backbone circuit-breaker: N-consecutive
+    // (or a clearly-unrecoverable) audit-write fault latches it → the write-actor quiesce-and-refuses
+    // every mutation (no audit-write attempted; reads stay live), until an operator restart. Kept as an
+    // `Arc` so the §17/Phase-6 safety surface can read its latched state (`is_tripped()`).
+    let audit_breaker = Arc::new(AuditBackboneBreaker::new(alarm.clone()));
+    let actor = WriteActor::spawn_with_alarm_and_breaker(
+        store,
+        Box::new(SystemClock),
+        gateway,
+        alarm,
+        audit_breaker,
+    );
     let handle = actor.handle();
     // the post-commit broadcast sender for the accept-loop's per-connection live subscribers (1.6d).
     let deltas = handle.delta_sender();

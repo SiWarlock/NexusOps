@@ -245,8 +245,11 @@ fn test_live_session_create_has_interception() {
         "the per-session decision_sink registry is wired (the intercept wait + the approve/deny resolve)"
     );
     assert!(
-        main_src.contains("spawn_with_alarm") && main_src.contains("FileIntegrityAlarm"),
-        "the §17 durable integrity alarm is bound at the write-actor (call-2)"
+        main_src.contains("spawn_with_alarm_and_breaker")
+            && main_src.contains("FileIntegrityAlarm")
+            && main_src.contains("AuditBackboneBreaker"),
+        "the §17 durable integrity alarm AND the daemon-wide audit-backbone circuit-breaker (P4.0b-2c) \
+         are bound at the write-actor (call-2 per-incident alarm + the systemic quiesce-and-refuse gate)"
     );
 
     // the SessionExecutor itself stays LAUNCHER-AGNOSTIC — it constructs no ClaudeAdapter / live spawn

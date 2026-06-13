@@ -154,6 +154,10 @@ fn gateway_error_to_code(e: &GatewayError) -> IpcErrorCode {
         // distinct from the re-approvable precondition_stale (the Q7/§11.5 safety-card distinction).
         GatewayError::FencingConflict => IpcErrorCode::FencingConflict,
         GatewayError::Serialize(_) => IpcErrorCode::ProtocolError,
+        // P4.0b-2c — the audit-backbone breaker is latched (systemic audit failure). The mutation is
+        // refused before any audit-write; surfaced as the §6.4 fail-closed `internal_error` (the loud
+        // distinguishable signal is the durable systemic alarm + the latched breaker state).
+        GatewayError::AuditBackboneDown => IpcErrorCode::InternalError,
     }
 }
 

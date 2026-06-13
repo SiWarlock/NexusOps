@@ -17,14 +17,21 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-/// The class of integrity incident (§17). Extensible; the call-2 case is the audit-write fault.
+/// The class of integrity incident (§17). Extensible; the call-2 case is the per-action audit-write
+/// fault, the part-3 case (4.0b-2c) is the systemic audit-backbone failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntegrityKind {
     /// §15 #5 — an audit-required event could not be durably committed (the audited mutator cannot
     /// audit). Raised on the agent-mutation adjudication's audit-write fault (call-2), paired with a
-    /// fail-closed Deny carrying `GatewayDenyKind::AuditWriteFailed`.
+    /// fail-closed Deny carrying `GatewayDenyKind::AuditWriteFailed`. This is the PER-ACTION incident.
     AuditWriteFailed,
+    /// §17/§15 #5 (P4.0b-2c, part 3) — the audit BACKBONE has SYSTEMICALLY failed: N consecutive
+    /// audit-write faults (no intervening clean commit) OR a single clearly-unrecoverable class
+    /// (disk-full / DB-corruption / IO). DISTINCT from the per-action [`AuditWriteFailed`] — this is
+    /// the daemon-wide circuit-breaker trip: the daemon quiesce-and-refuses all mutations (latched).
+    /// Raised exactly once, on the trip, by the audit-backbone breaker.
+    AuditBackboneSystemicFailure,
 }
 
 /// One integrity incident — the structured record raised on the independent durable channel. The
@@ -47,6 +54,20 @@ impl IntegrityIncident {
         Self {
             kind: IntegrityKind::AuditWriteFailed,
             detail: format!("audit event could not durably commit for action_type '{action_type}'"),
+        }
+    }
+
+    /// The §17/§15 #5 SYSTEMIC audit-backbone-failure incident (P4.0b-2c, part 3) — raised once when
+    /// the daemon-wide circuit-breaker trips (N consecutive audit-write faults, or a clearly-
+    /// unrecoverable class). **Content-free BY CONSTRUCTION (§15):** takes NO args — a static
+    /// structural reason, never any tool payload (the alarm file is an UN-redacted sink). The breaker's
+    /// counters stay in memory; only this structural fact reaches the durable channel.
+    pub fn audit_backbone_systemic_failure() -> Self {
+        Self {
+            kind: IntegrityKind::AuditBackboneSystemicFailure,
+            detail: "audit backbone systemic failure: the single audited mutator can no longer \
+                     reliably audit — daemon quiesced (mutations refused, latched until restart)"
+                .to_string(),
         }
     }
 }

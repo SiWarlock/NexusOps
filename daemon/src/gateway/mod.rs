@@ -12,6 +12,7 @@
 //! never writes the DB directly. `approve`/`deny`/`preview` + execution → L3.
 
 pub mod approval;
+pub mod circuit_breaker;
 pub mod executor;
 pub mod idempotency;
 pub mod pipeline;
@@ -80,6 +81,14 @@ pub enum GatewayError {
     UnsupportedPolicyDecision(String),
     #[error("gateway serialization failed: {0}")]
     Serialize(String),
+    /// P4.0b-2c (§17/§15 #5, RULED B) — the daemon-wide audit-backbone circuit-breaker is LATCHED
+    /// (systemic audit failure: N consecutive faults or a clearly-unrecoverable class). The single
+    /// audited mutator does NOT operate when it cannot audit: every mutation fail-closed-denies WITHOUT
+    /// attempting an audit-write, until an operator restart. Reads stay live. Maps to §6.4
+    /// `internal_error` (the loud distinguishable signal is the durable systemic alarm + the latched
+    /// breaker state, not the generic wire code).
+    #[error("audit backbone down (§17 systemic — daemon quiesced, mutations refused, latched)")]
+    AuditBackboneDown,
 }
 
 /// Map a registry-row rusqlite error → fail-closed `AuditWriteFailed` (a failed row write in the

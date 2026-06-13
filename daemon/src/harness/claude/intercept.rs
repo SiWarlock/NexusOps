@@ -24,6 +24,7 @@ use nexusops_shared::status::ActionRequest as ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
 
 use crate::eventstore::EventStore;
+use crate::gateway::circuit_breaker::{classify_audit_fault, AuditBackboneBreaker, AuditOutcome};
 use crate::gateway::{Gateway, GatewayError};
 use crate::harness::{coverage_of, Harness, MutationChannel, MutationCoverage, MutationVerdict};
 use crate::integrity::{IntegrityAlarm, IntegrityIncident};
@@ -222,25 +223,38 @@ pub fn route_intercept_live(
     store: &mut EventStore,
     payload: &HookPayload,
     alarm: &dyn IntegrityAlarm,
+    breaker: Option<&AuditBackboneBreaker>,
 ) -> InterceptOutcome {
-    let (outcome, audit_fault_action_type) = route_intercept_classified(gateway, store, payload);
-    if let Some(action_type) = audit_fault_action_type {
+    let (outcome, audit_fault) = route_intercept_classified(gateway, store, payload);
+    if let Some((action_type, fault_outcome)) = audit_fault {
         // the audited mutator could not AUDIT → the §17 best-practice surface: deny (in `outcome`) +
-        // this durable off-DB alarm. `detail` is content-free by construction (the action_type only).
+        // this durable off-DB per-incident alarm. `detail` is content-free by construction (the
+        // action_type only).
         alarm.raise(IntegrityIncident::audit_write_failed(action_type));
+        // P4.0b-2c (Q4) — the intercept audit-fault is ALSO part of the audit backbone the daemon-wide
+        // breaker observes: feed it the recoverable/unrecoverable classification (the breaker trips +
+        // raises the SYSTEMIC alarm on N-consecutive / an unrecoverable class). The intercept's
+        // GatewayError is consumed here (the caller gets only an `InterceptOutcome`), so the breaker is
+        // fed HERE rather than via the write-actor's `observe_gateway_result` (which sees submit/approve/
+        // deny `Result`s). A `None` breaker (the no-alarm test path) skips the feed.
+        if let Some(b) = breaker {
+            b.observe(fault_outcome);
+        }
     }
     outcome
 }
 
 /// The shared classifier: route the tool through the Gateway and return the [`InterceptOutcome`] PLUS
-/// the action_type IFF the Gateway failed with an **audit-write-fault** (so [`route_intercept_live`]
-/// can raise the §17 alarm with the structural action_type). `None` for every non-audit-fault path
-/// (an allow, an await, a policy-deny, an ingress-deny) — only the audit-backbone fault is the §17 signal.
+/// `(action_type, AuditOutcome)` IFF the Gateway failed with an **audit-write-fault** (so
+/// [`route_intercept_live`] can raise the §17 per-incident alarm with the structural action_type AND
+/// feed the daemon-wide breaker the recoverable/unrecoverable classification — P4.0b-2c). `None` for
+/// every non-audit-fault path (an allow, an await, a policy-deny, an ingress-deny) — only the
+/// audit-backbone fault is the §17 signal.
 fn route_intercept_classified(
     gateway: &Gateway,
     store: &mut EventStore,
     payload: &HookPayload,
-) -> (InterceptOutcome, Option<&'static str>) {
+) -> (InterceptOutcome, Option<(&'static str, AuditOutcome)>) {
     let action_type = match map_to_action_type(payload) {
         Ok(at) => at,
         Err(reason) => return (InterceptOutcome::Resolved(deny_verdict(reason)), None),
@@ -305,9 +319,15 @@ fn route_intercept_classified(
                         "the Gateway refused the intercepted tool call (fail-closed §15 #5)".to_string(),
                 },
             });
-            // surface the action_type for the §17 alarm ONLY on the audit-backbone fault.
-            let audit_fault =
-                matches!(kind, GatewayDenyKind::AuditWriteFailed).then_some(action_type);
+            // surface the action_type + the recoverable/unrecoverable classification ONLY on the
+            // audit-backbone fault (P4.0b-2c) — the per-incident alarm uses the action_type, the
+            // daemon-wide breaker consumes the AuditOutcome.
+            let audit_fault = match &e {
+                GatewayError::AuditWriteFailed(inner) => {
+                    Some((action_type, classify_audit_fault(inner)))
+                }
+                _ => None,
+            };
             (outcome, audit_fault)
         }
     }

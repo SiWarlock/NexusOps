@@ -882,7 +882,7 @@ fn test_route_intercept_live_raises_alarm_on_audit_fault() {
     let gw = catalog_gw();
     let alarm = RecordingIntegrityAlarm::new();
     arm(FaultPoint::AuditEventWrite);
-    let outcome = route_intercept_live(&gw, &mut store, &pp("Bash"), &alarm);
+    let outcome = route_intercept_live(&gw, &mut store, &pp("Bash"), &alarm, None);
     assert!(
         matches!(
             outcome,
@@ -903,7 +903,7 @@ fn test_route_intercept_live_raises_alarm_on_audit_fault() {
     let mut store2 = open(&path2);
     let gw2 = catalog_gw();
     let alarm2 = RecordingIntegrityAlarm::new();
-    let _ = route_intercept_live(&gw2, &mut store2, &pp("Read"), &alarm2);
+    let _ = route_intercept_live(&gw2, &mut store2, &pp("Read"), &alarm2, None);
     assert!(
         alarm2.incidents().is_empty(),
         "a non-fault adjudication raises no integrity alarm (only an audit-WRITE-fault does)"

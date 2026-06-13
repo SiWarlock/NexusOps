@@ -22,10 +22,17 @@ use crate::gateway::executor::{
     ActionExecutor, CatalogExecutor, EmittedEvent, ExecError, ExecutionOutcome,
 };
 use crate::session::{SessionCommand, SessionLauncher, SupervisorHandle};
+use crate::terminal::TerminalSession;
 
 /// The session-lifecycle action types this executor handles specially (else it delegates).
 const SESSION_CREATE: &str = "session.create";
 const SESSION_KILL: &str = "session.kill";
+
+/// The byte appended after an `initial_prompt` to SUBMIT it in claude's TUI (P4.0b-2-smoke, brief 053
+/// Q2). `\r` (CR) — claude's TUI submits on Enter, which is CR in PTY raw mode. The deterministic test
+/// asserts the exact bytes written; *which* terminator actually submits at the live `claude` is the
+/// runbook's #1 0.1-HITL watch item (the `\n` fallback is documented there).
+const SUBMIT_TERMINATOR: u8 = b'\r';
 
 /// The session.create/kill executor. Holds the NON-LIVE [`SessionLauncher`] seam (the live launcher
 /// swaps in at 4.0b-2) + the [`SupervisorHandle`] (a SYNC, non-blocking, UNBOUNDED bridge — cannot
@@ -80,11 +87,14 @@ impl SessionExecutor {
         // lock is held, which would already crash the write-actor thread regardless; poison-propagation
         // adds no new failure mode. The Mutex exists ONLY to satisfy `ActionExecutor: Sync` over the
         // `Send`-only launcher (no mutation; see the field doc). Accepted.
-        let launched = match self.launcher.lock().unwrap().launch_session() {
+        let mut launched = match self.launcher.lock().unwrap().launch_session() {
             Ok(l) => l,
             Err(e) => return ExecutionOutcome::Failed(format!("session launch failed: {e}")),
         };
         let session_id = launched.session_id.clone();
+        // Option-G dev-drive (brief 053): feed an optional `initial_prompt` to the LAUNCHED session's
+        // PTY, post-launch, BEFORE the session moves into the supervisor. Best-effort — see the helper.
+        let prompt_note = write_initial_prompt(&mut launched.terminal, req);
         let execution_profile_id = Self::resolve_profile(req);
         // drive the supervisor — a SYNC, NON-BLOCKING unbounded enqueue (cannot stall the write-actor,
         // cat-1). The status observer has no consumer in 4.0b-1 (the projection feed is later) → drop
@@ -104,8 +114,9 @@ impl SessionExecutor {
         ExecutionOutcome::Succeeded {
             changed_resources: req.resource_refs.clone(),
             detail: format!(
-                "session.create — spawned a supervised session {} (NON-LIVE launcher; 4.0b-1)",
-                session_id.as_str()
+                "session.create — spawned a supervised session {}{}",
+                session_id.as_str(),
+                prompt_note
             ),
             // a session-actor WAS spawned (the side effect) BEFORE txn-B → if the terminal write is
             // lost (§17), `ActionPartiallySucceeded` records the divergence (the actor is
@@ -170,5 +181,30 @@ impl ActionExecutor for SessionExecutor {
 
     fn preview(&self, req: &ActionRequest, generated_at: Timestamp) -> ActionPreview {
         self.inner.preview(req, generated_at)
+    }
+}
+
+/// Option-G dev-drive (P4.0b-2-smoke / brief 053): write the optional `initial_prompt` (+ the
+/// [`SUBMIT_TERMINATOR`]) to the LAUNCHED session's PTY **exactly once**, **post-launch**, so a real
+/// `claude` self-drives a demo prompt. Returns a `detail` suffix recording the outcome.
+///
+/// **Best-effort / fail-SOFT (NOT a safety I/O):** a PTY write error degrades to a recorded detail —
+/// it does NOT fail the session (the prompt-feed is dev convenience; every agent tool call still routes
+/// through the unchanged `intercept` adjudication, the chokepoint, regardless of how claude was
+/// prompted). Absent / empty prompt → nothing written (additive/opt-in — the no-prompt path is
+/// byte-unchanged). This does NOT touch the O-13 launch argv / the #10 enforcement surface.
+fn write_initial_prompt(terminal: &mut TerminalSession, req: &ActionRequest) -> &'static str {
+    let Some(prompt) = req.inputs.get("initial_prompt").and_then(|v| v.as_str()) else {
+        return "";
+    };
+    if prompt.is_empty() {
+        return "";
+    }
+    let mut bytes = prompt.as_bytes().to_vec();
+    bytes.push(SUBMIT_TERMINATOR);
+    match terminal.write(&bytes) {
+        Ok(()) => " (initial_prompt fed to the session PTY)",
+        // fail-soft: the session already launched + will spawn; the prompt-feed convenience degraded.
+        Err(_) => " (initial_prompt write degraded — best-effort dev-drive, session unaffected)",
     }
 }

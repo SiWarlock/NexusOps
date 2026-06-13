@@ -245,25 +245,45 @@ fn fire_decision_sink(
     }
 }
 
-/// `session.create` — the reachable UI/IPC live-launch path (C2). The daemon builds the
-/// `session.create` `ActionRequest` server-side with `requester_type = User` (PIN e — UI/IPC-initiated
-/// ONLY; an agent path is denied), the project as the catalog-required resource_ref, and the optional
-/// `execution_profile_id` in inputs (the §15 #8 binding records it at start). Risk is recorded-not-
-/// trusted (the §6.3 catalog reconciles it to the authoritative risk-0 at submit, LESSON §19). The
-/// risk-0 auto-execute path then drives the `SessionExecutor` → the live `ClaudeAdapter` launch.
+/// `session.create` — the reachable UI/IPC live-launch path (C2). Builds the server-side
+/// `ActionRequest` ([`build_session_create_request`]) then runs the pipeline. The risk-0 auto-execute
+/// path drives the `SessionExecutor` → the live `ClaudeAdapter` launch.
 fn session_create(
     params: &serde_json::Value,
     write: &WriteHandle,
 ) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
-    let project_id = match str_param(params, "project_id") {
-        Ok(s) => s.to_string(),
+    let req = match build_session_create_request(params) {
+        Ok(r) => r,
         Err(c) => return Ok(Err(c)),
     };
-    let inputs = match params.get("execution_profile_id").and_then(|v| v.as_str()) {
-        Some(p) => serde_json::json!({ "execution_profile_id": p }),
-        None => serde_json::json!({}),
-    };
-    let req = ActionRequest {
+    gateway_result(write.submit_action_blocking(req))
+}
+
+/// Build the `session.create` `ActionRequest` server-side from the IPC params (extracted so the
+/// param→inputs thread is unit-testable without a `WriteHandle`). The daemon SETS `requester_type =
+/// User` (PIN e — UI/IPC-initiated ONLY; an agent path is denied), the project as the catalog-required
+/// resource_ref, and the optional `execution_profile_id` (the §15 #8 binding records it at start) +
+/// the optional `initial_prompt` (the Option-G dev-drive, brief 053) in inputs. Risk is recorded-not-
+/// trusted (the §6.3 catalog reconciles it to the authoritative risk-0 at submit, LESSON §19).
+/// `project_id` is required (the catalog resource_ref) → a missing one is a client protocol violation.
+fn build_session_create_request(params: &serde_json::Value) -> Result<ActionRequest, IpcErrorCode> {
+    let project_id = str_param(params, "project_id")?.to_string();
+    // build inputs from the optional params present (both are ad-hoc JSON — NO frozen `shared/` type,
+    // NO CONTRACT bump; same handling as the existing `execution_profile_id`).
+    let mut inputs = serde_json::Map::new();
+    if let Some(p) = params.get("execution_profile_id").and_then(|v| v.as_str()) {
+        inputs.insert(
+            "execution_profile_id".to_string(),
+            serde_json::Value::String(p.to_string()),
+        );
+    }
+    if let Some(prompt) = params.get("initial_prompt").and_then(|v| v.as_str()) {
+        inputs.insert(
+            "initial_prompt".to_string(),
+            serde_json::Value::String(prompt.to_string()),
+        );
+    }
+    Ok(ActionRequest {
         action_request_id: ActionRequestId::new(),
         // the envelope project_id (Option) — None if it doesn't parse; the resource_ref carries the
         // raw id for the audit either way.
@@ -277,7 +297,7 @@ fn session_create(
             id: project_id,
             uri: None,
         }],
-        inputs,
+        inputs: serde_json::Value::Object(inputs),
         // recorded-not-trusted (§15) — `CatalogPolicy` overwrites to the authoritative locked_risk.
         risk_level: RiskLevel::Level0,
         idempotency_key: None,
@@ -288,8 +308,7 @@ fn session_create(
         // always parses); never gates anything.
         created_at: Timestamp::parse("1970-01-01T00:00:00Z")
             .expect("placeholder created_at — insert stamps the real daemon-clock time"),
-    };
-    gateway_result(write.submit_action_blocking(req))
+    })
 }
 
 /// `intercept` — the live INV-SEC-1 interception transport (C2, CAT-1). The Claude `PreToolUse` hook
@@ -451,4 +470,76 @@ fn sqlite_to_json(v: ValueRef) -> serde_json::Value {
 
 fn read_err(e: rusqlite::Error) -> IpcError {
     IpcError::Read(e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_create_request_threads_initial_prompt() {
+        // spec(§9.1) — the IPC boundary threads `initial_prompt` from the params into the
+        // `ActionRequest.inputs` (the Option-G dev-drive, brief 053). The thread is complete from the
+        // wire, not just inside the executor.
+        let params =
+            serde_json::json!({ "project_id": "proj_x", "initial_prompt": "do the thing" });
+        let req = build_session_create_request(&params).expect("builds the session.create request");
+        assert_eq!(req.action_type, "session.create");
+        assert_eq!(
+            req.inputs.get("initial_prompt").and_then(|v| v.as_str()),
+            Some("do the thing"),
+            "initial_prompt is threaded from the params into inputs"
+        );
+    }
+
+    #[test]
+    fn session_create_request_no_prompt_omits_it() {
+        // additive/opt-in — no initial_prompt param → inputs carries none (back-compat).
+        let params = serde_json::json!({ "project_id": "proj_x" });
+        let req = build_session_create_request(&params).expect("builds");
+        assert!(
+            req.inputs.get("initial_prompt").is_none(),
+            "no param → no inputs.initial_prompt"
+        );
+    }
+
+    #[test]
+    fn session_create_request_threads_profile_and_prompt_together() {
+        // both optional params coexist (the `smoke create --prompt --profile` path) — the existing
+        // execution_profile_id thread (§15 #8) is preserved alongside the new initial_prompt.
+        let params = serde_json::json!({
+            "project_id": "proj_x",
+            "execution_profile_id": "prof_y",
+            "initial_prompt": "go"
+        });
+        let req = build_session_create_request(&params).expect("builds");
+        assert_eq!(
+            req.inputs
+                .get("execution_profile_id")
+                .and_then(|v| v.as_str()),
+            Some("prof_y")
+        );
+        assert_eq!(
+            req.inputs.get("initial_prompt").and_then(|v| v.as_str()),
+            Some("go")
+        );
+        // forward-drift guard — ONLY the two known optional inputs are threaded (a future stray field
+        // would trip this rather than silently riding into `inputs`).
+        assert_eq!(
+            req.inputs.as_object().map(|o| o.len()),
+            Some(2),
+            "exactly the two known inputs (execution_profile_id + initial_prompt) are threaded"
+        );
+    }
+
+    #[test]
+    fn session_create_request_missing_project_is_protocol_error() {
+        // project_id is required (the catalog `requires_resource_refs` ref) — a missing one is a
+        // client protocol violation, not a silent default.
+        let params = serde_json::json!({ "initial_prompt": "go" });
+        assert!(matches!(
+            build_session_create_request(&params),
+            Err(IpcErrorCode::ProtocolError)
+        ));
+    }
 }

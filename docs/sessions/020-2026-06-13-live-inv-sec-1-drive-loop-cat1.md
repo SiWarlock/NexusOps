@@ -3,7 +3,7 @@
 - **Date:** 2026-06-13
 - **Phase:** 4 (session lifecycle, survival & failure-mode contract) — task **P4.0b-2 (cat-1)**
 - **Predecessor:** [019 — edges-R1 + 4.0b-2 decision logic](019-2026-06-13-edges-r1-and-4-0b-2-decision-logic.md)
-- **Successor:** _(next session — the 0.1-HITL smoke harness + 4.0b-2c circuit-breaker, fresh pair)_
+- **Successor:** [021 — P4.0b-2-smoke: the 0.1-HITL smoke harness (initial_prompt thread + dev-client)](021-2026-06-13-smoke-harness-initial-prompt-and-dev-client.md)
 - **Commits (on the round seal `0650868`):** `7332884` (C1) · `cef85eb` (C1b) · `a83c498` (C2) · `3c772b9` (C3)
 
 ## Why this session existed

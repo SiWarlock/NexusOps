@@ -8,6 +8,7 @@
 
 pub mod bootstrap;
 pub mod clock;
+pub mod decisions;
 pub mod eventstore;
 /// §14 deterministic fault-injection (2.4) — present ONLY under the `fault-injection` feature (the
 /// daemon's own test targets); compiled out of every production build (no prod fault surface).

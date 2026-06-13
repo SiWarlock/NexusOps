@@ -1,5 +1,9 @@
-//! The P7.1 (edges-023) GitHub sync executor (`ExecutorKind::Github`) — the FIRST real edges
-//! EXTERNAL-NETWORK mutator.
+//! The P7.1 edges EXTERNAL-NETWORK sync executors — `GithubExecutor` (edges-023, `ExecutorKind::Github`)
+//! and `LinearExecutor` (edges-024, `ExecutorKind::Linear`). Both share the captured-`Handle`/`block_on`/
+//! `NETWORK_TIMEOUT` 3a mechanism + the exhaustive §17 [`classify_sync_failure`] disposition + the
+//! `EmittedEvent::Namespaced` / `FailedWithEvents` emit path; they differ only in the provider client +
+//! the per-provider success/failure event (github emits `PullRequestSynced`; linear emits NO success
+//! event [Q1], only `LinearSyncFailed` on terminal-non-auth).
 //!
 //! `GithubExecutor` handles `github.create_pr` (risk-3) + `github.create_pr_draft` (risk-2) by driving an
 //! injected async [`GithubWriteClient`](crate::integrations::github_write::GithubWriteClient) (octocrab)
@@ -26,7 +30,7 @@
 use std::time::Duration;
 
 use nexusops_shared::actions::{ActionPreview, ActionRequest};
-use nexusops_shared::events::{GithubSyncFailed, Provider, PullRequestSynced};
+use nexusops_shared::events::{GithubSyncFailed, LinearSyncFailed, Provider, PullRequestSynced};
 use nexusops_shared::time::Timestamp;
 
 use crate::clock::Clock;
@@ -35,11 +39,17 @@ use crate::gateway::executor::{
 };
 use crate::integrations::classifier::IntegrationOutcomeClass;
 use crate::integrations::github_write::{CreatePrArgs, GithubWriteClient, GithubWriteError};
+use crate::integrations::linear_write::{
+    CreateIssueArgs, LinearWriteClient, LinearWriteError, LinkIssueArgs,
+};
 use crate::integrations::pull_request::derive_pull_request_status;
 
-/// The action types this executor handles directly (`ExecutorKind::Github`); the rest delegate.
+/// The action types `GithubExecutor` handles directly (`ExecutorKind::Github`); the rest delegate.
 const GITHUB_CREATE_PR: &str = "github.create_pr";
 const GITHUB_CREATE_PR_DRAFT: &str = "github.create_pr_draft";
+/// The action types `LinearExecutor` handles directly (`ExecutorKind::Linear`); the rest delegate.
+const LINEAR_LINK_ISSUE: &str = "linear.link_issue";
+const LINEAR_CREATE_ISSUE: &str = "linear.create_issue";
 
 /// The default network timeout — generous enough for a slow API, short enough that a hung call can't
 /// wedge the single write-actor for long. Tests inject a short one via [`GithubExecutor::with_timeout`].
@@ -193,20 +203,20 @@ impl GithubExecutor {
         }
     }
 
-    /// Map a write failure → the §17 outcome. TERMINAL non-auth (`ClientError`/`NotFound`) →
-    /// `FailedWithEvents` emitting `GithubSyncFailed` (the action FAILS + a durable §17 record).
-    /// `AuthFailed` → plain `Failed` (the `auth_expired` variant is DEFERRED). A transient class →
-    /// plain `Failed` (retry/queue; `GithubSyncFailed` is the terminal-non-auth class ONLY). The event
-    /// `reason` is the classifier's STRUCTURAL class-name ONLY — NEVER raw API text (§15).
+    /// Map a write failure → the §17 outcome via the SHARED [`classify_sync_failure`] disposition (so
+    /// github + linear can never route the same class differently — LESSON 32). TERMINAL non-auth
+    /// (`ClientError`/`NotFound`) → `FailedWithEvents` emitting `GithubSyncFailed` (the action FAILS + a
+    /// durable §17 record; `reason` = the §15 STRUCTURAL class-name, NEVER raw API text). `AuthFailed` →
+    /// plain `Failed` (the `auth_expired` variant DEFERRED). Transient → plain `Failed` (retry/queue).
     fn classify_failure(&self, err: GithubWriteError) -> ExecutionOutcome {
-        match &err.class {
-            // the deferred auth_expired path: plain Failed, structural reason, NO event.
-            IntegrationOutcomeClass::AuthFailed => {
+        match classify_sync_failure(&err.class) {
+            SyncFailure::Auth => {
                 ExecutionOutcome::Failed("github.create_pr failed: auth_failed".to_string())
             }
-            // terminal non-auth → the action fails AND emits GithubSyncFailed atomic with ActionFailed.
-            IntegrationOutcomeClass::ClientError { .. } | IntegrationOutcomeClass::NotFound => {
-                let reason = structural_reason(&err.class);
+            SyncFailure::Transient { reason } => {
+                ExecutionOutcome::Failed(format!("github.create_pr failed (transient): {reason}"))
+            }
+            SyncFailure::TerminalNonAuth { reason } => {
                 let failed_at = match Timestamp::parse(&self.clock.now_rfc3339()) {
                     Ok(ts) => ts,
                     Err(e) => {
@@ -233,17 +243,6 @@ impl GithubExecutor {
                     }],
                 }
             }
-            // transient — retry/queue, never a terminal *SyncFailed.
-            IntegrationOutcomeClass::ServerError
-            | IntegrationOutcomeClass::TransportError
-            | IntegrationOutcomeClass::RateLimited { .. } => ExecutionOutcome::Failed(format!(
-                "github.create_pr failed (transient): {}",
-                structural_reason(&err.class)
-            )),
-            // Success never reaches classify_failure (it's the Ok arm); fail closed defensively.
-            IntegrationOutcomeClass::Success => ExecutionOutcome::Failed(
-                "github.create_pr: a Success was classified as a failure (unreachable)".to_string(),
-            ),
         }
     }
 }
@@ -267,8 +266,236 @@ impl ActionExecutor for GithubExecutor {
     }
 }
 
+/// The P7.1 (edges-024) Linear sync executor (`ExecutorKind::Linear`) — the second edges external-network
+/// mutator, mirroring [`GithubExecutor`]. Handles `linear.link_issue` (risk-2, requires_resource_refs) +
+/// `linear.create_issue` (risk-2, NO resource_ref) by driving an injected async [`LinearWriteClient`]
+/// (Linear GraphQL) over the captured-`Handle` `block_on` + [`NETWORK_TIMEOUT`] 3a mechanism (shared with
+/// github). **Success → `ActionSucceeded` ONLY — NO Linear domain event** (the frozen contract has none,
+/// unlike github's `PullRequestSynced`; Linear is read on-demand via `fetch_issue`, §7.3 — the intentional
+/// asymmetry). Terminal non-auth → `LinearSyncFailed` via [`ExecutionOutcome::FailedWithEvents`] (the
+/// SHARED §17 [`classify_sync_failure`] disposition); auth/transient → plain `Failed`.
+pub struct LinearExecutor {
+    client: Box<dyn LinearWriteClient>,
+    handle: tokio::runtime::Handle,
+    clock: Box<dyn Clock>,
+    timeout: Duration,
+    inner: CatalogExecutor,
+}
+
+impl LinearExecutor {
+    /// Build with the default [`NETWORK_TIMEOUT`] (shared with github).
+    pub fn new(
+        client: Box<dyn LinearWriteClient>,
+        handle: tokio::runtime::Handle,
+        clock: Box<dyn Clock>,
+    ) -> Self {
+        Self::with_timeout(client, handle, clock, NETWORK_TIMEOUT)
+    }
+
+    /// Build with an explicit network timeout (tests inject a short one to exercise the bound fast).
+    pub fn with_timeout(
+        client: Box<dyn LinearWriteClient>,
+        handle: tokio::runtime::Handle,
+        clock: Box<dyn Clock>,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            client,
+            handle,
+            clock,
+            timeout,
+            inner: CatalogExecutor::new(),
+        }
+    }
+
+    fn execute_link_issue(&self, req: &ActionRequest) -> ExecutionOutcome {
+        // catalog precondition FIRST (link_issue requires_resource_refs=true — the issue IDENTITY).
+        if let Err(e) = self.inner.validate(req) {
+            return ExecutionOutcome::Failed(e.to_string());
+        }
+        // operands from req.inputs (§7.2/§15 redacted-op-inputs MVP-accept — issue_id/target are
+        // low-entropy identifiers). PARAM-INJECTION guard (LESSON 31/32): fail-closed non-empty
+        // validation BEFORE the call; Linear GraphQL uses TYPED VARIABLES (never interpolation) →
+        // injection-safe by construction (the `build_issue_query` precedent).
+        let Some(issue_id) = string_input(req, "issue_id") else {
+            return ExecutionOutcome::Failed(
+                "linear.link_issue requires a non-empty inputs[\"issue_id\"]".to_string(),
+            );
+        };
+        let Some(target) = string_input(req, "target") else {
+            return ExecutionOutcome::Failed(
+                "linear.link_issue requires a non-empty inputs[\"target\"]".to_string(),
+            );
+        };
+        let args = LinkIssueArgs { issue_id, target };
+        // 3a: drive the async client via the CAPTURED Handle's block_on + a hard timeout (NEVER
+        // Handle::current() — write-actor-thread panic; the edges-023 mechanism).
+        let result = self.handle.block_on(async {
+            tokio::time::timeout(self.timeout, self.client.link_issue(&args)).await
+        });
+        self.finish(req, result)
+    }
+
+    fn execute_create_issue(&self, req: &ActionRequest) -> ExecutionOutcome {
+        // catalog precondition FIRST. create_issue requires_resource_refs=FALSE → resolve() passes with
+        // NO ref (do not over-require); the precondition check still runs (uniform with link_issue).
+        if let Err(e) = self.inner.validate(req) {
+            return ExecutionOutcome::Failed(e.to_string());
+        }
+        let Some(team_id) = string_input(req, "team_id") else {
+            return ExecutionOutcome::Failed(
+                "linear.create_issue requires a non-empty inputs[\"team_id\"]".to_string(),
+            );
+        };
+        let Some(title) = string_input(req, "title") else {
+            return ExecutionOutcome::Failed(
+                "linear.create_issue requires a non-empty inputs[\"title\"]".to_string(),
+            );
+        };
+        let description = string_input(req, "description"); // optional
+        let args = CreateIssueArgs {
+            team_id,
+            title,
+            description,
+        };
+        let result = self.handle.block_on(async {
+            tokio::time::timeout(self.timeout, self.client.create_issue(&args)).await
+        });
+        self.finish(req, result)
+    }
+
+    /// Shared tail for both arms (both return `Result<(), LinearWriteError>`): map the
+    /// `block_on(timeout(...))` result → the outcome. **Success → `Succeeded { side_effect_applied: true,
+    /// changed_resources: req.resource_refs, emitted_events: [] }`** — NO Linear domain event (Q1;
+    /// `ActionSucceeded` is the audit record). A timeout → `Failed` (structural). A write error → the
+    /// SHARED §17 [`LinearExecutor::classify_failure`].
+    fn finish(
+        &self,
+        req: &ActionRequest,
+        result: Result<Result<(), LinearWriteError>, tokio::time::error::Elapsed>,
+    ) -> ExecutionOutcome {
+        match result {
+            // timed out — the write-actor must never hang unbounded. STRUCTURAL reason only (§15).
+            Err(_elapsed) => {
+                ExecutionOutcome::Failed("linear sync timed out (structural)".to_string())
+            }
+            Ok(Err(err)) => self.classify_failure(err),
+            Ok(Ok(())) => ExecutionOutcome::Succeeded {
+                // the resources this action touched — the audit record of what changed (the
+                // GithubExecutor precedent: link_issue's issue resource_ref; create_issue carries none →
+                // empty). Dropping it would leave a successful link's ActionSucceeded ref-less.
+                changed_resources: req.resource_refs.clone(),
+                detail: "linear sync — mutation applied via Linear GraphQL".to_string(),
+                // a real Linear mutation was applied BEFORE txn-B → a lost terminal write yields the
+                // honest ActionPartiallySucceeded (LESSON 21), NOT a clean rollback.
+                side_effect_applied: true,
+                // Q1: the frozen 11-event family has NO Linear success event (unlike PullRequestSynced)
+                // — ActionSucceeded is the audit record; Linear is read on-demand via fetch_issue (§7.3).
+                emitted_events: vec![],
+            },
+        }
+    }
+
+    /// The §17 disposition via the SHARED [`classify_sync_failure`] (mirrors github — terminal non-auth →
+    /// `LinearSyncFailed`; auth/transient → plain `Failed`). `reason` = the §15 STRUCTURAL class-name.
+    fn classify_failure(&self, err: LinearWriteError) -> ExecutionOutcome {
+        match classify_sync_failure(&err.class) {
+            SyncFailure::Auth => {
+                ExecutionOutcome::Failed("linear sync failed: auth_failed".to_string())
+            }
+            SyncFailure::Transient { reason } => {
+                ExecutionOutcome::Failed(format!("linear sync failed (transient): {reason}"))
+            }
+            SyncFailure::TerminalNonAuth { reason } => {
+                let failed_at = match Timestamp::parse(&self.clock.now_rfc3339()) {
+                    Ok(ts) => ts,
+                    Err(e) => {
+                        return ExecutionOutcome::Failed(format!("invalid clock timestamp: {e}"))
+                    }
+                };
+                let payload = LinearSyncFailed {
+                    provider: Provider::Linear,
+                    // §15: a STRUCTURAL class-name ONLY — never raw API/GraphQL response text.
+                    reason: reason.clone(),
+                    failed_at,
+                };
+                let payload_json = match serde_json::to_string(&payload) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        return ExecutionOutcome::Failed(format!("serialize LinearSyncFailed: {e}"))
+                    }
+                };
+                ExecutionOutcome::FailedWithEvents {
+                    detail: format!("linear sync failed: {reason}"),
+                    emitted_events: vec![EmittedEvent::Namespaced {
+                        event_type: LinearSyncFailed::EVENT_TYPE,
+                        payload_json,
+                    }],
+                }
+            }
+        }
+    }
+}
+
+impl ActionExecutor for LinearExecutor {
+    fn validate(&self, req: &ActionRequest) -> Result<(), ExecError> {
+        self.inner.validate(req)
+    }
+
+    fn execute(&self, req: &ActionRequest) -> ExecutionOutcome {
+        match req.action_type.as_str() {
+            LINEAR_LINK_ISSUE => self.execute_link_issue(req),
+            LINEAR_CREATE_ISSUE => self.execute_create_issue(req),
+            // any other Linear-kind action delegates to the inner side-effect-free stub (no event).
+            _ => self.inner.execute(req),
+        }
+    }
+
+    fn preview(&self, req: &ActionRequest, generated_at: Timestamp) -> ActionPreview {
+        self.inner.preview(req, generated_at)
+    }
+}
+
+/// The §17 disposition of an external-sync write failure — SHARED by every edges external-network mutator
+/// (github/linear) so the Auth / TerminalNonAuth / Transient routing can NEVER diverge between providers
+/// (a §17 correctness guard, not just DRY — LESSON 32). The executor maps each variant to its
+/// provider-specific outcome (the `*SyncFailed` event type differs; the disposition does not).
+enum SyncFailure {
+    /// `AuthFailed` → a plain `Failed("…auth_failed")`, NO event (the `auth_expired` `*SyncFailed` variant
+    /// is DEFERRED — needs a §17/INV-SEC re-review).
+    Auth,
+    /// terminal non-auth (`ClientError`/`NotFound`) → the action FAILS AND emits the provider's
+    /// `*SyncFailed` event (`FailedWithEvents`). `reason` = the §15 structural class-name.
+    TerminalNonAuth { reason: String },
+    /// transient (`ServerError`/`RateLimited`/`TransportError`) → a plain `Failed`, NO event (retry/queue;
+    /// `*SyncFailed` is the terminal-non-auth class ONLY). `reason` = the §15 structural class-name.
+    Transient { reason: String },
+}
+
+/// Classify a write-failure class → its §17 disposition. **Exhaustive** (no `_`) — a new
+/// `IntegrationOutcomeClass` variant forces a reconcile here (the `map_mergeable` precedent), so github +
+/// linear can never route the same class differently. `Success` is unreachable from a failure path (the
+/// executor calls this only on `Err`); fold it conservatively to `Transient` (a Success-classified-as-a-
+/// failure is a client bug → retry is the safe disposition).
+fn classify_sync_failure(class: &IntegrationOutcomeClass) -> SyncFailure {
+    match class {
+        IntegrationOutcomeClass::AuthFailed => SyncFailure::Auth,
+        IntegrationOutcomeClass::ClientError { .. } | IntegrationOutcomeClass::NotFound => {
+            SyncFailure::TerminalNonAuth {
+                reason: structural_reason(class),
+            }
+        }
+        IntegrationOutcomeClass::ServerError
+        | IntegrationOutcomeClass::TransportError
+        | IntegrationOutcomeClass::RateLimited { .. }
+        | IntegrationOutcomeClass::Success => SyncFailure::Transient {
+            reason: structural_reason(class),
+        },
+    }
+}
+
 /// The §15 STRUCTURAL class-name for a failure class — NEVER raw API text. Drives the persisted
-/// `GithubSyncFailed.reason` + the structured `Failed` detail.
+/// `{Github,Linear}SyncFailed.reason` + the structured `Failed` detail (shared by both executors).
 fn structural_reason(class: &IntegrationOutcomeClass) -> String {
     match class {
         IntegrationOutcomeClass::Success => "success",

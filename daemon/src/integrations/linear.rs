@@ -358,6 +358,44 @@ pub fn map_linear_response(
     })
 }
 
+/// Classify a Linear GraphQL **WRITE** (mutation) response → `Ok(())` on success (HTTP 2xx + no GraphQL
+/// `errors[]`) or `Err(class)` with the §17 outcome class. The WRITE analog of [`map_linear_response`]
+/// (which additionally extracts a `LinearIssue` on success) — it REUSES the SAME error-layering
+/// (`errors[]`-over-HTTP, `RATELIMITED`-overrides-400, auth detection via `classify_graphql_error_code`);
+/// a mutation's success is a unit (no domain object to extract — Linear emits no success event, Q1). `pub`
+/// for `linear_write.rs` + its unit test (edges-024). Pure + total.
+///
+/// **MVP NOTE (edges-024):** a 2xx body with NO GraphQL `errors[]` is treated as success even if the
+/// mutation payload carries a soft `success:false`. Linear returns `errors[]` for real failures, so this
+/// is rare; parsing the mutation result payload is a deferred live-client hardening (Step-9 SPREAD —
+/// "a false success is worse than a false failure"). The common `errors[]`/HTTP-status cases are handled.
+pub fn classify_linear_write_response(
+    http_status: u16,
+    retry_after: Option<&str>,
+    rate_limit_reset: Option<&str>,
+    body: &str,
+) -> Result<(), IntegrationOutcomeClass> {
+    // 1. errors[] present → ALWAYS an error (even on HTTP 200 — Linear partial-succeeds with data AND
+    //    errors). The primary code drives the class (the same layering map_linear_response uses).
+    if let Ok(env) = serde_json::from_str::<GraphqlErrorEnvelope>(body) {
+        if let Some(first) = env.errors.first() {
+            let code = first.extensions.as_ref().and_then(|e| e.code.as_deref());
+            return Err(classify_graphql_error_code(
+                code,
+                http_status,
+                retry_after,
+                rate_limit_reset,
+            ));
+        }
+    }
+    // 2. no errors[], HTTP 2xx → the mutation succeeded (unit; see the MVP NOTE re: soft success:false).
+    if (200..=299).contains(&http_status) {
+        return Ok(());
+    }
+    // 3. no errors[], non-2xx → classify the HTTP status (a 401 with no GraphQL body, a 5xx page, …).
+    Err(classify(Some(http_status), retry_after, false))
+}
+
 /// Resolve a GraphQL `errors[].extensions.code` → `IntegrationOutcomeClass`, layered over the HTTP
 /// status. RATELIMITED / auth recognized case-insensitively; an unrecognized code folds via `classify`,
 /// but a `Success` fold (the HTTP-200+errors case) is forced to a conservative transient `ServerError`

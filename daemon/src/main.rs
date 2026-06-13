@@ -22,8 +22,9 @@ use nexusopsd::gateway::Gateway;
 use nexusopsd::git::cli::SystemGitCli;
 use nexusopsd::git::executor::GitExecutor;
 use nexusopsd::idgen::UlidGen;
-use nexusopsd::integrations::executor::GithubExecutor;
+use nexusopsd::integrations::executor::{GithubExecutor, LinearExecutor};
 use nexusopsd::integrations::github_write::OctocrabGithubWriteClient;
+use nexusopsd::integrations::linear_write::LinearGraphqlWriteClient;
 use nexusopsd::ipc::current_euid;
 use nexusopsd::project::executor::ProjectExecutor;
 use nexusopsd::runtime::{bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor};
@@ -106,6 +107,23 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         nexusops_shared::catalog::ExecutorKind::Github,
         Arc::new(GithubExecutor::new(
             Box::new(OctocrabGithubWriteClient::new(octocrab::Octocrab::default())),
+            tokio::runtime::Handle::current(),
+            Box::new(SystemClock),
+        )),
+    );
+    // P7.1 (edges-024) — the second edges EXTERNAL-NETWORK mutator: linear.link_issue/create_issue via
+    // the Linear GraphQL write client. Same 3a captured-Handle/block_on/timeout mechanism. The
+    // LinearGraphqlWriteClient takes an injected reqwest::Client + endpoint + api_key; auth bootstrap
+    // (OAuth/PKCE) is deferred → an empty key for now (a real mutation → 401→AuthFailed→Failed,
+    // fail-closed-correct). Linear success emits NO domain event (Q1); ActionSucceeded is the record.
+    catalog_executor.register(
+        nexusops_shared::catalog::ExecutorKind::Linear,
+        Arc::new(LinearExecutor::new(
+            Box::new(LinearGraphqlWriteClient::new(
+                reqwest::Client::new(),
+                "https://api.linear.app/graphql".to_string(),
+                String::new(),
+            )),
             tokio::runtime::Handle::current(),
             Box::new(SystemClock),
         )),

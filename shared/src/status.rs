@@ -2,9 +2,9 @@
 //!
 //! Value sets are the frozen contract: stored as `TEXT status`, serialized as the
 //! exact snake_case wire string (serde `rename_all`). Each machine declares its
-//! terminal states. The 10th machine, **ExecutionProfile, is intentionally HELD**
-//! for 0.5b (see [`crate::EXECUTION_PROFILE_STATUS_HELD`]). Worktree is two axes
-//! (git + overlay); the precedence fn that combines them is Phase-1 projection
+//! terminal states. The 10th machine, **ExecutionProfile**, is **frozen in 0.5b**
+//! (P4.0b-1; the cat-4 SDK-vs-PTY decision resolved = PTY-primary). Worktree is two
+//! axes (git + overlay); the precedence fn that combines them is Phase-1 projection
 //! logic, out of scope for the freeze.
 
 use schemars::JsonSchema;
@@ -31,7 +31,9 @@ macro_rules! status_machine {
 
             /// True for the machine's terminal states (§5.1 bold).
             pub fn is_terminal(self) -> bool {
-                #[allow(unreachable_patterns)]
+                // every machine has ≥1 non-terminal variant (so `_` is always reachable) — the
+                // blanket `#[allow(unreachable_patterns)]` deferred for the held ExecutionProfile is
+                // no longer needed now the 10th machine landed (0.5b).
                 match self {
                     $( Self::$term => true, )*
                     _ => false,
@@ -143,6 +145,20 @@ status_machine! {
     terminal { Completed, Failed, Archived }
 }
 
+status_machine! {
+    /// ExecutionProfile runtime state (9, R-7) — the §5.1 8 + **`credit_exhausted`** (the SDK monthly
+    /// credit-pool HARD-STOP; distinct from the soft, auto-recovering `rate_limited` interactive
+    /// throttle — cat-4 PTY-primary). The 10th §5.1 machine — held in 0.5 pending the cat-4 SDK-vs-PTY
+    /// decision, **frozen here in 0.5b** (P4.0b-1). `disabled` (the profile turned off) is the ONLY
+    /// terminal; the rest are recoverable runtime conditions re-derived continuously
+    /// (`execution_profiles.status`, the config-vs-runtime split).
+    ExecutionProfile {
+        Available, Active, InUse, RateLimited, AuthExpired, Misconfigured, Disabled, Unknown,
+        CreditExhausted,
+    }
+    terminal { Disabled }
+}
+
 // Type aliases so the in-language identifiers read like the §5.1 machine names
 // (the wire value is the contract; these are idiomatic Rust handles).
 pub type SessionStatus = Session;
@@ -155,3 +171,4 @@ pub type ProjectBrainStatus = ProjectBrain;
 pub type ApprovalStatus = Approval;
 pub type ActionRequestStatus = ActionRequest;
 pub type AgentTeamStatus = AgentTeam;
+pub type ExecutionProfileStatus = ExecutionProfile;

@@ -7,7 +7,6 @@
 //! OBSERVATION event through an injected sink (the 3.4 `TerminalEventSink` precedent, LESSON §23/§24).
 //! NON-safety — no §15/INV-SEC-1 mechanism touched (the write-actor append already gates it).
 
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use nexusops_shared::events::TelemetrySampled;
@@ -17,30 +16,8 @@ use nexusopsd::harness::claude::telemetry::{
 };
 use nexusopsd::harness::claude::ClaudeAdapter;
 use nexusopsd::harness::HarnessAdapter;
-use nexusopsd::terminal::{ExitStatus, FakePty, Pty, PtyRead, PtySpawner};
 
 // ---- test doubles -------------------------------------------------------------------------------
-
-/// a no-op spawner (telemetry tests never launch; the adapter just needs a constructed spawner).
-struct NoopSpawner;
-impl PtySpawner for NoopSpawner {
-    fn spawn(
-        &self,
-        _program: &str,
-        _args: &[String],
-        _cwd: &Path,
-        _rows: u16,
-        _cols: u16,
-    ) -> std::io::Result<Box<dyn Pty>> {
-        Ok(Box::new(FakePty::new(
-            vec![PtyRead::Eof],
-            ExitStatus {
-                exit_code: Some(0),
-                signal: None,
-            },
-        )))
-    }
-}
 
 /// a collecting telemetry sink (the `TerminalEventSink` `FakeEventSink` precedent): captures every
 /// emitted `TelemetrySampled` so a test can assert the count + payload.
@@ -55,11 +32,10 @@ impl TelemetryEventSink for CollectingSink {
 }
 
 fn adapter() -> ClaudeAdapter {
+    // Option A (P4.0b-2): the adapter no longer spawns/holds a PTY — `new(cwd, session_id)`.
     ClaudeAdapter::new(
-        Box::new(NoopSpawner),
         std::path::PathBuf::from("/Users/x/proj"),
         "sess_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
-        "/usr/local/bin/nexusops-hook".to_string(),
     )
 }
 

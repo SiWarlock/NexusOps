@@ -8,16 +8,25 @@
 
 pub mod bootstrap;
 pub mod clock;
+pub mod decisions;
 pub mod eventstore;
 /// §14 deterministic fault-injection (2.4) — present ONLY under the `fault-injection` feature (the
 /// daemon's own test targets); compiled out of every production build (no prod fault surface).
 #[cfg(feature = "fault-injection")]
 pub mod fault;
 pub mod gateway;
+pub mod git;
 pub mod harness;
+pub mod hook;
 pub mod idgen;
+pub mod integrity;
 pub mod ipc;
 pub mod locks;
 pub mod projections;
 pub mod runtime;
+pub mod session;
+/// the `nexusopsd smoke` dev-client subcommand (P4.0b-2-smoke / brief 053) — the 0.1-HITL "see it
+/// work" rig. Feature-gated (`dev-client`): compiled out of a default/release build (prod hygiene).
+#[cfg(feature = "dev-client")]
+pub mod smoke;
 pub mod terminal;

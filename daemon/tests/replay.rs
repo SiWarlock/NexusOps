@@ -235,6 +235,7 @@ fn test_healthy_log_replays_unchanged() {
             harness: None,
             model: None,
             display_name: None,
+            execution_profile_id: None,
         })
         .unwrap();
         store

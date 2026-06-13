@@ -3,7 +3,7 @@
 - **Date:** 2026-06-12
 - **Phase:** 3 (Harness adapters & embedded terminal) — task **3.2 part 2** (the INV-SEC-1 interception)
 - **Predecessor:** [016 — Terminal Channel + Claude adapter observe path](016-2026-06-12-terminal-channel-and-claude-adapter-observe.md)
-- **Successor:** _(next session)_
+- **Successor:** [018 — P4.0b-1 cat-1: session.create/kill executor + ExecutionProfile freeze](018-2026-06-13-session-create-executor-and-execution-profile-freeze.md)
 - **Brief:** `docs/briefs/043-P3-2-claude-mutation-intercept-gateway.md` (spec-lint PASS `@6455090d`)
 - **Round commits:** L1 `9f228a6` · L2 `dfbf0aa` · L3 `73d7f79` · L4 `81041c1` · L5 `1a276b7` (L5 amended to fold the intercept.rs comment fix)
 

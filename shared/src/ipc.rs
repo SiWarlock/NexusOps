@@ -85,6 +85,12 @@ pub enum IpcErrorCode {
     FencingConflict,
     ProtocolError,
     InternalError,
+    // P4.0b-ui1 (§6.1/§6.4) — `not_found`: a requested resource (e.g. the `get_diff` worktree_id) does
+    // not resolve. A read-RPC not-found, distinct from `precondition_stale` (the re-approvable mutation
+    // card) + `internal_error` (a fault). Added @ 0.28.0; only a 0.28.0 consumer calls `get_diff`.
+    // (A plain `//` comment, NOT `///`: a per-variant doc would flip schemars to the const-union form
+    // — keep the flat-enum form the other §6.4 codes use, so the 3-way pydantic codegen stays clean.)
+    NotFound,
 }
 
 impl IpcErrorCode {
@@ -99,6 +105,7 @@ impl IpcErrorCode {
         Self::FencingConflict,
         Self::ProtocolError,
         Self::InternalError,
+        Self::NotFound,
     ];
 }
 
@@ -222,6 +229,57 @@ pub struct GetProjectionParams {
 pub struct ProjectionScope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+}
+
+/// `get_diff` params (§6.1; P4.0b-ui1) — the hunk-structured diff-read for the ui's 6.3e per-hunk
+/// review. Keyed off the **stable `wt_` worktree id** (NOT a mutable path — a worktree can move; the
+/// id is the frozen-ID-system handle the git.* actions ALSO target, so read-by-id ↔ mutate-by-id are
+/// consistent). The daemon resolves `worktree_id → proj_worktree.path` (read-only WAL) then reads git2.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GetDiffParams {
+    pub worktree_id: String,
+    pub file: String,
+}
+
+/// `get_diff` result (§6.1) — the file's structured diff (HEAD→workdir), reject-unknown.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiffResult {
+    pub hunks: Vec<Hunk>,
+}
+
+/// One unified-diff hunk (§6.1). The `old_start`/`new_start` POSITION fields are the hunk-identity the
+/// ui packs into the git.* action's resource_ref id (so stage/discard target THIS precise hunk + the
+/// `NaturalResourceRef` idempotency key is hunk-precise — read↔mutate consistency, §17). The "\ No
+/// newline at eof" marker is deferred (additive-later).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Hunk {
+    /// the `@@ -old_start,old_lines +new_start,new_lines @@` header line.
+    pub header: String,
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub lines: Vec<DiffLine>,
+}
+
+/// One line within a [`Hunk`] (§6.1): its kind + verbatim content (the trailing newline retained).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub content: String,
+}
+
+/// The kind of a [`DiffLine`] (§6.1) — closed, snake_case wire, reject-unknown.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffLineKind {
+    Context,
+    Added,
+    Removed,
 }
 
 /// `subscribe` params (§6.1). `filter` is provisional (a per-projection scope; widens later).

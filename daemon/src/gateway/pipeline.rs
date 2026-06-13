@@ -427,17 +427,20 @@ impl Gateway {
                 }
             }
             ApprovalMode::ApproveAll => {
-                // §11.5 migration — `critical` keys off the AUTHORITATIVE §6.3 catalog risk, NOT the
-                // requester-supplied `risk_level` (recorded, not trusted). A proposer under-claiming a
-                // catalog-risk-4 step as risk-0 still gets it excluded from approve-all. Every step is
-                // catalogued (rejected upfront otherwise), so lookup is Some.
-                let is_critical = |s: &nexusops_shared::actions::ActionPlanStep| {
-                    catalog::lookup(&s.action_request.action_type).map(|e| e.locked_risk)
-                        == Some(RiskLevel::Level4)
+                // §11.5 + P4.0b-ui1 — a step is NON-standing-grantable (excluded from approve-all) if
+                // its AUTHORITATIVE §6.3 catalog entry is risk-4 (critical) OR `!standing_grant_eligible`
+                // (the destructive `git.discard_hunk`). BOTH disjuncts (defense-in-depth; the invariant
+                // test pins risk-4⇒!eligible so they can't drift). Keys off the catalog, NOT the
+                // requester-supplied `risk_level` (recorded, not trusted — an under-claim still excludes).
+                // Every step is catalogued (rejected upfront otherwise), so lookup is Some.
+                let is_non_standing_grantable = |s: &nexusops_shared::actions::ActionPlanStep| {
+                    catalog::lookup(&s.action_request.action_type)
+                        .map(|e| e.locked_risk == RiskLevel::Level4 || !e.standing_grant_eligible)
+                        == Some(true)
                 };
-                // ONE plan-level approval over the non-critical steps (opened only if any exist —
-                // an all-critical plan gets only per-step approvals, no empty plan-level approval).
-                if plan.steps.iter().any(|s| !is_critical(s)) {
+                // ONE plan-level approval over the standing-grant-eligible steps (opened only if any
+                // exist — an all-excluded plan gets only per-step approvals, no empty plan-level one).
+                if plan.steps.iter().any(|s| !is_non_standing_grantable(s)) {
                     let first = &plan.steps[0].action_request;
                     let appr_id = ApprovalId::new();
                     approval::insert(
@@ -460,8 +463,9 @@ impl Gateway {
                     )?)?;
                     deltas.push(approval_queue_delta(appr_id.as_str()));
                 }
-                // each critical (risk-4) step gets its OWN per-step approval — never approve-all.
-                for step in plan.steps.iter().filter(|s| is_critical(s)) {
+                // each non-standing-grantable step (risk-4 OR !standing_grant_eligible) gets its OWN
+                // per-step approval — never folded into approve-all.
+                for step in plan.steps.iter().filter(|s| is_non_standing_grantable(s)) {
                     self.open_step_approval(gtx, &step.action_request, plan_id, now, deltas)?;
                 }
             }
@@ -979,7 +983,7 @@ impl Gateway {
             match &outcome {
                 // the executor's changed_resources/detail (Q7) are daemon-internal — recorded on the
                 // §6.2 ActionResult in a later phase; the ActionSucceeded event payload stays empty.
-                ExecutionOutcome::Succeeded { .. } => {
+                ExecutionOutcome::Succeeded { emitted_events, .. } => {
                     request::update_status(
                         gtx.tx(),
                         &act_id,
@@ -987,6 +991,13 @@ impl Gateway {
                         ARStatus::Succeeded,
                     )?;
                     gtx.append(&request::succeeded_intent(req, &now)?)?;
+                    // PIN a/b (P4.0b-1) — append the executor's additional in-txn events (the
+                    // session.create `SessionStarted`, carrying the §15 #8 `execution_profile_id`)
+                    // ATOMIC with `ActionSucceeded`: a write failure `?`-propagates → txn-B rolls back →
+                    // the action stays `executing` → L5 (INV-SEC-1 — never an unaudited session record).
+                    for ev in emitted_events {
+                        gtx.append(&request::emitted_event_intent(req, ev, &now)?)?;
+                    }
                     Ok(ActionAck {
                         action_request_id: act_id.clone(),
                         status: ARStatus::Succeeded,

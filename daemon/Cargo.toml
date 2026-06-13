@@ -42,6 +42,12 @@ base64 = "0.22"
 # resize, waitpid exit). PTY is DISPLAY-ONLY (#9) — never scraped for status. The blocking reader runs
 # on a spawn_blocking thread in the production drive loop (the write-actor-thread precedent, LESSON §9).
 portable-pty = "0.9"
+# git2 (libgit2) for the §6.1 get_diff READ-ONLY live diff (P4.0b-ui1; the §7.2 worktree-live-read
+# precedent + the §9 git2≥1.9.4/0.21 read-path vetted at OQ-INT-SPIKE-6). READ-ONLY here — git
+# MUTATIONS go through the git CLI as Gateway actions (forbidden #6), never git2. The daemon's FIRST
+# git2 use; dep beyond the brief's named list (orch-approved) — flag at Step-9; `cargo audit` runs at
+# /phase-exit 4. (Declared §tech-stack dep, pulled in now.)
+git2 = "0.21"
 # (the `nexusopsd` bin is auto-discovered from src/main.rs — no explicit [[bin]] needed.)
 
 [features]
@@ -50,19 +56,36 @@ portable-pty = "0.9"
 # a real SIGKILL. Compiled OUT of `cargo build`/`cargo run`/release (no production fault surface); the
 # self-dev-dependency below enables it ONLY for the daemon's own test/bench targets.
 fault-injection = []
+# P4.0b-R1a — gates daemon-internal TEST-SUPPORT items (fakes / test doubles) so they compile ONLY for
+# test/bench targets, never `cargo build`/release. R1a introduces the MECHANISM only — it gates nothing
+# yet (FakeHarness/FakePty/FakeLauncher stay ungated until 4.0b-2, when `PtyLauncher`'s FakeHarness
+# placeholder → the real ClaudeAdapter makes them test-only). Mirrors `fault-injection` (LESSON 21);
+# the cross-track edges resume gates its `integrations/` fakes behind it.
+test-support = []
+# P4.0b-2-smoke (brief 053) — gates the `smoke` dev-client subcommand (the 0.1-HITL "see it work" rig).
+# OFF by default (production hygiene — the smoke client isn't needed in a release build); the runbook
+# builds `cargo build --release --features dev-client`. NOTE (CI-rot residual, Step-9 flagged): the
+# default CI does not exercise this feature → a dedicated `--features dev-client` lint/build line is a
+# Future-TODO; this slice's preflight runs `clippy/build --features dev-client` to verify it.
+dev-client = []
 
 [dev-dependencies]
 tempfile = "3"
-# enable the `fault-injection` feature for the daemon's OWN integration tests (which link the lib as a
-# normal dependency, WITHOUT cfg(test)). Standard self-dev-dependency idiom: ON for test targets, OFF
-# for `cargo build`/release. Lets daemon/tests/recovery.rs arm §14 faults; the hook stays out of prod.
-nexusopsd = { path = ".", features = ["fault-injection"] }
+# enable the daemon's own gated features for its OWN integration tests (which link the lib as a normal
+# dependency, WITHOUT cfg(test)). Standard self-dev-dependency idiom: ON for test/bench targets, OFF
+# for `cargo build`/release. `fault-injection` lets daemon/tests/recovery.rs arm §14 faults;
+# `test-support` (R1a) gates test-only fakes (none yet — the mechanism). Both stay out of prod.
+nexusopsd = { path = ".", features = ["fault-injection", "test-support"] }
 # integration tests inject corrupt/future-version rows directly to exercise the
 # read-path degrade/quarantine (§17) without a pub test-backdoor in the API.
 rusqlite = { version = "0.34", features = ["bundled"] }
 # the runtime tests drive the write-actor + accept-loop + subscribe over a tokio runtime
-# (#[tokio::test]) + a real ephemeral UnixListener client.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+# (#[tokio::test]) + a real ephemeral UnixListener client. `test-util` (P4.0b-2) = `start_paused` /
+# `tokio::time::pause` for the deterministic 5-min decision-wait timeout test (no real-time sleep).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util", "test-util"] }
+# git2 in the get_diff integration test (daemon/tests/get_diff.rs) — builds the fixture repo
+# (Repository::init + commit + modify) the read-only read_diff is tested against (P4.0b-ui1).
+git2 = "0.21"
 
 # P2.5 — the §18 event-write/reader perf benchmark. `harness = false`: a plain `fn main()` (NOT the
 # libtest harness), so it is INVISIBLE to `cargo test --workspace` (the per-slice RED/GREEN loop) and
@@ -70,4 +93,13 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 # event_write` (the /phase-exit perf-budgets runner + 2.6's nightly CI job).
 [[bench]]
 name = "event_write"
+harness = false
+
+# P3.5 — the §18 terminal-attach-latency + §6.4 Terminal-Channel-throughput benchmark. `harness =
+# false`: a plain `fn main()` (NOT the libtest harness), so it is INVISIBLE to `cargo test --workspace`
+# (the per-slice RED/GREEN loop) and its `< 250 ms` p95 assertion never flakes there. Runs ONLY at its
+# own cadence: `cargo bench --bench terminal_attach` (the /phase-exit perf-budgets runner + the nightly
+# Phase-3 CI perf job). Drives the AS-BUILT 3.4 TerminalSession/PortablePtyHost host end-to-end.
+[[bench]]
+name = "terminal_attach"
 harness = false

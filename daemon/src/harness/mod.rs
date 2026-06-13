@@ -20,8 +20,11 @@
 pub mod claude;
 
 use nexusops_shared::harness::{
-    HarnessCapabilities, MetricQuality, NormalizedStatus, TelemetrySample, TranscriptRef,
+    HarnessCapabilities, NormalizedStatus, TelemetrySample, TranscriptRef,
 };
+// MetricQuality is used only by the `test-support`-gated `FakeHarness::telemetry_heartbeat`.
+#[cfg(any(test, feature = "test-support"))]
+use nexusops_shared::harness::MetricQuality;
 
 // ---- mutation interception (the can_use_tool / app-server approval surface, §9.1) ------------
 
@@ -201,16 +204,23 @@ pub trait HarnessAdapter: Send {
 /// A capability-respecting test double for the [`HarnessAdapter`] trait (the real adapters land
 /// 3.2/3.3). It surfaces capability-gated degradation HONESTLY — an unsupported capability returns
 /// `None`, never a fabricated value (§9.1/§11.4) — so the conformance scaffold exercises the contract.
+///
+/// **`test-support`-gated (P4.0b-2 L3):** now that the live `ClaudeAdapter` is the production adapter
+/// (C2), `FakeHarness` is TEST-ONLY — it compiles only for the daemon's own unit tests (`cfg(test)`)
+/// or integration/bench targets (`feature = "test-support"`), never `cargo build`/release.
+#[cfg(any(test, feature = "test-support"))]
 pub struct FakeHarness {
     caps: HarnessCapabilities,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl FakeHarness {
     pub fn new(caps: HarnessCapabilities) -> Self {
         Self { caps }
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl HarnessAdapter for FakeHarness {
     fn capabilities(&self) -> HarnessCapabilities {
         self.caps.clone()

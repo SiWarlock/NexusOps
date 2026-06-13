@@ -147,6 +147,155 @@ fn test_catalog_policy_decision_per_risk() {
 }
 
 // =================================================================================================
+// P4.0b-1 L2 — the risk-0 session-lifecycle relaxation + the 5 protective pins (CAT-1; away-ruled).
+// =================================================================================================
+
+/// `sample_request` with an explicit requester (PIN-e — the UI/IPC-only gate).
+fn request_from(action_type: &str, requester: RequesterType) -> ActionRequest {
+    ActionRequest {
+        requester_type: requester,
+        ..sample_request(action_type, RiskLevel::Level0)
+    }
+}
+
+#[test]
+fn test_session_create_kill_auto_allow() {
+    // spec(§6.3 away-ruled) — session.create/kill are risk-0 → Allow (audited auto-allow); a UI/User
+    // requester auto-executes (no approval). PINs (a)-(e) constrain HOW it stays safe (below).
+    let policy = CatalogPolicy;
+    assert_eq!(
+        policy
+            .decide(&sample_request("session.create", RiskLevel::Level0))
+            .status,
+        PolicyDecisionStatus::Allow
+    );
+    assert_eq!(
+        policy
+            .decide(&sample_request("session.kill", RiskLevel::Level0))
+            .status,
+        PolicyDecisionStatus::Allow
+    );
+}
+
+#[test]
+fn test_profile_change_requires_approval() {
+    // PIN (c) — spec(§15 #8) — session.profile_change is risk-2 → RequireApproval; the no-silent-
+    // account-hop gate lives on the CHANGE, never the routine start. Pin the DISCRETE PIN-c facts (the
+    // catalog risk is 2 + it's NOT on the risk-0 auto-execute allowlist → never auto-executed), not
+    // just the generic risk-2→approval arm any risk-2 type would satisfy.
+    assert_eq!(
+        nexusops_shared::catalog::lookup("session.profile_change")
+            .unwrap()
+            .locked_risk,
+        RiskLevel::Level2,
+        "session.profile_change is catalog-risk-2 (the §15 #8 account-hop gate)"
+    );
+    assert!(
+        !nexusopsd::gateway::policy::risk0_auto_execute_permitted("session.profile_change"),
+        "session.profile_change is NOT on the risk-0 auto-execute allowlist"
+    );
+    let policy = CatalogPolicy;
+    assert_eq!(
+        policy
+            .decide(&sample_request("session.profile_change", RiskLevel::Level0))
+            .status,
+        PolicyDecisionStatus::RequireApproval,
+        "profile-change is approval-gated (no silent account-hop)"
+    );
+}
+
+#[test]
+fn test_risk0_relaxation_is_narrow() {
+    // PIN (d) — spec(LESSON 19) — the risk-0 relaxation is NARROW to session-lifecycle. A non-session
+    // MUTATING type (git.create_worktree, catalog-risk-2) the requester CLAIMS is risk-0 is NOT
+    // auto-allowed (the catalog authority resolves its real risk → RequireApproval).
+    let policy = CatalogPolicy;
+    assert_eq!(
+        policy
+            .decide(&sample_request("git.create_worktree", RiskLevel::Level0))
+            .status,
+        PolicyDecisionStatus::RequireApproval,
+        "a non-session mutation can't ride the risk-0 relaxation (catalog-authoritative)"
+    );
+    // the explicit allowlist guard (lead-ruled, belt-and-suspenders over the catalog + LESSON 19
+    // re-gate): only the allowlisted risk-0 types may auto-execute; a non-allowlisted one fails closed.
+    assert!(nexusopsd::gateway::policy::risk0_auto_execute_permitted(
+        "session.create"
+    ));
+    assert!(nexusopsd::gateway::policy::risk0_auto_execute_permitted(
+        "session.kill"
+    ));
+    assert!(
+        !nexusopsd::gateway::policy::risk0_auto_execute_permitted("some.future.risk0_mutation"),
+        "a risk-0 type NOT on the allowlist fails closed — admitting one forces a deliberate edit"
+    );
+}
+
+#[test]
+fn test_risk0_allowlist_matches_catalog() {
+    // PIN (d) consistency — the explicit auto-execute allowlist MUST equal the catalog's risk-0 set:
+    // a type is allowlisted IFF it is catalog-risk-0. So (1) every catalog risk-0 type is allowlisted
+    // (else it silently fail-closes — this is the LOUD dev-time catch) and (2) the allowlist can't
+    // admit a non-risk-0 type. Admitting a NEW auto-executing type therefore forces a deliberate edit
+    // to BOTH the catalog risk AND the allowlist — a future risk-0 mutation can't silently auto-execute.
+    use nexusops_shared::catalog::{lookup, AGENT_MUTATION_ACTION_TYPES, MVP_ACTION_TYPES};
+    // forward — every catalogued type is allowlisted IFF it is catalog-risk-0.
+    for at in MVP_ACTION_TYPES.iter().chain(AGENT_MUTATION_ACTION_TYPES) {
+        let is_catalog_risk0 = lookup(at).unwrap().locked_risk == RiskLevel::Level0;
+        assert_eq!(
+            is_catalog_risk0,
+            nexusopsd::gateway::policy::risk0_auto_execute_permitted(at),
+            "the risk-0 auto-execute allowlist must EXACTLY track the catalog risk-0 set: {at}"
+        );
+    }
+    // reverse — every allowlist entry IS a catalog risk-0 type (catches a phantom / typo'd allowlist
+    // entry, e.g. `session.creat`, that the forward sweep alone would never visit).
+    for at in nexusopsd::gateway::policy::risk0_auto_execute_allowlist() {
+        assert_eq!(
+            lookup(at).map(|e| e.locked_risk),
+            Some(RiskLevel::Level0),
+            "every risk-0 allowlist entry must be a catalog risk-0 type: {at}"
+        );
+    }
+}
+
+#[test]
+fn test_session_create_rejects_agent_brain_requester() {
+    // PIN (e) — spec(§15 #8 / 043) — session.create/kill are UI/IPC-initiated only; an AgentSession /
+    // ProjectBrain / WorkflowPack requester is DENIED (agents stay governed by the 043
+    // AgentMutationPolicy, never spawning a session at risk-0).
+    let policy = CatalogPolicy;
+    for requester in [
+        RequesterType::AgentSession,
+        RequesterType::ProjectBrain,
+        RequesterType::WorkflowPack,
+    ] {
+        assert_eq!(
+            policy
+                .decide(&request_from("session.create", requester))
+                .status,
+            PolicyDecisionStatus::Deny,
+            "{requester:?} session.create is denied (UI/IPC-only)"
+        );
+        assert_eq!(
+            policy
+                .decide(&request_from("session.kill", requester))
+                .status,
+            PolicyDecisionStatus::Deny,
+            "{requester:?} session.kill is denied (UI/IPC-only)"
+        );
+    }
+    // a User (the desktop UI) is the permitted requester → auto-allows.
+    assert_eq!(
+        policy
+            .decide(&request_from("session.create", RequesterType::User))
+            .status,
+        PolicyDecisionStatus::Allow,
+        "a User (UI/IPC) session.create auto-allows"
+    );
+}
+
+// =================================================================================================
 // L3 — the risk-0 `allow` auto-execute path (the FIRST no-human-approval execution path) + the
 // §11.5 approve-all critical-exclusion migrated onto the catalog-authoritative risk. INV-SEC-1.
 // =================================================================================================
@@ -505,4 +654,164 @@ fn test_recorded_risk_reconciled_to_catalog() {
         payload["risk_level"], 2,
         "ActionRequested carries the catalog risk-2, not the claimed 0"
     );
+}
+
+// =================================================================================================
+// P4.0b-ui1 (brief 052) — the per-hunk git.* catalog freeze + the non-standing-grant safety floor.
+// The 3 git.* hunk action types + the `standing_grant_eligible` catalog field generalizing the
+// risk-4 approve-all exclusion (USER-ruled: git.discard_hunk is destructive/irreversible →
+// per-action approval ALWAYS, even under an approve-all). Executor bodies = stubs (Phase 5).
+// =================================================================================================
+
+// ---- 052 #1 — the 3 git.* hunk catalog entries (risk / executor / refs / preview) ---------------
+
+#[test]
+fn test_git_hunk_catalog_risks() {
+    // spec(§6.3) — git.stage_hunk/unstage_hunk = risk-2 (the git.* tier); git.discard_hunk = risk-3
+    // (destructive); ALL executor_kind=git, requires_resource_refs=yes (the file/hunk is the target),
+    // and discard's preview_class=diff (show the content lost). The 3 types resolve in the catalog.
+    use nexusops_shared::catalog::{lookup, ExecutorKind, PreviewClass};
+    for t in ["git.stage_hunk", "git.unstage_hunk"] {
+        let e = lookup(t).unwrap_or_else(|| panic!("{t} must be catalogued"));
+        assert_eq!(
+            e.locked_risk,
+            RiskLevel::Level2,
+            "{t} = risk-2 (git.* tier)"
+        );
+        assert_eq!(e.executor, ExecutorKind::Git, "{t} executor_kind=git");
+        assert!(e.requires_resource_refs, "{t} requires the file/hunk ref");
+    }
+    let discard = lookup("git.discard_hunk").expect("git.discard_hunk catalogued");
+    assert_eq!(
+        discard.locked_risk,
+        RiskLevel::Level3,
+        "git.discard_hunk = risk-3 (destructive, irreversible content loss)"
+    );
+    assert_eq!(discard.executor, ExecutorKind::Git);
+    assert!(discard.requires_resource_refs);
+    assert_eq!(
+        discard.preview_class,
+        PreviewClass::Diff,
+        "discard's preview shows EXACTLY the hunk content lost (USER-ruled)"
+    );
+}
+
+// ---- 052 #2 — git.discard_hunk is NON-standing-grantable (adversarial; the load-bearing pin) -----
+
+#[test]
+fn test_discard_hunk_non_standing_grantable() {
+    // spec(§6.2 / §11.5) — the USER-ruled safety floor: a destructive risk-3 action that is
+    // standing_grant_eligible=false is EXCLUDED from a plan-level approve-all (it gets its OWN per-step
+    // approval, ALWAYS), generalizing the risk-4 critical-exclusion (LESSON 19). A standing-grant-
+    // eligible git.* step (stage_hunk) IS covered by the plan-level approve-all. Mirrors
+    // test_approve_all_excludes_catalog_critical, but the exclusion keys off the new field, not risk-4.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = catalog_gateway();
+    let p = plan(
+        vec![
+            step(
+                "s1",
+                "git.stage_hunk",
+                RiskLevel::Level2,
+                serde_json::json!({}),
+            ),
+            step(
+                "s2",
+                "git.discard_hunk",
+                RiskLevel::Level3,
+                serde_json::json!({}),
+            ),
+        ],
+        ApprovalMode::ApproveAll,
+    );
+    let plan_id = p.plan_id.as_str().to_string();
+    gw.submit_action_plan(&mut store, p).expect("submit plan");
+
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let plan_level: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM approvals WHERE action_request_id IS NULL AND plan_id = ?1",
+            [&plan_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        plan_level, 1,
+        "ONE plan-level approve-all over the standing-grant-eligible step (stage_hunk)"
+    );
+    let per_step: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM approvals WHERE action_request_id IS NOT NULL AND plan_id = ?1",
+            [&plan_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        per_step, 1,
+        "git.discard_hunk gets its OWN per-step approval — NEVER folded into approve-all (USER-ruled)"
+    );
+}
+
+// ---- 052 #3 — the standing_grant_eligible catalog field (the floor's input) ----------------------
+
+#[test]
+fn test_standing_grant_eligible_field() {
+    // spec(§6.2/§6.3) — the catalog carries `standing_grant_eligible`: false for the destructive
+    // git.discard_hunk AND the risk-4 floor type workflow.command.invoke (reconciled to ONE mechanism,
+    // Step-2.5 #1 unified-field); true for the normal git.* tier + ordinary types. The policy
+    // approve-all floor reads this field (refuse standing-grant for risk-4 OR !standing_grant_eligible).
+    use nexusops_shared::catalog::lookup;
+    assert!(
+        !lookup("git.discard_hunk").unwrap().standing_grant_eligible,
+        "git.discard_hunk is NOT standing-grant-eligible (destructive)"
+    );
+    assert!(
+        !lookup("workflow.command.invoke")
+            .unwrap()
+            .standing_grant_eligible,
+        "workflow.command.invoke reconciles to the same field (one mechanism, not two)"
+    );
+    for t in ["git.stage_hunk", "git.unstage_hunk", "git.status"] {
+        assert!(
+            lookup(t).unwrap().standing_grant_eligible,
+            "{t} IS standing-grant-eligible (the normal tier)"
+        );
+    }
+}
+
+// ---- 052 #4 — git.discard_hunk preview_class=diff (the destructive-action preview) ---------------
+
+#[test]
+fn test_discard_hunk_preview_class_diff() {
+    // spec(§6.3) — discard's preview renders the hunk content (the diff) so the human sees EXACTLY what
+    // is irreversibly lost before approving (USER-ruled). stage/unstage = git (index ops), Step-2.5 #2.
+    use nexusops_shared::catalog::{lookup, PreviewClass};
+    assert_eq!(
+        lookup("git.discard_hunk").unwrap().preview_class,
+        PreviewClass::Diff
+    );
+}
+
+// ---- 052 ADD — the two non-standing-grant disjuncts can't DRIFT (orch-requested invariant) -------
+
+#[test]
+fn test_risk4_implies_non_standing_grantable() {
+    // spec(§6.2) — the approve-all exclusion keeps BOTH disjuncts (`risk==Level4 OR
+    // !standing_grant_eligible`, defense-in-depth). This invariant pins they can't drift: EVERY
+    // catalogued risk-4 (critical) entry MUST also be standing_grant_eligible=false, so a future risk-4
+    // addition that forgets the field is still excluded from approve-all (and the unification holds).
+    use nexusops_shared::catalog::{lookup, AGENT_MUTATION_ACTION_TYPES, MVP_ACTION_TYPES};
+    for t in MVP_ACTION_TYPES
+        .iter()
+        .chain(AGENT_MUTATION_ACTION_TYPES.iter())
+    {
+        let e = lookup(t).unwrap_or_else(|| panic!("{t} catalogued"));
+        if e.locked_risk == RiskLevel::Level4 {
+            assert!(
+                !e.standing_grant_eligible,
+                "risk-4 (critical) '{t}' MUST be non-standing-grantable (the disjuncts must not drift)"
+            );
+        }
+    }
 }

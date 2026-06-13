@@ -73,6 +73,12 @@ pub struct ActionTypeCatalogEntry {
     /// whether the action's params carry a typed schema (`false` = the §6.3/OQ-WP-5 null-schema
     /// floor — `workflow.command.invoke`)
     pub params_schema_present: bool,
+    /// whether a standing grant (plan-level approve-all) may cover this action (§6.2; P4.0b-ui1).
+    /// `false` = NON-standing-grantable: the §6.2 floor refuses to fold it into an approve-all — it
+    /// ALWAYS gets a per-action human approval (the destructive `git.discard_hunk` + the risk-4
+    /// `workflow.command.invoke` floor — unified to ONE mechanism). The approve-all exclusion keeps
+    /// BOTH disjuncts (`risk==Level4 OR !standing_grant_eligible`, defense-in-depth).
+    pub standing_grant_eligible: bool,
 }
 
 /// The LOCKED §6.3 MVP action-type set (22; AG §28.2). The closed lookup domain — a type not here
@@ -86,6 +92,8 @@ pub const MVP_ACTION_TYPES: &[&str] = &[
     "workflow.command.invoke",
     "plan.link_task",
     "session.create",
+    "session.kill",
+    "session.profile_change",
     "session.attach_terminal",
     "session.send_message",
     "session.pause",
@@ -94,6 +102,9 @@ pub const MVP_ACTION_TYPES: &[&str] = &[
     "git.diff",
     "git.create_worktree",
     "git.create_branch",
+    "git.stage_hunk",
+    "git.unstage_hunk",
+    "git.discard_hunk",
     "github.create_pr_draft",
     "github.create_pr",
     "linear.link_issue",
@@ -115,6 +126,15 @@ pub const AGENT_MUTATION_ACTION_TYPES: &[&str] = &[
     "agent.file_edit",
     "agent.file_read",
     "agent.mcp_tool",
+    // P4.0b-2 (the live drive loop, user-ruled d.2 split tool-policy): the catalog IS the explicit
+    // enumerated allowlist. `agent.todo_write` = the LONE benign-internal auto-allow (risk-0; provably
+    // no FS/git/external/exfil surface — the agent's own scratch TODO list). `agent.web_fetch` /
+    // `agent.web_search` = the network-EGRESS tools (risk-2 approval-gated — a data-exfil dimension,
+    // secrets-in-a-URL past the trust boundary; NOT benign). Everything unclassified stays fail-closed
+    // (the receiver denies an unmapped tool — `CoverageGap`/`UnmappedTool`). Additive (MVP-22 untouched).
+    "agent.todo_write",
+    "agent.web_fetch",
+    "agent.web_search",
 ];
 
 fn entry(
@@ -132,6 +152,33 @@ fn entry(
         executor,
         requires_resource_refs,
         params_schema_present,
+        // the default: most actions ARE standing-grant-eligible. The NON-eligible ones (the §6.2
+        // floor — destructive/critical) use [`entry_no_standing_grant`] (P4.0b-ui1).
+        standing_grant_eligible: true,
+    }
+}
+
+/// Like [`entry`] but NON-standing-grantable (§6.2 floor, P4.0b-ui1) — a standing grant / approve-all
+/// can never cover it; it ALWAYS gets a per-action human approval. For the destructive
+/// `git.discard_hunk` (irreversible content loss) + the risk-4 `workflow.command.invoke` floor.
+fn entry_no_standing_grant(
+    locked_risk: RiskLevel,
+    preview_class: PreviewClass,
+    idempotency_formula: IdempotencyFormula,
+    executor: ExecutorKind,
+    requires_resource_refs: bool,
+    params_schema_present: bool,
+) -> ActionTypeCatalogEntry {
+    ActionTypeCatalogEntry {
+        standing_grant_eligible: false,
+        ..entry(
+            locked_risk,
+            preview_class,
+            idempotency_formula,
+            executor,
+            requires_resource_refs,
+            params_schema_present,
+        )
     }
 }
 
@@ -153,6 +200,20 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
         "git.status" => entry(R::Level0, P::Git, I::None, X::Git, true, true),
         "git.diff" => entry(R::Level0, P::Diff, I::None, X::Git, true, true),
         "code.open_file" => entry(R::Level0, P::Command, I::None, X::Code, true, true),
+        // risk-0 — session-lifecycle (P4.0b-1 away-ruled): session.create/kill are MUTATIONS yet
+        // risk-0 (audited auto-allow). The relaxation is NARROW to the supervised session lifecycle
+        // (NOT a general "mutations may be risk-0") — the danger is downstream-gated by the live
+        // per-tool interception (4.0b-2); the policy enforces 5 pins (UI/IPC-only requester, the risk-0
+        // allowlist, SessionStarted-audited, profile-recorded-at-start, profile-CHANGE-approval-gated).
+        "session.create" => entry(R::Level0, P::Session, I::FromInputs, X::Session, true, true),
+        "session.kill" => entry(
+            R::Level0,
+            P::Session,
+            I::NaturalResourceRef,
+            X::Session,
+            true,
+            true,
+        ),
         // risk-1
         "session.attach_terminal" => entry(
             R::Level1,
@@ -171,7 +232,12 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
             true,
         ),
         // risk-2
-        "session.create" => entry(R::Level2, P::Session, I::FromInputs, X::Session, true, true),
+        // session.profile_change — the §15 #8 no-silent-account-hop APPROVAL gate (PIN c). The TYPE +
+        // the risk-2 gate land here (4.0b-1); the executor BODY (the actual profile swap) is a later
+        // slice — the SAFETY pin is the approval-gating, testable now.
+        "session.profile_change" => {
+            entry(R::Level2, P::Session, I::FromInputs, X::Session, true, true)
+        }
         "session.resume" => entry(
             R::Level2,
             P::Session,
@@ -204,6 +270,23 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
             entry(R::Level2, P::Git, I::NaturalResourceRef, X::Git, true, true)
         }
         "git.create_branch" => entry(R::Level2, P::Git, I::NaturalResourceRef, X::Git, true, true),
+        // P4.0b-ui1 (the ui-6.3e per-hunk surface; USER-ruled) — stage/unstage = risk-2 (the git.*
+        // tier, index ops → preview_class=git); the resource_ref targets the precise hunk
+        // (worktree+file+position) so NaturalResourceRef dedups per-hunk, not per-file (read↔mutate
+        // consistency). git executor BODY = stub via the R1-A registry seam (real git op = Phase 5).
+        "git.stage_hunk" => entry(R::Level2, P::Git, I::NaturalResourceRef, X::Git, true, true),
+        "git.unstage_hunk" => entry(R::Level2, P::Git, I::NaturalResourceRef, X::Git, true, true),
+        // git.discard_hunk = risk-3 + DESTRUCTIVE (irreversible content loss) → NON-standing-grantable
+        // (USER-ruled: always a per-action human approval, never folded into an approve-all) +
+        // preview_class=diff (the preview shows EXACTLY the hunk content discarded).
+        "git.discard_hunk" => entry_no_standing_grant(
+            R::Level3,
+            P::Diff,
+            I::NaturalResourceRef,
+            X::Git,
+            true,
+            true,
+        ),
         "github.create_pr_draft" => entry(
             R::Level2,
             P::Api,
@@ -228,8 +311,11 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
         }
         // risk-4 — CRITICAL: arbitrary pack-command execution, unbounded blast radius; the §6.3/
         // OQ-WP-5 "cannot be standing-granted" floor falls out of risk-4 (params_schema_present=false;
-        // lead-ruled 2026-06-11). Never approve-all-eligible; never auto-executes.
-        "workflow.command.invoke" => entry(
+        // lead-ruled 2026-06-11). Never approve-all-eligible; never auto-executes. P4.0b-ui1: also
+        // `standing_grant_eligible=false` (entry_no_standing_grant) — UNIFYING the floor onto ONE
+        // mechanism (the approve-all exclusion keeps both disjuncts; test_risk4_implies_non_standing_grantable
+        // pins they can't drift).
+        "workflow.command.invoke" => entry_no_standing_grant(
             R::Level4,
             P::Workflow,
             I::FromInputs,
@@ -251,6 +337,15 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
         "agent.bash" => entry(R::Level2, P::Command, I::None, X::Adjudication, false, true),
         "agent.file_edit" => entry(R::Level2, P::Diff, I::None, X::Adjudication, false, true),
         "agent.mcp_tool" => entry(R::Level2, P::Api, I::None, X::Adjudication, false, true),
+        // P4.0b-2 — the d.2 split tool-policy. `agent.todo_write` = the LONE benign-internal auto-allow
+        // (risk-0). NOT "read-only" — it WRITES the agent's own scratch TODO list — but that write has
+        // **no daemon-side side effect**: adjudication-only (no executor runs) + no FS/git/external/exfil
+        // surface, so the agent updating its own task list can't harm the trust boundary. `agent.web_fetch`/
+        // `agent.web_search` = network EGRESS → risk-2 require_approval (the exfil dimension; the L4 params
+        // deny-rules may raise, never lower).
+        "agent.todo_write" => entry(R::Level0, P::Command, I::None, X::Adjudication, false, true),
+        "agent.web_fetch" => entry(R::Level2, P::Api, I::None, X::Adjudication, false, true),
+        "agent.web_search" => entry(R::Level2, P::Api, I::None, X::Adjudication, false, true),
         _ => return None,
     })
 }

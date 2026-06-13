@@ -81,14 +81,37 @@ pub mod time;
 /// (audit-integrity: never silently dropped). Additive-tolerant: a human-deny (`Some`) still serializes
 /// the field identically; a policy-deny (`None`) OMITS it (`skip_serializing_if`), and a reader uses
 /// `#[serde(default)]` to read it back as `None`. Un-consumed by ui today. §5.0.
-pub const CONTRACT_VERSION: &str = "0.23.0";
-
-/// **ExecutionProfile's status machine (the 10th §5.1 machine) is intentionally
-/// HELD, not frozen, in 0.5.** Its runtime states (`rate_limited`/`auth_expired`,
-/// plus a possible SDK-credit-exhaustion value) are the one surface the cat-4
-/// SDK-vs-PTY decision and the ≥2026-06-15 credit-pool drain (guardrail 1) could
-/// reshape. Re-frozen in **0.5b** once cat-4 resolves. This marker makes the
-/// absence deliberate, not forgotten.
-pub const EXECUTION_PROFILE_STATUS_HELD: &str =
-    "ExecutionProfile status machine held for 0.5b pending cat-4 SDK-vs-PTY + \
-     the >=2026-06-15 credit-pool drain (guardrail 1)";
+/// 0.24.0 (P4.0b-1) freezes the **0.5b `ExecutionProfile`** runtime-state machine (the 10th §5.1
+/// machine — HELD in 0.5 pending the cat-4 SDK-vs-PTY decision, now resolved = PTY-primary): 9 values
+/// = the §5.1 8 + `credit_exhausted` (the SDK monthly credit-pool HARD-STOP, distinct from the soft
+/// `rate_limited` interactive throttle; `disabled` is the only terminal). + adds
+/// `SessionStarted.execution_profile_id` (`Option<ExecutionProfileId>`, the §15 #8 binding surface —
+/// the profile recorded at session.create). Additive, no frozen type reshaped (§5.0).
+/// 0.25.0 (P4.0b-1 L2) reclassifies the §6.3 catalog for the away-ruled risk-0 session-lifecycle:
+/// `session.create` risk-2→risk-0 + NEW `session.kill` (risk-0) + NEW `session.profile_change`
+/// (risk-2 — the §15 #8 no-silent-account-hop APPROVAL gate); `MVP_ACTION_TYPES` 22→24. The risk-0
+/// relaxation is NARROW (an explicit daemon-policy auto-execute allowlist + a UI/IPC-only requester
+/// guard). Catalog-data semantics; no frozen type reshaped (§5.0).
+/// 0.26.0 (P4.0b-R1b) freezes the edges-R1 **Phase-5/7 wiring EventTypeRegistry payloads** (§7.1) — the
+/// events edges' dormant executors emit (via `EmittedEvent`) + its projectors consume, in ONE batched
+/// additive bump (edges regenerates once): P5.1 `ProjectRescanned` (one coarse event; `remote_url`
+/// carries the §15 strip-userinfo-at-source contract); P5.2 `WorktreeCreated`/`BranchCreated` + the 4
+/// empty-payload overlay transitions (`WorktreeMerged`/`WorktreePrunable`/`WorktreeDeleted`/
+/// `WorktreeLocked`); P7.1 `PullRequestSynced` (reuses the §5.1 `PullRequest` enum) /
+/// `IntegrationConnectionRegistered` (`keychain_ref` = a §15 pointer, never the secret) /
+/// `GithubSyncFailed` + `LinearSyncFailed` (non-auth variant only; `reason` = a structural class-name) +
+/// the closed `Provider` enum (`github`|`linear`). `shared/`-only — NO daemon emission (edges' P5/P7
+/// executors emit later). Additive, no frozen type reshaped (§5.0).
+/// 0.27.0 (P4.0b-2 — the live drive loop, user-ruled d.2 split tool-policy) adds **3 new `agent.*`
+/// catalog types** to `AGENT_MUTATION_ACTION_TYPES`: `agent.todo_write` (risk-0 — the LONE benign-
+/// internal auto-allow; the catalog IS the explicit enumerated allowlist, call-3 PIN) +
+/// `agent.web_fetch`/`agent.web_search` (risk-2 require_approval — the network-EGRESS/exfil dimension).
+/// Machine-internal (minted by the hook-receiver), so `MVP_ACTION_TYPES` stays 22 (the 043 precedent).
+/// Additive — a new agent.* set + catalog entries; no frozen type reshaped (§5.0).
+/// 0.28.0 (P4.0b-ui1 — the ui-6.3e unlock) adds: **3 new `git.*` MVP catalog types** (`git.stage_hunk`/
+/// `git.unstage_hunk` risk-2; `git.discard_hunk` risk-3 + NON-standing-grantable, MVP 24→27) + the
+/// `standing_grant_eligible` field on `ActionTypeCatalogEntry` (the §6.2 non-standing-grant floor,
+/// unifying the risk-4 floor) + the §6.1 `get_diff` RPC types (`GetDiffParams`/`DiffResult`/`Hunk`/
+/// `DiffLine`/`DiffLineKind`) + `IpcErrorCode::NotFound` (§6.4 9→10, the read-RPC not-found). Additive;
+/// no frozen type reshaped (the catalog entry gains a field; existing entries default it true) (§5.0).
+pub const CONTRACT_VERSION: &str = "0.28.0";

@@ -7,3 +7,6 @@ claude-code-tdd-agent-crew-scaffold/
 
 # Transient watchdog lock (scheduled-tasks daemon).
 .claude/scheduled_tasks.lock
+
+# Python bytecode cache (the §5.0 contract-verify offline tests, P4.0b-T).
+__pycache__/

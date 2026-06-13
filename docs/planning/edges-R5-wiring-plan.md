@@ -102,3 +102,44 @@ Ordered lowest-risk-first; reads/risk-0 before mutators; the migration foundatio
    arms with the git mutators; or github+linear sync as one bundled brief). Lean: keep mutators atomic (security), bundle reads.
 2. **MIGRATION_9 collision** — claim it now on `track/edges` vs. coordinate next-free with the daemon track at the final merge.
 3. **`auth_expired` defer holds** — non-auth `*SyncFailed` only this round; the auth variant stays gated on §17/INV-SEC re-review.
+
+---
+
+## R5 round progress + accumulated hot-routing (apply at the phase-exit merge)
+
+> Edges does NOT edit the shared root docs (`IMPLEMENTATION_PLAN.md`/`ARCHITECTURE.md`/`daemon/CLAUDE.md`/
+> `daemon/LESSONS.md`) in-worktree mid-round (cross-track rule). Doc-deltas accumulate here + apply at the
+> phase-exit merge reconciliation. Lead rulings (R5 open): slice granularity = orch's call (atomic mutators,
+> bundle reads); `auth_expired` defer CONFIRMED; MIGRATION_9 = lead routing to user (Wave-A/B don't need it).
+
+**Slice ledger:**
+- **edges-019** P5.1 `project.rescan` executor — LANDED `c739278` (543/0, security CLEAR). Executor + emission
+  + §15 strip-at-source; read-model projector deferred (needs MIGRATION_9). Q1 ruled **B (generic
+  `EmittedEvent::Namespaced{event_type, payload_json}`)** — one gateway/ edit serves all ~11 edges events.
+- **edges-020** P5.2 `git.create_worktree` executor — DISPATCHED (task #5). First real edges FS mutation.
+
+**Slice-plan revision (orch, slice-sequencing authority):** the separate "git read executors" slice
+(Wave-A slice 2) is **DISSOLVED** — `git.status`/`git.diff` have NO consumer (reads served via
+`get_projection(Worktree)→proj_worktree` + the in-lane diff backend), and `ExecutorKind::Git` is ONE handler
+for all `git.*`, so `GitExecutor` (edges-020) handles `create_worktree` + delegates status/diff/create_branch
+to the inner stub. Net Wave-B/C/D unchanged; one fewer slice.
+
+**Accumulated PLAN-DELTA for the merge reconciliation:**
+- **LESSON 30** (next-free; daemon took ≤§29) — edges executors emit via the in-txn `EmittedEvent::Namespaced`
+  bridge through the §15 gate (SessionExecutor precedent); credential-bearing URL fields (`remote_url`)
+  stripped AT THE EMIT SOURCE — authority-scoped, **last-`@`-in-authority** delimiter, ALL scheme-URL userinfo
+  stripped (a token can ride the bare-username slot), scp-style intact; the Redactor is the backstop only.
+- **Arch-doc notes (edges-019):** (a) `ExecutorKind::Project` registered in production main.rs; (b)
+  `ProjectRescanned` has a live edges emitter; (c) the new daemon-internal `EmittedEvent::Namespaced{event_type,
+  payload_json}` generic bridge (object_ref dropped — `AppendIntent` has no generic slot; identity rides the
+  envelope `project_id`/`correlation_id`, LESSON §10/§17); `SessionStarted` stays typed.
+- **Carry-forward — §15-backstop/repo_root (origin edges-019):** the §15 entropy backstop masks high-entropy
+  `repo_root` path components in the persisted `ProjectRescanned` (defense-in-depth working). Implication for
+  the **registry-projector / MIGRATION_9 slice:** a high-entropy real repo path → masked repo_root → the
+  projector can't locate the repo from the event alone → re-derive identity from `project_id`, OR exempt
+  path-fields from entropy masking (arch consideration). NOT blocking emit+strip.
+- **Completed-work ticks (hold):** P5.1 = PARTIAL (executor + emission landed edges-019; registry projector
+  pending MIGRATION_9). P5.2 = in progress (edges-020 mutator; proj_worktree projector + create_branch pending).
+- **Cross-track surfaces (lead-aware):** edges touches `gateway/executor.rs` + `gateway/request.rs` (the
+  `EmittedEvent::Namespaced` bridge — 1 variant + 1 arm, additive, resolved at minimal surface) + will claim
+  MIGRATION_9 (Wave-C). Both flagged to the lead alongside the daemon track's concurrent gateway/ + migration edits.

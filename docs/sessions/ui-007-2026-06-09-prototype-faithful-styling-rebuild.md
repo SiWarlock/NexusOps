@@ -4,7 +4,7 @@
 - **Phase:** post-Phase-6 presentation rebuild (solo working session per handoff 001 — the team is paused; this is the user-directed rebuild after the 6.5 "Graphite Arc" token-pass was REJECTED as not matching the prototype)
 - **Track:** `track/ui`
 - **Predecessor:** [ui-006 — daemon-independent polish round](ui-006-2026-06-08-daemon-independent-polish-round.md)
-- **Successor:** _(none yet)_
+- **Successor:** [ui-008](ui-008-2026-06-13-intent-seam-foundation-and-gatewaymodal.md)
 - **Round commits:** `8f52a71` · `9d943e3` · `e6b198f` · `856d1d3` · `c566f6a` · `15b0fc4` (+ this doc)
 - **Tests:** 193 → **214 green**; tsc + oxlint + prettier clean throughout.
 

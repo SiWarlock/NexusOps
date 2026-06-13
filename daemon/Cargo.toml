@@ -42,6 +42,12 @@ base64 = "0.22"
 # resize, waitpid exit). PTY is DISPLAY-ONLY (#9) — never scraped for status. The blocking reader runs
 # on a spawn_blocking thread in the production drive loop (the write-actor-thread precedent, LESSON §9).
 portable-pty = "0.9"
+# git2 (libgit2) for the §6.1 get_diff READ-ONLY live diff (P4.0b-ui1; the §7.2 worktree-live-read
+# precedent + the §9 git2≥1.9.4/0.21 read-path vetted at OQ-INT-SPIKE-6). READ-ONLY here — git
+# MUTATIONS go through the git CLI as Gateway actions (forbidden #6), never git2. The daemon's FIRST
+# git2 use; dep beyond the brief's named list (orch-approved) — flag at Step-9; `cargo audit` runs at
+# /phase-exit 4. (Declared §tech-stack dep, pulled in now.)
+git2 = "0.21"
 # (the `nexusopsd` bin is auto-discovered from src/main.rs — no explicit [[bin]] needed.)
 
 [features]
@@ -77,6 +83,9 @@ rusqlite = { version = "0.34", features = ["bundled"] }
 # (#[tokio::test]) + a real ephemeral UnixListener client. `test-util` (P4.0b-2) = `start_paused` /
 # `tokio::time::pause` for the deterministic 5-min decision-wait timeout test (no real-time sleep).
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util", "test-util"] }
+# git2 in the get_diff integration test (daemon/tests/get_diff.rs) — builds the fixture repo
+# (Repository::init + commit + modify) the read-only read_diff is tested against (P4.0b-ui1).
+git2 = "0.21"
 
 # P2.5 — the §18 event-write/reader perf benchmark. `harness = false`: a plain `fn main()` (NOT the
 # libtest harness), so it is INVISIBLE to `cargo test --workspace` (the per-slice RED/GREEN loop) and

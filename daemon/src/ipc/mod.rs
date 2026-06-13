@@ -23,6 +23,9 @@ mod server;
 mod subscribe;
 mod transport;
 
+// P4.0b-ui1 — the §6.1 get_diff read core (resolve worktree_id→path + git2 read-only); pub for the
+// integration test + a future direct caller. The RPC dispatch routes "get_diff" to it.
+pub use methods::read_worktree_diff;
 pub use peer::{authorize_peer, current_euid, peer_uid};
 pub use server::serve_connection;
 pub use subscribe::push_subscription;

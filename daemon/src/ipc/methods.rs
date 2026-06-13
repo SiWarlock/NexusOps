@@ -17,8 +17,8 @@ use nexusops_shared::actions::{
 };
 use nexusops_shared::ids::{ActionRequestId, ProjectId};
 use nexusops_shared::ipc::{
-    Capabilities, GetProjectionParams, IpcErrorCode, ProjectionName, RpcRequest, RpcResponse,
-    SubscribeParams, WireError,
+    Capabilities, DiffResult, GetDiffParams, GetProjectionParams, IpcErrorCode, ProjectionName,
+    RpcRequest, RpcResponse, SubscribeParams, WireError,
 };
 use nexusops_shared::status::ActionRequest as ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
@@ -67,6 +67,9 @@ pub(crate) fn dispatch(
     let outcome: Result<serde_json::Value, IpcErrorCode> = match req.method.as_str() {
         "get_capabilities" => Ok(capabilities_value()),
         "get_projection" => get_projection(&req.params, db_path)?,
+        // P4.0b-ui1 — the §6.1 hunk-structured diff READ (the ui-6.3e source). Resolves
+        // worktree_id→proj_worktree.path (read-only WAL) then reads git2 LIVE read-only; NO mutation.
+        "get_diff" => get_diff(&req.params, db_path)?,
         "subscribe" => subscribe_ack(&req.params),
         // §6.1 mutation methods (2.1b) — run the Gateway pipeline on the write-actor (the sole
         // mutator, forbidden #2/#3). A `GatewayError` → a structured `IpcErrorCode` response; the
@@ -435,6 +438,59 @@ fn get_projection(
         crate::eventstore::open_read_only(db_path).map_err(|e| IpcError::Read(e.to_string()))?;
     let rows = read_table_as_json(&conn, table)?;
     Ok(Ok(rows))
+}
+
+/// `get_diff` (§6.1; P4.0b-ui1) — the hunk-structured diff read for the ui-6.3e per-hunk review.
+/// Bad/malformed params → `protocol_error`; an unresolved worktree_id → `not_found`; success → the
+/// serialized [`DiffResult`]. Pure read (no write-actor, no mutation).
+fn get_diff(
+    params: &serde_json::Value,
+    db_path: &Path,
+) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
+    let params: GetDiffParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(_) => return Ok(Err(IpcErrorCode::ProtocolError)),
+    };
+    match read_worktree_diff(db_path, &params.worktree_id, &params.file) {
+        Ok(diff) => Ok(Ok(
+            serde_json::to_value(diff).unwrap_or(serde_json::Value::Null)
+        )),
+        Err(code) => Ok(Err(code)),
+    }
+}
+
+/// Resolve `worktree_id → proj_worktree.path` over a READ-ONLY WAL conn, then read `file`'s
+/// HEAD→workdir diff LIVE via git2 (read-only). The testable core of [`get_diff`]. **No mutation, no
+/// write-actor** (the §7.2 worktree-live-read precedent / Forbidden #3). An unpopulated worktree_id
+/// (`proj_worktree` fills at P5.2/edges) OR a path that isn't a readable git repo → [`IpcErrorCode::NotFound`].
+pub fn read_worktree_diff(
+    db_path: &Path,
+    worktree_id: &str,
+    file: &str,
+) -> Result<DiffResult, IpcErrorCode> {
+    use rusqlite::OptionalExtension as _;
+    // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
+    let conn =
+        crate::eventstore::open_read_only(db_path).map_err(|_| IpcErrorCode::InternalError)?;
+    let path: Option<String> = conn
+        .query_row(
+            "SELECT path FROM proj_worktree WHERE worktree_id = ?1",
+            [worktree_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|_| IpcErrorCode::InternalError)?;
+    // an unpopulated worktree_id (proj_worktree empty until P5) → typed NotFound (NOT precondition_stale
+    // — that's the re-approvable mutation card; this is a read not-found).
+    let Some(path) = path else {
+        return Err(IpcErrorCode::NotFound);
+    };
+    crate::git::read_diff(Path::new(&path), file).map_err(|e| match e {
+        // the worktree path isn't a readable git repo (e.g. moved/not-yet-created) → NotFound.
+        crate::git::GitReadError::Open { .. } => IpcErrorCode::NotFound,
+        // a genuine diff-read fault → internal.
+        crate::git::GitReadError::Diff(_) => IpcErrorCode::InternalError,
+    })
 }
 
 /// `SELECT *` a projection table → a JSON array (one object per row). `table` is the compile-time

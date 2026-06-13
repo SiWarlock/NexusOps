@@ -31,10 +31,11 @@ use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::harness::{HarnessCapabilities, MetricQuality, TelemetrySample, TranscriptRef};
 use crate::ids::IdKind;
 use crate::ipc::{
-    ActionAck, Capabilities, DeltaKind, GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode,
-    PlanAck, PlanStepAck, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest,
-    RpcResponse, ServerFrame, SubscribeParams, TerminalControlFrame, TerminalControlKind,
-    TerminalInputFrame, TerminalOutputFrame, VersionSkewError, WireError,
+    ActionAck, Capabilities, DeltaKind, DiffLine, DiffLineKind, DiffResult, GetDiffParams,
+    GetProjectionParams, HelloAck, HelloFrame, Hunk, IpcErrorCode, PlanAck, PlanStepAck,
+    ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, RpcResponse, ServerFrame,
+    SubscribeParams, TerminalControlFrame, TerminalControlKind, TerminalInputFrame,
+    TerminalOutputFrame, VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
 use crate::status::{
@@ -94,6 +95,13 @@ struct ContractBundle {
     rpc_response: RpcResponse,
     get_projection_params: GetProjectionParams,
     projection_scope: ProjectionScope,
+    // P4.0b-ui1 — the §6.1 get_diff RPC wire types (the ui-6.3e diff source). DiffResult transitively
+    // pulls Hunk/DiffLine/DiffLineKind into $defs; listed explicitly for a stable named snapshot.
+    get_diff_params: GetDiffParams,
+    diff_result: DiffResult,
+    hunk: Hunk,
+    diff_line: DiffLine,
+    diff_line_kind: DiffLineKind,
     // 1.5 L4 — frame-type multiplexing envelope + subscribe streaming (§6.4/§6.1)
     server_frame: ServerFrame,
     projection_delta: ProjectionDelta,

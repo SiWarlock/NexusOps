@@ -520,6 +520,7 @@ fn test_ipc_contract_wire_values() {
             "fencing_conflict",
             "protocol_error",
             "internal_error",
+            "not_found",
         ],
     );
     // §6.1 projection names — PascalCase (match the ui's pinned get_projection literals + the
@@ -771,6 +772,76 @@ fn test_plan_ack_field_names_snapshot() {
     assert!(
         serde_json::from_value::<nexusops_shared::ipc::PlanAck>(rogue).is_err(),
         "unknown field rejected"
+    );
+}
+
+// ---- P4.0b-ui1 (brief 052) — the §6.1 get_diff RPC wire types (§2.5-seam snapshot) ---------------
+
+fn sample_diff_result() -> nexusops_shared::ipc::DiffResult {
+    use nexusops_shared::ipc::{DiffLine, DiffLineKind, DiffResult, Hunk};
+    DiffResult {
+        hunks: vec![Hunk {
+            header: "@@ -1,3 +1,3 @@".to_string(),
+            old_start: 1,
+            old_lines: 3,
+            new_start: 1,
+            new_lines: 3,
+            lines: vec![
+                DiffLine {
+                    kind: DiffLineKind::Context,
+                    content: "alpha\n".to_string(),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Removed,
+                    content: "beta\n".to_string(),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Added,
+                    content: "BETA\n".to_string(),
+                },
+            ],
+        }],
+    }
+}
+
+#[test]
+fn test_hunk_types_snapshot() {
+    // spec(§6.1) — §2.5-seam GatewayPort freeze guard for the ui-6.3e diff source: a field
+    // added/removed/renamed on GetDiffParams / DiffResult / Hunk / DiffLine fails this snapshot. The
+    // position fields (old_start/new_start) ARE the hunk-identity the ui packs into the resource_ref id
+    // (read↔mutate consistency, §17). The expected sets ARE the checked-in 0.28.0 freeze.
+    use nexusops_shared::ipc::{DiffLineKind, GetDiffParams};
+    expect_fields(
+        &GetDiffParams {
+            worktree_id: "wt_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+            file: "src/x.rs".to_string(),
+        },
+        &["worktree_id", "file"],
+    );
+    let d = sample_diff_result();
+    expect_fields(&d, &["hunks"]);
+    expect_fields(
+        &d.hunks[0],
+        &[
+            "header",
+            "old_start",
+            "old_lines",
+            "new_start",
+            "new_lines",
+            "lines",
+        ],
+    );
+    expect_fields(&d.hunks[0].lines[0], &["kind", "content"]);
+    // DiffLineKind = the closed 3-value wire enum (snake_case, reject-unknown).
+    assert_eq!(
+        serde_json::to_value(DiffLineKind::Removed).unwrap(),
+        serde_json::json!("removed")
+    );
+    // reject-unknown end-to-end (§5.0/§15 fail-closed).
+    let rogue = serde_json::json!({ "worktree_id": "wt_x", "file": "a", "extra": true });
+    assert!(
+        serde_json::from_value::<GetDiffParams>(rogue).is_err(),
+        "unknown field rejected on GetDiffParams"
     );
 }
 
@@ -1428,8 +1499,8 @@ fn test_action_type_catalog_covers_mvp_set() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        24,
-        "the §6.3 MVP set is 24 types (22 + session.kill + session.profile_change, P4.0b-1)"
+        27,
+        "the §6.3 MVP set is 27 types (24 + git.stage_hunk/unstage_hunk/discard_hunk, P4.0b-ui1)"
     );
     for at in MVP_ACTION_TYPES {
         let e = lookup(at).unwrap_or_else(|| panic!("catalog missing the MVP type {at}"));
@@ -1527,6 +1598,7 @@ fn test_catalog_and_policy_decision_field_snapshot() {
             "executor",
             "requires_resource_refs",
             "params_schema_present",
+            "standing_grant_eligible",
         ],
     );
     expect_fields(
@@ -1686,8 +1758,8 @@ fn test_agent_mutation_family_snapshot_spec_6_3() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        24,
-        "the human-facing §6.3 MVP set is 24 — the agent family stays a separate machine-internal const"
+        27,
+        "the human-facing §6.3 MVP set is 27 — the agent family stays a separate machine-internal const"
     );
     assert_eq!(
         AGENT_MUTATION_ACTION_TYPES.len(),
@@ -2332,7 +2404,7 @@ fn test_contract_version_bumped_0_27_0() {
     // the edges-R1 Phase-5/7 wiring event-type freeze; **0.27.0** = the P4.0b-2 split tool-policy — 3
     // new `agent.*` catalog types (`agent.todo_write` risk-0 benign auto-allow + `agent.web_fetch`/
     // `agent.web_search` risk-2 egress). Machine-internal (MVP-22 untouched); additive (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.27.0");
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.28.0");
 }
 
 // =================================================================================================

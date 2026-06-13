@@ -543,6 +543,10 @@
         "requires_resource_refs": {
           "description": "whether the action requires ≥1 `resource_ref`",
           "type": "boolean"
+        },
+        "standing_grant_eligible": {
+          "description": "whether a standing grant (plan-level approve-all) may cover this action (§6.2; P4.0b-ui1).\n`false` = NON-standing-grantable: the §6.2 floor refuses to fold it into an approve-all — it\nALWAYS gets a per-action human approval (the destructive `git.discard_hunk` + the risk-4\n`workflow.command.invoke` floor — unified to ONE mechanism). The approve-all exclusion keeps\nBOTH disjuncts (`risk==Level4 OR !standing_grant_eligible`, defense-in-depth).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -551,7 +555,8 @@
         "idempotency_formula",
         "executor",
         "requires_resource_refs",
-        "params_schema_present"
+        "params_schema_present",
+        "standing_grant_eligible"
       ],
       "type": "object"
     },
@@ -801,6 +806,48 @@
       },
       "required": [
         "device_id"
+      ],
+      "type": "object"
+    },
+    "DiffLine": {
+      "additionalProperties": false,
+      "description": "One line within a [`Hunk`] (§6.1): its kind + verbatim content (the trailing newline retained).",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/DiffLineKind"
+        }
+      },
+      "required": [
+        "kind",
+        "content"
+      ],
+      "type": "object"
+    },
+    "DiffLineKind": {
+      "description": "The kind of a [`DiffLine`] (§6.1) — closed, snake_case wire, reject-unknown.",
+      "enum": [
+        "context",
+        "added",
+        "removed"
+      ],
+      "type": "string"
+    },
+    "DiffResult": {
+      "additionalProperties": false,
+      "description": "`get_diff` result (§6.1) — the file's structured diff (HEAD→workdir), reject-unknown.",
+      "properties": {
+        "hunks": {
+          "items": {
+            "$ref": "#/$defs/Hunk"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "hunks"
       ],
       "type": "object"
     },
@@ -1064,6 +1111,23 @@
       ],
       "type": "string"
     },
+    "GetDiffParams": {
+      "additionalProperties": false,
+      "description": "`get_diff` params (§6.1; P4.0b-ui1) — the hunk-structured diff-read for the ui's 6.3e per-hunk\nreview. Keyed off the **stable `wt_` worktree id** (NOT a mutable path — a worktree can move; the\nid is the frozen-ID-system handle the git.* actions ALSO target, so read-by-id ↔ mutate-by-id are\nconsistent). The daemon resolves `worktree_id → proj_worktree.path` (read-only WAL) then reads git2.",
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "worktree_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "worktree_id",
+        "file"
+      ],
+      "type": "object"
+    },
     "GetProjectionParams": {
       "additionalProperties": false,
       "description": "`get_projection` params (§6.1). `page` (pagination) is provisional and omitted for MVP.\n\n**MVP NOTE:** `scope` is **accepted but NOT YET enforced** — the daemon returns the full\nprojection table regardless of `scope.project_id` (the local same-uid peer has no tenancy\nboundary in MVP). Do not build client filtering that assumes the daemon honors `scope`;\nscope filtering (and the `ProjectId` newtype on the field) land when multi-project scoping does.",
@@ -1205,6 +1269,51 @@
       ],
       "type": "object"
     },
+    "Hunk": {
+      "additionalProperties": false,
+      "description": "One unified-diff hunk (§6.1). The `old_start`/`new_start` POSITION fields are the hunk-identity the\nui packs into the git.* action's resource_ref id (so stage/discard target THIS precise hunk + the\n`NaturalResourceRef` idempotency key is hunk-precise — read↔mutate consistency, §17). The \"\\ No\nnewline at eof\" marker is deferred (additive-later).",
+      "properties": {
+        "header": {
+          "description": "the `@@ -old_start,old_lines +new_start,new_lines @@` header line.",
+          "type": "string"
+        },
+        "lines": {
+          "items": {
+            "$ref": "#/$defs/DiffLine"
+          },
+          "type": "array"
+        },
+        "new_lines": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "new_start": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "old_lines": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "old_start": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "header",
+        "old_start",
+        "old_lines",
+        "new_start",
+        "new_lines",
+        "lines"
+      ],
+      "type": "object"
+    },
     "IdKind": {
       "description": "The 22 shared ID kinds (§5.2). Serialized snake_case (== the ID field name).",
       "enum": [
@@ -1281,7 +1390,8 @@
         "precondition_stale",
         "fencing_conflict",
         "protocol_error",
-        "internal_error"
+        "internal_error",
+        "not_found"
       ],
       "type": "string"
     },
@@ -2507,6 +2617,15 @@
     "device_registered": {
       "$ref": "#/$defs/DeviceRegistered"
     },
+    "diff_line": {
+      "$ref": "#/$defs/DiffLine"
+    },
+    "diff_line_kind": {
+      "$ref": "#/$defs/DiffLineKind"
+    },
+    "diff_result": {
+      "$ref": "#/$defs/DiffResult"
+    },
     "event_envelope": {
       "$ref": "#/$defs/EventEnvelope"
     },
@@ -2528,6 +2647,9 @@
     "gateway_object_kind": {
       "$ref": "#/$defs/GatewayObjectKind"
     },
+    "get_diff_params": {
+      "$ref": "#/$defs/GetDiffParams"
+    },
     "get_projection_params": {
       "$ref": "#/$defs/GetProjectionParams"
     },
@@ -2542,6 +2664,9 @@
     },
     "hello_frame": {
       "$ref": "#/$defs/HelloFrame"
+    },
+    "hunk": {
+      "$ref": "#/$defs/Hunk"
     },
     "id_kind": {
       "$ref": "#/$defs/IdKind"
@@ -2756,6 +2881,11 @@
     "rpc_response",
     "get_projection_params",
     "projection_scope",
+    "get_diff_params",
+    "diff_result",
+    "hunk",
+    "diff_line",
+    "diff_line_kind",
     "server_frame",
     "projection_delta",
     "delta_kind",
@@ -2828,5 +2958,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.27.0"
+  "x-contract-version": "0.28.0"
 }

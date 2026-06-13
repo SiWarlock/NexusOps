@@ -108,4 +108,10 @@ pub mod time;
 /// `agent.web_fetch`/`agent.web_search` (risk-2 require_approval — the network-EGRESS/exfil dimension).
 /// Machine-internal (minted by the hook-receiver), so `MVP_ACTION_TYPES` stays 22 (the 043 precedent).
 /// Additive — a new agent.* set + catalog entries; no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.27.0";
+/// 0.28.0 (P4.0b-ui1 — the ui-6.3e unlock) adds: **3 new `git.*` MVP catalog types** (`git.stage_hunk`/
+/// `git.unstage_hunk` risk-2; `git.discard_hunk` risk-3 + NON-standing-grantable, MVP 24→27) + the
+/// `standing_grant_eligible` field on `ActionTypeCatalogEntry` (the §6.2 non-standing-grant floor,
+/// unifying the risk-4 floor) + the §6.1 `get_diff` RPC types (`GetDiffParams`/`DiffResult`/`Hunk`/
+/// `DiffLine`/`DiffLineKind`) + `IpcErrorCode::NotFound` (§6.4 9→10, the read-RPC not-found). Additive;
+/// no frozen type reshaped (the catalog entry gains a field; existing entries default it true) (§5.0).
+pub const CONTRACT_VERSION: &str = "0.28.0";

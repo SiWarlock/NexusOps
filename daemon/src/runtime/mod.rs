@@ -14,10 +14,14 @@
 
 mod drainer;
 mod listener;
+mod telemetry_sink;
 mod wait_class;
 mod writer;
 
 pub use drainer::{spawn_drainer, spawn_reaper};
 pub use listener::{bind, spawn_accept_loop};
+pub use telemetry_sink::{
+    TelemetryHandleSlot, WriteActorTelemetrySink, WriteActorTelemetrySinkFactory,
+};
 pub use wait_class::{InterceptWaitClass, MAX_CONNECTIONS, RESERVED_GENERAL};
 pub use writer::{RuntimeError, WriteActor, WriteHandle, BROADCAST_CAPACITY};

@@ -27,7 +27,8 @@ use nexusopsd::idgen::UlidGen;
 use nexusopsd::integrity::{FileIntegrityAlarm, IntegrityAlarm};
 use nexusopsd::ipc::current_euid;
 use nexusopsd::runtime::{
-    bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor, MAX_CONNECTIONS,
+    bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor,
+    WriteActorTelemetrySinkFactory, MAX_CONNECTIONS,
 };
 use nexusopsd::session::{spawn_supervisor_task, PtyLauncher};
 use nexusopsd::terminal::PortablePtySpawner;
@@ -121,7 +122,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // hook_receiver = `<this binary> hook` — the PreToolUse interception ingress.
     let project_cwd = std::env::current_dir()?;
     let hook_receiver = format!("{} hook", std::env::current_exe()?.display());
-    let launcher = PtyLauncher::new(Box::new(PortablePtySpawner), project_cwd, hook_receiver);
+    // P4.0c — the production telemetry sink factory (the live drive caller of the 044 emit path). Built
+    // DEFERRED: the launcher (holding the factory) is consumed into the SessionExecutor → Gateway →
+    // write-actor BELOW, BEFORE the `WriteHandle` exists — so the factory shares a cell the
+    // `telemetry_slot` binds the handle into once the actor is up (well before any session.create →
+    // make_sink). The launcher holds the factory as an opaque `Box<dyn TelemetrySinkFactory>` →
+    // `session/` never imports `WriteHandle` (cat-1). The per-session sink appends `TelemetrySampled`
+    // OBSERVATION events via the write-actor; the pump's live `UsageSource` ingress is the P4 follow-on.
+    let (telemetry_factory, telemetry_slot) =
+        WriteActorTelemetrySinkFactory::deferred(Arc::new(SystemClock));
+    let launcher = PtyLauncher::new(Box::new(PortablePtySpawner), project_cwd, hook_receiver)
+        .with_telemetry_sink_factory(Box::new(telemetry_factory));
 
     // the session.create/kill executor (the live launcher + the supervisor), REGISTERED under
     // `ExecutorKind::Session` in the production CatalogExecutor — this is the reachable session.create
@@ -157,6 +168,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         audit_breaker,
     );
     let handle = actor.handle();
+    // P4.0c — bind the write-actor handle into the telemetry factory's deferred slot NOW (the actor is
+    // up; this is before the accept-loop below serves any session.create → make_sink). The per-session
+    // sinks the launcher mints now reach the live write-actor.
+    telemetry_slot.bind(handle.clone());
     // the post-commit broadcast sender for the accept-loop's per-connection live subscribers (1.6d).
     let deltas = handle.delta_sender();
 

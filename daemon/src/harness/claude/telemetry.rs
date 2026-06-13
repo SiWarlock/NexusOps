@@ -17,6 +17,7 @@ use serde::Deserialize;
 
 use nexusops_shared::events::TelemetrySampled;
 use nexusops_shared::harness::{MetricQuality, TelemetrySample};
+use nexusops_shared::ids::{ProjectId, SessionId};
 
 /// A single CUMULATIVE usage reading from Claude's structured source (the transcript `ResultMessage`
 /// `usage`/`total_cost_usd` + the statusLine input). A SNAPSHOT — [`push_usage`](super::ClaudeAdapter::push_usage)
@@ -77,6 +78,36 @@ pub fn telemetry_sample(prev: Option<&UsageReading>, reading: &UsageReading) -> 
 /// add a `+ Sync` bound here — `Send` alone suffices for the single-owner cadence 044 + P4 target.
 pub trait TelemetryEventSink: Send {
     fn emit_telemetry(&self, event: TelemetrySampled);
+}
+
+/// The per-tick cumulative-usage SOURCE the telemetry pump drains (4.0c). The session-actor's
+/// telemetry tick calls [`poll_usage`](Self::poll_usage); each `Some` cumulative reading is deltaed +
+/// emitted via the bound sink ([`ClaudeAdapter::poll_telemetry`](super::ClaudeAdapter)). The
+/// PRODUCTION source is the **P4** live hook-receiver/statusLine ingestion feed (the deferred ingress
+/// seam — 4.0c binds the sink + the pump-tick + this trait, but the live transcript/statusLine I/O
+/// that FEEDS it lands at P4, the "build the mechanism, wire the ingress later" pattern); tests drive
+/// a scripted source. `Send` — owned by the one drive-loop thread (the [`TelemetryEventSink`] precedent).
+pub trait UsageSource: Send {
+    /// The next cumulative reading available this tick, or `None` if none (no reading yet / unchanged).
+    /// A `None` is a no-op tick — never a fabricated reading (§11.4). The cumulative delta inherently
+    /// coalesces a faster-than-tick source (the next poll's delta covers the gap).
+    fn poll_usage(&mut self) -> Option<UsageReading>;
+}
+
+/// Builds a per-session [`TelemetryEventSink`] (4.0c). The PRODUCTION impl (`runtime::WriteActorTelemetrySinkFactory`)
+/// closes over the write-actor `WriteHandle` + the daemon `Clock`; the launcher (in `session/`, the
+/// cat-1 boundary) holds this as an OPAQUE `Box<dyn>` and never imports `WriteHandle` — so emission is
+/// injected from OUTSIDE `session/` (the §15 redaction gate + the write-actor append run in the
+/// production impl, NOT a bypass — LESSON §23). `Send + Sync` — shared across the launcher's
+/// `launch_session` calls (one sink minted per launched session).
+pub trait TelemetrySinkFactory: Send + Sync {
+    /// Mint the telemetry sink for one launched session (its `TelemetrySampled` events carry this
+    /// session/project identity on the envelope; the `proj_usage_ledger` buckets by them).
+    fn make_sink(
+        &self,
+        session_id: &SessionId,
+        project_id: Option<&ProjectId>,
+    ) -> Box<dyn TelemetryEventSink>;
 }
 
 // ---- the parser: external Claude usage JSON → a typed UsageReading (defensive, fail-closed) -------

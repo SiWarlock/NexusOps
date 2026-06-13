@@ -154,6 +154,24 @@ impl WriteHandle {
             .map_err(RuntimeError::from)
     }
 
+    /// Append a non-mutation OBSERVATION event (telemetry/lifecycle the daemon WITNESSES) through the
+    /// single writer, **fire-and-forget** (4.0c). The SAME write-actor append path as [`append`](Self::append)
+    /// — so the §15 redaction gate + the in-band projections run identically (NOT a redaction bypass;
+    /// the `TelemetrySampled`/`DeviceRegistered` observation precedent, LESSON §23) — but `try_send` +
+    /// drop-on-full instead of awaiting the reply: an observation must NEVER back-pressure the writer
+    /// (forbidden #3 / LESSON §9) and is non-safety (LESSON §30 — a dropped sample is a stale meter,
+    /// never a safety fault). Returns `true` if enqueued, `false` if dropped (channel full / actor
+    /// gone); the reply [`EventId`] is discarded (the caller doesn't await it).
+    pub fn try_append_observation(&self, intent: AppendIntent) -> bool {
+        let (reply, _rx) = oneshot::channel();
+        self.tx
+            .try_send(Command::Append {
+                intent: Box::new(intent),
+                reply,
+            })
+            .is_ok()
+    }
+
     /// Drain one outbox pass for `dest` through the single writer (the drainer loop's call).
     pub async fn drain_once(
         &self,

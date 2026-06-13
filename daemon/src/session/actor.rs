@@ -30,6 +30,12 @@ use crate::terminal::TerminalSession;
 /// with push-based hook/transcript-stream ingestion feeding the adapter.
 const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
+/// The telemetry pump cadence (4.0c) — the statusLine `refreshInterval` (§9.1/§11.4). Each tick calls
+/// `adapter.poll_telemetry()` (drain the live usage source → emit a `TelemetrySampled` DELTA via the
+/// injected sink). `MissedTickBehavior::Delay` so a slow tick never bursts a backlog (LESSON §9). The
+/// pump emits nothing until the live `UsageSource` is wired (P4); the sink-bind + cadence are 4.0c.
+const TELEMETRY_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+
 /// The per-actor command mailbox depth (control messages: small + bursty).
 const COMMAND_MAILBOX_CAPACITY: usize = 16;
 
@@ -80,7 +86,7 @@ async fn run(
 
     // launch is blocking (the real launch forks a process); move the boxed adapter through
     // spawn_blocking and back (`Box<dyn HarnessAdapter>` is `Send`).
-    let (adapter, launched) = tokio::task::spawn_blocking(move || {
+    let (mut adapter, launched) = tokio::task::spawn_blocking(move || {
         let mut adapter = adapter;
         let launched = adapter.launch();
         (adapter, launched)
@@ -119,6 +125,11 @@ async fn run(
     // actor on shutdown, so a SUPERVISED actor never orphans. (A direct caller that drops all senders
     // without a Kill on a non-terminating adapter would leave the actor polling — a documented misuse.)
     let mut ticker = tokio::time::interval(STATUS_POLL_INTERVAL);
+    // the 4.0c telemetry pump tick (statusLine refresh cadence). `MissedTickBehavior::Delay` so a
+    // backlog never bursts (LESSON §9); it rides the same `select!` as the status poll + the mailbox,
+    // so it NEVER blocks the command mailbox (poll_telemetry is a cheap drain + a fire-and-forget emit).
+    let mut telemetry_tick = tokio::time::interval(TELEMETRY_REFRESH_INTERVAL);
+    telemetry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut mailbox_open = true;
     loop {
         tokio::select! {
@@ -142,6 +153,13 @@ async fn run(
                         break;
                     }
                 }
+            }
+            _ = telemetry_tick.tick() => {
+                // 4.0c — the telemetry pump: drain the live usage source → emit a TelemetrySampled
+                // DELTA via the adapter's injected sink (a non-mutation OBSERVATION; the cat-1
+                // boundary holds — the sink is opaque, this actor never imports `WriteHandle`). A
+                // no-op until the live `UsageSource` is wired (P4). Cheap + non-blocking (inline).
+                adapter.poll_telemetry();
             }
         }
     }

@@ -197,6 +197,13 @@ pub trait HarnessAdapter: Send {
     fn telemetry_heartbeat(&self) -> Option<TelemetrySample>;
     /// Resume an existing session (resume-or-replay; §8/§17).
     fn resume(&self) -> ResumeResult;
+    /// (4.0c) Drive one telemetry pump tick: drain the latest cumulative usage reading from the
+    /// adapter's live source + emit its per-heartbeat DELTA via the bound telemetry sink. The
+    /// session-actor's telemetry tick calls this at the statusLine refresh cadence. **Default no-op** —
+    /// only an adapter wired with a `UsageSource` + a `TelemetryEventSink` (the `ClaudeAdapter`) does
+    /// work; `FakeHarness`/Codex inherit the no-op. A non-mutation OBSERVATION path (LESSON §23) —
+    /// never the Gateway, and never the DB from `session/` (the sink is opaque, injected from `runtime/`).
+    fn poll_telemetry(&mut self) {}
 }
 
 // ---- FakeHarness — the §14 test double (proves the trait is satisfiable + object-safe) --------

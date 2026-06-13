@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { describeConflict, describeAuditIntegrity } from "./model";
+import { describeConflict, describeAuditIntegrity, describeRejection } from "./model";
 import { fencingConflictFixture } from "./fixtures";
 import { ActionRequestStatus, AuditOutcomeStatus, AuditIntegrityKind } from "../contracts/index";
 
@@ -91,5 +91,19 @@ describe("safety model — audit-integrity (§15/§17, safety #5)", () => {
     for (const kind of kinds) {
       expect(ActionRequestStatus.options).not.toContain(kind);
     }
+  });
+});
+
+describe("safety model — §6.4 rejection routing (Q6, forbidden #2)", () => {
+  it("rejection_routes_not_found_to_honest_generic", () => {
+    // spec(§6.4 / forbidden #2) — `not_found` (0.28.0, the get_diff "worktree/file
+    // not found" READ error) is NOT a mutation rejection: it must fall to the honest
+    // GENERIC treatment, NEVER a fabricated fencing/internal-error safety card. The
+    // code is carried VERBATIM (never collapsed/remapped); it is never re-approvable.
+    const desc = describeRejection({ code: "not_found" });
+    expect(desc.kind).toBe("generic");
+    expect(desc.code).toBe("not_found"); // verbatim, never remapped
+    expect(desc.reapprovable).toBe(false);
+    expect(desc.severity).toBe("warning"); // not a critical safety card
   });
 });

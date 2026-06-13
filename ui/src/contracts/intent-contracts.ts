@@ -17,6 +17,20 @@ import bundle from "./generated";
 const RiskLevel = z.number().int().min(0).max(4);
 const Timestamp = z.string();
 
+/** §6.3e per-hunk git action-type identifiers — a TYPING CONVENIENCE handle for the
+ *  6.3e Code/Diff wiring slice. These are NOT a schema enum $def; they are string
+ *  consts in the Rust catalog (`shared/src/catalog.rs` MVP_ACTION_TYPES) and the
+ *  ui's `ActionRequest.action_type` stays `z.string()`. The ui adopts ONLY the
+ *  identifier — NEVER the risk class / standing_grant eligibility (daemon-authoritative
+ *  policy, cat-1 Q4; the UI renders the daemon's policy, never derives its own).
+ *  Drift-pinned to the catalog authority by intent-contracts.test. PROVISIONAL. */
+export const PerHunkGitActionType = z.enum([
+  "git.stage_hunk",
+  "git.unstage_hunk",
+  "git.discard_hunk",
+]);
+export type PerHunkGitActionType = z.infer<typeof PerHunkGitActionType>;
+
 /** §6.2 ResourceRef — a targeted resource. Enum field delegated. */
 export const ResourceRef = z.object({
   type: bundle.shape.ResourceType,

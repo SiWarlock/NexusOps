@@ -357,6 +357,58 @@ export const ServerFrame = z.discriminatedUnion("frame_type", [
 ]);
 export type ServerFrame = z.infer<typeof ServerFrame>;
 
+// ─── §6.1 diff read surface (PROVISIONAL — the 6.3e get_diff result) ──────────
+// The `get_diff` RPC's structured result (HEAD→workdir), adopted AHEAD of its
+// consumer (the 6.3e Code/Diff slice maps DiffResult → the render + targets the
+// per-hunk git.* actions by old_start/new_start hunk-identity). Hand-modeled
+// provisional shadows of the frozen §6.1 $defs (objects aren't generated — Lesson
+// §2); the enum field (DiffLine.kind) delegates to the GENERATED DiffLineKind
+// (never re-declared, Lesson §1/§2). All four are `.strict()` (the frozen $defs are
+// `additionalProperties:false`) + field-set/-type drift-pinned (provisional.test).
+
+/** One line within a [`Hunk`] (§6.1): kind + verbatim content. PROVISIONAL. */
+export const DiffLine = z
+  .object({
+    kind: bundle.shape.DiffLineKind,
+    content: z.string(),
+  })
+  .strict();
+export type DiffLine = z.infer<typeof DiffLine>;
+
+/** One unified-diff hunk (§6.1). The old_start/new_start POSITION fields are the
+ *  hunk-identity the per-hunk git.* actions target; offsets are frozen uint32
+ *  (integer, minimum 0). PROVISIONAL. */
+export const Hunk = z
+  .object({
+    header: z.string(),
+    old_start: z.number().int().nonnegative(),
+    old_lines: z.number().int().nonnegative(),
+    new_start: z.number().int().nonnegative(),
+    new_lines: z.number().int().nonnegative(),
+    lines: z.array(DiffLine),
+  })
+  .strict();
+export type Hunk = z.infer<typeof Hunk>;
+
+/** `get_diff` result (§6.1) — the file's structured diff (HEAD→workdir). PROVISIONAL. */
+export const DiffResult = z
+  .object({
+    hunks: z.array(Hunk),
+  })
+  .strict();
+export type DiffResult = z.infer<typeof DiffResult>;
+
+/** `get_diff` params (§6.1) — keyed off the stable `wt_` worktree id (NOT a path;
+ *  the git.* actions ALSO target the id → read-by-id ↔ mutate-by-id consistency,
+ *  §17). The daemon resolves worktree_id → proj_worktree.path. PROVISIONAL. */
+export const GetDiffParams = z
+  .object({
+    worktree_id: z.string(),
+    file: z.string(),
+  })
+  .strict();
+export type GetDiffParams = z.infer<typeof GetDiffParams>;
+
 /** get_capabilities result (provisional; §6.4 handshake surface). */
 export const Capabilities = z.object({
   protocol_version: z.number(),

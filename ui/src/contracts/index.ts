@@ -22,6 +22,10 @@ export const ApprovalStatus = shape.ApprovalStatus;
 // 0.12.0 additions (daemon 1.5/1.6 IPC + projection-name freeze).
 export const DeltaKind = shape.DeltaKind;
 export const DesktopObjectKind = shape.DesktopObjectKind;
+// 0.28.0 (§6.3e get_diff): DiffLineKind is consumed by the DiffLine provisional
+// shape. ExecutionProfile/Provider are also generated at 0.28.0 but exposed-ahead
+// (no consumer yet) → not re-exported here until a typed consumer lands.
+export const DiffLineKind = shape.DiffLineKind;
 export const IdKind = shape.IdKind;
 export const IpcErrorCode = shape.IpcErrorCode;
 // Exported as ...Enum: the provisional registry KEY TYPE `ProjectionName`

@@ -11,6 +11,7 @@ import type {
   ActionPreview,
   ActionRequest,
   Capabilities,
+  DiffResult,
   ProjectionDelta,
   ProjectionName,
   ProjectionPageByName,
@@ -54,6 +55,14 @@ export interface GatewayPort {
   subscribe_terminal(terminal_id: string): AsyncIterable<TerminalOutputFrame>;
 
   get_capabilities(): Promise<Capabilities>;
+
+  // §6.1 get_diff — a read-only structured diff (HEAD→workdir) for a file in a
+  // worktree (the 6.3e Code/Diff surface). A READ (NOT a mutation — qualified to
+  // adopt ahead of its consumer): the daemon resolves `worktree_id → proj_worktree.path`
+  // then reads git2. Errors surface a `WireError` (e.g. the §6.4 `not_found` read
+  // code) the same as the other methods; there is NO diff-mutation method here (the
+  // per-hunk git.* actions go through the submit_action intent path, not this read).
+  get_diff(worktree_id: string, file: string): Promise<DiffResult>;
 
   // §6.1 mutation-intent surface (daemon/src/ipc/methods.rs:169-211). INV-SEC-1 /
   // §4.2 law 1: the UI SUBMITS intents only — the daemon's Action Gateway is the

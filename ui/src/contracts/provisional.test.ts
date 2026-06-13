@@ -2,6 +2,10 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+  DiffLine,
+  DiffResult,
+  GetDiffParams,
+  Hunk,
   MetricQuality,
   ServerFrame,
   TerminalOutputFrame,
@@ -130,6 +134,99 @@ describe("provisional MetricQuality (§9.1 — frozen-but-generator-pending shad
     const frozen = (schema.$defs.MetricQuality!.oneOf ?? []).map((v) => v.const!);
     expect(frozen.length, "frozen MetricQuality must be a oneOf-of-const").toBeGreaterThan(0);
     expect([...MetricQuality.options].toSorted()).toEqual([...frozen].toSorted());
+  });
+});
+
+describe("provisional diff shapes (§6.1 — the 6.3e get_diff read surface)", () => {
+  it("diff_shapes_field_sets_match_frozen_schema", () => {
+    // spec(§6.1) — §2.5-seam: the 4 new diff object shapes the ui hand-models as
+    // provisional shadows (DiffResult/Hunk/DiffLine/GetDiffParams) must equal the
+    // frozen schema $defs' property sets, both directions. A daemon diff-shape change
+    // (a field added/removed) fails this loudly, the same way the generated-enum drift
+    // test fails on a value-set change (Lesson §2/§14).
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
+      $defs: Record<string, { properties?: Record<string, unknown> }>;
+    };
+    const cases: [string, { shape: Record<string, unknown> }][] = [
+      ["DiffResult", DiffResult],
+      ["Hunk", Hunk],
+      ["DiffLine", DiffLine],
+      ["GetDiffParams", GetDiffParams],
+    ];
+    for (const [name, shadow] of cases) {
+      const frozen = Object.keys(schema.$defs[name]!.properties!).toSorted();
+      expect(
+        Object.keys(shadow.shape).toSorted(),
+        `field drift in ${name}`,
+      ).toEqual(frozen);
+    }
+  });
+
+  it("hunk_offsets_are_uint32", () => {
+    // spec(§6.1) — Lesson §14: a §2.5-seam type adopted AHEAD of its consumer carries
+    // a field-TYPE pin, not just a field-name pin. The frozen Hunk offsets
+    // (old_start/old_lines/new_start/new_lines) are uint32 INTEGERS (minimum 0); a
+    // string-typed offset would pass the name-set snapshot but reject a real frame.
+    const base = {
+      header: "@@ -1,2 +1,3 @@",
+      old_start: 1,
+      old_lines: 2,
+      new_start: 1,
+      new_lines: 3,
+      lines: [{ kind: "context", content: " a\n" }],
+    };
+    expect(Hunk.safeParse(base).success, "numeric uint32 offsets must parse").toBe(true);
+    for (const field of ["old_start", "old_lines", "new_start", "new_lines"]) {
+      expect(
+        Hunk.safeParse({ ...base, [field]: "1" }).success,
+        `${field} is a uint32 integer, not a string — a string offset must be rejected`,
+      ).toBe(false);
+      expect(
+        Hunk.safeParse({ ...base, [field]: -1 }).success,
+        `${field} is a uint32 (minimum 0) — a negative offset must be rejected`,
+      ).toBe(false);
+    }
+  });
+
+  it("diff_line_kind_delegates_to_generated_enum", () => {
+    // spec(§6.1) — DiffLine.kind delegates to the GENERATED DiffLineKind validator
+    // (never a re-literal'd union, Lesson §1/§2): every canonical kind parses, an
+    // unknown kind is rejected (reject-unknown end-to-end, §5.0/§15).
+    expect(DiffLine.safeParse({ kind: "context", content: " x\n" }).success).toBe(true);
+    expect(DiffLine.safeParse({ kind: "added", content: "+x\n" }).success).toBe(true);
+    expect(DiffLine.safeParse({ kind: "removed", content: "-x\n" }).success).toBe(true);
+    expect(DiffLine.safeParse({ kind: "bogus", content: "x\n" }).success).toBe(false);
+  });
+
+  it("diff_shapes_reject_unknown_fields", () => {
+    // spec(§6.1) — the frozen diff $defs are `additionalProperties:false`; the
+    // shadows are `.strict()` to match. The field-set snapshot pins NAMES but would
+    // NOT catch an accidental `.strict()` drop — so pin the reject-extra behavior
+    // directly: a well-formed value with one extra field must FAIL each shadow.
+    expect(
+      DiffResult.safeParse({ hunks: [], extra: 1 }).success,
+      "DiffResult must reject an unknown field (.strict)",
+    ).toBe(false);
+    expect(
+      DiffLine.safeParse({ kind: "added", content: "+x\n", extra: 1 }).success,
+      "DiffLine must reject an unknown field (.strict)",
+    ).toBe(false);
+    expect(
+      GetDiffParams.safeParse({ worktree_id: "wt_1", file: "a.ts", extra: 1 }).success,
+      "GetDiffParams must reject an unknown field (.strict)",
+    ).toBe(false);
+    expect(
+      Hunk.safeParse({
+        header: "@@ -1 +1 @@",
+        old_start: 1,
+        old_lines: 1,
+        new_start: 1,
+        new_lines: 1,
+        lines: [],
+        extra: 1,
+      }).success,
+      "Hunk must reject an unknown field (.strict)",
+    ).toBe(false);
   });
 });
 

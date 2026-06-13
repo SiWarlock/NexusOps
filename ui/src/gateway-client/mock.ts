@@ -24,9 +24,13 @@ import type {
   ProjectionPageByName,
   WireError,
 } from "../contracts/index";
-// TerminalOutputFrame imported as a VALUE (the Zod shadow) — used both as the
-// parse validator below and as the AsyncIterable<TerminalOutputFrame> element type.
-import { CONTRACT_VERSION, TerminalOutputFrame } from "../contracts/index";
+// TerminalOutputFrame + DiffResult imported as VALUES (the Zod shadows) — used both
+// as the parse validators below and as the method return/element types.
+import {
+  CONTRACT_VERSION,
+  DiffResult,
+  TerminalOutputFrame,
+} from "../contracts/index";
 import { terminalOutputFixture } from "./terminal-fixture";
 import type { ConnectionState } from "../connection/state";
 import { approvalQueueFixture } from "../projections/fixtures/proj_approval_queue";
@@ -41,6 +45,29 @@ import { usageFixture } from "../projections/fixtures/proj_usage";
 import { parseDelta, parseProjectionPage } from "./boundary";
 
 const DEFAULT_PROTOCOL_VERSION = 1;
+
+// A small CONTRACT-shaped get_diff fixture (a DiffResult). Deliberately decoupled
+// from any DiffReview.tsx render fixture — this is the §6.1 read-surface shape the
+// 6.3e Code/Diff slice consumes + maps to the render (Q1). Served THROUGH the frozen
+// shadow below so the mock can never emit a diff the real boundary would reject.
+const diffFixture: unknown = {
+  hunks: [
+    {
+      header: "@@ -1,3 +1,4 @@",
+      old_start: 1,
+      old_lines: 3,
+      new_start: 1,
+      new_lines: 4,
+      lines: [
+        { kind: "context", content: " fn main() {\n" },
+        { kind: "removed", content: "-    println!(\"hi\");\n" },
+        { kind: "added", content: "+    println!(\"hello\");\n" },
+        { kind: "added", content: "+    log::info!(\"started\");\n" },
+        { kind: "context", content: " }\n" },
+      ],
+    },
+  ],
+};
 
 // Raw fixtures keyed by projection name; served THROUGH the boundary validator.
 const FIXTURES: Record<ProjectionName, unknown> = {
@@ -113,6 +140,15 @@ export class MockGatewayPort implements GatewayPort {
       protocol_version: this.protocolVersion,
       contract_version: CONTRACT_VERSION,
     };
+  }
+
+  // §6.1 get_diff — read-only structured diff fixture, served THROUGH the frozen
+  // DiffResult shadow (parse-don't-trust, symmetric with get_projection). The real
+  // UdsGatewayPort reads git2; this returns a contract-valid fixture so 6.3e can be
+  // built/tested without a live daemon. `worktree_id`/`file` are accepted but unused
+  // (the fixture is fixed) — the daemon resolves the id→path + reads the real diff.
+  async get_diff(_worktree_id: string, _file: string): Promise<DiffResult> {
+    return DiffResult.parse(diffFixture);
   }
 
   // §6.1 mutation-intent surface — deterministic fixtures. The daemon mints the

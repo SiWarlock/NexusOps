@@ -3,7 +3,7 @@
 **Date:** 2026-06-13
 **Role:** edges-daemon-orchestrator (R5, fresh — resumed from the R4 pause)
 **Predecessor:** `edges-009-2026-06-13-r5-p5-p7-wiring.md` (impl session doc, `09d003b`)
-**Successor:** _(filled at the next /orchestrate-end)_
+**Successor:** [edges-011-2026-06-13-r6-p7-1-wave-d-e.md](edges-011-2026-06-13-r6-p7-1-wave-d-e.md)
 **Round-seal commit:** _(this commit)_ · branch `track/edges` · **NOT pushed, NOT merged to main** (round close-out only; the `bd3ee31` merge stays local — the edges→main merge is the eventual phase-exit, not this round)
 
 > **Companion (READ THIS for the full cross-track ledger + findings + TODOs):** `docs/planning/edges-R5-wiring-plan.md` (committed `c50db99`) — the PLAN-DELTA the integration owner applies at the final merge. This doc is the round's orchestrator framing; the wiring-plan doc is the authoritative accumulated delta.

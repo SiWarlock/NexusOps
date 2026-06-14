@@ -118,10 +118,15 @@ export function Shell({
   safety?: SafetyState;
 }) {
   // Stable client across renders (a fresh default per render would loop the effect).
-  // PRODUCTION DEFAULT = the real UdsGatewayPort (L1 read-swap, 051) — the initial
-  // get_projection/get_capabilities load now shows REAL daemon data over the 050 invoke
-  // bridge. The MockGatewayPort stays the injectable test/dev seam (passed via `gateway`).
-  const [client] = useState<GatewayPort>(() => gateway ?? new UdsGatewayPort());
+  // PRODUCTION DEFAULT = the real UdsGatewayPort (L1 read-swap, 051). **L2-C GO-LIVE (057,
+  // USER-signed-off):** constructed `mutationsEnabled: true` — the single switch that lights up the
+  // mutation transport (the port methods `invoke`) AND the UI submit controls (`canSubmitIntent &&
+  // mutationsEnabled`) together. A real human can now approve/deny/submit a real, daemon-risk-classified
+  // mutation; the daemon's Action Gateway executes + audits it (INV-SEC-1 chokepoint; this UI gate is
+  // defense-in-depth). The MockGatewayPort stays the injectable test/dev seam (passed via `gateway`).
+  const [client] = useState<GatewayPort>(
+    () => gateway ?? new UdsGatewayPort({ mutationsEnabled: true }),
+  );
   const [data, setData] = useState<ShellData | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [connection, setConnection] = useState<ConnectionState>(() =>

@@ -47,10 +47,14 @@ export interface ResumeModeDescriptor {
   label: string;
 }
 
-// resumed = brought back live; replayed = relaunched from the event log.
+// The frozen 4-value ResumeMode (§8/§11.4). Record<ResumeMode,…> forces every value to be covered
+// (no fall-through). resumed = native-resume; replayed = rebuilt-from-scrollback; relaunched = a
+// fresh launch (nothing to resume/replay); reattached_live = the surviving in-flight turn (broker).
 const RESUME_MODE: Record<ResumeMode, { glyph: string; label: string }> = {
   resumed: { glyph: "▶", label: "Resumed (live)" },
   replayed: { glyph: "⟳", label: "Replayed (relaunched)" },
+  relaunched: { glyph: "↺", label: "Relaunched (fresh)" },
+  reattached_live: { glyph: "⇆", label: "Reattached (live)" },
 };
 
 export function describeResumeMode(mode: ResumeMode): ResumeModeDescriptor {

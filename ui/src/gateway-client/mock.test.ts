@@ -70,8 +70,9 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     // when the frozen contract bumps (the drift test chains this to the schema).
     // Bumped 0.8.0 → 0.12.0 (main→ui merge regen) → 0.19.0 (Phase-2 Gateway freeze)
     // → 0.23.0 (Phase-3 boundary merge: §9.1 harness / §6.4 Terminal Channel)
-    // → 0.28.0 (Phase-4 boundary merge: §6.3e per-hunk git actions + get_diff).
-    expect(caps.contract_version).toBe("0.28.0");
+    // → 0.28.0 (Phase-4 boundary merge: §6.3e per-hunk git actions + get_diff)
+    // → 0.31.0 (L2-prep boundary merge: survival 0.29 / ApprovalQueueRow 0.30 / SessionRecovered 0.31).
+    expect(caps.contract_version).toBe("0.31.0");
     expect(caps.protocol_version).toBe(1);
   });
 });

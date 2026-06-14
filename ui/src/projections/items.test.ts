@@ -5,6 +5,7 @@ import type {
   PullRequestRow,
   ApprovalQueueRow,
 } from "../contracts/index";
+import { makeApprovalRow } from "./fixtures/proj_approval_queue";
 
 describe("projection item mappers", () => {
   it("to_session_items_maps_rows", () => {
@@ -33,9 +34,14 @@ describe("projection item mappers", () => {
 
   it("to_approval_items_maps_rows", () => {
     const rows: ApprovalQueueRow[] = [
-      { approval_id: "ap1", project_id: "p1", status: "requested", title: "Approve deploy" },
-      // no title → label falls back to the id
-      { approval_id: "ap2", project_id: "p1", status: "approved" },
+      makeApprovalRow({
+        approval_id: "ap1",
+        project_id: "p1",
+        status: "requested",
+        preview_summary: "Approve deploy",
+      }),
+      // no preview_summary → label falls back to the id
+      makeApprovalRow({ approval_id: "ap2", project_id: "p1", status: "approved" }),
     ];
     expect(toApprovalItems(rows)).toEqual([
       { id: "ap1", label: "Approve deploy", machine: "Approval", status: "requested" },

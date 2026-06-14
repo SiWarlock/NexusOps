@@ -7,6 +7,9 @@
 // §5.0 / §6.1 / §7.2 and the brief's Step-2.5 Q2.
 import { z } from "zod";
 import bundle from "./generated";
+// The §6.2 risk axis + the PolicyDecision shadow live in intent-contracts (which depends only on
+// zod+generated — no cycle). The frozen ApprovalQueueRow carries both, so the row shadow reuses them.
+import { PolicyDecision, RiskLevel } from "./intent-contracts";
 
 // Delegate to the generated enums (no hand-declared status unions). The two R-5
 // status enums were renamed to their `$def` names at the 0.19.0 Gateway freeze
@@ -16,21 +19,34 @@ const PullRequest = bundle.shape.PullRequest;
 const ApprovalStatus = bundle.shape.ApprovalStatus;
 const ActorType = bundle.shape.ActorType;
 const ActionRequestStatus = bundle.shape.ActionRequestStatus;
+const RequesterType = bundle.shape.RequesterType;
 
-// ─── Survival/recovery (PROVISIONAL — 6.4d) ──────────────────────────────────
-// The daemon's O-2 survival schema is NOT frozen. RecoveryState/ResumeMode/
-// RecoveryStatus are hand-declared provisional shapes (Lesson §2); they reconcile
-// at the daemon survival-schema freeze (Carry-forward provisional→generated spread).
+// ─── Survival/recovery (FROZEN @0.29–0.31 — drift-pinned shadows) ─────────────
+// The daemon FROZE the O-2 survival schema (`ResumeMode`/`RecoveryState`) as
+// `oneOf`-of-`const` defs (doc-commented), which gen-contracts.mjs (flat `.enum` only)
+// does NOT emit — so these stay hand-declared z.enum SHADOWS, drift-pinned to the
+// schema's `oneOf` const set (the MetricQuality precedent), NOT generated. They retire
+// to generated when the generator gains oneOf-const support (carry-forward). `RecoveryStatus`
+// is a ui-local wrapper the daemon did NOT freeze → stays provisional, re-based over RecoveryState.
 
-/** Post-restart recovery state (O-2, §11.4). PROVISIONAL. */
+/** Post-restart recovery state (O-2, §11.4) — drift-pinned to the frozen `RecoveryState` oneOf. */
 export const RecoveryState = z.enum(["recovering", "recovered", "recovery_failed"]);
 export type RecoveryState = z.infer<typeof RecoveryState>;
 
-/** How a session was brought back after a restart (O-2): live vs relaunched. PROVISIONAL. */
-export const ResumeMode = z.enum(["resumed", "replayed"]);
+/** How a session was brought back after a daemon restart (O-2, §8/§11.4) — drift-pinned to the
+ *  frozen 4-value `ResumeMode` oneOf (`resumed`=native-resume, `replayed`=rebuilt-from-scrollback,
+ *  `relaunched`=fresh launch, `reattached_live`=surviving in-flight turn via the detachable broker). */
+export const ResumeMode = z.enum([
+  "resumed",
+  "replayed",
+  "relaunched",
+  "reattached_live",
+]);
 export type ResumeMode = z.infer<typeof ResumeMode>;
 
-/** The recovery status input (fixture-driven; daemon survival logic not built). */
+/** The recovery status input (ui-local wrapper — the daemon froze RecoveryState but not this
+ *  wrapper; re-based over the drift-pinned RecoveryState). The SessionRecovered-event→aggregate
+ *  consumption (§11.4 recovery-UX) is a deferred follow-on. */
 export const RecoveryStatus = z.object({
   state: RecoveryState,
   // sessions affected by a failed recovery (subject ids); empty/absent otherwise.
@@ -170,13 +186,32 @@ export const PullRequestProjectionPage = z.object({
 });
 export type PullRequestProjectionPage = z.infer<typeof PullRequestProjectionPage>;
 
-/** A row of the ApprovalQueue projection (provisional; status delegates to the frozen enum). */
-export const ApprovalQueueRow = z.object({
-  approval_id: z.string(),
-  project_id: z.string(),
-  status: ApprovalStatus,
-  title: z.string().optional(),
-});
+/** A row of the ApprovalQueue projection — the FIRST frozen projection-row (@0.30,
+ *  `shared/src/projections.rs`). A drift-pinned frozen-shadow: the 14-field set + types are
+ *  snapshot-pinned to the schema `$defs.ApprovalQueueRow` (provisional.test); enum fields delegate
+ *  to the generated value-sets (`risk_level`→`RiskLevel` int 0–4, `status`→`ApprovalStatus`,
+ *  `requester_type`→`RequesterType`); `policy_decision` delegates to the `PolicyDecision` shadow.
+ *  `.strict()` per the frozen `deny_unknown_fields`; the `Option<>` fields are present-and-nullable
+ *  (the daemon serializes them as explicit `null` — no `skip_serializing_if`), tolerated-absent on read.
+ *  The card sources real `risk_level`/`policy_decision` from this row (053 Layer C — no fixture risk). */
+export const ApprovalQueueRow = z
+  .object({
+    approval_id: z.string(),
+    action_request_id: z.string().nullable().optional(),
+    plan_id: z.string().nullable().optional(),
+    project_id: z.string().nullable().optional(),
+    session_id: z.string().nullable().optional(),
+    agent_team_id: z.string().nullable().optional(),
+    risk_level: RiskLevel,
+    status: ApprovalStatus,
+    requester_type: RequesterType,
+    requester_id: z.string(),
+    preview_summary: z.string().nullable().optional(),
+    requested_at: z.string(),
+    expires_at: z.string().nullable().optional(),
+    policy_decision: PolicyDecision.nullable().optional(),
+  })
+  .strict();
 export type ApprovalQueueRow = z.infer<typeof ApprovalQueueRow>;
 
 export const ApprovalQueuePage = z.object({

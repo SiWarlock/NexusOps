@@ -328,7 +328,7 @@ function CommandRail({
                     key={a.approval_id}
                     risk={meta?.risk}
                     who={meta?.who}
-                    text={a.title ?? a.approval_id}
+                    text={a.preview_summary ?? a.approval_id}
                   />
                 );
               })}

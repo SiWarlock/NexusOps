@@ -14,7 +14,7 @@ import bundle from "./generated";
 
 // RiskLevel is a frozen INTEGER bounded 0–4 (the §6.2 risk axis), NOT an enum — the
 // policy engine is catalog-authoritative; the UI never derives it (Q4). Timestamp is RFC3339.
-const RiskLevel = z.number().int().min(0).max(4);
+export const RiskLevel = z.number().int().min(0).max(4);
 const Timestamp = z.string();
 
 /** §6.3e per-hunk git action-type identifiers — a TYPING CONVENIENCE handle for the

@@ -49,7 +49,8 @@ export function toPrItems(rows: PullRequestRow[]): ProjectionItem[] {
 export function toApprovalItems(rows: ApprovalQueueRow[]): ProjectionItem[] {
   return rows.map((a) => ({
     id: a.approval_id,
-    label: a.title ?? a.approval_id,
+    // the frozen ApprovalQueueRow has no `title` — `preview_summary` is the human label.
+    label: a.preview_summary ?? a.approval_id,
     machine: "Approval",
     status: a.status,
   }));

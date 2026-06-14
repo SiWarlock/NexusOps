@@ -2,11 +2,14 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+  ApprovalQueueRow,
   DiffLine,
   DiffResult,
   GetDiffParams,
   Hunk,
   MetricQuality,
+  RecoveryState,
+  ResumeMode,
   ServerFrame,
   TerminalOutputFrame,
   WireError,
@@ -247,5 +250,70 @@ describe("provisional terminal shadow (§6.4 — the 6.3d well consumes this)", 
     expect(Object.keys(TerminalOutputFrame.shape).toSorted()).toEqual(
       Object.keys(frozenVariant.properties).toSorted(),
     );
+  });
+});
+
+describe("053 L2-prep — ApprovalQueueRow frozen-shadow + survival drift-pins (§5.0)", () => {
+  const readSchema = () =>
+    JSON.parse(readFileSync(schemaPath, "utf8")) as {
+      $defs: Record<
+        string,
+        { properties?: Record<string, unknown>; oneOf?: { const?: string }[] }
+      >;
+    };
+
+  it("approval_queue_row_field_set_matches_frozen_schema", () => {
+    // spec(§5.0) — the FIRST frozen projection-row: the 14-field set is snapshot-pinned to the
+    // frozen schema `$defs.ApprovalQueueRow` (a daemon field add/remove/rename fails this loudly,
+    // the §2.5-seam shared-contract snapshot — the ServerFrame precedent).
+    const schema = readSchema();
+    expect(Object.keys(ApprovalQueueRow.shape).toSorted()).toEqual(
+      Object.keys(schema.$defs.ApprovalQueueRow!.properties!).toSorted(),
+    );
+  });
+
+  it("approval_queue_row_strict_rejects_extra_and_requires_core", () => {
+    // `.strict()` per the frozen `deny_unknown_fields`; the required core present; optionals nullable.
+    const base = {
+      approval_id: "appr_1",
+      action_request_id: null,
+      plan_id: null,
+      project_id: null,
+      session_id: null,
+      agent_team_id: null,
+      risk_level: 2,
+      status: "awaiting_approval",
+      requester_type: "agent_session",
+      requester_id: "a1",
+      preview_summary: null,
+      requested_at: "2026-06-14T00:00:00Z",
+      expires_at: null,
+      policy_decision: null,
+    };
+    expect(ApprovalQueueRow.safeParse(base).success).toBe(true);
+    // an extra field → rejected (.strict()).
+    expect(ApprovalQueueRow.safeParse({ ...base, bogus: 1 }).success).toBe(false);
+    // a missing required core field → rejected.
+    const noRisk: Record<string, unknown> = { ...base };
+    delete noRisk.risk_level;
+    expect(ApprovalQueueRow.safeParse(noRisk).success).toBe(false);
+  });
+
+  it("resume_mode_drift_pinned_to_schema_oneof_four_values", () => {
+    // spec(§5.0) — ResumeMode is a `oneOf`-of-`const` (NOT generated — the MetricQuality limitation);
+    // the shadow's member set is drift-pinned to the schema's 4 const values (resumed/replayed/
+    // relaunched/reattached_live). A daemon change fails loudly until the generator gains oneOf-const.
+    const schema = readSchema();
+    const frozen = (schema.$defs.ResumeMode!.oneOf ?? []).map((v) => v.const!);
+    expect(frozen.length).toBe(4);
+    expect([...ResumeMode.options].toSorted()).toEqual([...frozen].toSorted());
+  });
+
+  it("recovery_state_drift_pinned_to_schema_oneof", () => {
+    // spec(§5.0) — RecoveryState is also a oneOf-of-const → drift-pinned shadow (values unchanged).
+    const schema = readSchema();
+    const frozen = (schema.$defs.RecoveryState!.oneOf ?? []).map((v) => v.const!);
+    expect(frozen.length).toBeGreaterThan(0);
+    expect([...RecoveryState.options].toSorted()).toEqual([...frozen].toSorted());
   });
 });

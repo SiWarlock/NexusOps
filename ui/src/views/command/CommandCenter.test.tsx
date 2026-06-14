@@ -4,6 +4,7 @@ import type { ComponentProps } from "react";
 import { cleanup, render, screen, fireEvent, within } from "@testing-library/react";
 import { CommandCenter } from "./CommandCenter";
 import type { SessionRow } from "../../contracts/index";
+import { makeApprovalRow } from "../../projections/fixtures/proj_approval_queue";
 
 afterEach(cleanup);
 
@@ -98,12 +99,12 @@ describe("CommandCenter triage cockpit", () => {
   it("rail_queue_lists_global_approvals_and_waiting_sessions", () => {
     renderCC({
       approvals: [
-        {
+        makeApprovalRow({
           approval_id: "a1",
           project_id: "p2",
           status: "awaiting_approval",
-          title: "git.create_worktree",
-        },
+          preview_summary: "git.create_worktree",
+        }),
       ],
       waiting: [sessionOf("w1", "waiting_on_permission", "Add rate limiting")],
     });

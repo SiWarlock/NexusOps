@@ -5,6 +5,7 @@ import {
   resumeModesBySessionId,
 } from "./model";
 import type { SessionRow } from "../contracts/index";
+import { ResumeMode } from "../contracts/index";
 
 describe("recovery model", () => {
   it("recovery_state_to_banner_descriptor", () => {
@@ -38,6 +39,23 @@ describe("recovery model", () => {
     expect(replayed.glyph).toBeTruthy();
     expect(resumed.glyph).not.toBe(replayed.glyph);
     expect(resumed.label).not.toBe(replayed.label);
+  });
+
+  it("resume_mode_covers_all_four_frozen_values_no_fall_through", () => {
+    // the frozen ResumeMode grew 2→4 (relaunched/reattached_live, §8/§11.4); every value renders a
+    // non-empty glyph+label (never color-alone §11), with no fall-through to a default (the
+    // Record<ResumeMode,…> in model.ts forces coverage). Glyphs are distinct across the set.
+    const glyphs = new Set<string>();
+    for (const mode of ResumeMode.options) {
+      const d = describeResumeMode(mode);
+      expect(d.glyph, `glyph for ${mode}`).toBeTruthy();
+      expect(d.label, `label for ${mode}`).toBeTruthy();
+      glyphs.add(d.glyph);
+    }
+    expect(ResumeMode.options).toHaveLength(4);
+    expect(glyphs.size).toBe(4); // all distinct — no two modes share a glyph
+    expect(describeResumeMode("relaunched").label).toContain("Relaunched");
+    expect(describeResumeMode("reattached_live").label).toContain("Reattached");
   });
 });
 

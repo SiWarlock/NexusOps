@@ -27,13 +27,18 @@ use nexusopsd::integrations::github_write::OctocrabGithubWriteClient;
 use nexusopsd::integrations::linear_write::LinearGraphqlWriteClient;
 use nexusopsd::ipc::current_euid;
 use nexusopsd::project::executor::ProjectExecutor;
-use nexusopsd::runtime::{bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor};
+use nexusopsd::runtime::{
+    bind, spawn_accept_loop, spawn_drainer, spawn_git_watcher, spawn_reaper, WriteActor,
+};
 use nexusopsd::session::spawn_supervisor_task;
 
 /// outbox drain cadence (§12) — deliver due rows a few times a minute.
 const DRAINER_INTERVAL: Duration = Duration::from_secs(5);
 /// lease reap cadence (§17) — free expired leases periodically.
 const REAPER_INTERVAL: Duration = Duration::from_secs(30);
+/// git-watcher cadence (§7.2) — refresh each worktree's live-read git-axis cache periodically. Git
+/// reads are local + cheap but not free; keep the cadence generous (the reaper cadence).
+const GIT_WATCHER_INTERVAL: Duration = Duration::from_secs(30);
 /// the local JSONL audit/debug mirror sink (§10.4) within the app-support dir.
 const EVENTS_MIRROR_FILE: &str = "events.jsonl";
 /// the GatewayPort UDS within the app-support dir (§6.4).
@@ -155,6 +160,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // L3 — bind the GatewayPort UDS (reclaiming a stale socket) + spawn the peer-auth'd accept-loop.
     let db_path = base_dir.join(DB_FILENAME);
+    // §7.2 git-watcher (edges-026): refresh each proj_worktree's live-read git-axis cache on an
+    // interval (the drainer/reaper precedent). It enumerates proj_worktree over a read-only WAL conn +
+    // issues a NON-event `refresh_worktree_status` per worktree through the write-actor.
+    let git_watcher = spawn_git_watcher(
+        handle.clone(),
+        db_path.clone(),
+        GIT_WATCHER_INTERVAL,
+        shutdown_rx.clone(),
+    );
     let listener = bind(&base_dir.join(SOCKET_FILE))?;
     eprintln!("nexusopsd: GatewayPort listening at {SOCKET_FILE}");
     let accept = spawn_accept_loop(
@@ -173,6 +187,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let _ = shutdown_tx.send(true);
     let _ = drainer.await;
     let _ = reaper.await;
+    let _ = git_watcher.await;
     let _ = accept.await;
     let _ = supervisor.await; // drains its session actors (Kill + await each handle — no orphan task).
     actor.shutdown().await;

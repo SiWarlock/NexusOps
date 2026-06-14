@@ -13,9 +13,11 @@
 //! the accept-loop, and the subscribe source.
 
 mod drainer;
+mod git_watcher;
 mod listener;
 mod writer;
 
 pub use drainer::{spawn_drainer, spawn_reaper};
+pub use git_watcher::spawn_git_watcher;
 pub use listener::{bind, spawn_accept_loop};
-pub use writer::{RuntimeError, WriteActor, WriteHandle, BROADCAST_CAPACITY};
+pub use writer::{compute_worktree_cache, RuntimeError, WriteActor, WriteHandle, BROADCAST_CAPACITY};

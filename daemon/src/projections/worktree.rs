@@ -110,3 +110,60 @@ impl Projector for WorktreeProjector {
         Ok(())
     }
 }
+
+/// The computed §7.2 live-read git-axis cache values for a worktree — produced by the runtime layer
+/// (`compute_worktree_cache`, which does the git2 read + the §5.1 status derivation) and written by
+/// [`refresh_git_cache`]. PLAIN values only (no `git/` types) so the persistence core stays git-free
+/// (the edges-022 layer rule — persistence must NOT import the `git/` edge; both sides pin to the same
+/// frozen serde wire value).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeGitCache {
+    /// the within-axis git-sync status wire value (`WorktreeGit` → "clean"/"dirty"/"behind_base"/…).
+    pub dirty_state: String,
+    /// commits ahead of base; `None` when no base resolved.
+    pub ahead_count: Option<i64>,
+    /// commits behind base; `None` when no base resolved.
+    pub behind_count: Option<i64>,
+    /// HEAD commit sha (40-hex); `None` for an unborn HEAD.
+    pub last_commit_sha: Option<String>,
+    /// the recomputed §5.1 status wire value (the live git axis collapsed with the Creating overlay).
+    pub status: String,
+}
+
+/// Refresh one worktree's §7.2 live-read git-axis cache (the P5.2 follow-on) — a NON-event, NON-Gateway
+/// write (the git-axis is a live-read cache, NOT event-sourced, §7.1). `git`=`Some` → UPDATE the
+/// git-axis cols (`dirty_state`/`ahead_count`/`behind_count`/`last_commit_sha`) + the recomputed
+/// `status` + the `git_checked_at` freshness stamp; `git`=`None` (a non-git / inaccessible path) →
+/// stamp `git_checked_at` ONLY (we checked; there is no git truth, so the git-axis cols + status are
+/// left unchanged). The event-sourced cols (path/branch/base/project_id/repo_id) are NEVER touched, and
+/// `updated_at_seq` (the EVENT watermark) is left as-is — `git_checked_at` is the cache-refresh time, a
+/// distinct axis from the last event that touched the row. Returns the rows updated (0 = an unknown
+/// `worktree_id` → a safe no-op). `checked_at` is the daemon Clock UTC-Z.
+pub(crate) fn refresh_git_cache(
+    tx: &Transaction,
+    worktree_id: &str,
+    git: Option<&WorktreeGitCache>,
+    checked_at: &str,
+) -> Result<usize, ProjectionError> {
+    let rows = match git {
+        Some(g) => tx.execute(
+            "UPDATE proj_worktree SET dirty_state = ?2, ahead_count = ?3, behind_count = ?4, \
+             last_commit_sha = ?5, status = ?6, git_checked_at = ?7 WHERE worktree_id = ?1",
+            params![
+                worktree_id,
+                g.dirty_state,
+                g.ahead_count,
+                g.behind_count,
+                g.last_commit_sha,
+                g.status,
+                checked_at,
+            ],
+        )?,
+        // None: we checked but there is no git truth → record only that the check happened.
+        None => tx.execute(
+            "UPDATE proj_worktree SET git_checked_at = ?2 WHERE worktree_id = ?1",
+            params![worktree_id, checked_at],
+        )?,
+    };
+    Ok(rows)
+}

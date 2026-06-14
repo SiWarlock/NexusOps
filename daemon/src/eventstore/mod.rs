@@ -201,6 +201,29 @@ impl EventStore {
         crate::projections::rebuild(&mut self.conn).map_err(projection_to_store_err)
     }
 
+    /// Refresh one worktree's §7.2 live-read git-axis cache (edges-026, the P5.2 follow-on). A
+    /// **NON-event, NON-Gateway** write on the single writer (forbidden #3 — the git-watcher's call):
+    /// the git-axis is a live-read cache, NOT event-sourced (§7.1), so no event is appended and no
+    /// projector fold runs. `git` carries the runtime-computed values (`None` = a non-git / inaccessible
+    /// path → stamp `git_checked_at` only). One IMMEDIATE txn; `clock` stamps `git_checked_at` UTC-Z.
+    /// Returns the rows updated (0 = an unknown `worktree_id` → a safe no-op). The git read +
+    /// derivation happen in the runtime layer (the persistence core stays git-free, the edges-022 rule).
+    pub fn refresh_worktree_status(
+        &mut self,
+        clock: &dyn Clock,
+        worktree_id: &str,
+        git: Option<&crate::projections::WorktreeGitCache>,
+    ) -> Result<usize, EventStoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(EventStoreError::Write)?;
+        let rows = crate::projections::refresh_git_cache(&tx, worktree_id, git, &clock.now_rfc3339())
+            .map_err(projection_to_store_err)?;
+        tx.commit().map_err(EventStoreError::Write)?;
+        Ok(rows)
+    }
+
     /// Append one event. Assigns `seq` (canonical monotonic order), `event_id`, `recorded_at`.
     /// Fails closed on a write/constraint failure (§15/§17). A thin wrapper that opens its own
     /// IMMEDIATE txn over [`append_in_txn`] — the gateway pipeline shares that same primitive WITHIN

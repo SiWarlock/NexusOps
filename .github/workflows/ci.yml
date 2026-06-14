@@ -36,11 +36,34 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: fmt --check
-        run: cargo fmt --all --check
+        run: cargo fmt --all --check  # fmt parses (doesn't build) → covers nexusops-ui too
+      # `nexusops-ui` (the ui/src-tauri Tauri 2.x app crate) is EXCLUDED here: clippy/test COMPILE
+      # it, and on ubuntu the Tauri Linux webkit deps (webkit2gtk) aren't present. The macOS app
+      # crate is covered by the `ui-tauri` job below (macos-latest; WebKit built-in). (P6.8 L1 / 050.)
       - name: clippy -D warnings
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --exclude nexusops-ui -- -D warnings
       - name: test --workspace
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude nexusops-ui
+
+  # --- ui-tauri / the Tauri app crate (macOS — WebKit built-in) ---------------------------------
+  # `nexusops-ui` (ui/src-tauri, the Tauri 2.x app crate) is excluded from the ubuntu `daemon` job
+  # (it can't build the Linux webkit deps). It builds + tests on macOS — the real target, WebKit
+  # built-in. Covers the read-command bridge unit tests (the ClientError→GatewayCommandError mapping
+  # + the param-marshaling frozen-round-trip). The #[ignore]'d smoke (needs a live daemon) is NOT
+  # run here. (P6.8 L1 — the live UdsGatewayPort transport; 050.)
+  ui-tauri:
+    name: ui-tauri (the Tauri app crate · macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy -p nexusops-ui
+        run: cargo clippy -p nexusops-ui --all-targets -- -D warnings
+      - name: test -p nexusops-ui
+        run: cargo test -p nexusops-ui
 
   # --- ui / Frontend tier -----------------------------------------------------------------------
   # The exact local `/preflight` ui-mode commands. pnpm 9 (matches ui/pnpm-lock.yaml

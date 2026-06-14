@@ -24,6 +24,7 @@ use crate::harness::{HarnessAdapter, MutationIntercept, ResumeMode, ResumeResult
 
 pub mod auth;
 pub mod parse;
+pub mod perms;
 pub mod status;
 pub mod stream;
 

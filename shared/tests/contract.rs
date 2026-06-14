@@ -2348,6 +2348,55 @@ fn test_terminal_process_exited_wire_contract() {
     assert_eq!(TerminalProcessExited::EVENT_TYPE, "TerminalProcessExited");
 }
 
+// ---- 4.1b-1 RED — the SessionRecovered observation event wire contract (§8.1/§7.1/§5.0/§15) ----
+
+#[test]
+fn test_session_recovered_wire_contract() {
+    // spec(§8.1) — the daemon-restart recovery OBSERVATION event (the §11.4 resumed-vs-replayed bit).
+    // System-actor, write-actor, NOT a Gateway Action (Q1=(a), lead/user-ruled). EventTypeRegistry
+    // single-home + reject-unknown (the TerminalProcessExited/TelemetrySampled observation precedent).
+    use nexusops_shared::events::SessionRecovered;
+    use nexusops_shared::harness::ResumeMode;
+    use nexusops_shared::ids::ExecutionProfileId;
+    let v = SessionRecovered {
+        mode: ResumeMode::Replayed,
+        replayed_event_count: 17,
+        execution_profile_id: Some(ExecutionProfileId::new()),
+    };
+    let j = serde_json::to_value(&v).unwrap();
+    assert_eq!(
+        serde_json::from_value::<SessionRecovered>(j).unwrap(),
+        v,
+        "SessionRecovered round-trips"
+    );
+    let mut rogue = serde_json::to_value(&v)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    rogue.insert("rogue".to_string(), serde_json::json!(1));
+    assert!(
+        serde_json::from_value::<SessionRecovered>(serde_json::Value::Object(rogue)).is_err(),
+        "unknown field rejected (deny_unknown_fields, §5.0/§15)"
+    );
+    assert_eq!(SessionRecovered::EVENT_TYPE, "SessionRecovered");
+    // §2.5-seam stability (LESSON §15 trap 3): no `skip_serializing_if`, so a non-`Replayed` count (0)
+    // and a `None` profile serialize as EXPLICIT `0` / `null` — never omitted (a stable field-name set).
+    let relaunched = serde_json::to_value(SessionRecovered {
+        mode: ResumeMode::Relaunched,
+        replayed_event_count: 0,
+        execution_profile_id: None,
+    })
+    .unwrap();
+    assert_eq!(relaunched["replayed_event_count"], serde_json::json!(0));
+    assert!(
+        relaunched
+            .get("execution_profile_id")
+            .is_some_and(|v| v.is_null()),
+        "a None profile serializes as explicit null, never omitted (trap 3)"
+    );
+}
+
 // ---- 043 L5 RED — ActionDenied.approval_id is OPTIONAL (the A1 record-then-deny forensic event) ----
 
 #[test]
@@ -2395,16 +2444,192 @@ fn test_action_denied_approval_id_optional() {
     );
 }
 
-// ---- P4.0b-2 RED — CONTRACT_VERSION bumped to 0.27.0 (the 3 split-tool-policy agent.* types) ----
+// =====================================================================================
+// P4.1a — the §8/§9.1 survival/recovery schema freeze (B2-strict; CONTRACT 0.29.0).
+// Freezes the `resume()`-return contract — `ResumeMode`(4), `RecoveryState`(3), and
+// `ResumeResult{mode, replayed_event_count}` — replacing the daemon-internal `{resumed_live,…}`
+// shape + reconciling the ui's provisional `ResumeMode`/`RecoveryState`. The 4th `ResumeMode`
+// (`reattached_live`) is the user-ruled B2-strict §8 EXTENSION (the SURVIVING in-flight turn).
+// deny_unknown_fields / reject-unknown end-to-end (§5.0/§15). 4.1a c2 = decision logic; 4.1b = broker.
+// =====================================================================================
+
+fn sample_resume_result() -> nexusops_shared::harness::ResumeResult {
+    use nexusops_shared::harness::{ResumeMode, ResumeResult};
+    // a VALID combo for the shape/round-trip snapshot: `replayed_event_count` is non-zero ONLY on the
+    // `Replayed` rung (the producer invariant `decide_resume` enforces), so the fixture uses Replayed.
+    ResumeResult {
+        mode: ResumeMode::Replayed,
+        replayed_event_count: 42,
+    }
+}
 
 #[test]
-fn test_contract_version_bumped_0_27_0() {
+fn test_resume_mode_enum_frozen_4_values() {
+    // spec(§9.1) — the deep-dive §7.2 B2-strict 4-value set: `resumed` (a NEW process resumed from
+    // the harness transcript), `replayed` (serialized-scrollback replay), `relaunched` (a fresh
+    // launch, no resume), `reattached_live` (the SURVIVING same-process in-flight turn — the B2-strict
+    // §8 EXTENSION). The frozen-enum snapshot is the anti-drift gate (LESSONS §14/§15); decl order.
+    use nexusops_shared::harness::ResumeMode;
+    check_values(
+        ResumeMode::ALL,
+        &["resumed", "replayed", "relaunched", "reattached_live"],
+    );
+    assert_eq!(ResumeMode::ALL.len(), 4, "B2-strict = the 4-value set");
+}
+
+#[test]
+fn test_recovery_state_enum_frozen_3_values() {
+    // spec(§11.4) — the ui's existing 3 recovery states, frozen VERBATIM (a reconcile, no drift):
+    // `recovering` / `recovered` / `recovery_failed`. snake_case wire; reject-unknown.
+    use nexusops_shared::harness::RecoveryState;
+    check_values(
+        RecoveryState::ALL,
+        &["recovering", "recovered", "recovery_failed"],
+    );
+    assert_eq!(
+        RecoveryState::ALL.len(),
+        3,
+        "the ui provisional, frozen as-is"
+    );
+}
+
+#[test]
+fn test_resume_result_shape() {
+    // spec(§9.1) — the `resume()` return; the §2.5-seam field-name set frozen (LESSONS §15 trap 3)
+    // + round-trips. Minimal `{mode, replayed_event_count}` (additive-later is non-breaking).
+    expect_fields(&sample_resume_result(), &["mode", "replayed_event_count"]);
+    let json = serde_json::to_string(&sample_resume_result()).unwrap();
+    let back: nexusops_shared::harness::ResumeResult = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, sample_resume_result(), "ResumeResult round-trips");
+}
+
+#[test]
+fn test_resume_mode_unknown_value_rejected() {
+    // spec(§5.0/§15) — reject-unknown end-to-end (fail-closed parse boundary).
+    use nexusops_shared::harness::ResumeMode;
+    assert!(serde_json::from_value::<ResumeMode>(serde_json::json!("teleported")).is_err());
+}
+
+#[test]
+fn test_recovery_state_unknown_value_rejected() {
+    // spec(§5.0/§15) — reject-unknown end-to-end (fail-closed parse boundary).
+    use nexusops_shared::harness::RecoveryState;
+    assert!(serde_json::from_value::<RecoveryState>(serde_json::json!("half_recovered")).is_err());
+}
+
+#[test]
+fn test_resume_result_rejects_unknown_field() {
+    // spec(§5.0/§15) — `deny_unknown_fields` on the struct: an extra key fails to deserialize (the
+    // frozen-struct boundary, like every other §2.5-seam struct).
+    let r: Result<nexusops_shared::harness::ResumeResult, _> = serde_json::from_value(
+        serde_json::json!({"mode": "replayed", "replayed_event_count": 3, "extra": true}),
+    );
+    assert!(r.is_err(), "deny_unknown_fields rejects an extra key");
+}
+
+// =====================================================================================
+// P4.0b-ui2 (②-mini) C2 — the FIRST frozen projection-row: ApprovalQueueRow (CONTRACT 0.30.0).
+// The `proj_approval_queue` read model the ui's human-approval card consumes, typed in shared/ (no
+// loose-JSON on the approval path, pin #2): the wire columns + `risk_level: RiskLevel` +
+// `policy_decision: Option<PolicyDecision>` (the frozen §6.2 type — the C1-persisted decision). Field
+// names match the ui provisional where aligned (approval_id/project_id/status, pin #1). The
+// bookkeeping `sort_key`/`updated_at_seq` are NOT on the wire row (internal). deny_unknown_fields.
+// =====================================================================================
+
+fn sample_approval_queue_row() -> nexusops_shared::projections::ApprovalQueueRow {
+    use nexusops_shared::actions::{
+        PolicyDecision, PolicyDecisionStatus, RequesterType, RiskLevel,
+    };
+    use nexusops_shared::projections::ApprovalQueueRow;
+    use nexusops_shared::status::Approval;
+    // fully populated (all Options Some) so the field-name snapshot sees every key.
+    ApprovalQueueRow {
+        approval_id: "appr_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        action_request_id: Some("act_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        plan_id: Some("aplan_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        project_id: Some("prj_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        session_id: Some("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        agent_team_id: Some("team_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        risk_level: RiskLevel::Level2,
+        status: Approval::AwaitingApproval,
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        preview_summary: Some("create worktree feature/x".to_string()),
+        requested_at: "2026-06-11T00:00:00Z".to_string(),
+        expires_at: Some("2026-06-11T01:00:00Z".to_string()),
+        policy_decision: Some(PolicyDecision {
+            status: PolicyDecisionStatus::RequireApproval,
+            reasons: vec!["risk-2 requires approval".to_string()],
+            required_approvals: vec![],
+            constraints: vec![],
+            safer_alt: None,
+        }),
+    }
+}
+
+#[test]
+fn test_approval_queue_row_frozen_shape() {
+    // spec(§7 / §2.5-seam) — the FIRST frozen projection-row. The field-name set is frozen (LESSON §15)
+    // + round-trips; `risk_level: RiskLevel` (typed) + `policy_decision: Option<PolicyDecision>` (the
+    // frozen §6.2 type — no loose JSON on the approval path, pin #2). `sort_key`/`updated_at_seq` are
+    // NOT wire fields.
+    expect_fields(
+        &sample_approval_queue_row(),
+        &[
+            "approval_id",
+            "action_request_id",
+            "plan_id",
+            "project_id",
+            "session_id",
+            "agent_team_id",
+            "risk_level",
+            "status",
+            "requester_type",
+            "requester_id",
+            "preview_summary",
+            "requested_at",
+            "expires_at",
+            "policy_decision",
+        ],
+    );
+    let json = serde_json::to_string(&sample_approval_queue_row()).unwrap();
+    let back: nexusops_shared::projections::ApprovalQueueRow =
+        serde_json::from_str(&json).expect("ApprovalQueueRow round-trips");
+    assert_eq!(
+        back.risk_level,
+        nexusops_shared::actions::RiskLevel::Level2,
+        "risk_level is the typed RiskLevel"
+    );
+    assert!(
+        back.policy_decision.is_some(),
+        "policy_decision is the typed Option<PolicyDecision>"
+    );
+}
+
+#[test]
+fn test_approval_queue_row_rejects_unknown_field() {
+    // spec(§5.0/§15) — deny_unknown_fields on the frozen row (the §2.5-seam struct boundary): a valid
+    // row + ONE extra key fails to deserialize.
+    let mut v = serde_json::to_value(sample_approval_queue_row()).unwrap();
+    v.as_object_mut()
+        .unwrap()
+        .insert("rogue".to_string(), serde_json::json!(true));
+    assert!(
+        serde_json::from_value::<nexusops_shared::projections::ApprovalQueueRow>(v).is_err(),
+        "deny_unknown_fields rejects an extra key"
+    );
+}
+
+// ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
+
+#[test]
+fn test_contract_version_bumped_0_31_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.26.0 =
-    // the edges-R1 Phase-5/7 wiring event-type freeze; **0.27.0** = the P4.0b-2 split tool-policy — 3
-    // new `agent.*` catalog types (`agent.todo_write` risk-0 benign auto-allow + `agent.web_fetch`/
-    // `agent.web_search` risk-2 egress). Machine-internal (MVP-22 untouched); additive (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.28.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.29.0 =
+    // the P4.1a survival-schema freeze; 0.30.0 = the P4.0b-ui2 (②-mini) `ApprovalQueueRow` freeze;
+    // **0.31.0** = the P4.1b-1 `SessionRecovered` observation event (the daemon-restart recovery
+    // signal). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.31.0");
 }
 
 // =================================================================================================

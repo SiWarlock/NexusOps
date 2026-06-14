@@ -172,12 +172,13 @@ impl Gateway {
                     // 4. open an approval (awaiting the human) + emit ActionApprovalRequested.
                     let appr_id = ApprovalId::new();
                     approval::insert(
-                        gtx.tx(),
+                        gtx,
                         &appr_id,
                         Some(&act_id),
                         None, // a single action has no parent plan (2.1c)
                         ApprovalStatus::AwaitingApproval,
                         &RequiredApprover::current_user(),
+                        Some(&decision), // ②-mini: persist the authoritative PolicyDecision (§15-redacted)
                         None, // no expiry on submit; the expiry path is exercised via approve (2.1c)
                         &now,
                     )?;
@@ -444,12 +445,13 @@ impl Gateway {
                     let first = &plan.steps[0].action_request;
                     let appr_id = ApprovalId::new();
                     approval::insert(
-                        gtx.tx(),
+                        gtx,
                         &appr_id,
                         None, // plan-level: no single action (scope=Plan)
                         Some(plan_id),
                         ApprovalStatus::AwaitingApproval,
                         &RequiredApprover::current_user(),
+                        None, // ②-mini: plan-level policy_decision = NULL (Q2; sourcing is a follow-on)
                         None,
                         now,
                     )?;
@@ -489,13 +491,14 @@ impl Gateway {
     ) -> Result<(), GatewayError> {
         let appr_id = ApprovalId::new();
         approval::insert(
-            gtx.tx(),
+            gtx,
             &appr_id,
             Some(req.action_request_id.as_str()),
             Some(plan_id),
             ApprovalStatus::AwaitingApproval,
             &RequiredApprover::current_user(),
-            None,
+            None, // ②-mini: per-step (StepByStep) policy_decision = NULL (Q2 follow-on, like plan-level)
+            None, // expires_at
             now,
         )?;
         gtx.append(&approval::approval_requested_intent(req, &appr_id, now)?)?;

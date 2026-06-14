@@ -23,12 +23,15 @@ use crate::events::{
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
     AuditIntegrityViolation, BranchCreated, DeviceRegistered, GithubSyncFailed,
     IntegrationConnectionRegistered, LinearSyncFailed, LocalRunnerRegistered, ProjectRescanned,
-    Provider, PullRequestSynced, SensitiveOutputRedacted, SessionStarted, TelemetrySampled,
-    TerminalProcessExited, WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged,
-    WorktreePrunable,
+    Provider, PullRequestSynced, SensitiveOutputRedacted, SessionRecovered, SessionStarted,
+    TelemetrySampled, TerminalProcessExited, WorktreeCreated, WorktreeDeleted, WorktreeLocked,
+    WorktreeMerged, WorktreePrunable,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
-use crate::harness::{HarnessCapabilities, MetricQuality, TelemetrySample, TranscriptRef};
+use crate::harness::{
+    HarnessCapabilities, MetricQuality, RecoveryState, ResumeMode, ResumeResult, TelemetrySample,
+    TranscriptRef,
+};
 use crate::ids::IdKind;
 use crate::ipc::{
     ActionAck, Capabilities, DeltaKind, DiffLine, DiffLineKind, DiffResult, GetDiffParams,
@@ -38,6 +41,7 @@ use crate::ipc::{
     TerminalOutputFrame, VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
+use crate::projections::ApprovalQueueRow;
 use crate::status::{
     ActionRequest, AgentTeam, Approval, ExecutionProfile, ProjectBrain, PullRequest, Session, Task,
     WorkflowInstance, WorktreeGit, WorktreeOverlay,
@@ -162,13 +166,20 @@ struct ContractBundle {
     idempotency_formula: IdempotencyFormula,
     // 3.1 — the §9.1 HarnessAdapter normalized return types (shared/src/harness.rs) + the §7.1
     // TelemetrySampled telemetry-observation event. NormalizedStatus is the frozen `Session` $def
-    // (already registered above), not a new type. ResumeResult + the trait + the mutation-coverage
-    // matrix are DAEMON-INTERNAL (not a wire contract). Additive (CONTRACT 0.20.0).
+    // (already registered above), not a new type. The HarnessAdapter trait + the mutation-coverage
+    // matrix are DAEMON-INTERNAL (not a wire contract); ResumeResult freezes at 4.1a (below).
+    // Additive (CONTRACT 0.20.0).
     telemetry_sample: TelemetrySample,
     metric_quality: MetricQuality,
     transcript_ref: TranscriptRef,
     harness_capabilities: HarnessCapabilities,
     telemetry_sampled: TelemetrySampled,
+    // P4.1a (CONTRACT 0.29.0) — the §8/§9.1 survival contract freeze: ResumeMode(4) + RecoveryState(3)
+    // + ResumeResult{mode,replayed_event_count} (the deep-dive §7.2 B2-strict freeze; reconciles the ui
+    // provisional). The decide_resume ladder + the broker are DAEMON-INTERNAL (4.1a c2 / 4.1b). Additive.
+    resume_mode: ResumeMode,
+    recovery_state: RecoveryState,
+    resume_result: ResumeResult,
     // 3.4 — the §6.4 Terminal Channel wire contract (shared/src/ipc.rs): the 3 terminal frames +
     // the TerminalControlKind flow-control enum + the §7.1 TerminalProcessExited observation event.
     // ServerFrame (already registered above) gains the TerminalOutput variant — the reserved slot
@@ -194,6 +205,14 @@ struct ContractBundle {
     integration_connection_registered: IntegrationConnectionRegistered,
     github_sync_failed: GithubSyncFailed,
     linear_sync_failed: LinearSyncFailed,
+    // P4.0b-ui2 (CONTRACT 0.30.0) — the FIRST frozen projection-row: ApprovalQueueRow (the
+    // proj_approval_queue read model the §11.5 approval card consumes, typed; risk_level +
+    // policy_decision: Option<PolicyDecision>). Additive (shared/src/projections.rs).
+    approval_queue_row: ApprovalQueueRow,
+    // P4.1b-1 (CONTRACT 0.31.0) — the §8.1 daemon-restart recovery OBSERVATION event (the §11.4
+    // resumed-vs-replayed bit + the §17 "restart session" affordance). System-actor, write-actor, NOT
+    // a Gateway Action (Q1=(a)); §15 #8 profile preserved. Additive (shared/src/events.rs).
+    session_recovered: SessionRecovered,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

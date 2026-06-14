@@ -17,7 +17,7 @@ use tokio::sync::watch;
 use nexusopsd::bootstrap::{cold_start, BootstrapConfig, DB_FILENAME};
 use nexusopsd::clock::SystemClock;
 use nexusopsd::decisions::DecisionRegistry;
-use nexusopsd::eventstore::{JsonlMirror, PrefixRedactor};
+use nexusopsd::eventstore::{open_read_only, JsonlMirror, PrefixRedactor};
 use nexusopsd::gateway::circuit_breaker::AuditBackboneBreaker;
 use nexusopsd::gateway::executor::CatalogExecutor;
 use nexusopsd::gateway::policy::AgentMutationPolicy;
@@ -26,7 +26,11 @@ use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
 use nexusopsd::integrity::{FileIntegrityAlarm, IntegrityAlarm};
 use nexusopsd::ipc::current_euid;
-use nexusopsd::runtime::{bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor};
+use nexusopsd::runtime::recovery::run_restart_recovery;
+use nexusopsd::runtime::{
+    bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor,
+    WriteActorTelemetrySinkFactory, MAX_CONNECTIONS,
+};
 use nexusopsd::session::{spawn_supervisor_task, PtyLauncher};
 use nexusopsd::terminal::PortablePtySpawner;
 
@@ -40,8 +44,9 @@ const EVENTS_MIRROR_FILE: &str = "events.jsonl";
 const SOCKET_FILE: &str = "gateway.sock";
 /// the §17 durable integrity-incident file within the app-support dir (call-2 — the off-DB alarm).
 const INTEGRITY_INCIDENTS_FILE: &str = "integrity-incidents.jsonl";
-/// max concurrent live GatewayPort connections (anti-DoS bound, §6.4).
-const MAX_CONNECTIONS: usize = 64;
+// the general GatewayPort connection cap + the F2 intercept-wait reserved sub-bound are the canonical
+// `nexusopsd::runtime::{MAX_CONNECTIONS, RESERVED_GENERAL}` (the accept loop derives the wait class
+// from the `max_connections` it is passed — `wait_cap = MAX_CONNECTIONS − MAX_CONNECTIONS/4`).
 
 fn main() -> ExitCode {
     // C2 — the `nexusopsd hook <event>` subcommand: the live PreToolUse interception ingress (a
@@ -118,7 +123,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // hook_receiver = `<this binary> hook` — the PreToolUse interception ingress.
     let project_cwd = std::env::current_dir()?;
     let hook_receiver = format!("{} hook", std::env::current_exe()?.display());
-    let launcher = PtyLauncher::new(Box::new(PortablePtySpawner), project_cwd, hook_receiver);
+    // P4.0c — the production telemetry sink factory (the live drive caller of the 044 emit path). Built
+    // DEFERRED: the launcher (holding the factory) is consumed into the SessionExecutor → Gateway →
+    // write-actor BELOW, BEFORE the `WriteHandle` exists — so the factory shares a cell the
+    // `telemetry_slot` binds the handle into once the actor is up (well before any session.create →
+    // make_sink). The launcher holds the factory as an opaque `Box<dyn TelemetrySinkFactory>` →
+    // `session/` never imports `WriteHandle` (cat-1). The per-session sink appends `TelemetrySampled`
+    // OBSERVATION events via the write-actor; the pump's live `UsageSource` ingress is the P4 follow-on.
+    let (telemetry_factory, telemetry_slot) =
+        WriteActorTelemetrySinkFactory::deferred(Arc::new(SystemClock));
+    let launcher = PtyLauncher::new(Box::new(PortablePtySpawner), project_cwd, hook_receiver)
+        .with_telemetry_sink_factory(Box::new(telemetry_factory));
 
     // the session.create/kill executor (the live launcher + the supervisor), REGISTERED under
     // `ExecutorKind::Session` in the production CatalogExecutor — this is the reachable session.create
@@ -154,6 +169,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         audit_breaker,
     );
     let handle = actor.handle();
+    // P4.0c — bind the write-actor handle into the telemetry factory's deferred slot NOW (the actor is
+    // up; this is before the accept-loop below serves any session.create → make_sink). The per-session
+    // sinks the launcher mints now reach the live write-actor.
+    telemetry_slot.bind(handle.clone());
     // the post-commit broadcast sender for the accept-loop's per-connection live subscribers (1.6d).
     let deltas = handle.delta_sender();
 
@@ -170,6 +189,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // bind the GatewayPort UDS (reclaiming a stale socket) + spawn the peer-auth'd accept-loop — the
     // registry is threaded in for the live `intercept` transport + the approve/deny decision_sink.
     let db_path = base_dir.join(DB_FILENAME);
+
+    // P4.1b-1 — the §16/§8.1 restart recovery: enumerate the sessions that were live at shutdown (from
+    // the rebuilt `proj_session`) → `decide_resume` per session → emit the System-actor `SessionRecovered`
+    // observation (Q1=(a), lead/user-ruled: the daemon re-materializing its OWN already-approved session,
+    // NOT a Gateway Action). The PRODUCTION caller of `decide_resume` — closes its 4.1a Step-7.5
+    // reachability. Runs post-write-actor + post-supervisor, BEFORE the accept-loop serves clients. The
+    // §15 #8 profile is preserved from the committed `SessionStarted`. The REAL broker/launcher
+    // re-materialization is 4.1b-2 (LIVE survival = HITL); here the recovery DECISION is made + audited.
+    match open_read_only(&db_path) {
+        Ok(conn) => {
+            let recovered = run_restart_recovery(&conn, &handle, Arc::new(SystemClock));
+            if recovered > 0 {
+                eprintln!("nexusopsd: restart recovery — {recovered} session(s) recovered");
+            }
+        }
+        Err(e) => eprintln!("nexusopsd: restart recovery skipped (proj_session unavailable): {e}"),
+    }
+
     let listener = bind(&base_dir.join(SOCKET_FILE))?;
     eprintln!("nexusopsd: GatewayPort listening at {SOCKET_FILE}");
     let accept = spawn_accept_loop(

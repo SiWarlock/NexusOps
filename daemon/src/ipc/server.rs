@@ -40,6 +40,10 @@ pub fn serve_connection(
     // shared across connections (the supervisor reap cancels too). The `intercept` bridge gets its
     // runtime handle via `Handle::try_current()` (the serve thread is a `spawn_blocking` task).
     registry: &crate::decisions::DecisionRegistry,
+    // P4.0b-2-F2 — the intercept-wait permit class (§6.4/§10); shared across connections (one per
+    // daemon). The `intercept` handler parks here for the approval-wait so concurrent waits can't
+    // exhaust the general accept pool + starve the UI/reads (reserved headroom; fail-closed on exhaustion).
+    wait_class: &crate::runtime::InterceptWaitClass,
 ) -> Result<(), IpcError> {
     // Rule #7 (§15 / ADR-004): peer-auth before anything else — before any frame is read.
     authorize_peer(peer_uid, daemon_uid)?;
@@ -121,7 +125,7 @@ pub fn serve_connection(
         if req.method == "subscribe" {
             if let Ok(params) = serde_json::from_value::<SubscribeParams>(req.params.clone()) {
                 let rx = deltas.subscribe();
-                let ack = methods::dispatch(&req, db_path, write, registry)?;
+                let ack = methods::dispatch(&req, db_path, write, registry, wait_class)?;
                 let accepted = ack.error.is_none();
                 let buf = serde_json::to_vec(&ServerFrame::RpcResponse(ack))
                     .map_err(|e| IpcError::Protocol(e.to_string()))?;
@@ -151,7 +155,9 @@ pub fn serve_connection(
         }
         // wrap the response in the frame-type-tagged ServerFrame envelope (§6.4 multiplexing) so
         // the client demuxes rpc-responses from subscription-push frames on one connection.
-        let frame = ServerFrame::RpcResponse(methods::dispatch(&req, db_path, write, registry)?);
+        let frame = ServerFrame::RpcResponse(methods::dispatch(
+            &req, db_path, write, registry, wait_class,
+        )?);
         let buf = serde_json::to_vec(&frame).map_err(|e| IpcError::Protocol(e.to_string()))?;
         write_frame(&mut stream, &buf)?;
     }

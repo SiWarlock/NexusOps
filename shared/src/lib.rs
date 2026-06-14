@@ -15,6 +15,7 @@ pub mod harness;
 pub mod ids;
 pub mod ipc;
 pub mod objects;
+pub mod projections;
 pub mod schema;
 pub mod status;
 pub mod time;
@@ -58,8 +59,8 @@ pub mod time;
 /// `TelemetrySample` + `MetricQuality` + `TranscriptRef` + `HarnessCapabilities` (10 PRD-HARN-5
 /// fields) + the §7.1 `TelemetrySampled` telemetry-observation event — additive, no frozen type
 /// reshaped. `NormalizedStatus` re-exports the frozen §5.1 `Session` (not a new type/$def). The
-/// `HarnessAdapter` trait + `MutationIntercept` + the mutation-coverage matrix + `ResumeResult` are
-/// DAEMON-INTERNAL (not a `shared/` wire contract); `ResumeResult`/survival freezes in Phase 4 (§8/§17).
+/// `HarnessAdapter` trait + `MutationIntercept` + the mutation-coverage matrix are DAEMON-INTERNAL
+/// (not a `shared/` wire contract); `ResumeResult`/`ResumeMode`/`RecoveryState` survival froze at 4.1a (0.29.0).
 /// 0.21.0 (3.4) freezes the §6.4 Terminal Channel wire contract (`shared/src/ipc.rs`): the 3 terminal
 /// frames (`TerminalOutputFrame`/`TerminalInputFrame`/`TerminalControlFrame`) + the `TerminalControlKind`
 /// (pause|resume) flow-control enum + the §7.1 `TerminalProcessExited` PTY-death observation event.
@@ -114,4 +115,19 @@ pub mod time;
 /// unifying the risk-4 floor) + the §6.1 `get_diff` RPC types (`GetDiffParams`/`DiffResult`/`Hunk`/
 /// `DiffLine`/`DiffLineKind`) + `IpcErrorCode::NotFound` (§6.4 9→10, the read-RPC not-found). Additive;
 /// no frozen type reshaped (the catalog entry gains a field; existing entries default it true) (§5.0).
-pub const CONTRACT_VERSION: &str = "0.28.0";
+/// 0.29.0 (P4.1a) freezes the §8/§9.1 SURVIVAL contract (the deep-dive §7.2 B2-strict freeze):
+/// `ResumeMode`(4: resumed|replayed|relaunched|reattached_live — the 4th = the user-ruled B2-strict §8
+/// EXTENSION, the surviving in-flight turn reattached via the detachable-terminal broker) +
+/// `RecoveryState`(3: recovering|recovered|recovery_failed, == the ui provisional, frozen verbatim) +
+/// `ResumeResult{mode, replayed_event_count}` (replacing the daemon-internal `{resumed_live,…}`;
+/// `replayed_event_count` non-zero only on the Replayed path). Additive, no frozen type reshaped (§5.0).
+/// The `decide_resume` ladder is daemon-internal (4.1a commit 2); the broker subsystem is 4.1b.
+/// 0.30.0 (P4.0b-ui2, the ②-mini, Fork B) freezes the FIRST projection-row — `ApprovalQueueRow`
+/// (`shared/src/projections.rs`): the `proj_approval_queue` read model the §11.5 human-approval card
+/// consumes, typed (the wire columns + `risk_level: RiskLevel` + `policy_decision: Option<PolicyDecision>`
+/// — the §6.2 decision now persisted §15-redacted at approval-open + sibling-read into the row). Served
+/// TYPED (no loose JSON on the approval path). Additive, no frozen type reshaped (§5.0).
+/// 0.31.0 (P4.1b-1) adds the §8.1 daemon-restart `SessionRecovered` OBSERVATION event (`shared/src/events.rs`:
+/// the §11.4 resumed-vs-replayed bit + the §17 "restart session" affordance; System-actor, write-actor,
+/// NOT a Gateway Action [Q1=(a)]; §15 #8 profile preserved). Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.31.0";

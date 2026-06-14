@@ -693,6 +693,91 @@
       ],
       "type": "string"
     },
+    "ApprovalQueueRow": {
+      "additionalProperties": false,
+      "description": "One open row of the `proj_approval_queue` read model (§7 / §11.5) — an approval awaiting a human\ndecision. The bookkeeping `sort_key`/`updated_at_seq` columns are NOT on the wire row (internal —\nthe UI sorts off `risk_level` + `requested_at`). The load-bearing typed fields: `risk_level`\n(the authoritative §6.3 risk) + `policy_decision` (the frozen §6.2 decision, persisted §15-redacted\nat approval-open in C1; `None` for a plan-level approve-all). `status`/`requester_type` are the\nfrozen §5.1/§6.2 enums (reject-unknown — no loose JSON on the approval path). `action_request_id`\nis `None` for a plan-level approve-all approval. Optionals serialize as explicit `null` (no\n`skip_serializing_if`) so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
+      "properties": {
+        "action_request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent_team_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approval_id": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plan_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "policy_decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicyDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preview_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested_at": {
+          "type": "string"
+        },
+        "requester_id": {
+          "type": "string"
+        },
+        "requester_type": {
+          "$ref": "#/$defs/RequesterType"
+        },
+        "risk_level": {
+          "$ref": "#/$defs/RiskLevel"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/ApprovalStatus"
+        }
+      },
+      "required": [
+        "approval_id",
+        "risk_level",
+        "status",
+        "requester_type",
+        "requester_id",
+        "requested_at"
+      ],
+      "type": "object"
+    },
     "ApprovalScope": {
       "description": "The approval's authority scope (§6.2 Approval).",
       "enum": [
@@ -1781,6 +1866,26 @@
       ],
       "type": "object"
     },
+    "RecoveryState": {
+      "description": "The per-session recovery lifecycle state (§11.4 / §17) — frozen VERBATIM from the ui's provisional\n(a reconcile, no drift). snake_case wire; reject-unknown (§15). The post-restart recovery\nevent/projection that drives it is 4.1b/4.3 (freeze-load-bearing-defer-the-rest, LESSON §14).",
+      "oneOf": [
+        {
+          "const": "recovering",
+          "description": "recovery in progress (rebuild projections, reclaim leases, decide-resume per session)",
+          "type": "string"
+        },
+        {
+          "const": "recovered",
+          "description": "recovery complete — all sessions resumed/replayed/relaunched",
+          "type": "string"
+        },
+        {
+          "const": "recovery_failed",
+          "description": "recovery failed (a fail-closed terminal — the operator-surfaced degraded state)",
+          "type": "string"
+        }
+      ]
+    },
     "RedactionStatus": {
       "description": "§15 redaction state. The single-writer GATE refuses to persist any event\nthat is not `redacted`. A quarantined (unredactable) event is diverted —\nnot persisted — and a `SensitiveOutputRedacted` event recorded instead, so\nonly these 2 values ever reach the `events` table.",
       "enum": [
@@ -1881,6 +1986,50 @@
         "artifact"
       ],
       "type": "string"
+    },
+    "ResumeMode": {
+      "description": "How a session was brought back after a daemon restart (§8/§9.1 survival; the deep-dive §7.2\nB2-strict 4-value set). Carries the §11.4 \"resumed-(live) vs replayed-(relaunched)\" indicator.\nsnake_case wire; reject-unknown (§15). Produced by the daemon-internal `decide_resume` ladder.",
+      "oneOf": [
+        {
+          "const": "resumed",
+          "description": "a NEW process resumed from the harness transcript (`--resume` / `thread/resume`)",
+          "type": "string"
+        },
+        {
+          "const": "replayed",
+          "description": "rebuilt from serialized scrollback, then relaunched (no native resume)",
+          "type": "string"
+        },
+        {
+          "const": "relaunched",
+          "description": "a fresh launch — nothing to resume or replay (the \"restart session\" affordance tail)",
+          "type": "string"
+        },
+        {
+          "const": "reattached_live",
+          "description": "the SURVIVING same-process in-flight turn, reattached via the detachable-terminal broker\n(the user-ruled B2-strict §8 EXTENSION)",
+          "type": "string"
+        }
+      ]
+    },
+    "ResumeResult": {
+      "additionalProperties": false,
+      "description": "The result of a session's resume/replay/reattach decision (§9.1 `resume()` return) — produced by\nthe daemon-internal `decide_resume` ladder (4.1a commit 2). `replayed_event_count` is non-zero\nONLY on the `Replayed` path (0 on resumed/reattached/relaunched). Minimal field set (additive-later\nis non-breaking); `deny_unknown_fields` reject-unknown (§5.0/§15); no optionals (the set is total).",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/ResumeMode"
+        },
+        "replayed_event_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "mode",
+        "replayed_event_count"
+      ],
+      "type": "object"
     },
     "RiskLevel": {
       "maximum": 4,
@@ -2085,6 +2234,34 @@
         "killed"
       ],
       "type": "string"
+    },
+    "SessionRecovered": {
+      "additionalProperties": false,
+      "description": "The §8.1 daemon-restart recovery record (4.1b-1): how a session that was live at shutdown was brought\nback — the §11.4 \"resumed-(live) vs replayed-(relaunched)\" indicator + the §17 \"restart session\"\naffordance tail (`mode == Relaunched`). A **non-mutation OBSERVATION event**: a recovery is the daemon\nre-materializing its OWN already-approved prior session, so it follows the System-actor non-mutation-\nevent precedent (`DeviceRegistered`/`TelemetrySampled`, LESSON §10/§23) — written via the single\nwrite-actor through the §15 redaction gate (#2/#3 hold), **NEVER through the Gateway** (Q1=(a),\nlead/user-ruled: INV-SEC-1 governs proposer-intent state *mutations*; the daemon re-materializing its\nown session is a lifecycle event, not a proposer intent). The §15 #8 `execution_profile_id` is\nPRESERVED from the original `SessionStarted` (no silent account-hop). The session IDENTITY\n(`session_id`/`occurred_at`) lives on the [`crate::event_envelope::EventEnvelope`] columns; this\npayload carries only the recovery outcome. Optionals serialize as explicit `null` (no\n`skip_serializing_if`) for a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).",
+      "properties": {
+        "execution_profile_id": {
+          "description": "the §15 #8 ExecutionProfile PRESERVED from the original `SessionStarted` (no account-hop). `None`\nonly for a profile-less prior session (pre-§15-#8).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "$ref": "#/$defs/ResumeMode",
+          "description": "how the session was recovered (the §8.1 B2-strict ladder outcome)."
+        },
+        "replayed_event_count": {
+          "description": "the scrollback event count replayed (non-zero ONLY on `Replayed`, mirroring `ResumeResult`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "mode",
+        "replayed_event_count"
+      ],
+      "type": "object"
     },
     "SessionStarted": {
       "additionalProperties": false,
@@ -2593,6 +2770,9 @@
     "approval_model": {
       "$ref": "#/$defs/Approval"
     },
+    "approval_queue_row": {
+      "$ref": "#/$defs/ApprovalQueueRow"
+    },
     "approval_scope": {
       "$ref": "#/$defs/ApprovalScope"
     },
@@ -2731,6 +2911,9 @@
     "pull_request_synced": {
       "$ref": "#/$defs/PullRequestSynced"
     },
+    "recovery_state": {
+      "$ref": "#/$defs/RecoveryState"
+    },
     "redaction_status": {
       "$ref": "#/$defs/RedactionStatus"
     },
@@ -2748,6 +2931,12 @@
     },
     "resource_type": {
       "$ref": "#/$defs/ResourceType"
+    },
+    "resume_mode": {
+      "$ref": "#/$defs/ResumeMode"
+    },
+    "resume_result": {
+      "$ref": "#/$defs/ResumeResult"
     },
     "risk_level": {
       "$ref": "#/$defs/RiskLevel"
@@ -2769,6 +2958,9 @@
     },
     "session": {
       "$ref": "#/$defs/Session"
+    },
+    "session_recovered": {
+      "$ref": "#/$defs/SessionRecovered"
     },
     "session_started": {
       "$ref": "#/$defs/SessionStarted"
@@ -2938,6 +3130,9 @@
     "transcript_ref",
     "harness_capabilities",
     "telemetry_sampled",
+    "resume_mode",
+    "recovery_state",
+    "resume_result",
     "terminal_output_frame",
     "terminal_input_frame",
     "terminal_control_frame",
@@ -2954,9 +3149,11 @@
     "pull_request_synced",
     "integration_connection_registered",
     "github_sync_failed",
-    "linear_sync_failed"
+    "linear_sync_failed",
+    "approval_queue_row",
+    "session_recovered"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.28.0"
+  "x-contract-version": "0.31.0"
 }

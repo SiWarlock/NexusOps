@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use nexusops_shared::events::TerminalProcessExited;
 use nexusops_shared::ids::SessionId;
 
+use crate::harness::claude::telemetry::TelemetrySinkFactory;
 use crate::harness::claude::{ClaudeAdapter, ClaudeLaunchSpec};
 use crate::harness::HarnessAdapter;
 use crate::terminal::{PtySpawner, TerminalEventSink, TerminalId, TerminalSession};
@@ -113,6 +114,12 @@ pub struct PtyLauncher {
     /// the hook-receiver command the generated `ClaudeSettings` wires the `PreToolUse` hook to (the
     /// `nexusopsd` hook-subcommand that bridges Claude's hook protocol ↔ the daemon's UDS `intercept`).
     hook_receiver: String,
+    /// (4.0c) the OPAQUE per-session telemetry-sink factory — `main.rs` builds the production
+    /// `WriteActorTelemetrySinkFactory` (closing over the `WriteHandle`) and hands it here; this
+    /// launcher mints a sink per session + injects it into the `ClaudeAdapter`. Held as `Box<dyn
+    /// TelemetrySinkFactory>` (a `harness/` trait, NOT `WriteHandle`) so `session/` stays cat-1
+    /// import-grep-clean. `None` = no telemetry emission (tests / a sink-less launch).
+    telemetry_sink_factory: Option<Box<dyn TelemetrySinkFactory>>,
 }
 
 impl PtyLauncher {
@@ -125,7 +132,17 @@ impl PtyLauncher {
             spawner,
             cwd,
             hook_receiver: hook_receiver.into(),
+            telemetry_sink_factory: None,
         }
+    }
+
+    /// Inject the production telemetry-sink factory (4.0c; the `ClaudeAdapter::with_telemetry_sink`
+    /// builder precedent). `main.rs` calls this with the `WriteActorTelemetrySinkFactory` so each
+    /// launched session emits its `TelemetrySampled` observations via the write-actor. Opaque — the
+    /// launcher never sees the `WriteHandle` inside (cat-1).
+    pub fn with_telemetry_sink_factory(mut self, factory: Box<dyn TelemetrySinkFactory>) -> Self {
+        self.telemetry_sink_factory = Some(factory);
+        self
     }
 }
 
@@ -156,13 +173,17 @@ impl SessionLauncher for PtyLauncher {
         // the LIVE ClaudeAdapter — it does NOT spawn (the launcher just did); status derives from the
         // live hook signals via `push_signal` (safety #9), never the PTY. `session_id` is a best-effort
         // transcript-path default (the live hook input carries the authoritative `transcript_path`).
-        let adapter = Box::new(ClaudeAdapter::new(
-            self.cwd.clone(),
-            session_id.as_str().to_string(),
-        ));
+        let mut adapter = ClaudeAdapter::new(self.cwd.clone(), session_id.as_str().to_string());
+        // (4.0c) inject the per-session telemetry sink from the opaque factory BEFORE the session takes
+        // the adapter (the production `WriteActorTelemetrySink` → write-actor append). `project_id` is
+        // None for the MVP cwd-based launch (threading session.create's project_id is a P5 follow-on).
+        // The pump's live `UsageSource` is the P4 ingress seam — the sink is bound now, ready for it.
+        if let Some(factory) = &self.telemetry_sink_factory {
+            adapter = adapter.with_telemetry_sink(factory.make_sink(&session_id, None));
+        }
         Ok(LaunchedSession {
             session_id,
-            adapter,
+            adapter: Box::new(adapter),
             terminal,
         })
     }

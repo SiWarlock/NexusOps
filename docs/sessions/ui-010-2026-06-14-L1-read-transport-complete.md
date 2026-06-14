@@ -3,7 +3,7 @@
 - **Date:** 2026-06-14
 - **Phase:** Phase 6 (ui-resume) — **P6.8 L1** (the live `UdsGatewayPort` read transport — "go-live", reads-only, NON-cat-1), slices 3a/3 + 4/4 → **L1 COMPLETE**
 - **Predecessor:** [ui-009](ui-009-2026-06-14-6.3e-completion-and-L1-read-transport.md)
-- **Successor:** _(none yet)_
+- **Successor:** [ui-011](ui-011-2026-06-14-L2prep-regen-0.31-and-approval-real-risk.md)
 - **Track:** `track/ui` · implementer `ui-implementer` (fresh session, cycled at the 050 boundary) · orchestrator `ui-orchestrator` · lead `ui-team-lead`
 
 ## Why this session existed

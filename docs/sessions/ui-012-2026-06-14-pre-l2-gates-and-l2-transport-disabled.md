@@ -3,7 +3,7 @@
 - **Date:** 2026-06-14
 - **Phase:** Phase 6 (ui-resume) — **P6.8 L2** (the two pre-L2 NON-cat-1 gates + the first two L2 cat-1 sub-slices, foundation-first L2-O1=(B))
 - **Predecessor:** [ui-011](ui-011-2026-06-14-L2prep-regen-0.31-and-approval-real-risk.md)
-- **Successor:** _(none yet)_
+- **Successor:** [ui-013](ui-013-2026-06-14-l2-c-go-live-mutation-transport-live.md)
 - **Track:** `track/ui` · implementer `ui-implementer` · orchestrator `ui-orchestrator` · lead `ui-team-lead`
 
 ## Why this session existed

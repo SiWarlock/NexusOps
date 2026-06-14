@@ -95,8 +95,15 @@ fn make_divergence(repo: &Repository) {
     commit_file(repo, "f.txt", "2"); // C2 on main (HEAD advances)
     let tree = c1_commit.tree().expect("c1 tree");
     let sig = Signature::now("Test", "test@example.com").expect("sig");
-    repo.commit(Some("refs/heads/base"), &sig, &sig, "B2", &tree, &[&c1_commit])
-        .expect("base commit");
+    repo.commit(
+        Some("refs/heads/base"),
+        &sig,
+        &sig,
+        "B2",
+        &tree,
+        &[&c1_commit],
+    )
+    .expect("base commit");
 }
 
 // ---- gateway-seed of a proj_worktree row (edges-022 precedent) -------------
@@ -155,7 +162,12 @@ fn approval_id_of(path: &Path) -> String {
 
 /// submit + approve a git.create_worktree → drives WorktreeCreated + the in-band proj_worktree fold.
 /// Returns the minted `worktree_id`.
-fn seed_worktree(store: &mut EventStore, path: &Path, worktree_path: &str, base_branch: &str) -> String {
+fn seed_worktree(
+    store: &mut EventStore,
+    path: &Path,
+    worktree_path: &str,
+    base_branch: &str,
+) -> String {
     let gw = gw_with_git();
     gw.submit_action(store, create_worktree_req(worktree_path, base_branch))
         .expect("submit");
@@ -243,7 +255,11 @@ async fn test_refresh_fills_git_axis_cache() {
     actor.shutdown().await;
 
     let r = read_row(&dbpath, &wt_id);
-    assert_eq!(r.dirty_state.as_deref(), Some("behind_base"), "git_axis wire value");
+    assert_eq!(
+        r.dirty_state.as_deref(),
+        Some("behind_base"),
+        "git_axis wire value"
+    );
     assert_eq!(r.ahead_count, Some(1));
     assert_eq!(r.behind_count, Some(1));
     assert!(r.last_commit_sha.is_some(), "HEAD sha cached");
@@ -277,7 +293,11 @@ async fn test_refresh_recomputes_status_from_live_git_axis() {
         std::fs::write(repo_dir.path().join("a.txt"), "changed").unwrap(); // dirty (tracked change)
         actor
             .handle()
-            .refresh_worktree_status(wt_id.clone(), repo_dir.path().to_string_lossy().into_owned(), None)
+            .refresh_worktree_status(
+                wt_id.clone(),
+                repo_dir.path().to_string_lossy().into_owned(),
+                None,
+            )
             .await
             .unwrap();
         actor.shutdown().await;
@@ -295,7 +315,11 @@ async fn test_refresh_recomputes_status_from_live_git_axis() {
         commit_file(&repo, "a.txt", "hello"); // clean tree
         actor
             .handle()
-            .refresh_worktree_status(wt_id.clone(), repo_dir.path().to_string_lossy().into_owned(), None)
+            .refresh_worktree_status(
+                wt_id.clone(),
+                repo_dir.path().to_string_lossy().into_owned(),
+                None,
+            )
             .await
             .unwrap();
         actor.shutdown().await;
@@ -319,7 +343,11 @@ async fn test_refresh_stamps_git_checked_at_utc_z() {
     commit_file(&init_repo(repo_dir.path()), "a.txt", "hi");
     actor
         .handle()
-        .refresh_worktree_status(wt_id.clone(), repo_dir.path().to_string_lossy().into_owned(), None)
+        .refresh_worktree_status(
+            wt_id.clone(),
+            repo_dir.path().to_string_lossy().into_owned(),
+            None,
+        )
         .await
         .unwrap();
     actor.shutdown().await;
@@ -345,7 +373,11 @@ async fn test_refresh_non_git_path_stamps_checked_only() {
 
     let rows = actor
         .handle()
-        .refresh_worktree_status(wt_id.clone(), non_git.path().to_string_lossy().into_owned(), None)
+        .refresh_worktree_status(
+            wt_id.clone(),
+            non_git.path().to_string_lossy().into_owned(),
+            None,
+        )
         .await
         .expect("refresh does not panic on a non-git path");
     assert_eq!(rows, 1, "the row was touched (git_checked_at stamped)");
@@ -353,7 +385,10 @@ async fn test_refresh_non_git_path_stamps_checked_only() {
 
     let r = read_row(&dbpath, &wt_id);
     assert_eq!(r.git_checked_at.as_deref(), Some(CHECKED_AT), "we checked");
-    assert_eq!(r.dirty_state, None, "no git truth → git-axis cols left as-is (NULL)");
+    assert_eq!(
+        r.dirty_state, None,
+        "no git truth → git-axis cols left as-is (NULL)"
+    );
     assert_eq!(r.ahead_count, None);
     assert_eq!(r.behind_count, None);
     assert_eq!(r.last_commit_sha, None);
@@ -391,7 +426,10 @@ async fn test_refresh_is_write_actor_not_gateway_no_event() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(refreshed_events, 0, "there is no WorktreeStatusRefreshed event type");
+    assert_eq!(
+        refreshed_events, 0,
+        "there is no WorktreeStatusRefreshed event type"
+    );
 }
 
 // =============================================================================
@@ -443,7 +481,12 @@ async fn test_git_watcher_refreshes_known_worktrees() {
     let actor = WriteActor::spawn(store, Box::new(FixedClock::new(CHECKED_AT)), stub_gateway());
 
     let (sd_tx, sd_rx) = watch::channel(false);
-    let watcher = spawn_git_watcher(actor.handle(), dbpath.clone(), Duration::from_millis(2), sd_rx);
+    let watcher = spawn_git_watcher(
+        actor.handle(),
+        dbpath.clone(),
+        Duration::from_millis(2),
+        sd_rx,
+    );
     tokio::time::sleep(Duration::from_millis(40)).await; // let the watcher tick
     sd_tx.send(true).unwrap();
     watcher.await.expect("watcher joins cleanly on shutdown");
@@ -486,7 +529,10 @@ fn test_proj_worktree_rebuild_resets_live_read_cache() {
     // a full rebuild → the cache resets (the live-read cache is not in the event log).
     store.rebuild_projections().expect("rebuild");
     let after = read_row(&dbpath, &wt_id);
-    assert_eq!(after.status, "creating", "status resets to the event-derived overlay");
+    assert_eq!(
+        after.status, "creating",
+        "status resets to the event-derived overlay"
+    );
     assert_eq!(after.dirty_state, None);
     assert_eq!(after.ahead_count, None);
     assert_eq!(after.behind_count, None);

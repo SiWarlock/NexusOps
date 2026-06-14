@@ -487,11 +487,15 @@ pub fn compute_worktree_cache(path: &Path, base: Option<&str>) -> Option<Worktre
     Some(WorktreeGitCache {
         // the within-axis git-sync status as the frozen snake_case wire value (`as_wire_str` is pinned
         // byte-for-byte to the serde serialization by precedence.rs's `derived_wire_str_matches_serde`).
-        dirty_state: DerivedWorktreeStatus::Git(st.git_axis).as_wire_str().to_string(),
+        dirty_state: DerivedWorktreeStatus::Git(st.git_axis)
+            .as_wire_str()
+            .to_string(),
         // commit counts are tiny in practice, but guard the usize→i64 narrowing (no silent wrap — the
         // strict-typing posture; `graph_ahead_behind` is `usize`, the DDL column is i64 SQLite INTEGER).
         ahead_count: st.ahead_count.map(|n| i64::try_from(n).unwrap_or(i64::MAX)),
-        behind_count: st.behind_count.map(|n| i64::try_from(n).unwrap_or(i64::MAX)),
+        behind_count: st
+            .behind_count
+            .map(|n| i64::try_from(n).unwrap_or(i64::MAX)),
         last_commit_sha: st.last_commit_sha,
         status: derive_worktree_status(st.git_axis, Some(WorktreeOverlay::Creating))
             .as_wire_str()

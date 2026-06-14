@@ -218,8 +218,9 @@ impl EventStore {
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(EventStoreError::Write)?;
-        let rows = crate::projections::refresh_git_cache(&tx, worktree_id, git, &clock.now_rfc3339())
-            .map_err(projection_to_store_err)?;
+        let rows =
+            crate::projections::refresh_git_cache(&tx, worktree_id, git, &clock.now_rfc3339())
+                .map_err(projection_to_store_err)?;
         tx.commit().map_err(EventStoreError::Write)?;
         Ok(rows)
     }

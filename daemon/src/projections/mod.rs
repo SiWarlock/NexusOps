@@ -32,8 +32,8 @@ use crate::eventstore::DegradableEvent;
 // edges-026 (P5.2 follow-on) — the §7.2 worktree live-read cache: the public computed-values type
 // (the runtime layer produces it; tests construct it via `compute_worktree_cache`) + the crate-internal
 // refresh UPDATE (`EventStore::refresh_worktree_status` drives it through the single writer).
-pub use worktree::WorktreeGitCache;
 pub(crate) use worktree::refresh_git_cache;
+pub use worktree::WorktreeGitCache;
 
 /// Typed projection failure. A `Decode` (a payload/enum that won't bind to its
 /// frozen §5.1 shape) degrades the offending projector (§7.2); a `Db` is an

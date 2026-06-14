@@ -62,4 +62,14 @@ describe("applySessionDelta — live Session re-render (read cache; forbidden #2
       applySessionDelta(baseRows, { projection: "Session", kind: "remove" }),
     ).toBe(baseRows);
   });
+
+  it("ignores a delta for a different projection (defense-in-depth, parse-don't-trust)", () => {
+    const foreign: ProjectionDelta = {
+      projection: "PullRequest",
+      kind: "remove",
+      id: baseRows[0]!.session_id,
+    };
+    // a non-Session delta never touches the Session cache, even if its id collides.
+    expect(applySessionDelta(baseRows, foreign)).toBe(baseRows);
+  });
 });

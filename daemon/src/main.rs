@@ -17,7 +17,7 @@ use tokio::sync::watch;
 use nexusopsd::bootstrap::{cold_start, BootstrapConfig, DB_FILENAME};
 use nexusopsd::clock::SystemClock;
 use nexusopsd::decisions::DecisionRegistry;
-use nexusopsd::eventstore::{open_read_only, JsonlMirror, PrefixRedactor};
+use nexusopsd::eventstore::{open_read_only, JsonlMirror, PrefixRedactor, WalCheckpointMode};
 use nexusopsd::gateway::circuit_breaker::AuditBackboneBreaker;
 use nexusopsd::gateway::executor::CatalogExecutor;
 use nexusopsd::gateway::policy::AgentMutationPolicy;
@@ -29,8 +29,8 @@ use nexusopsd::ipc::current_euid;
 use nexusopsd::runtime::recovery::run_restart_recovery;
 use nexusopsd::runtime::session_death::WriteActorSessionDeathSink;
 use nexusopsd::runtime::{
-    bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor,
-    WriteActorTelemetrySinkFactory, MAX_CONNECTIONS,
+    bind, spawn_accept_loop, spawn_drainer, spawn_reaper, spawn_staleness_poller,
+    spawn_wal_checkpointer, WriteActor, WriteActorTelemetrySinkFactory, MAX_CONNECTIONS,
 };
 use nexusopsd::session::spawn_supervisor_task;
 use nexusopsd::session::tmux::{
@@ -42,6 +42,15 @@ use nexusopsd::terminal::PortablePtySpawner;
 const DRAINER_INTERVAL: Duration = Duration::from_secs(5);
 /// lease reap cadence (§17) — free expired leases periodically.
 const REAPER_INTERVAL: Duration = Duration::from_secs(30);
+/// WAL-checkpoint cadence (§10) — bound the SQLite WAL via the single write-actor (PASSIVE,
+/// non-blocking). Coarser than the writes: a steady flush, never per-commit churn.
+const WAL_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(60);
+/// session-staleness recompute cadence (§17) — recompute the stale-by-age signal over the read-only
+/// WAL. (Correct-but-dormant until a `last_heartbeat_at` producer lands — see the 4.3 Carry-forward.)
+const STALENESS_POLL_INTERVAL: Duration = Duration::from_secs(30);
+/// the heartbeat-age threshold (§5.1 `Session::Stale`): a non-terminal session silent longer than
+/// this is stale. A tunable default (no §11.4 number is pinned); the threshold the poller derives by.
+const STALENESS_THRESHOLD_SECS: i64 = 120;
 /// the local JSONL audit/debug mirror sink (§10.4) within the app-support dir.
 const EVENTS_MIRROR_FILE: &str = "events.jsonl";
 /// the GatewayPort UDS within the app-support dir (§6.4).
@@ -226,9 +235,29 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     let reaper = spawn_reaper(handle.clone(), REAPER_INTERVAL, shutdown_rx.clone());
 
+    // 4.3 — the deterministic background maintenance jobs (§10/§17): the WAL checkpointer rides the
+    // single write-actor (PASSIVE, non-blocking — forbidden #3, never a rogue writer); the staleness
+    // poller recomputes the §5.1 stale-by-age signal over the read-only WAL (live-read, never folded).
+    let checkpointer = spawn_wal_checkpointer(
+        handle.clone(),
+        WalCheckpointMode::Passive,
+        WAL_CHECKPOINT_INTERVAL,
+        shutdown_rx.clone(),
+    );
+
     // bind the GatewayPort UDS (reclaiming a stale socket) + spawn the peer-auth'd accept-loop — the
     // registry is threaded in for the live `intercept` transport + the approve/deny decision_sink.
     let db_path = base_dir.join(DB_FILENAME);
+
+    // the staleness poller reads the read-only WAL at `db_path` each tick (own snapshot — never the
+    // write-actor). `db_path` is cloned: the accept-loop below takes ownership of the original.
+    let staleness = spawn_staleness_poller(
+        db_path.clone(),
+        Arc::new(SystemClock),
+        STALENESS_THRESHOLD_SECS,
+        STALENESS_POLL_INTERVAL,
+        shutdown_rx.clone(),
+    );
 
     // P4.1b-1 — the §16/§8.1 restart recovery: enumerate the sessions that were live at shutdown (from
     // the rebuilt `proj_session`) → `decide_resume` per session → emit the System-actor `SessionRecovered`
@@ -273,6 +302,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let _ = shutdown_tx.send(true);
     let _ = drainer.await;
     let _ = reaper.await;
+    let _ = checkpointer.await;
+    let _ = staleness.await;
     let _ = accept.await;
     let _ = supervisor.await; // drains its session actors (Kill + await each handle — no orphan task).
     actor.shutdown().await;

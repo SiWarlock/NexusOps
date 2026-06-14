@@ -13,6 +13,7 @@
 //! the accept-loop, and the subscribe source.
 
 mod drainer;
+pub mod jobs;
 mod listener;
 pub mod recovery;
 pub mod session_death;
@@ -21,6 +22,9 @@ mod wait_class;
 mod writer;
 
 pub use drainer::{spawn_drainer, spawn_reaper};
+pub use jobs::{
+    is_stale, recompute_staleness_once, spawn_staleness_poller, spawn_wal_checkpointer,
+};
 pub use listener::{bind, spawn_accept_loop};
 pub use telemetry_sink::{
     TelemetryHandleSlot, WriteActorTelemetrySink, WriteActorTelemetrySinkFactory,

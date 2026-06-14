@@ -18,7 +18,10 @@ use nexusops_shared::ids::EventId;
 use nexusops_shared::ipc::{ActionAck, DeltaKind, PlanAck, ProjectionDelta, ProjectionName};
 
 use crate::clock::Clock;
-use crate::eventstore::{AppendIntent, Destination, DrainSummary, EventStore, EventStoreError};
+use crate::eventstore::{
+    AppendIntent, Destination, DrainSummary, EventStore, EventStoreError, WalCheckpointMode,
+    WalCheckpointSummary,
+};
 use crate::gateway::circuit_breaker::AuditBackboneBreaker;
 use crate::gateway::{Gateway, GatewayError};
 use crate::harness::claude::intercept::{
@@ -66,6 +69,12 @@ enum Command {
     },
     ReapLeases {
         reply: oneshot::Sender<Result<Vec<(ResourceId, LeaseKind)>, LeaseError>>,
+    },
+    // 4.3: a bounded WAL checkpoint (§10) — the background checkpointer rides the single write-actor
+    // (forbidden #3 / LESSON §9), never a rogue writable connection. A read PRAGMA, no state change.
+    WalCheckpoint {
+        mode: WalCheckpointMode,
+        reply: oneshot::Sender<Result<WalCheckpointSummary, EventStoreError>>,
     },
     // --- 2.1b Action Gateway mutation commands: the pipeline runs ON the write-actor (the single
     // writer, forbidden #3) so each transition's {row + authoritative event} is one atomic txn. ---
@@ -192,6 +201,23 @@ impl WriteHandle {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(Command::ReapLeases { reply })
+            .await
+            .map_err(|_| RuntimeError::ActorGone)?;
+        rx.await
+            .map_err(|_| RuntimeError::ActorGone)?
+            .map_err(RuntimeError::from)
+    }
+
+    /// Run a bounded WAL checkpoint through the single writer (the 4.3 checkpointer loop's call) —
+    /// the checkpoint executes on the write-actor's own connection, so the WAL is bounded WITHOUT a
+    /// second writable connection (forbidden #3 / LESSON §9).
+    pub async fn wal_checkpoint(
+        &self,
+        mode: WalCheckpointMode,
+    ) -> Result<WalCheckpointSummary, RuntimeError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(Command::WalCheckpoint { mode, reply })
             .await
             .map_err(|_| RuntimeError::ActorGone)?;
         rx.await
@@ -449,6 +475,12 @@ fn run_actor(
             }
             Command::ReapLeases { reply } => {
                 let _ = reply.send(store.reap_leases(clock.as_ref()));
+            }
+            // 4.3: the bounded WAL checkpoint runs on this single writer's own connection — no rogue
+            // writable connection is ever opened (forbidden #3 / LESSON §9). A read PRAGMA; no event,
+            // no projection, no broadcast (it changes no observable state).
+            Command::WalCheckpoint { mode, reply } => {
+                let _ = reply.send(store.wal_checkpoint(mode));
             }
             // 2.1b Action Gateway mutations run the pipeline against the single writable store
             // (each transition's row+event is its own atomic txn inside the method). The gateway's

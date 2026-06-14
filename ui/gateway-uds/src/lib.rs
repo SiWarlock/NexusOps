@@ -13,14 +13,15 @@
 //! **NON-cat-1: reads only** — no `submit_action`/`approve`/`deny`. INV-SEC-1 stays daemon-side.
 
 use std::io::{Read, Write};
+use std::ops::ControlFlow;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use nexusops_shared::ipc::{
     Capabilities, DiffResult, GetDiffParams, GetProjectionParams, HelloAck, HelloFrame,
-    IpcErrorCode, ProjectionName, ProjectionScope, RpcRequest, ServerFrame, VersionSkewError,
-    PROTOCOL_VERSION,
+    IpcErrorCode, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, ServerFrame,
+    SubscribeParams, VersionSkewError, PROTOCOL_VERSION,
 };
 use serde_json::Value;
 
@@ -164,6 +165,14 @@ pub fn call<S: Read + Write>(
     // parse-don't-trust: deny_unknown_fields on the shared frame types rejects a malformed/
     // extra-field frame as a serde error (fail-closed).
     let frame: ServerFrame = serde_json::from_slice(&body)?;
+    demux_rpc_response(frame, id)
+}
+
+/// Demux a `ServerFrame` as the `RpcResponse` correlated to request `id`: id-mismatch / a
+/// non-`RpcResponse` frame / a dual-None body → `Protocol` (fail-closed); a `WireError` → the
+/// verbatim §6.4 `Wire(code)`; a `result` → `Ok(value)`. Shared by the single-shot [`call`] and
+/// the subscribe ACK (`subscribe_stream`) so both honor the §6.1 exactly-one-of contract identically.
+fn demux_rpc_response(frame: ServerFrame, id: u64) -> Result<Value, ClientError> {
     match frame {
         ServerFrame::RpcResponse(resp) => {
             // demux by id FIRST — an uncorrelated/stale response is a protocol violation, not a
@@ -189,9 +198,9 @@ pub fn call<S: Read + Write>(
                 ))),
             }
         }
-        // a SubscriptionPush / TerminalOutput on a single-shot read is a frame-discipline error.
+        // a SubscriptionPush / TerminalOutput where an RpcResponse was expected is a discipline error.
         other => Err(ClientError::Protocol(format!(
-            "expected an RpcResponse on a single-shot read, got {other:?}"
+            "expected an RpcResponse, got {other:?}"
         ))),
     }
 }
@@ -257,6 +266,93 @@ pub fn connect_and_call(method: &str, params: Value) -> Result<Value, ClientErro
     handshake(&mut stream, CLIENT_KIND, env!("CARGO_PKG_VERSION"))?;
     call(&mut stream, method, params, 1)
     // stream drops here (the one-shot connection model)
+}
+
+// ─── the subscribe stream (052 — the dedicated persistent push-read connection) ───────────────
+
+/// Subscribe to a projection's live delta stream over a DEDICATED persistent connection: write the
+/// `subscribe` `RpcRequest` (id `id`) → read + demux the ack `RpcResponse` (a `WireError` ack →
+/// `Err(Wire)`, fail-closed exactly as [`call`] via the shared [`demux_rpc_response`]) → then loop
+/// `read_frame` → demux each `ServerFrame::SubscriptionPush(ProjectionDelta)` to `on_delta`. The
+/// daemon makes a subscribe connection terminal/single-writer and **closes it on lag**
+/// (`ProjectionDelta` carries no `seq` → a gap is client-undetectable; recovery is reconnect +
+/// re-`get_projection`, NOT client gap-fill — daemon LESSON 12 / §11.7): so a clean EOF/`Io` on the
+/// read loop **terminates the stream successfully** (`Ok(())`), not as a fault. A non-`SubscriptionPush`
+/// frame mid-stream → `Protocol`. The 8 MiB per-frame bound holds (the codec rejects an oversized
+/// frame pre-alloc). `on_delta` returns [`ControlFlow::Break`] to stop early (e.g. the downstream
+/// sink/channel was dropped — the teardown path, so a dropped subscriber leaves no spinning read).
+pub fn subscribe_stream<S, F>(
+    stream: &mut S,
+    projection: ProjectionName,
+    id: u64,
+    mut on_delta: F,
+) -> Result<(), ClientError>
+where
+    S: Read + Write,
+    F: FnMut(ProjectionDelta) -> ControlFlow<()>,
+{
+    // write the subscribe RPC + validate the ack (the daemon spawns its push thread only on an
+    // accepted ack; a WireError ack → fail-closed, the push loop is never entered).
+    let params = serde_json::to_value(SubscribeParams {
+        projection,
+        filter: None,
+    })?;
+    write_frame(
+        stream,
+        &serde_json::to_vec(&RpcRequest {
+            method: "subscribe".to_string(),
+            params,
+            id,
+        })?,
+    )?;
+    let ack_body = read_frame(stream)?;
+    let ack_frame: ServerFrame = serde_json::from_slice(&ack_body)?;
+    demux_rpc_response(ack_frame, id)?; // Ok(value) is the echoed {subscribed:…}; only success matters
+
+    // the push-read loop: every frame after the ack is a SubscriptionPush for this projection (the
+    // connection is dedicated/single-writer post-ack — daemon LESSON 12).
+    loop {
+        let body = match read_frame(stream) {
+            Ok(b) => b,
+            // the daemon closed the connection (lag/EOF) → terminate CLEANLY (the recovery
+            // contract: reconnect + re-get_projection, never a gap-fill on a seq-less stream).
+            Err(ClientError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(())
+            }
+            Err(e) => return Err(e), // FrameTooLarge / a real io fault → surface it
+        };
+        let frame: ServerFrame = serde_json::from_slice(&body)?;
+        match frame {
+            ServerFrame::SubscriptionPush(delta) => {
+                if on_delta(delta).is_break() {
+                    return Ok(());
+                }
+            }
+            other => {
+                return Err(ClientError::Protocol(format!(
+                    "expected a SubscriptionPush mid-stream, got {other:?}"
+                )))
+            }
+        }
+    }
+}
+
+/// Connect → handshake → [`subscribe_stream`] over a DEDICATED `UnixStream` (the 052 persistent
+/// connection model). Unlike [`connect_and_call`], this **deliberately sets NO read timeout**: a
+/// healthy idle subscription blocks on the next push indefinitely (deltas are sparse) — only the
+/// daemon's lag-close (EOF) ends it; the 30 s single-shot timeout would kill a quiet-but-live
+/// subscription. Exactly one RPC is issued (the subscribe, id 1); multiplexed unique-correlation-ids
+/// stay deferred (the daemon MVP is 1-subscription-per-connection, terminal post-ack). The
+/// `#[ignore]` integration test exercises this against a live daemon.
+pub fn connect_and_subscribe<F>(projection: ProjectionName, on_delta: F) -> Result<(), ClientError>
+where
+    F: FnMut(ProjectionDelta) -> ControlFlow<()>,
+{
+    let path = socket_path()?;
+    let mut stream = UnixStream::connect(&path)?;
+    // NB: NO set_read_timeout — see the doc comment (a subscribe must not time out while idle).
+    handshake(&mut stream, CLIENT_KIND, env!("CARGO_PKG_VERSION"))?;
+    subscribe_stream(&mut stream, projection, 1, on_delta)
 }
 
 #[cfg(test)]
@@ -545,5 +641,125 @@ mod tests {
         let req: RpcRequest = serde_json::from_slice(&s.writes[4..]).unwrap();
         assert_eq!(req.method, "get_projection");
         assert_eq!(req.params["name"], "Session");
+    }
+
+    // ─── subscribe_stream (052 — the dedicated persistent push-read connection) ───────────────
+
+    use std::ops::ControlFlow;
+
+    /// A framed subscribe ACK (RpcResponse{id, result:{subscribed}}) — the daemon's first frame.
+    fn subscribe_ack(id: u64, projection: &str) -> Vec<u8> {
+        frame_json(&ServerFrame::RpcResponse(
+            nexusops_shared::ipc::RpcResponse {
+                id,
+                result: Some(serde_json::json!({ "subscribed": projection })),
+                error: None,
+            },
+        ))
+    }
+    /// A framed SubscriptionPush(ProjectionDelta) push frame.
+    fn push(delta: nexusops_shared::ipc::ProjectionDelta) -> Vec<u8> {
+        frame_json(&ServerFrame::SubscriptionPush(delta))
+    }
+    fn session_delta(id: &str) -> nexusops_shared::ipc::ProjectionDelta {
+        nexusops_shared::ipc::ProjectionDelta {
+            projection: ProjectionName::Session,
+            kind: nexusops_shared::ipc::DeltaKind::Upsert,
+            row: None,
+            id: Some(id.to_string()),
+        }
+    }
+
+    #[test]
+    fn subscribe_stream_yields_each_push_delta() {
+        // spec(§6.4) — ack then 2 SubscriptionPush frames → both deltas reach the sink, in order.
+        let mut reads = subscribe_ack(1, "Session");
+        reads.extend(push(session_delta("sess_1")));
+        reads.extend(push(session_delta("sess_2")));
+        let mut s = FakeStream::new(reads);
+        let mut got: Vec<Option<String>> = Vec::new();
+        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |d| {
+            got.push(d.id.clone());
+            ControlFlow::Continue(())
+        });
+        assert!(r.is_ok());
+        assert_eq!(
+            got,
+            vec![Some("sess_1".to_string()), Some("sess_2".to_string())]
+        );
+        // the client wrote a `subscribe` RpcRequest carrying the projection.
+        let req: RpcRequest = serde_json::from_slice(&s.writes[4..]).unwrap();
+        assert_eq!(req.method, "subscribe");
+        assert_eq!(req.params["projection"], "Session");
+    }
+
+    #[test]
+    fn subscribe_stream_terminates_on_close() {
+        // spec(§11.7) — ack then EOF (the daemon closed on lag) → a CLEAN terminate, not a fault;
+        // no gap-fill (ProjectionDelta carries no seq — recovery is reconnect, daemon LESSON 12).
+        let mut s = FakeStream::new(subscribe_ack(1, "Session")); // ack, then the cursor EOFs
+        let mut count = 0;
+        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        assert!(r.is_ok(), "EOF after the ack is a clean close, not a fault");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn subscribe_ack_wire_error_fails_closed() {
+        // spec(§6.4) — a WireError ack → Err(Wire(code)) verbatim; the push loop is never entered.
+        let ack = frame_json(&ServerFrame::RpcResponse(
+            nexusops_shared::ipc::RpcResponse {
+                id: 1,
+                result: None,
+                error: Some(nexusops_shared::ipc::WireError {
+                    code: IpcErrorCode::ProtocolError,
+                }),
+            },
+        ));
+        let mut s = FakeStream::new(ack);
+        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| ControlFlow::Continue(()));
+        assert!(matches!(
+            r,
+            Err(ClientError::Wire(IpcErrorCode::ProtocolError))
+        ));
+    }
+
+    #[test]
+    fn subscribe_push_over_8mib_rejected() {
+        // spec(§6.4) — an oversized push frame → FrameTooLarge from the prefix alone (pre-alloc).
+        let mut reads = subscribe_ack(1, "Session");
+        reads.extend_from_slice(&((MAX_FRAME_SIZE + 1) as u32).to_be_bytes()); // oversized prefix, no body
+        let mut s = FakeStream::new(reads);
+        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| ControlFlow::Continue(()));
+        assert!(matches!(r, Err(ClientError::FrameTooLarge { .. })));
+    }
+
+    #[test]
+    fn subscribe_non_push_frame_mid_stream_is_protocol() {
+        // spec(§6.4) — a non-SubscriptionPush frame after the ack → Protocol (frame-discipline).
+        let mut reads = subscribe_ack(1, "Session");
+        reads.extend(rpc_ok(2, serde_json::json!({ "x": 1 }))); // an RpcResponse mid-stream
+        let mut s = FakeStream::new(reads);
+        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| ControlFlow::Continue(()));
+        assert!(matches!(r, Err(ClientError::Protocol(_))));
+    }
+
+    #[test]
+    fn subscribe_stream_sink_break_stops_early() {
+        // the sink can stop the loop (e.g. the Tauri channel closed) — ControlFlow::Break ends it.
+        let mut reads = subscribe_ack(1, "Session");
+        reads.extend(push(session_delta("sess_1")));
+        reads.extend(push(session_delta("sess_2")));
+        let mut s = FakeStream::new(reads);
+        let mut count = 0;
+        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| {
+            count += 1;
+            ControlFlow::Break(())
+        });
+        assert!(r.is_ok());
+        assert_eq!(count, 1, "Break after the first delta stops the loop");
     }
 }

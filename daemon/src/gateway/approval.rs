@@ -8,7 +8,7 @@
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use nexusops_shared::actions::{
-    ActionRequest as ActionRequestModel, RequesterType, RequiredApprover,
+    ActionRequest as ActionRequestModel, PolicyDecision, RequesterType, RequiredApprover,
 };
 use nexusops_shared::event_envelope::{Sensitivity, SourceType, Visibility};
 use nexusops_shared::events::{
@@ -18,7 +18,7 @@ use nexusops_shared::gateway_ids::ApprovalId;
 use nexusops_shared::ids::{ProjectId, WorkspaceId};
 use nexusops_shared::status::Approval;
 
-use crate::eventstore::AppendIntent;
+use crate::eventstore::{AppendIntent, GatewayTxn};
 use crate::gateway::{db_err, enum_wire, gateway_event_intent, GatewayError};
 
 /// the loaded `approvals` row the gateway acts on (approve/deny/expire). `action_request_id` is
@@ -129,33 +129,47 @@ pub fn can_transition(from: Approval, to: Approval) -> bool {
 // indirection without clarity for a single DB write helper (mirrors `request::insert`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn insert(
-    tx: &Transaction,
+    gtx: &GatewayTxn,
     approval_id: &ApprovalId,
     action_request_id: Option<&str>,
     plan_id: Option<&str>,
     status: Approval,
     required_approver: &RequiredApprover,
+    policy_decision: Option<&PolicyDecision>,
     expires_at: Option<&str>,
     created_at: &str,
 ) -> Result<(), GatewayError> {
     let approver_json = serde_json::to_string(required_approver)
         .map_err(|e| GatewayError::Serialize(e.to_string()))?;
-    tx.execute(
-        "INSERT INTO approvals \
+    // §15 dual-gate (rule #3, LESSON §16): the authoritative `PolicyDecision` (2.2; computed at
+    // approval-open, was DROPPED) persists at rest on the registry row → run it through the SAME §15
+    // Redactor as `inputs_json` BEFORE INSERT (fail-closed; never an un-redacted persist — the
+    // PolicyDecision is policy-generated, but defense-in-depth). `None` for a plan-level approve-all
+    // (Q2 — the single-action path carries the real decision; plan-level sourcing is a follow-on).
+    let policy_decision_json = match policy_decision {
+        Some(pd) => Some(gtx.redact_row(
+            &serde_json::to_string(pd).map_err(|e| GatewayError::Serialize(e.to_string()))?,
+        )?),
+        None => None,
+    };
+    gtx.tx()
+        .execute(
+            "INSERT INTO approvals \
          (approval_id, action_request_id, plan_id, status, required_approver, decided_by, \
-          decided_at, expires_at, created_at) \
-         VALUES (?1,?2,?3,?4,?5,NULL,NULL,?6,?7)",
-        rusqlite::params![
-            approval_id.as_str(),
-            action_request_id,
-            plan_id,
-            enum_wire(&status)?,
-            approver_json,
-            expires_at,
-            created_at,
-        ],
-    )
-    .map_err(db_err)?;
+          decided_at, expires_at, created_at, policy_decision_json) \
+         VALUES (?1,?2,?3,?4,?5,NULL,NULL,?6,?7,?8)",
+            rusqlite::params![
+                approval_id.as_str(),
+                action_request_id,
+                plan_id,
+                enum_wire(&status)?,
+                approver_json,
+                expires_at,
+                created_at,
+                policy_decision_json,
+            ],
+        )
+        .map_err(db_err)?;
     Ok(())
 }
 

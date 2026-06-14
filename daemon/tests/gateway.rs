@@ -1043,3 +1043,161 @@ fn test_approval_queue_rebuild_equivalent() {
         "full rebuild reproduces the incremental approval-queue state"
     );
 }
+
+// =============================================================================================
+// P4.0b-ui2 (②-mini) C1 — persist the authoritative PolicyDecision (§15-redacted) on the approvals
+// row + sibling-read it into proj_approval_queue. The Gateway computes the decision (pipeline.rs:154)
+// but currently DROPS it; this captures it so the ui's live approval card shows REAL risk/policy.
+// NON-cat-1, but §15 redaction-before-persist on the new payload (security-reviewer runs).
+// =============================================================================================
+
+/// a high-entropy KEY=value secret planted in a PolicyDecision reason — proves the §15 redactor runs
+/// over the persisted `policy_decision_json` (the PolicyDecision is policy-generated, but fail-closed).
+const POLICY_REASON_SECRET: &str = "Zx9Kq2Lm7Wp4Rn1Vc6Bt3Hy8Fd5Gj0Aa2Ss4Dd";
+
+/// a `PolicyEngine` that returns RequireApproval with a SECRET-shaped reason — the redaction vehicle.
+struct SecretReasonPolicy;
+impl nexusopsd::gateway::policy::PolicyEngine for SecretReasonPolicy {
+    fn decide(&self, _req: &ActionRequest) -> nexusops_shared::actions::PolicyDecision {
+        nexusops_shared::actions::PolicyDecision {
+            status: nexusops_shared::actions::PolicyDecisionStatus::RequireApproval,
+            reasons: vec![format!("API_SECRET={POLICY_REASON_SECRET}")],
+            required_approvals: vec![],
+            constraints: vec![],
+            safer_alt: None,
+        }
+    }
+}
+
+#[test]
+fn test_approval_open_persists_policy_decision() {
+    // spec(§6.2/§11.5) — the authoritative PolicyDecision computed at approval-open is PERSISTED on
+    // the approvals row (was dropped at pipeline.rs:154). The card shows the real decision, not a
+    // recompute/fixture; the single canonical decision is captured at open.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    gw.submit_action(
+        &mut store,
+        sample_request("git.create_worktree", RiskLevel::Level2),
+    )
+    .expect("submit");
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let pd: Option<String> = conn
+        .query_row("SELECT policy_decision_json FROM approvals", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let pd = pd.expect("policy_decision_json persisted on the approvals row");
+    let decision: nexusops_shared::actions::PolicyDecision = serde_json::from_str(&pd).unwrap();
+    assert_eq!(
+        decision.status,
+        nexusops_shared::actions::PolicyDecisionStatus::RequireApproval,
+        "the persisted decision == the policy decide() output"
+    );
+}
+
+#[test]
+fn test_proj_approval_queue_carries_policy_decision() {
+    // spec(§7) — the projector sibling-reads policy_decision_json from approvals into the read model
+    // (IMMUTABLE field, sibling-read; the LESSON §17 discipline).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    gw.submit_action(
+        &mut store,
+        sample_request("git.create_worktree", RiskLevel::Level2),
+    )
+    .expect("submit");
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let pd: Option<String> = conn
+        .query_row(
+            "SELECT policy_decision_json FROM proj_approval_queue",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        pd.is_some(),
+        "the projector folds policy_decision_json (sibling-read)"
+    );
+}
+
+#[test]
+fn test_policy_decision_persist_is_redacted() {
+    // spec(§15 rule #3 / LESSON §16) — the persisted policy_decision_json passes the §15 Redactor
+    // before INSERT (the inputs_json dual-gate precedent): a secret-shaped string in a reasons[] value
+    // is masked at rest. The PolicyDecision is policy-generated, but fail-closed (defense-in-depth).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = Gateway::new(
+        Box::new(SecretReasonPolicy),
+        Box::new(nexusopsd::gateway::executor::StubExecutor),
+    );
+    gw.submit_action(
+        &mut store,
+        sample_request("git.create_worktree", RiskLevel::Level2),
+    )
+    .expect("submit");
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let pd: String = conn
+        .query_row("SELECT policy_decision_json FROM approvals", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(
+        !pd.contains(POLICY_REASON_SECRET),
+        "the policy_decision secret must be masked at rest: {pd}"
+    );
+    assert!(pd.contains("[REDACTED]"), "masked in place: {pd}");
+
+    // the MASKED value (not the raw secret) flows through the sibling-read into the ui-facing read
+    // model — guards a regression where the projector re-reads from an unredacted source (§15 at the
+    // read-model boundary). By construction the projector copies the already-redacted column.
+    let pd_proj: String = conn
+        .query_row(
+            "SELECT policy_decision_json FROM proj_approval_queue",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        !pd_proj.contains(POLICY_REASON_SECRET),
+        "the secret must NOT reach the proj_approval_queue read model: {pd_proj}"
+    );
+    assert!(
+        pd_proj.contains("[REDACTED]"),
+        "the projector carries the redacted value: {pd_proj}"
+    );
+}
+
+#[test]
+fn test_approval_queue_rebuild_equivalence() {
+    // spec(LESSON §17) — the sibling-read is rebuild-safe: a full rebuild reproduces
+    // policy_decision_json byte-identically (immutable-from-registry, never recomputed).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    gw.submit_action(
+        &mut store,
+        sample_request("git.create_worktree", RiskLevel::Level2),
+    )
+    .expect("submit");
+    let read_pd = |p: &std::path::Path| -> Option<String> {
+        nexusopsd::eventstore::open_read_only(p)
+            .unwrap()
+            .query_row(
+                "SELECT policy_decision_json FROM proj_approval_queue",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let before = read_pd(&path);
+    store.rebuild_projections().unwrap();
+    let after = read_pd(&path);
+    assert_eq!(
+        before, after,
+        "rebuild reproduces policy_decision_json byte-identically (sibling-read is rebuild-safe)"
+    );
+}

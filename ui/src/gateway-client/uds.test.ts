@@ -8,14 +8,47 @@
 // methods are NOT invokable (reads-only — L2 mutation transport is cat-1 HELD).
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { UdsGatewayPort } from "./uds";
+import {
+  UdsGatewayPort,
+  subscriptionIterable,
+  type SubscriptionEvent,
+} from "./uds";
 import { BoundaryValidationError, parseProjectionPage } from "./boundary";
 import { WireError } from "../contracts/index";
-import type { ActionRequest } from "../contracts/index";
+import type { ActionRequest, ProjectionDelta } from "../contracts/index";
 import { sessionPageFixture } from "../projections/fixtures/proj_session";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+// the real subscribe() constructs a Channel — stub it so the smoke test can build the port; the
+// streaming logic itself is tested through subscriptionIterable with a fake start (no real Channel).
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+  Channel: class {
+    onmessage: ((e: unknown) => void) | undefined = undefined;
+  },
+}));
 const mockInvoke = vi.mocked(invoke);
+
+/** A fake subscribe `start`: captures the onMessage handler so a test drives the stream. */
+function fakeStart() {
+  let emit: ((e: SubscriptionEvent) => void) | null = null;
+  const start = (onMessage: (e: SubscriptionEvent) => void) => {
+    emit = onMessage;
+    return Promise.resolve();
+  };
+  return {
+    start,
+    emit: (e: SubscriptionEvent) => emit!(e),
+  };
+}
+
+/** Drain an AsyncIterable to completion (collecting deltas); rethrows if the iterable throws. */
+async function drain(
+  iter: AsyncIterable<ProjectionDelta>,
+): Promise<ProjectionDelta[]> {
+  const out: ProjectionDelta[] = [];
+  for await (const d of iter) out.push(d);
+  return out;
+}
 
 // A contract-valid get_diff result (mirrors the mock's diffFixture / the daemon Hunk shape).
 const validDiff = {
@@ -209,12 +242,60 @@ describe("UdsGatewayPort — single-shot reads (Layer A)", () => {
     await expect(port.deny("appr_1", "no")).rejects.toThrow(/not wired|L2/i);
     // the §6.4 terminal demux is a P4 surface — not wired in L1 either.
     expect(() => port.subscribe_terminal("t1")).toThrow(/not wired|L2|P4/i);
-    // the projection subscribe stream is slice 052 — not wired in L1.
-    expect(() => port.subscribe({ projection: "Session" })).toThrow(
-      /not wired|052/i,
-    );
+    // (subscribe is now WIRED at 052 — covered by its own tests below; it is a READ, not a mutation.)
 
     // the read client can NEVER reach a mutation command — no Tauri mutation command exists.
     expect(mockInvoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("UdsGatewayPort — subscribe streaming (Layer B-TS)", () => {
+  it("subscribe_iterable_parsedelta_each_frame — yields a parseDelta'd delta then ends on close", async () => {
+    const h = fakeStart();
+    const iter = subscriptionIterable(h.start);
+    const validDelta = { projection: "Session", kind: "upsert", id: "sess_1" };
+    h.emit({ kind: "delta", delta: validDelta });
+    h.emit({ kind: "closed" });
+
+    const got: ProjectionDelta[] = [];
+    for await (const d of iter) got.push(d);
+
+    expect(got).toHaveLength(1);
+    expect(got[0]!.id).toBe("sess_1");
+    expect(got[0]!.kind).toBe("upsert");
+  });
+
+  it("subscribe_iterable rejects a malformed delta with BoundaryValidationError (parse-don't-trust)", async () => {
+    const h = fakeStart();
+    const iter = subscriptionIterable(h.start);
+    // a malformed delta (bad kind, no projection) → parseDelta throws; never yielded (§5.0 fail-closed).
+    h.emit({ kind: "delta", delta: { kind: "not_a_real_kind" } });
+
+    await expect(drain(iter)).rejects.toBeInstanceOf(BoundaryValidationError);
+  });
+
+  it("subscribe_iterable_ends_on_stream_close — a `closed` event ends the iterable cleanly (no throw)", async () => {
+    const h = fakeStart();
+    const iter = subscriptionIterable(h.start);
+    h.emit({ kind: "closed" });
+
+    const got: ProjectionDelta[] = [];
+    for await (const d of iter) got.push(d);
+    expect(got).toHaveLength(0);
+  });
+
+  it("subscribe_iterable_surfaces_error_on_error_signal — an `error` event throws (honest degrade, never silent §11.7)", async () => {
+    const h = fakeStart();
+    const iter = subscriptionIterable(h.start);
+    h.emit({ kind: "error", error: { kind: "io", message: "broken pipe" } });
+
+    await expect(drain(iter)).rejects.toBeInstanceOf(Error);
+  });
+
+  it("subscribe() returns an AsyncIterable (wired at 052 — replaces the 051 not-wired throw)", () => {
+    mockInvoke.mockResolvedValue(undefined);
+    const port = new UdsGatewayPort();
+    const iter = port.subscribe({ projection: "Session" });
+    expect(typeof iter[Symbol.asyncIterator]).toBe("function");
   });
 });

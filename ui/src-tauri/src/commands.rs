@@ -10,17 +10,19 @@
 //! #[tauri::command] wrappers + the socket connect are infra (the gated smoke test covers the
 //! round-trip end-to-end against a real daemon).
 
-use nexusops_gateway_uds::{connect_and_call, ClientError};
+use nexusops_gateway_uds::{connect_and_call, connect_and_subscribe, ClientError};
 use nexusops_shared::ipc::{
     GetDiffParams, GetProjectionParams, IpcErrorCode, ProjectionName, ProjectionScope,
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::ops::ControlFlow;
+use tauri::ipc::Channel;
 
 /// A serializable (→ JS), leak-free command error. `Wire` carries the verbatim §6.4 code so the
 /// 051 TS `describeRejection` routes it; the other variants carry only structural info (sizes /
 /// versions / an error Display string) — reads-only, so no daemon payload / path / secret crosses.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GatewayCommandError {
     /// the daemon rejected the read with a structured §6.4 code (verbatim wire value).
@@ -144,6 +146,60 @@ pub async fn gateway_get_capabilities() -> Result<Value, GatewayCommandError> {
     call_daemon("get_capabilities", serde_json::json!({})).await
 }
 
+/// A frame streamed to the frontend over the subscribe `Channel` (052). A tagged enum so the TS
+/// AsyncIterable yields-vs-ends-vs-errors UNAMBIGUOUSLY (§11.7): `Delta` carries the raw daemon
+/// `ProjectionDelta` (the TS `parseDelta`-validates it at the boundary — parse-don't-trust); `Closed`
+/// is the daemon's clean lag-close (→ the iterable ends → the Shell recovery reconnects); `Error`
+/// carries the leak-free §6.4 `GatewayCommandError` (→ the iterable surfaces it). NOT a shared
+/// contract — a ui-host-local marshaling type.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubscriptionEvent {
+    Delta { delta: Value },
+    Closed,
+    Error { error: GatewayCommandError },
+}
+
+/// Subscribe to a projection's live delta stream (052) — the dedicated persistent connection. Spawns
+/// the blocking [`connect_and_subscribe`] off the async runtime (the 050 `spawn_blocking` precedent),
+/// sending each delta over the Tauri `Channel`; on the daemon's lag-close → `Closed`, on a transport
+/// fault → `Error` (distinct, §11.7). If the frontend drops the `Channel` (`send` errors), the sink
+/// returns `Break` → the blocking read loop ends + the stream is dropped (NO leaked subscription
+/// thread — the teardown/recovery path). Typed-narrow allowlist (registered in `lib.rs`); still NO
+/// generic `gateway_call` / mutation command (LESSON 21 — reads-only, INV-SEC-1 daemon-side).
+#[tauri::command]
+pub async fn gateway_subscribe(
+    projection: ProjectionName,
+    on_event: Channel<SubscriptionEvent>,
+) -> Result<(), GatewayCommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = connect_and_subscribe(projection, |delta| {
+            let value = serde_json::to_value(&delta).unwrap_or(Value::Null);
+            match on_event.send(SubscriptionEvent::Delta { delta: value }) {
+                Ok(()) => ControlFlow::Continue(()),
+                // the frontend dropped the channel → stop reading (no leaked subscription thread).
+                Err(_) => ControlFlow::Break(()),
+            }
+        });
+        // signal the stream end DISTINCTLY: a clean close (lag/EOF) vs a transport error. A failed
+        // send here just means the frontend already went away — nothing to do.
+        match result {
+            Ok(()) => {
+                let _ = on_event.send(SubscriptionEvent::Closed);
+            }
+            Err(e) => {
+                let _ = on_event.send(SubscriptionEvent::Error {
+                    error: map_client_error(e),
+                });
+            }
+        }
+    })
+    .await
+    .map_err(|e| GatewayCommandError::Internal {
+        message: format!("subscribe task failed to join: {e}"),
+    })
+}
+
 /// Run the BLOCKING 049 `connect_and_call` off the async runtime (it uses a std `UnixStream`) and
 /// map any `ClientError` → the serializable command error.
 async fn call_daemon(method: &'static str, params: Value) -> Result<Value, GatewayCommandError> {
@@ -240,5 +296,36 @@ mod tests {
         let parsed: GetDiffParams = serde_json::from_value(params).unwrap();
         assert_eq!(parsed.worktree_id, "wt_1");
         assert_eq!(parsed.file, "a.ts");
+    }
+
+    #[test]
+    fn subscription_event_maps_delta_close_error_distinctly() {
+        // spec(§11.7) — the 3 Channel payload variants serialize to DISTINCT kinds (delta/closed/
+        // error) so the TS iterable yields-vs-ends-vs-errors unambiguously; none collapse, the error
+        // carries the verbatim §6.4 code (leak-free — kind/code only, the same shape map_client_error
+        // produces for the single-shot reads).
+        let delta = serde_json::to_value(SubscriptionEvent::Delta {
+            delta: serde_json::json!({ "projection": "Session", "kind": "upsert" }),
+        })
+        .unwrap();
+        let closed = serde_json::to_value(SubscriptionEvent::Closed).unwrap();
+        let err = serde_json::to_value(SubscriptionEvent::Error {
+            error: map_client_error(ClientError::Wire(IpcErrorCode::NotFound)),
+        })
+        .unwrap();
+
+        assert_eq!(delta["kind"], "delta");
+        assert_eq!(closed["kind"], "closed");
+        assert_eq!(err["kind"], "error");
+        let kinds = [
+            delta["kind"].as_str().unwrap(),
+            closed["kind"].as_str().unwrap(),
+            err["kind"].as_str().unwrap(),
+        ];
+        let unique: std::collections::HashSet<&str> = kinds.iter().copied().collect();
+        assert_eq!(unique.len(), 3, "the 3 payload variants must be distinct");
+        // the nested error is the verbatim §6.4 code (the 050 wire-code path), nothing else leaked.
+        assert_eq!(err["error"]["kind"], "wire");
+        assert_eq!(err["error"]["code"], "not_found");
     }
 }

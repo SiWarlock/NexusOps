@@ -9,10 +9,12 @@ mod commands;
 pub fn run() {
     tauri::Builder::default()
         // The complete read-command allowlist (registered = invokable; nothing else is exposed).
+        // Still NO mutation/`gateway_call` command — reads + the subscribe stream only (LESSON 21).
         .invoke_handler(tauri::generate_handler![
             commands::gateway_get_projection,
             commands::gateway_get_diff,
             commands::gateway_get_capabilities,
+            commands::gateway_subscribe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

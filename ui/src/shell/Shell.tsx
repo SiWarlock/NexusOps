@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { GatewayPort } from "../gateway-client/types";
 import { UdsGatewayPort } from "../gateway-client/uds";
+import { runSubscriptionSupervisor } from "../gateway-client/subscribe-recovery";
+import { applySessionDelta } from "../gateway-client/delta-reducer";
 import type {
   ApprovalQueueRow,
   AuditEventRow,
@@ -36,7 +38,7 @@ import {
   deriveDegradedState,
   type VersionCompat,
 } from "../connection/version";
-import type { ConnectionState } from "../connection/state";
+import { canTransition, type ConnectionState } from "../connection/state";
 import { DegradedBanner } from "../connection/DegradedBanner";
 import { RecoveryBanner } from "../recovery/RecoveryBanner";
 import { resumeModesBySessionId } from "../recovery/model";
@@ -82,6 +84,11 @@ interface ShellData {
   usage: UsageRow[];
   creditPool: CreditPool | null;
 }
+
+// Bounded backoff for the live-subscribe reconnect recovery (052) — don't hammer the daemon on a
+// flapping connection; cap the wait so recovery stays responsive.
+const SUBSCRIBE_BACKOFF_BASE_MS = 500;
+const SUBSCRIBE_BACKOFF_MAX_MS = 30_000;
 
 /**
  * The top-level app shell — a projection-driven reattaching client (§11). Reads
@@ -200,6 +207,58 @@ export function Shell({
         if (!cancelled) setError(e);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // Live subscribe stream (052) — the Session projection's deltas keep the cockpit live as the
+  // daemon mutates (the local store stays a read cache, forbidden #2); on a lag-close the recovery
+  // machine reconnects → re-subscribes → re-`get_projection`s a fresh snapshot (no stale-as-live,
+  // §11.7). Session-only here (the L1 mechanism on the most-dynamic projection); the other
+  // projections reuse the identical mechanism — a spread. Recomputes the switcher counts so a live
+  // session change is consistent across the list AND the derived counts.
+  useEffect(() => {
+    let cancelled = false;
+    const recountFrom = (prev: ShellData, sessions: SessionRow[]): ShellData => ({
+      ...prev,
+      sessions,
+      counts: deriveProjectSwitcherCounts({
+        projects: prev.projects,
+        sessions,
+        pullRequests: prev.pullRequests,
+        approvals: prev.approvals,
+      }),
+    });
+    runSubscriptionSupervisor({
+      subscribe: () => client.subscribe({ projection: "Session" }),
+      onDelta: (delta) =>
+        setData((prev) =>
+          prev ? recountFrom(prev, applySessionDelta(prev.sessions, delta)) : prev,
+        ),
+      refetch: async () => {
+        const page = await client.get_projection("Session");
+        setData((prev) => (prev ? recountFrom(prev, page.rows) : prev));
+      },
+      setConnection: (next) =>
+        setConnection((prev) => (canTransition(prev, next) ? next : prev)),
+      delay: (attempt) =>
+        new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SUBSCRIBE_BACKOFF_MAX_MS,
+              SUBSCRIBE_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+            ),
+          ),
+        ),
+      shouldContinue: () => !cancelled,
+    }).catch((e: unknown) => {
+      // The supervisor degrades internally on stream faults; a throw escaping it is unexpected
+      // (e.g. a synchronous fault setting up a re-subscribe). Log it — don't crash the cockpit
+      // (a live-read recovery fault must never take down the whole shell, §11.7).
+      console.error("subscription supervisor exited unexpectedly", e);
+    });
     return () => {
       cancelled = true;
     };

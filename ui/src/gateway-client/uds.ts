@@ -107,7 +107,9 @@ export function subscriptionIterable(
   });
   return {
     async *[Symbol.asyncIterator](): AsyncGenerator<ProjectionDelta> {
-      void startPromise; // keep the ref so the rejection handler stays attached
+      // `startPromise`'s `.catch` (an invoke rejection → an error event) is attached eagerly at the
+      // `start()` call above; reference it here so it isn't flagged unused (no floating rejection).
+      void startPromise;
       for (;;) {
         while (queue.length > 0) {
           const e = queue.shift()!;

@@ -292,10 +292,33 @@ describe("UdsGatewayPort — subscribe streaming (Layer B-TS)", () => {
     await expect(drain(iter)).rejects.toBeInstanceOf(Error);
   });
 
-  it("subscribe() returns an AsyncIterable (wired at 052 — replaces the 051 not-wired throw)", () => {
+  it("subscribe_iterable yields multiple deltas queued before iteration (no lost wakeup)", async () => {
+    const h = fakeStart();
+    const iter = subscriptionIterable(h.start);
+    // queue TWO deltas + a close BEFORE iterating — the buffered async-queue must yield both, in order.
+    h.emit({
+      kind: "delta",
+      delta: { projection: "Session", kind: "upsert", id: "s1" },
+    });
+    h.emit({
+      kind: "delta",
+      delta: { projection: "Session", kind: "remove", id: "s2" },
+    });
+    h.emit({ kind: "closed" });
+
+    const got = await drain(iter);
+    expect(got.map((d) => d.id)).toEqual(["s1", "s2"]);
+  });
+
+  it("subscribe() returns an AsyncIterable invoking gateway_subscribe (wired at 052 — replaces the 051 not-wired throw)", () => {
     mockInvoke.mockResolvedValue(undefined);
     const port = new UdsGatewayPort();
     const iter = port.subscribe({ projection: "Session" });
     expect(typeof iter[Symbol.asyncIterator]).toBe("function");
+    // the real subscribe eager-starts the gateway_subscribe command with the projection (the wiring pin).
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "gateway_subscribe",
+      expect.objectContaining({ projection: "Session" }),
+    );
   });
 });

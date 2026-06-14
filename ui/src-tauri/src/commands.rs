@@ -174,7 +174,11 @@ pub async fn gateway_subscribe(
 ) -> Result<(), GatewayCommandError> {
     tauri::async_runtime::spawn_blocking(move || {
         let result = connect_and_subscribe(projection, |delta| {
-            let value = serde_json::to_value(&delta).unwrap_or(Value::Null);
+            // a ProjectionDelta is plain serde-derive data over JSON-compatible fields → serializing
+            // it is infallible; expect (over a null/empty fallback) so a structural fault surfaces as
+            // an Internal join-error, never a silent `delta: null` masquerading as a live delta.
+            let value = serde_json::to_value(&delta)
+                .expect("a ProjectionDelta always serializes to JSON");
             match on_event.send(SubscriptionEvent::Delta { delta: value }) {
                 Ok(()) => ControlFlow::Continue(()),
                 // the frontend dropped the channel → stop reading (no leaked subscription thread).

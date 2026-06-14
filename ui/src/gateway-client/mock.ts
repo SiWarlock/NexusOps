@@ -123,6 +123,13 @@ export class MockGatewayPort implements GatewayPort {
       );
     }
     yield parseDelta(sessionDeltaFixture);
+    // Then STAY OPEN — a real subscribe stream blocks on the next push until the daemon
+    // closes it on lag (it does NOT end after one delta). Blocking here keeps the live
+    // subscribe supervisor (052) from spinning recovery in Mock-backed tests; consumers
+    // that only sample the stream break after the first delta (mock.test.ts).
+    await new Promise<void>(() => {
+      /* never resolves: a live subscribe stream stays open until the daemon closes it */
+    });
   }
 
   async *subscribe_terminal(

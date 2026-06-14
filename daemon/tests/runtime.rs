@@ -419,6 +419,7 @@ async fn test_foreign_peer_rejected_in_accept_path() {
         8,
         no_deltas(),
         nexusopsd::runtime::WriteHandle::disconnected(),
+        std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         sd_rx,
     );
 
@@ -453,6 +454,7 @@ async fn test_connection_cap_enforced() {
         1,
         no_deltas(),
         nexusopsd::runtime::WriteHandle::disconnected(),
+        std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         sd_rx,
     ); // cap = 1
 
@@ -495,6 +497,7 @@ async fn test_connection_permit_released_on_close() {
         1,
         no_deltas(),
         nexusopsd::runtime::WriteHandle::disconnected(),
+        std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         sd_rx,
     ); // cap = 1
 
@@ -538,6 +541,7 @@ async fn test_read_projection_over_real_socket() {
         8,
         no_deltas(),
         nexusopsd::runtime::WriteHandle::disconnected(),
+        std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         sd_rx,
     );
 

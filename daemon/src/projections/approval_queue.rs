@@ -72,10 +72,16 @@ fn open_row(
     // the parent plan + expiry come from the approvals row (plan_id NULL for a standalone action).
     // A missing sibling row is a true integrity break (the Gateway wrote it in this very txn / it
     // is durable for a rebuild) → propagate as a Db error (fail-closed), never a silent default.
-    let (plan_id, expires_at): (Option<String>, Option<String>) = tx.query_row(
-        "SELECT plan_id, expires_at FROM approvals WHERE approval_id = ?1",
+    // policy_decision_json (②-mini): IMMUTABLE — sibling-read from approvals (persisted §15-redacted at
+    // approval-open), never recomputed → rebuild-safe (LESSON §17). NULL for a plan-level approve-all (Q2).
+    let (plan_id, expires_at, policy_decision_json): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = tx.query_row(
+        "SELECT plan_id, expires_at, policy_decision_json FROM approvals WHERE approval_id = ?1",
         [approval_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
 
     let action_request_id = env.action_request_id.as_ref().map(|a| a.as_str());
@@ -118,8 +124,8 @@ fn open_row(
         "INSERT INTO proj_approval_queue \
          (approval_id, action_request_id, plan_id, project_id, session_id, agent_team_id, \
           risk_level, status, requester_type, requester_id, preview_summary, requested_at, \
-          expires_at, sort_key, updated_at_seq) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,'awaiting_approval',?8,?9,NULL,?10,?11,?12,?13) \
+          expires_at, sort_key, updated_at_seq, policy_decision_json) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,'awaiting_approval',?8,?9,NULL,?10,?11,?12,?13,?14) \
          ON CONFLICT(approval_id) DO UPDATE SET \
            action_request_id=excluded.action_request_id, plan_id=excluded.plan_id, \
            project_id=excluded.project_id, session_id=excluded.session_id, \
@@ -127,7 +133,8 @@ fn open_row(
            status='awaiting_approval', requester_type=excluded.requester_type, \
            requester_id=excluded.requester_id, preview_summary=excluded.preview_summary, \
            requested_at=excluded.requested_at, expires_at=excluded.expires_at, \
-           sort_key=excluded.sort_key, updated_at_seq=excluded.updated_at_seq",
+           sort_key=excluded.sort_key, updated_at_seq=excluded.updated_at_seq, \
+           policy_decision_json=excluded.policy_decision_json",
         params![
             approval_id,
             action_request_id,
@@ -142,6 +149,7 @@ fn open_row(
             expires_at,
             sort_key,
             env.seq,
+            policy_decision_json,
         ],
     )?;
     Ok(())

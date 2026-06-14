@@ -65,6 +65,10 @@ base64 = "0.22"
 # resize, waitpid exit). PTY is DISPLAY-ONLY (#9) — never scraped for status. The blocking reader runs
 # on a spawn_blocking thread in the production drive loop (the write-actor-thread precedent, LESSON §9).
 portable-pty = "0.9"
+# NOTE (R8 merge): main's P4.0b-ui1 get_diff added a second `git2 = "0.21"` here; deduped at the
+# main→edges merge — the edges `git2` entry above (default-features=false + vendored-libgit2, the
+# forbidden-#6 read-only/OQ-INT-SPIKE-6 posture) is the single source. main's get_diff read_diff uses
+# only core libgit2 diff APIs, satisfied by the vendored build with no default features.
 # (the `nexusopsd` bin is auto-discovered from src/main.rs — no explicit [[bin]] needed.)
 
 [features]
@@ -79,6 +83,12 @@ fault-injection = []
 # placeholder → the real ClaudeAdapter makes them test-only). Mirrors `fault-injection` (LESSON 21);
 # the cross-track edges resume gates its `integrations/` fakes behind it.
 test-support = []
+# P4.0b-2-smoke (brief 053) — gates the `smoke` dev-client subcommand (the 0.1-HITL "see it work" rig).
+# OFF by default (production hygiene — the smoke client isn't needed in a release build); the runbook
+# builds `cargo build --release --features dev-client`. NOTE (CI-rot residual, Step-9 flagged): the
+# default CI does not exercise this feature → a dedicated `--features dev-client` lint/build line is a
+# Future-TODO; this slice's preflight runs `clippy/build --features dev-client` to verify it.
+dev-client = []
 
 [dev-dependencies]
 tempfile = "3"
@@ -91,11 +101,15 @@ nexusopsd = { path = ".", features = ["fault-injection", "test-support"] }
 # read-path degrade/quarantine (§17) without a pub test-backdoor in the API.
 rusqlite = { version = "0.34", features = ["bundled"] }
 # the runtime tests drive the write-actor + accept-loop + subscribe over a tokio runtime
-# (#[tokio::test]) + a real ephemeral UnixListener client.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+# (#[tokio::test]) + a real ephemeral UnixListener client. `test-util` (P4.0b-2) = `start_paused` /
+# `tokio::time::pause` for the deterministic 5-min decision-wait timeout test (no real-time sleep).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util", "test-util"] }
 # reqwest in dev-deps too (like tokio above) so the §15 no-key-leak test can CONSTRUCT a Client +
 # drive fetch_issue against a closed local port (transport-error path). Same version/features → one compile.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# git2 in the get_diff integration test (daemon/tests/get_diff.rs) — builds the fixture repo
+# (Repository::init + commit + modify) the read-only read_diff is tested against (P4.0b-ui1).
+git2 = "0.21"
 
 # P2.5 — the §18 event-write/reader perf benchmark. `harness = false`: a plain `fn main()` (NOT the
 # libtest harness), so it is INVISIBLE to `cargo test --workspace` (the per-slice RED/GREEN loop) and

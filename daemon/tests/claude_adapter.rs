@@ -5,77 +5,20 @@
 //! Status derives from STRUCTURED signals (hook events + transcript + the 3.4 exit event), NEVER
 //! from PTY output bytes (safety #9). Interception (INV-SEC-1) + telemetry = brief 043; resume = P4.
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
 
 use nexusops_shared::status::Session;
 use nexusopsd::harness::claude::{ClaudeAdapter, ClaudeLaunchSpec, CLAUDE_CAPABILITIES};
-use nexusopsd::harness::HarnessAdapter;
-use nexusopsd::terminal::{ExitStatus, FakePty, Pty, PtyRead, PtySpawner};
+use nexusopsd::harness::{HarnessAdapter, ResumeMode};
 
-// ---- a recording PtySpawner test double: records the spawn call + returns a scripted FakePty ----
-
-#[derive(Clone)]
-struct SpawnCall {
-    program: String,
-    args: Vec<String>,
-    cwd: PathBuf,
-}
-
-#[derive(Clone, Default)]
-struct RecordingSpawner {
-    calls: Arc<Mutex<Vec<SpawnCall>>>,
-}
-
-impl PtySpawner for RecordingSpawner {
-    fn spawn(
-        &self,
-        program: &str,
-        args: &[String],
-        cwd: &Path,
-        _rows: u16,
-        _cols: u16,
-    ) -> std::io::Result<Box<dyn Pty>> {
-        self.calls.lock().unwrap().push(SpawnCall {
-            program: program.to_string(),
-            args: args.to_vec(),
-            cwd: cwd.to_path_buf(),
-        });
-        // a minimal live child for the adapter to own (launch only needs a spawned Pty).
-        Ok(Box::new(FakePty::new(
-            vec![PtyRead::Eof],
-            ExitStatus {
-                exit_code: Some(0),
-                signal: None,
-            },
-        )))
-    }
-}
-
-/// a spawner that always fails — pins the launch error path.
-struct FailingSpawner;
-
-impl PtySpawner for FailingSpawner {
-    fn spawn(
-        &self,
-        _program: &str,
-        _args: &[String],
-        _cwd: &Path,
-        _rows: u16,
-        _cols: u16,
-    ) -> std::io::Result<Box<dyn Pty>> {
-        Err(std::io::Error::other("spawn refused (test)"))
-    }
-}
-
-fn adapter_with(spawner: RecordingSpawner) -> ClaudeAdapter {
+/// a live `ClaudeAdapter` for the observe-path tests (capability/status/transcript/telemetry). Option A
+/// (P4.0b-2): the adapter no longer spawns or holds a PTY — the `PtyLauncher` owns the live-claude
+/// spawn site (pinned by `tests/session_live.rs`); `new(cwd, session_id)` is the status/transcript-only
+/// constructor (the launch/#10 tests moved to `session_live.rs`).
+fn live_adapter() -> ClaudeAdapter {
     ClaudeAdapter::new(
-        Box::new(spawner),
         PathBuf::from("/Users/x/proj"),
         "sess_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
-        // the hook-receiver command the generated settings reference — the real daemon receiver
-        // endpoint is built in 043; 042 only wires the spec to point at it.
-        "/usr/local/bin/nexusops-hook".to_string(),
     )
 }
 
@@ -98,7 +41,7 @@ fn test_claude_capabilities_const() {
     assert!(caps.supports_subagents);
     assert!(!caps.supports_cloud_tasks);
     // and the adapter surfaces exactly this const.
-    let a = adapter_with(RecordingSpawner::default());
+    let a = live_adapter();
     assert_eq!(a.capabilities(), CLAUDE_CAPABILITIES);
 }
 
@@ -109,7 +52,7 @@ fn test_launch_spec_is_o13_compliant() {
     // safety #10 / O-13 — the launch spec is the default-mode-only / no-SDK-drive / no-bg-subagent
     // enforcement surface (PTY-primary). The argv + the generated settings ARE the contract.
     let spec = ClaudeLaunchSpec::build(
-        Path::new("/Users/x/proj"),
+        &PathBuf::from("/Users/x/proj"),
         "sess_01ARZ3NDEKTSV4RRFFQ69G5FAV",
         "/usr/local/bin/nexusops-hook",
     );
@@ -159,54 +102,54 @@ fn test_launch_spec_is_o13_compliant() {
     );
 }
 
-// ---- 3.2 L1 RED #3 — launch() spawns via the injected Pty seam → Starting (§9.1 + 3.4) ----
+// ---- P4.0b-2 env hygiene + session correlation (note-1; §15 #8) — the spec's env policy ----------
 
 #[test]
-fn test_launch_spawns_via_injected_pty_returns_starting() {
-    // §9.1 launch + the 3.4 Pty seam — launch() builds the O-13 spec + spawns it via the injected
-    // PtySpawner (FakePty here, PortablePtyHost in prod) exactly once, with the spec's argv + cwd,
-    // and returns the normalized Starting status (the live spawn is the §14 non-deterministic surface).
-    let spawner = RecordingSpawner::default();
-    let mut adapter = adapter_with(spawner.clone());
-
-    let status = adapter.launch();
-    assert_eq!(
-        status,
-        Session::Starting,
-        "launch → NormalizedStatus::Starting"
+fn test_claude_spec_env_mutations_strip_api_key_and_carry_session() {
+    // spec(§15 #8 / P4.0b-2 note-1) — the live `claude` is spawned with a HYGIENIC env: REMOVE
+    // `ANTHROPIC_API_KEY` (so it rides subscription/OAuth auth, not the API-key billing pool the
+    // PTY-primary design avoids), and SET `NEXUSOPS_SESSION_ID` = the daemon session id (the hook
+    // subprocess inherits it → the daemon correlates a `PreToolUse` interception to the session it
+    // belongs to, so a dead session's pending decisions are cancel_session-swept → Deny). The
+    // per-profile `CLAUDE_CODE_OAUTH_TOKEN` set is the HITL-parked profile-config (a forward note).
+    let spec = ClaudeLaunchSpec::build(
+        &PathBuf::from("/Users/x/proj"),
+        "sess_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "/usr/local/bin/nexusops-hook",
     );
+    let muts = spec.env_mutations();
 
-    let calls = spawner.calls.lock().unwrap();
-    assert_eq!(calls.len(), 1, "spawned exactly once");
-    assert_eq!(calls[0].program, "claude");
-    assert_eq!(calls[0].cwd, PathBuf::from("/Users/x/proj"));
+    // ANTHROPIC_API_KEY is REMOVED (value None) — the §15 #8 account-auth hygiene.
     assert!(
-        calls[0]
-            .args
-            .windows(2)
-            .any(|w| w[0] == "--permission-mode" && w[1] == "default"),
-        "spawned with the O-13 argv (default mode): {:?}",
-        calls[0].args
+        muts.iter()
+            .any(|m| m.key == "ANTHROPIC_API_KEY" && m.value.is_none()),
+        "ANTHROPIC_API_KEY is stripped from the spawned env: {muts:?}"
+    );
+    // NEXUSOPS_SESSION_ID is SET to the daemon session id — the hook→session correlation key.
+    assert!(
+        muts.iter().any(|m| m.key == "NEXUSOPS_SESSION_ID"
+            && m.value.as_deref() == Some("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+        "NEXUSOPS_SESSION_ID carries the daemon session id: {muts:?}"
     );
 }
 
-// ---- 3.2 L1 RED #3b — a spawn failure yields Failed (the launch error path) ----
+// ---- launch() = the Creating→Starting marker only (the launcher owns the spawn — Option A) --------
+//
+// (The former `test_launch_spawns_via_injected_pty_returns_starting` + `test_launch_spawn_failure_*`
+// MOVED to `tests/session_live.rs` — the launcher is now the single live-claude spawn site + the O-13
+// #10 enforcement surface, P4.0b-2 Option A. `ClaudeAdapter::launch` no longer spawns; it holds no
+// spawner — structurally cannot.)
 
 #[test]
-fn test_launch_spawn_failure_yields_failed() {
-    // launch() maps a spawn failure to Session::Failed (fail-closed — no phantom Starting). The
-    // write-fail→Failed arm shares this contract (harder to inject deterministically; the spawn-fail
-    // arm pins the error-handling shape).
-    let mut adapter = ClaudeAdapter::new(
-        Box::new(FailingSpawner),
-        PathBuf::from("/Users/x/proj"),
-        "sess_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
-        "/usr/local/bin/nexusops-hook".to_string(),
-    );
+fn test_launch_is_the_lifecycle_marker_no_spawn() {
+    // spec(§9.1 / P4.0b-2 Option A) — the adapter's `launch()` is the daemon-lifecycle Creating→Starting
+    // marker ONLY (it holds no spawner, no PTY). The live spawn + the O-13 #10 spec live at the launcher
+    // (pinned by `tests/session_live.rs`); status then derives from hook signals (safety #9).
+    let mut adapter = live_adapter();
     assert_eq!(
         adapter.launch(),
-        Session::Failed,
-        "a spawn failure → Failed (never a phantom Starting)"
+        Session::Starting,
+        "launch() = the Creating→Starting marker (no spawn — the launcher owns the spawn site)"
     );
 }
 
@@ -385,7 +328,7 @@ fn test_status_derivation_takes_structured_signals_not_pty_bytes() {
 #[test]
 fn test_push_signal_updates_stream_status() {
     use nexusopsd::harness::claude::ClaudeSignal;
-    let mut adapter = adapter_with(RecordingSpawner::default());
+    let mut adapter = live_adapter();
     assert_eq!(adapter.launch(), Session::Starting);
     assert_eq!(adapter.stream_status(), Session::Starting);
     adapter.push_signal(ClaudeSignal::PreToolUse {
@@ -413,7 +356,7 @@ fn test_read_transcript_locates_jsonl() {
         std::env::var_os("HOME").is_some(),
         "this test derives ~/.claude/… and needs HOME set"
     );
-    let adapter = adapter_with(RecordingSpawner::default()); // cwd=/Users/x/proj, sess_01ARZ…
+    let adapter = live_adapter(); // cwd=/Users/x/proj, sess_01ARZ…
     let t = adapter
         .read_transcript()
         .expect("Claude supports transcript read");
@@ -443,10 +386,8 @@ fn test_read_transcript_locates_jsonl() {
     // the project slug replaces path separators AND dots → '-' (best-effort; 043 overwrites). A
     // dotted cwd exercises the non-obvious dot-replacement.
     let dotted = ClaudeAdapter::new(
-        Box::new(RecordingSpawner::default()),
         PathBuf::from("/Users/x/v1.2.3/proj"),
         "sess_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
-        "/usr/local/bin/nexusops-hook".to_string(),
     );
     let dt = dotted.read_transcript().expect("transcript ref");
     assert!(
@@ -464,21 +405,22 @@ fn test_observe_path_stubs_marked() {
 
     // intercept_mutation→ None (the live PreToolUse→Gateway hook wiring is P4), resume→ P4; the
     // adapter stays object-safe (Box<dyn HarnessAdapter>).
-    let mut adapter: Box<dyn HarnessAdapter> = Box::new(adapter_with(RecordingSpawner::default()));
+    let mut adapter: Box<dyn HarnessAdapter> = Box::new(live_adapter());
     adapter.launch();
     assert!(
         adapter.intercept_mutation().is_none(),
         "intercept_mutation → None (the live hook wiring is P4)"
     );
     let r = adapter.resume();
-    assert!(
-        !r.resumed_live,
-        "resume → minimal, not re-attached live (survival is P4)"
+    assert_ne!(
+        r.mode,
+        ResumeMode::ReattachedLive,
+        "resume → minimal, NOT re-attached live (the live broker reattach comes only from decide_resume, 4.1b)"
     );
 
     // telemetry_heartbeat is NO LONGER an always-None stub (044): None before any reading, Some
     // after a usage reading is pushed (the emission landed this slice).
-    let mut concrete = adapter_with(RecordingSpawner::default());
+    let mut concrete = live_adapter();
     assert!(
         concrete.telemetry_heartbeat().is_none(),
         "telemetry_heartbeat → None before any usage reading"

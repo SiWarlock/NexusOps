@@ -153,6 +153,37 @@ pub struct EventStore {
     redactor: Box<dyn Redactor>,
 }
 
+/// The WAL checkpoint mode for [`EventStore::wal_checkpoint`] (§10). PASSIVE is the periodic
+/// non-blocking default (4.3 — won't contend with the read-only WAL readers); TRUNCATE additionally
+/// truncates the `-wal` file to zero (a future size-threshold path — the enum makes it a drop-in).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalCheckpointMode {
+    /// Checkpoint as many frames as possible WITHOUT blocking concurrent readers (best-effort).
+    Passive,
+    /// Checkpoint, then truncate the `-wal` file to zero bytes (may wait on a reader's snapshot).
+    Truncate,
+}
+
+impl WalCheckpointMode {
+    /// The `PRAGMA wal_checkpoint(<MODE>)` statement — a fixed enum-selected literal (no caller
+    /// input → no injection surface).
+    fn pragma_sql(self) -> &'static str {
+        match self {
+            WalCheckpointMode::Passive => "PRAGMA wal_checkpoint(PASSIVE)",
+            WalCheckpointMode::Truncate => "PRAGMA wal_checkpoint(TRUNCATE)",
+        }
+    }
+}
+
+/// The `PRAGMA wal_checkpoint` result triple (§10). `busy`=1 if a reader/lock prevented a full
+/// checkpoint; `log_frames`=frames in the WAL; `checkpointed_frames`=frames moved into the main db.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalCheckpointSummary {
+    pub busy: i64,
+    pub log_frames: i64,
+    pub checkpointed_frames: i64,
+}
+
 impl EventStore {
     /// Open (creating if needed) with WAL pragmas + forward-only migrations.
     /// Refuses a db newer than this binary understands (§16). The `redactor`
@@ -536,6 +567,27 @@ impl EventStore {
         clock: &dyn Clock,
     ) -> Result<Vec<(ResourceId, LeaseKind)>, LeaseError> {
         locks::reap_once(&mut self.conn, clock)
+    }
+
+    /// Run a bounded WAL checkpoint (§10) on the writer's connection — the 4.3 background
+    /// checkpointer's deterministic `*_once` unit, commanded through the single write-actor so it
+    /// never opens a rogue writable connection (forbidden #3 / LESSON §9). PASSIVE = non-blocking
+    /// best-effort (flush as many frames as possible without blocking a reader); TRUNCATE also
+    /// truncates the `-wal` file to zero. Returns the `PRAGMA wal_checkpoint` triple. A read PRAGMA
+    /// on `&self.conn` (the write-actor owns the only writable connection).
+    pub fn wal_checkpoint(
+        &self,
+        mode: WalCheckpointMode,
+    ) -> Result<WalCheckpointSummary, EventStoreError> {
+        self.conn
+            .query_row(mode.pragma_sql(), [], |r| {
+                Ok(WalCheckpointSummary {
+                    busy: r.get(0)?,
+                    log_frames: r.get(1)?,
+                    checkpointed_frames: r.get(2)?,
+                })
+            })
+            .map_err(EventStoreError::Write)
     }
 
     /// The applied schema version (§16). Typed `Result<u32, _>` — a real read error is

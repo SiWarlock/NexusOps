@@ -125,10 +125,15 @@ fn columns(path: &std::path::Path, table: &str) -> std::collections::BTreeMap<St
 fn test_migration_8_action_plans_and_plan_dimension() {
     // spec(§6.2 / DATA_MODEL §2.9) — MIGRATION_8 adds the action_plans table + action_requests.plan_id
     // + generalizes approvals (action_request_id NULLABLE, + plan_id) + the proj_approval_queue
-    // plan dimension; SUPPORTED_USER_VERSION == 8.
+    // plan dimension. (The store opens at the LATEST version — now 9 after MIGRATION_9, the ②-mini
+    // policy_decision_json columns.)
     let (_d, path) = temp_db();
     let store = open(&path);
-    assert_eq!(store.user_version().unwrap(), 8, "MIGRATION_8 raises to v8");
+    assert_eq!(
+        store.user_version().unwrap(),
+        9,
+        "the store opens at the latest SUPPORTED_USER_VERSION (9 after MIGRATION_9, ②-mini)"
+    );
 
     // action_plans — the thin grouping table + the plan-submit immutable context (Flag 2)
     let ap = columns(&path, "action_plans");
@@ -892,4 +897,116 @@ fn test_reapprove_cascaded_plan_rejected() {
         matches!(err, GatewayError::IllegalTransition { .. }),
         "second approve → IllegalTransition (the approval is terminal), got {err:?}"
     );
+}
+
+// ---- P4.0b-ui2 (②-mini) C1 — the plan-level approve-all approval persists NULL policy_decision ----
+
+#[test]
+fn test_plan_level_approval_persists_null_policy_decision() {
+    // spec(§6.2 / Q2) — a plan-level approve-all approval (`action_request_id` NULL, `plan_id` set)
+    // persists `policy_decision_json` = NULL (the single-action path carries the real decision;
+    // plan-level sourcing is a follow-on) and the projector carries NULL without error. Pins that the
+    // `approval::insert` `tx`→`gtx` + policy-param sig change did NOT regress the plan call site.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    let s1 = step(
+        "s1",
+        "git.create_worktree",
+        RiskLevel::Level2,
+        serde_json::json!({}),
+    );
+    let s3 = step(
+        "s3",
+        "project.rescan",
+        RiskLevel::Level1,
+        serde_json::json!({}),
+    );
+    let p = plan(vec![s1, s3], ApprovalMode::ApproveAll);
+    let plan_id = p.plan_id.as_str().to_string();
+    gw.submit_action_plan(&mut store, p).expect("submit");
+    let appr = plan_approval_id(&path, &plan_id);
+
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let pd_appr: Option<String> = conn
+        .query_row(
+            "SELECT policy_decision_json FROM approvals WHERE approval_id = ?1",
+            [&appr],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        pd_appr.is_none(),
+        "a plan-level approve-all approval persists NULL policy_decision (Q2)"
+    );
+    let pd_proj: Option<String> = conn
+        .query_row(
+            "SELECT policy_decision_json FROM proj_approval_queue WHERE approval_id = ?1",
+            [&appr],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        pd_proj.is_none(),
+        "the projector carries NULL for the plan-level row (no error)"
+    );
+}
+
+// ---- P4.0b-ui2 (②-mini) C2 — the ApprovalQueue projection is served TYPED (pin #2; Some + None) ----
+
+#[test]
+fn test_get_projection_serves_typed_approval_row() {
+    // spec(§6.1 / pin #2) — the ApprovalQueue projection is served TYPED via `read_approval_queue_typed`
+    // (no loose JSON on the human-approval path). It must handle BOTH a Some (single-action, the C1
+    // persisted decision) AND a None (plan-level approve-all, NULL policy_decision) row — both
+    // deserialize into the frozen `ApprovalQueueRow`, neither errors. Guards the DB-TEXT→
+    // Option<PolicyDecision> mapping: a wrong NULL-unwrap would break the ENTIRE read whenever a
+    // plan-level approval is present (an availability bug on the safety-critical approval path).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = stub_gateway();
+    // a single-action approval → Some(policy_decision) (C1 persists the StubPolicy decision).
+    let single = step(
+        "solo",
+        "git.create_worktree",
+        RiskLevel::Level2,
+        serde_json::json!({}),
+    )
+    .action_request;
+    gw.submit_action(&mut store, single)
+        .expect("submit single action");
+    // an ApproveAll plan (one non-critical step) → a plan-level approval with NULL policy_decision (Q2).
+    let s1 = step(
+        "s1",
+        "project.rescan",
+        RiskLevel::Level1,
+        serde_json::json!({}),
+    );
+    gw.submit_action_plan(&mut store, plan(vec![s1], ApprovalMode::ApproveAll))
+        .expect("submit plan");
+
+    let rows = nexusopsd::ipc::read_approval_queue_typed(&path).expect("typed approval-queue read");
+    assert_eq!(
+        rows.len(),
+        2,
+        "both approvals served (single-action + plan-level)"
+    );
+    // BOTH deserialized into the frozen ApprovalQueueRow (the read never errored on the NULL).
+    let some_count = rows.iter().filter(|r| r.policy_decision.is_some()).count();
+    let none_count = rows.iter().filter(|r| r.policy_decision.is_none()).count();
+    assert_eq!(
+        some_count, 1,
+        "the single-action row carries Some(PolicyDecision)"
+    );
+    assert_eq!(
+        none_count, 1,
+        "the plan-level row carries None (NULL policy_decision) — the read handled NULL"
+    );
+    for r in &rows {
+        assert_eq!(
+            r.status,
+            nexusops_shared::status::Approval::AwaitingApproval,
+            "typed Approval status (no loose JSON)"
+        );
+    }
 }

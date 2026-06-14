@@ -442,3 +442,14 @@ CREATE TABLE proj_approval_queue (
 CREATE INDEX ix_approval_queue_open ON proj_approval_queue(status, risk_level, requested_at);
 DELETE FROM projection_offsets WHERE projection_name = 'approval_queue';
 ";
+
+/// Migration 9 (P4.0b-ui2, the ②-mini, Fork B) — surface the authoritative §6.2 `PolicyDecision` on
+/// the approval path. Additive nullable `policy_decision_json` on `approvals` (persisted §15-redacted
+/// at approval-open — the `pipeline.rs` decision that was previously DROPPED, now captured) + on
+/// `proj_approval_queue` (the projector sibling-reads it, rebuild-safe — LESSON §17). `ALTER ADD
+/// COLUMN`: additive nullable, so historical rows legitimately carry NULL (no source decision to
+/// backfill) and the projection re-folds new events on catch-up — no DROP+CREATE / offset-reset.
+pub const MIGRATION_9_POLICY_DECISION: &str = "\
+ALTER TABLE approvals ADD COLUMN policy_decision_json TEXT;
+ALTER TABLE proj_approval_queue ADD COLUMN policy_decision_json TEXT;
+";

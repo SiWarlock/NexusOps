@@ -7,40 +7,18 @@
 //! OBSERVATION event through an injected sink (the 3.4 `TerminalEventSink` precedent, LESSON §23/§24).
 //! NON-safety — no §15/INV-SEC-1 mechanism touched (the write-actor append already gates it).
 
-use std::path::Path;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use nexusops_shared::events::TelemetrySampled;
 use nexusops_shared::harness::MetricQuality;
 use nexusopsd::harness::claude::telemetry::{
-    parse_usage_reading, telemetry_sample, TelemetryEventSink, UsageReading,
+    parse_usage_reading, telemetry_sample, TelemetryEventSink, UsageReading, UsageSource,
 };
 use nexusopsd::harness::claude::ClaudeAdapter;
 use nexusopsd::harness::HarnessAdapter;
-use nexusopsd::terminal::{ExitStatus, FakePty, Pty, PtyRead, PtySpawner};
 
 // ---- test doubles -------------------------------------------------------------------------------
-
-/// a no-op spawner (telemetry tests never launch; the adapter just needs a constructed spawner).
-struct NoopSpawner;
-impl PtySpawner for NoopSpawner {
-    fn spawn(
-        &self,
-        _program: &str,
-        _args: &[String],
-        _cwd: &Path,
-        _rows: u16,
-        _cols: u16,
-    ) -> std::io::Result<Box<dyn Pty>> {
-        Ok(Box::new(FakePty::new(
-            vec![PtyRead::Eof],
-            ExitStatus {
-                exit_code: Some(0),
-                signal: None,
-            },
-        )))
-    }
-}
 
 /// a collecting telemetry sink (the `TerminalEventSink` `FakeEventSink` precedent): captures every
 /// emitted `TelemetrySampled` so a test can assert the count + payload.
@@ -55,11 +33,10 @@ impl TelemetryEventSink for CollectingSink {
 }
 
 fn adapter() -> ClaudeAdapter {
+    // Option A (P4.0b-2): the adapter no longer spawns/holds a PTY — `new(cwd, session_id)`.
     ClaudeAdapter::new(
-        Box::new(NoopSpawner),
         std::path::PathBuf::from("/Users/x/proj"),
         "sess_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
-        "/usr/local/bin/nexusops-hook".to_string(),
     )
 }
 
@@ -254,5 +231,132 @@ fn test_usage_parser_binds_fixture_rejects_malformed() {
         )
         .is_none(),
         "bad token type → None (fail-closed)"
+    );
+}
+
+// ===== 4.0c (brief 056) — the live telemetry pump + the non-monotonic-cumulative clamp ============
+
+/// a scripted [`UsageSource`] (4.0c) — the pump's per-tick cumulative-reading source. Yields its
+/// queued readings one per `poll_usage`, then `None` (exhausted). The PRODUCTION source (the live
+/// hook-receiver/statusLine feed) is the P4 deferred seam; tests drive this scripted double.
+#[derive(Default)]
+struct ScriptedSource {
+    readings: VecDeque<UsageReading>,
+}
+impl ScriptedSource {
+    fn new(readings: Vec<UsageReading>) -> Self {
+        Self {
+            readings: readings.into(),
+        }
+    }
+}
+impl UsageSource for ScriptedSource {
+    fn poll_usage(&mut self) -> Option<UsageReading> {
+        self.readings.pop_front()
+    }
+}
+
+// ---- RED #7 — a transient DECREASING cumulative must not OVER-count (the §18 baseline clamp) ------
+
+#[test]
+fn test_non_monotonic_cumulative_does_not_overcount() {
+    // spec(§9.1/§18) — the existing per-delta floor (`saturating_sub` / `cost.max(0)`) only stops a
+    // NEGATIVE delta; a transient DOWN-glitch in the cumulative would still inflate the NEXT delta
+    // (the climb back up is double-counted — the proj_usage_ledger SUMs). 4.0c clamps the STORED
+    // baseline monotonic (max per field) so the SUM of emitted deltas == the TRUE final cumulative.
+    let sink = CollectingSink::default();
+    let mut a = adapter().with_telemetry_sink(Box::new(sink.clone()));
+    a.push_usage(reading(100, 20, Some(30.0), 0.10)); // cumulative 100/20/0.10
+    a.push_usage(reading(40, 8, Some(20.0), 0.02)); // glitch DOWN — delta 0, baseline HELD at 100/20/0.10
+    a.push_usage(reading(150, 30, Some(55.0), 0.11)); // back up — delta vs the held baseline, not the dip
+    let ev = sink.events.lock().unwrap();
+    let sum_in: u64 = ev.iter().map(|e| e.sample.tokens_in).sum();
+    let sum_out: u64 = ev.iter().map(|e| e.sample.tokens_out).sum();
+    let sum_cost: f64 = ev.iter().map(|e| e.sample.cost_estimate).sum();
+    assert_eq!(
+        sum_in, 150,
+        "SUM of token_in deltas == final cumulative 150 (un-clamped would over-count 100+0+110=210)"
+    );
+    assert_eq!(
+        sum_out, 30,
+        "SUM of token_out deltas == final cumulative 30 (un-clamped 20+0+22=42)"
+    );
+    assert!(
+        (sum_cost - 0.11).abs() < 1e-9,
+        "SUM of cost deltas == final cumulative 0.11 (un-clamped 0.10+0+0.09=0.19)"
+    );
+    // the glitch-down reading itself emits a non-negative (zero) delta (AC3 as written, never negative).
+    assert_eq!(
+        ev[1].sample.tokens_in, 0,
+        "the down-glitch reading emits a 0 token delta, never negative"
+    );
+    assert!(
+        ev[1].sample.cost_estimate >= 0.0,
+        "the down-glitch reading emits a non-negative cost delta"
+    );
+}
+
+// ---- RED #8 — the pump tick (poll_telemetry) drains ONE source reading → ONE emit (§9.1 AC2) ------
+
+#[test]
+fn test_pump_poll_drains_source_emits_per_reading() {
+    // spec(§9.1) — the pump's per-tick behavior (the session-actor telemetry tick calls
+    // poll_telemetry()): drain ONE cumulative reading from the injected UsageSource + emit its DELTA
+    // via the bound sink. N source readings → N poll_telemetry() calls → N emits; an exhausted source
+    // → no emit (never a phantom re-emit / over-count). The live source = the P4 hook/statusLine feed.
+    let sink = CollectingSink::default();
+    let src = ScriptedSource::new(vec![
+        reading(100, 20, Some(30.0), 0.01),
+        reading(250, 60, Some(55.0), 0.03),
+    ]);
+    let mut a = adapter()
+        .with_telemetry_sink(Box::new(sink.clone()))
+        .with_usage_source(Box::new(src));
+    a.poll_telemetry(); // reading 1 → emit (delta from zero)
+    a.poll_telemetry(); // reading 2 → emit (incremental delta)
+    a.poll_telemetry(); // source exhausted → NO emit
+    let ev = sink.events.lock().unwrap();
+    assert_eq!(
+        ev.len(),
+        2,
+        "two source readings → two emits; the exhausted poll emits nothing (no over-count)"
+    );
+    assert_eq!(
+        (ev[0].sample.tokens_in, ev[0].sample.tokens_out),
+        (100, 20),
+        "first emit = the delta from zero"
+    );
+    assert_eq!(
+        (ev[1].sample.tokens_in, ev[1].sample.tokens_out),
+        (150, 40),
+        "second emit = the incremental DELTA 150/40 (not the cumulative 250/60)"
+    );
+}
+
+// ---- RED #9 — the pump is a no-op when source-less or sink-less (044-safe; 4.0c prod has no source) -
+
+#[test]
+fn test_poll_telemetry_source_less_or_sink_less_is_noop() {
+    // spec(§9.1) — 044-safe degradation. NO source → poll_telemetry is a no-op (this IS production
+    // 4.0c: the sink is bound but the live source = P4, so the pump ticks emit nothing yet — never a
+    // panic). A source but NO sink → still drains+stores (telemetry_heartbeat stays correct) but emits
+    // nothing (the 044 sink-less invariant), never a panic.
+    let mut a = adapter(); // no source, no sink
+    a.poll_telemetry();
+    assert!(
+        a.telemetry_heartbeat().is_none(),
+        "no source → nothing drained → no sample, no panic"
+    );
+
+    let src = ScriptedSource::new(vec![reading(100, 20, Some(30.0), 0.01)]);
+    let mut b = adapter().with_usage_source(Box::new(src)); // source, no sink
+    b.poll_telemetry();
+    let s = b
+        .telemetry_heartbeat()
+        .expect("the drained reading advances the heartbeat even sink-less (044-safe)");
+    assert_eq!(
+        (s.tokens_in, s.tokens_out),
+        (100, 20),
+        "delta stored sink-less; the bound-sink path would also emit it"
     );
 }

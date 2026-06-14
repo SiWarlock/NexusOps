@@ -21,14 +21,15 @@ use nexusops_shared::harness::{
 };
 use nexusops_shared::status::Session;
 
-use crate::harness::{HarnessAdapter, MutationIntercept, ResumeResult};
-use crate::terminal::{Pty, PtySpawner};
+use crate::harness::{HarnessAdapter, MutationIntercept, ResumeMode, ResumeResult};
+use crate::terminal::EnvMutation;
 
+pub mod decision;
 pub mod intercept;
 mod status;
 pub mod telemetry;
 pub use status::{derive_status, ClaudeSignal, NotificationKind};
-use telemetry::{telemetry_sample, TelemetryEventSink, UsageReading};
+use telemetry::{telemetry_sample, TelemetryEventSink, UsageReading, UsageSource};
 
 // ---- the 10 Claude HarnessCapabilities (Q1, lead-confirmed) -------------------------------------
 
@@ -224,6 +225,9 @@ pub struct ClaudeLaunchSpec {
     cwd: PathBuf,
     settings: ClaudeSettings,
     settings_path: PathBuf,
+    /// the daemon session id — carried into the spawned env as `NEXUSOPS_SESSION_ID` so the
+    /// `PreToolUse` hook subprocess reports the session a mutation interception belongs to.
+    session_id: String,
 }
 
 impl ClaudeLaunchSpec {
@@ -248,7 +252,21 @@ impl ClaudeLaunchSpec {
             cwd: cwd.to_path_buf(),
             settings,
             settings_path,
+            session_id: session_id.to_string(),
         }
+    }
+
+    /// The P4.0b-2 env-hygiene + correlation mutations applied to the spawned `claude` child (note-1):
+    /// REMOVE `ANTHROPIC_API_KEY` (so it rides subscription/OAuth auth, not the API-key billing pool
+    /// the PTY-primary design avoids — §15 #8) and SET `NEXUSOPS_SESSION_ID` = the daemon session id
+    /// (inherited by the `PreToolUse` hook subprocess → the daemon correlates an interception to the
+    /// session it belongs to, so a dead session's pending decisions are cancel_session-swept → Deny).
+    /// The per-profile `CLAUDE_CODE_OAUTH_TOKEN` set is the HITL-parked profile-config (a forward note).
+    pub fn env_mutations(&self) -> Vec<EnvMutation> {
+        vec![
+            EnvMutation::remove("ANTHROPIC_API_KEY"),
+            EnvMutation::set("NEXUSOPS_SESSION_ID", &self.session_id),
+        ]
     }
 
     pub fn program(&self) -> &str {
@@ -307,25 +325,20 @@ impl ClaudeLaunchSpec {
 
 // ---- ClaudeAdapter — the §9.1 adapter (observe path) --------------------------------------------
 
-/// The default PTY size for a launched session (the real size comes from the client at the P4 drive loop).
-const DEFAULT_ROWS: u16 = 24;
-const DEFAULT_COLS: u16 = 80;
-
 /// The Claude project-dir slug for a cwd: path separators + dots → '-' (so `/Users/x/proj` →
 /// `-Users-x-proj`). Best-effort — 043's live hook input supplies the authoritative `transcript_path`.
 fn project_slug(cwd: &Path) -> String {
     cwd.to_string_lossy().replace(['/', '.'], "-")
 }
 
-/// The Claude Code `HarnessAdapter` (PTY-primary). Owns the spawned `Box<dyn Pty>` (the 3.4 seam) +
-/// the derived status state machine. **Send, not Sync** — owned by ONE drive-loop thread.
+/// The Claude Code `HarnessAdapter` (PTY-primary). **Status-from-hooks ONLY** (safety #9) — it does
+/// NOT own the PTY and does NOT spawn: the **`PtyLauncher` owns the single live-claude spawn site**
+/// (the O-13 #10 enforcement surface lives at the launcher's `ClaudeLaunchSpec` use; P4.0b-2 Option A,
+/// lead-ruled). `launch()` here is the daemon-lifecycle `Creating→Starting` marker only — never a
+/// spawn (pinned by `tests/session_live.rs`). **Send, not Sync** — owned by ONE drive-loop thread.
 pub struct ClaudeAdapter {
-    spawner: Box<dyn PtySpawner>,
     cwd: PathBuf,
     session_id: String,
-    hook_receiver: String,
-    /// the live PTY child, set on `launch()` (the daemon owns it; display-only, safety #9).
-    pty: Option<Box<dyn Pty>>,
     /// the current derived status (L2 `derive_status` advances it via `push_signal`).
     status: Session,
     /// the last CUMULATIVE usage reading (044) — `push_usage` deltas the next reading against it.
@@ -338,31 +351,31 @@ pub struct ClaudeAdapter {
     /// `None`→`~` sentinel).
     execution_profile_id: Option<String>,
     /// the injected telemetry emission seam (044; the 3.4 `TerminalEventSink` precedent). The
-    /// production write-actor binding + the periodic pump land at the P4 drive loop; `None` =
-    /// store-the-delta-but-don't-emit (the sink-less default; P4 always binds one).
+    /// production write-actor binding lands at 4.0c (`runtime::WriteActorTelemetrySink`, injected via
+    /// the launcher's `TelemetrySinkFactory`); `None` = store-the-delta-but-don't-emit (the sink-less
+    /// default; production binds one).
     telemetry_sink: Option<Box<dyn TelemetryEventSink>>,
+    /// the injected per-tick usage SOURCE the pump drains (4.0c; the `push_signal` ingestion-seam
+    /// precedent). [`poll_telemetry`](HarnessAdapter::poll_telemetry) pulls one cumulative reading from
+    /// it per tick → `push_usage`. `None` = no source → the pump tick is a no-op (4.0c production
+    /// until P4 wires the live hook-receiver/statusLine feed); tests inject a scripted source.
+    usage_source: Option<Box<dyn UsageSource>>,
 }
 
 impl ClaudeAdapter {
-    pub fn new(
-        spawner: Box<dyn PtySpawner>,
-        cwd: PathBuf,
-        session_id: String,
-        hook_receiver: String,
-    ) -> Self {
+    pub fn new(cwd: PathBuf, session_id: String) -> Self {
         Self {
-            spawner,
             cwd,
             session_id,
-            hook_receiver,
-            pty: None,
             // pre-launch: the daemon-created session state (`Creating` is a daemon-lifecycle state,
-            // not adapter-derived — `launch()` transitions it to `Starting`).
+            // not adapter-derived — `launch()` transitions it to `Starting`). The PTY is spawned by
+            // the `PtyLauncher` (Option A) BEFORE this adapter is constructed — the adapter never spawns.
             status: Session::Creating,
             last_cumulative: None,
             last_sample: None,
             execution_profile_id: None,
             telemetry_sink: None,
+            usage_source: None,
         }
     }
 
@@ -372,6 +385,15 @@ impl ClaudeAdapter {
     /// the P4 drive loop; tests inject a collecting double.
     pub fn with_telemetry_sink(mut self, sink: Box<dyn TelemetryEventSink>) -> Self {
         self.telemetry_sink = Some(sink);
+        self
+    }
+
+    /// Inject the per-tick [`UsageSource`] the telemetry pump drains (4.0c — the `with_telemetry_sink`
+    /// builder precedent). The production source (the live hook-receiver/statusLine feed) is the P4
+    /// ingress seam; tests inject a scripted source. Without one, [`poll_telemetry`](HarnessAdapter::poll_telemetry)
+    /// is a no-op (4.0c production until P4 wires the feed).
+    pub fn with_usage_source(mut self, source: Box<dyn UsageSource>) -> Self {
+        self.usage_source = Some(source);
         self
     }
 
@@ -391,14 +413,36 @@ impl ClaudeAdapter {
     /// emits exactly one `TelemetrySampled` observation event through the sink if one is bound.
     /// Delta-tracking is updated BEFORE (and regardless of) emission — never coupled to the sink.
     pub fn push_usage(&mut self, reading: UsageReading) {
-        let sample = telemetry_sample(self.last_cumulative.as_ref(), &reading);
+        // Non-monotonic-CUMULATIVE clamp (4.0c, §9.1/§18): the cumulative token/cost counters are
+        // assumed monotonic, but a transient upstream DOWN-glitch/reset would otherwise inflate the
+        // NEXT delta — the climb back up double-counts (the proj_usage_ledger SUMs). Clamp the STORED
+        // baseline to a per-field HIGH-WATER MARK so every delta is measured against the max-seen
+        // cumulative; the pure `telemetry_sample` keeps its per-delta floor (`saturating_sub` /
+        // `cost.max(0)`) as the defense-in-depth second layer. `context_pct` is a CURRENT gauge — pass
+        // it through, NEVER a high-water mark (the projector MAXes it).
+        let clamped = match &self.last_cumulative {
+            Some(prev) => UsageReading {
+                tokens_in: reading.tokens_in.max(prev.tokens_in),
+                tokens_out: reading.tokens_out.max(prev.tokens_out),
+                cost: reading.cost.max(prev.cost),
+                context_pct: reading.context_pct,
+                model: reading.model,
+            },
+            None => reading,
+        };
+        let sample = telemetry_sample(self.last_cumulative.as_ref(), &clamped);
         let event = TelemetrySampled {
             sample: sample.clone(),
-            model: reading.model.clone(),
+            model: clamped.model.clone(),
             execution_profile_id: self.execution_profile_id.clone(),
         };
-        // update delta-tracking first — decoupled from emission (the sink-less heartbeat stays correct).
-        self.last_cumulative = Some(reading);
+        // Advance the baseline + the latest sample BEFORE (and regardless of) emission — delta-tracking
+        // is decoupled from the sink (the sink-less heartbeat stays correct). ACCEPTED soft-degrade
+        // residual (LESSON §30): a fire-and-forget emit that is dropped (channel full) leaves the
+        // baseline advanced → a slightly UNDER-counted ledger; we never couple the baseline to
+        // emit-success (that'd be complexity for an approximate, non-safety meter) and never
+        // DOUBLE-count — telemetry never back-pressures the writer (forbidden #3 / LESSON §9).
+        self.last_cumulative = Some(clamped);
         self.last_sample = Some(sample);
         if let Some(sink) = &self.telemetry_sink {
             sink.emit_telemetry(event);
@@ -412,27 +456,12 @@ impl HarnessAdapter for ClaudeAdapter {
     }
 
     fn launch(&mut self) -> NormalizedStatus {
-        let spec = ClaudeLaunchSpec::build(&self.cwd, &self.session_id, &self.hook_receiver);
-        // write the generated per-session settings (Q4 — never the user's global config). A write
-        // failure leaves the session un-launched → Failed (the richer launch-error handling lands
-        // with the P4 drive loop).
-        if spec.write_settings().is_err() {
-            self.status = Session::Failed;
-            return self.status;
-        }
-        match self.spawner.spawn(
-            spec.program(),
-            spec.args(),
-            &self.cwd,
-            DEFAULT_ROWS,
-            DEFAULT_COLS,
-        ) {
-            Ok(pty) => {
-                self.pty = Some(pty);
-                self.status = Session::Starting;
-            }
-            Err(_) => self.status = Session::Failed,
-        }
+        // Option A (P4.0b-2, lead-ruled): the adapter does NOT spawn — the `PtyLauncher` owns the
+        // single live-claude spawn site (it built the O-13 `ClaudeLaunchSpec`, wrote the 0600 settings
+        // fail-closed, and spawned the claude PTY into the `TerminalSession` BEFORE constructing this
+        // adapter). `launch()` is the daemon-lifecycle `Creating→Starting` marker only — the real
+        // status then derives from the live hook signals via `push_signal` (safety #9), never the PTY.
+        self.status = Session::Starting;
         self.status
     }
 
@@ -481,10 +510,25 @@ impl HarnessAdapter for ClaudeAdapter {
     }
 
     fn resume(&self) -> ResumeResult {
-        // → Phase 4 (survival §8/§17). A minimal "did not re-attach live" stub for now.
+        // A minimal non-live stub (4.1a Q4 uniform rule: `Replayed`, the neutral non-live default).
+        // The real strategy is the daemon-internal `decide_resume` ladder (4.1a commit 2), driven by
+        // the bootstrap restart path (4.1b); `ReattachedLive` comes ONLY from there (the live broker).
         ResumeResult {
-            resumed_live: false,
+            mode: ResumeMode::Replayed,
             replayed_event_count: 0,
+        }
+    }
+
+    fn poll_telemetry(&mut self) {
+        // 4.0c — the pump tick (the session-actor's telemetry interval). Drain the latest cumulative
+        // reading from the live source (the P4 hook-receiver/statusLine feed) + route it through
+        // `push_usage` (delta + cumulative clamp + emit via the bound sink). No source (4.0c production
+        // until P4 wires the ingress) or an unchanged source → a no-op tick (044-safe). One reading
+        // per tick: the cumulative delta covers any gap if the source advanced faster than the tick.
+        // Take the reading out (drop the source borrow) BEFORE the `&mut self` push_usage call.
+        let reading = self.usage_source.as_mut().and_then(|s| s.poll_usage());
+        if let Some(reading) = reading {
+            self.push_usage(reading);
         }
     }
 }

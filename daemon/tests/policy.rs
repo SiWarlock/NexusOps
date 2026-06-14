@@ -655,3 +655,163 @@ fn test_recorded_risk_reconciled_to_catalog() {
         "ActionRequested carries the catalog risk-2, not the claimed 0"
     );
 }
+
+// =================================================================================================
+// P4.0b-ui1 (brief 052) — the per-hunk git.* catalog freeze + the non-standing-grant safety floor.
+// The 3 git.* hunk action types + the `standing_grant_eligible` catalog field generalizing the
+// risk-4 approve-all exclusion (USER-ruled: git.discard_hunk is destructive/irreversible →
+// per-action approval ALWAYS, even under an approve-all). Executor bodies = stubs (Phase 5).
+// =================================================================================================
+
+// ---- 052 #1 — the 3 git.* hunk catalog entries (risk / executor / refs / preview) ---------------
+
+#[test]
+fn test_git_hunk_catalog_risks() {
+    // spec(§6.3) — git.stage_hunk/unstage_hunk = risk-2 (the git.* tier); git.discard_hunk = risk-3
+    // (destructive); ALL executor_kind=git, requires_resource_refs=yes (the file/hunk is the target),
+    // and discard's preview_class=diff (show the content lost). The 3 types resolve in the catalog.
+    use nexusops_shared::catalog::{lookup, ExecutorKind, PreviewClass};
+    for t in ["git.stage_hunk", "git.unstage_hunk"] {
+        let e = lookup(t).unwrap_or_else(|| panic!("{t} must be catalogued"));
+        assert_eq!(
+            e.locked_risk,
+            RiskLevel::Level2,
+            "{t} = risk-2 (git.* tier)"
+        );
+        assert_eq!(e.executor, ExecutorKind::Git, "{t} executor_kind=git");
+        assert!(e.requires_resource_refs, "{t} requires the file/hunk ref");
+    }
+    let discard = lookup("git.discard_hunk").expect("git.discard_hunk catalogued");
+    assert_eq!(
+        discard.locked_risk,
+        RiskLevel::Level3,
+        "git.discard_hunk = risk-3 (destructive, irreversible content loss)"
+    );
+    assert_eq!(discard.executor, ExecutorKind::Git);
+    assert!(discard.requires_resource_refs);
+    assert_eq!(
+        discard.preview_class,
+        PreviewClass::Diff,
+        "discard's preview shows EXACTLY the hunk content lost (USER-ruled)"
+    );
+}
+
+// ---- 052 #2 — git.discard_hunk is NON-standing-grantable (adversarial; the load-bearing pin) -----
+
+#[test]
+fn test_discard_hunk_non_standing_grantable() {
+    // spec(§6.2 / §11.5) — the USER-ruled safety floor: a destructive risk-3 action that is
+    // standing_grant_eligible=false is EXCLUDED from a plan-level approve-all (it gets its OWN per-step
+    // approval, ALWAYS), generalizing the risk-4 critical-exclusion (LESSON 19). A standing-grant-
+    // eligible git.* step (stage_hunk) IS covered by the plan-level approve-all. Mirrors
+    // test_approve_all_excludes_catalog_critical, but the exclusion keys off the new field, not risk-4.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = catalog_gateway();
+    let p = plan(
+        vec![
+            step(
+                "s1",
+                "git.stage_hunk",
+                RiskLevel::Level2,
+                serde_json::json!({}),
+            ),
+            step(
+                "s2",
+                "git.discard_hunk",
+                RiskLevel::Level3,
+                serde_json::json!({}),
+            ),
+        ],
+        ApprovalMode::ApproveAll,
+    );
+    let plan_id = p.plan_id.as_str().to_string();
+    gw.submit_action_plan(&mut store, p).expect("submit plan");
+
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let plan_level: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM approvals WHERE action_request_id IS NULL AND plan_id = ?1",
+            [&plan_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        plan_level, 1,
+        "ONE plan-level approve-all over the standing-grant-eligible step (stage_hunk)"
+    );
+    let per_step: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM approvals WHERE action_request_id IS NOT NULL AND plan_id = ?1",
+            [&plan_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        per_step, 1,
+        "git.discard_hunk gets its OWN per-step approval — NEVER folded into approve-all (USER-ruled)"
+    );
+}
+
+// ---- 052 #3 — the standing_grant_eligible catalog field (the floor's input) ----------------------
+
+#[test]
+fn test_standing_grant_eligible_field() {
+    // spec(§6.2/§6.3) — the catalog carries `standing_grant_eligible`: false for the destructive
+    // git.discard_hunk AND the risk-4 floor type workflow.command.invoke (reconciled to ONE mechanism,
+    // Step-2.5 #1 unified-field); true for the normal git.* tier + ordinary types. The policy
+    // approve-all floor reads this field (refuse standing-grant for risk-4 OR !standing_grant_eligible).
+    use nexusops_shared::catalog::lookup;
+    assert!(
+        !lookup("git.discard_hunk").unwrap().standing_grant_eligible,
+        "git.discard_hunk is NOT standing-grant-eligible (destructive)"
+    );
+    assert!(
+        !lookup("workflow.command.invoke")
+            .unwrap()
+            .standing_grant_eligible,
+        "workflow.command.invoke reconciles to the same field (one mechanism, not two)"
+    );
+    for t in ["git.stage_hunk", "git.unstage_hunk", "git.status"] {
+        assert!(
+            lookup(t).unwrap().standing_grant_eligible,
+            "{t} IS standing-grant-eligible (the normal tier)"
+        );
+    }
+}
+
+// ---- 052 #4 — git.discard_hunk preview_class=diff (the destructive-action preview) ---------------
+
+#[test]
+fn test_discard_hunk_preview_class_diff() {
+    // spec(§6.3) — discard's preview renders the hunk content (the diff) so the human sees EXACTLY what
+    // is irreversibly lost before approving (USER-ruled). stage/unstage = git (index ops), Step-2.5 #2.
+    use nexusops_shared::catalog::{lookup, PreviewClass};
+    assert_eq!(
+        lookup("git.discard_hunk").unwrap().preview_class,
+        PreviewClass::Diff
+    );
+}
+
+// ---- 052 ADD — the two non-standing-grant disjuncts can't DRIFT (orch-requested invariant) -------
+
+#[test]
+fn test_risk4_implies_non_standing_grantable() {
+    // spec(§6.2) — the approve-all exclusion keeps BOTH disjuncts (`risk==Level4 OR
+    // !standing_grant_eligible`, defense-in-depth). This invariant pins they can't drift: EVERY
+    // catalogued risk-4 (critical) entry MUST also be standing_grant_eligible=false, so a future risk-4
+    // addition that forgets the field is still excluded from approve-all (and the unification holds).
+    use nexusops_shared::catalog::{lookup, AGENT_MUTATION_ACTION_TYPES, MVP_ACTION_TYPES};
+    for t in MVP_ACTION_TYPES
+        .iter()
+        .chain(AGENT_MUTATION_ACTION_TYPES.iter())
+    {
+        let e = lookup(t).unwrap_or_else(|| panic!("{t} catalogued"));
+        if e.locked_risk == RiskLevel::Level4 {
+            assert!(
+                !e.standing_grant_eligible,
+                "risk-4 (critical) '{t}' MUST be non-standing-grantable (the disjuncts must not drift)"
+            );
+        }
+    }
+}

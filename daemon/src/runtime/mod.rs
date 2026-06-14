@@ -14,12 +14,24 @@
 
 mod drainer;
 mod git_watcher;
+pub mod jobs;
 mod listener;
+pub mod recovery;
+pub mod session_death;
+mod telemetry_sink;
+mod wait_class;
 mod writer;
 
 pub use drainer::{spawn_drainer, spawn_reaper};
 pub use git_watcher::spawn_git_watcher;
+pub use jobs::{
+    is_stale, recompute_staleness_once, spawn_staleness_poller, spawn_wal_checkpointer,
+};
 pub use listener::{bind, spawn_accept_loop};
+pub use telemetry_sink::{
+    TelemetryHandleSlot, WriteActorTelemetrySink, WriteActorTelemetrySinkFactory,
+};
+pub use wait_class::{InterceptWaitClass, MAX_CONNECTIONS, RESERVED_GENERAL};
 pub use writer::{
     compute_worktree_cache, RuntimeError, WriteActor, WriteHandle, BROADCAST_CAPACITY,
 };

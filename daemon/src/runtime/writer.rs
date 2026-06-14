@@ -20,10 +20,19 @@ use nexusops_shared::ipc::{ActionAck, DeltaKind, PlanAck, ProjectionDelta, Proje
 use nexusops_shared::status::WorktreeOverlay;
 
 use crate::clock::Clock;
-use crate::eventstore::{AppendIntent, Destination, DrainSummary, EventStore, EventStoreError};
+use crate::eventstore::{
+    AppendIntent, Destination, DrainSummary, EventStore, EventStoreError, WalCheckpointMode,
+    WalCheckpointSummary,
+};
+use crate::gateway::circuit_breaker::AuditBackboneBreaker;
 use crate::gateway::{Gateway, GatewayError};
 use crate::git::precedence::{derive_worktree_status, DerivedWorktreeStatus};
 use crate::git::reads::read_worktree_status;
+use crate::harness::claude::intercept::{
+    route_intercept, route_intercept_live, HookPayload, InterceptOutcome,
+};
+use crate::harness::MutationVerdict;
+use crate::integrity::IntegrityAlarm;
 use crate::locks::{LeaseError, LeaseKind, ResourceId};
 use crate::projections::WorktreeGitCache;
 
@@ -76,6 +85,12 @@ enum Command {
         base: Option<String>,
         reply: oneshot::Sender<Result<usize, EventStoreError>>,
     },
+    // 4.3: a bounded WAL checkpoint (§10) — the background checkpointer rides the single write-actor
+    // (forbidden #3 / LESSON §9), never a rogue writable connection. A read PRAGMA, no state change.
+    WalCheckpoint {
+        mode: WalCheckpointMode,
+        reply: oneshot::Sender<Result<WalCheckpointSummary, EventStoreError>>,
+    },
     // --- 2.1b Action Gateway mutation commands: the pipeline runs ON the write-actor (the single
     // writer, forbidden #3) so each transition's {row + authoritative event} is one atomic txn. ---
     GatewaySubmit {
@@ -99,6 +114,13 @@ enum Command {
     GatewayPreview {
         action_request_id: String,
         reply: oneshot::Sender<Result<ActionPreview, GatewayError>>,
+    },
+    // C2 (the live INV-SEC-1 interception): route an intercepted agent tool-call through the Gateway
+    // ON the single writer (the adjudication ActionRequest commits here — audit-before-verdict, §15
+    // #5). Boxed — HookPayload carries the verbatim tool params (clippy large_enum_variant).
+    GatewayIntercept {
+        payload: Box<HookPayload>,
+        reply: oneshot::Sender<InterceptOutcome>,
     },
     Shutdown,
 }
@@ -156,6 +178,24 @@ impl WriteHandle {
             .map_err(RuntimeError::from)
     }
 
+    /// Append a non-mutation OBSERVATION event (telemetry/lifecycle the daemon WITNESSES) through the
+    /// single writer, **fire-and-forget** (4.0c). The SAME write-actor append path as [`append`](Self::append)
+    /// — so the §15 redaction gate + the in-band projections run identically (NOT a redaction bypass;
+    /// the `TelemetrySampled`/`DeviceRegistered` observation precedent, LESSON §23) — but `try_send` +
+    /// drop-on-full instead of awaiting the reply: an observation must NEVER back-pressure the writer
+    /// (forbidden #3 / LESSON §9) and is non-safety (LESSON §30 — a dropped sample is a stale meter,
+    /// never a safety fault). Returns `true` if enqueued, `false` if dropped (channel full / actor
+    /// gone); the reply [`EventId`] is discarded (the caller doesn't await it).
+    pub fn try_append_observation(&self, intent: AppendIntent) -> bool {
+        let (reply, _rx) = oneshot::channel();
+        self.tx
+            .try_send(Command::Append {
+                intent: Box::new(intent),
+                reply,
+            })
+            .is_ok()
+    }
+
     /// Drain one outbox pass for `dest` through the single writer (the drainer loop's call).
     pub async fn drain_once(
         &self,
@@ -201,6 +241,23 @@ impl WriteHandle {
                 base,
                 reply,
             })
+            .await
+            .map_err(|_| RuntimeError::ActorGone)?;
+        rx.await
+            .map_err(|_| RuntimeError::ActorGone)?
+            .map_err(RuntimeError::from)
+    }
+
+    /// Run a bounded WAL checkpoint through the single writer (the 4.3 checkpointer loop's call) —
+    /// the checkpoint executes on the write-actor's own connection, so the WAL is bounded WITHOUT a
+    /// second writable connection (forbidden #3 / LESSON §9).
+    pub async fn wal_checkpoint(
+        &self,
+        mode: WalCheckpointMode,
+    ) -> Result<WalCheckpointSummary, RuntimeError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(Command::WalCheckpoint { mode, reply })
             .await
             .map_err(|_| RuntimeError::ActorGone)?;
         rx.await
@@ -289,6 +346,26 @@ impl WriteHandle {
             .map_err(|_| RuntimeError::ActorGone)?;
         rx.blocking_recv().map_err(|_| RuntimeError::ActorGone)
     }
+
+    /// Route an intercepted agent tool-call through the Gateway on the single writer (C2 — the live
+    /// INV-SEC-1 interception). The adjudication `ActionRequest` commits here (audit-BEFORE-verdict);
+    /// when the write-actor was spawned with an [`IntegrityAlarm`], an audit-WRITE-fault raises the
+    /// §17 alarm (call-2). **BLOCKING** — the sync IPC `intercept` handler can't `.await`; the returned
+    /// [`InterceptOutcome`] drives the per-session `decision_sink` wait (an `AwaitingApproval` rests for
+    /// the human; a `Resolved` is the verdict NOW).
+    pub fn intercept_blocking(
+        &self,
+        payload: HookPayload,
+    ) -> Result<InterceptOutcome, RuntimeError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .blocking_send(Command::GatewayIntercept {
+                payload: Box::new(payload),
+                reply,
+            })
+            .map_err(|_| RuntimeError::ActorGone)?;
+        rx.blocking_recv().map_err(|_| RuntimeError::ActorGone)
+    }
 }
 
 /// Owns the write-actor thread. Hand its [`WriteHandle`] to every async task that must mutate;
@@ -301,8 +378,59 @@ pub struct WriteActor {
 impl WriteActor {
     /// Spawn the dedicated writer thread owning `store` (with a `clock` for `drain_once`/
     /// `reap_leases` and the `gateway` whose mutation pipeline runs ON this single-writer thread).
-    /// The thread blocks on the command channel; reads never reach it.
+    /// The thread blocks on the command channel; reads never reach it. **No `IntegrityAlarm`** — the
+    /// `GatewayIntercept` path uses the no-alarm `route_intercept` (tests never exercise the call-2
+    /// audit-fault-with-alarm path); PRODUCTION uses [`spawn_with_alarm`](Self::spawn_with_alarm).
     pub fn spawn(store: EventStore, clock: Box<dyn Clock>, gateway: Gateway) -> Self {
+        Self::spawn_inner(store, clock, gateway, None, None)
+    }
+
+    /// Spawn the write-actor WITH the §17 [`IntegrityAlarm`] bound (C2): an agent-mutation
+    /// adjudication's audit-WRITE-fault raises the alarm on the independent durable channel (call-2).
+    /// No daemon-wide breaker — for tests that exercise the per-incident alarm without the systemic
+    /// circuit-breaker. PRODUCTION uses [`spawn_with_alarm_and_breaker`](Self::spawn_with_alarm_and_breaker).
+    pub fn spawn_with_alarm(
+        store: EventStore,
+        clock: Box<dyn Clock>,
+        gateway: Gateway,
+        alarm: Box<dyn IntegrityAlarm>,
+    ) -> Self {
+        Self::spawn_inner(store, clock, gateway, Some(Arc::from(alarm)), None)
+    }
+
+    /// Spawn the write-actor WITH both the §17 [`IntegrityAlarm`] AND the daemon-wide
+    /// [`AuditBackboneBreaker`] bound (P4.0b-2c, production — `main.rs`). The breaker observes every
+    /// Gateway audit-write outcome on this single chokepoint (the gate+feed seam) and, once latched,
+    /// the actor fail-closed-denies every mutation WITHOUT attempting an audit-write (RULED B). The
+    /// `Arc` is shared with `main` so the §17 surface can read [`is_tripped`](AuditBackboneBreaker::is_tripped).
+    pub fn spawn_with_alarm_and_breaker(
+        store: EventStore,
+        clock: Box<dyn Clock>,
+        gateway: Gateway,
+        alarm: Arc<dyn IntegrityAlarm>,
+        breaker: Arc<AuditBackboneBreaker>,
+    ) -> Self {
+        Self::spawn_inner(store, clock, gateway, Some(alarm), Some(breaker))
+    }
+
+    fn spawn_inner(
+        store: EventStore,
+        clock: Box<dyn Clock>,
+        gateway: Gateway,
+        alarm: Option<Arc<dyn IntegrityAlarm>>,
+        breaker: Option<Arc<AuditBackboneBreaker>>,
+    ) -> Self {
+        // INVARIANT: a bound breaker implies a bound alarm. The intercept path feeds the breaker via
+        // `route_intercept_live` (the alarm branch of the `GatewayIntercept` match) — with `alarm=None`
+        // the no-alarm `route_intercept` runs and the intercept fault would not reach the breaker. No
+        // public ctor yields (None alarm, Some breaker): `spawn`=(None,None), `spawn_with_alarm`=
+        // (Some,None), `spawn_with_alarm_and_breaker`=(Some,Some). The debug_assert pins it so a future
+        // ctor can't silently leave the intercept path unfed. (submit/approve/deny feed via
+        // `observe_gateway_result` regardless of the alarm.)
+        debug_assert!(
+            alarm.is_some() || breaker.is_none(),
+            "a bound breaker requires a bound alarm (the intercept feed lives on the live route)"
+        );
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_DEPTH);
         // the broadcast sender lives in the actor thread (it publishes post-commit); the handle
         // keeps a clone so `subscribe()` can mint receivers without touching the writer. The
@@ -312,7 +440,7 @@ impl WriteActor {
         let actor_deltas = deltas.clone();
         let join = std::thread::Builder::new()
             .name("nexusops-write-actor".to_string())
-            .spawn(move || run_actor(store, clock, gateway, rx, actor_deltas))
+            .spawn(move || run_actor(store, clock, gateway, rx, actor_deltas, alarm, breaker))
             // a daemon that cannot spawn its sole writer cannot run — fail loud at startup.
             .expect("spawn the write-actor thread");
         Self {
@@ -362,6 +490,8 @@ fn run_actor(
     gateway: Gateway,
     mut rx: mpsc::Receiver<Command>,
     deltas: broadcast::Sender<ProjectionDelta>,
+    alarm: Option<Arc<dyn IntegrityAlarm>>,
+    breaker: Option<Arc<AuditBackboneBreaker>>,
 ) {
     while let Some(cmd) = rx.blocking_recv() {
         match cmd {
@@ -405,29 +535,62 @@ fn run_actor(
                     cache.as_ref(),
                 ));
             }
+            // 4.3: the bounded WAL checkpoint runs on this single writer's own connection — no rogue
+            // writable connection is ever opened (forbidden #3 / LESSON §9). A read PRAGMA; no event,
+            // no projection, no broadcast (it changes no observable state).
+            Command::WalCheckpoint { mode, reply } => {
+                let _ = reply.send(store.wal_checkpoint(mode));
+            }
             // 2.1b Action Gateway mutations run the pipeline against the single writable store
             // (each transition's row+event is its own atomic txn inside the method). The gateway's
             // events fold into projections in-band; 2.1c (Q6) accumulates the `proj_approval_queue`
             // subscribe-deltas the pipeline touched + PUBLISHES them AFTER the txn commits (an
             // Err/rolled-back op publishes nothing; broadcast::send never back-pressures the writer,
             // forbidden #3) — mirroring the `Command::Append` publish-after-commit above.
+            // P4.0b-2c (RULED B) — the audit-backbone gate+feed seam. Every Gateway mutation funnels
+            // through this single chokepoint (forbidden #2/#3: the write-actor is the sole gateway
+            // driver). When the breaker is LATCHED, fail-closed-deny WITHOUT attempting an audit-write
+            // (`AuditBackboneDown`, before any gateway_txn — "no mutation slips the trip window");
+            // otherwise run the op + FEED the breaker the audit-write outcome. Reads (Preview) +
+            // get_projection/subscribe never reach the actor's mutation commands → stay live.
             Command::GatewaySubmit { req, reply } => {
+                if breaker.as_ref().is_some_and(|b| b.is_tripped()) {
+                    let _ = reply.send(Err(GatewayError::AuditBackboneDown));
+                    continue;
+                }
                 let mut queue_deltas = Vec::new();
                 let result = gateway.submit_action_collecting(&mut store, *req, &mut queue_deltas);
+                if let Some(b) = &breaker {
+                    b.observe_gateway_result(&result);
+                }
                 publish_after_commit(&deltas, &result, queue_deltas);
                 let _ = reply.send(result);
             }
             Command::GatewayPlanSubmit { plan, reply } => {
+                if breaker.as_ref().is_some_and(|b| b.is_tripped()) {
+                    let _ = reply.send(Err(GatewayError::AuditBackboneDown));
+                    continue;
+                }
                 let mut queue_deltas = Vec::new();
                 let result =
                     gateway.submit_action_plan_collecting(&mut store, *plan, &mut queue_deltas);
+                if let Some(b) = &breaker {
+                    b.observe_gateway_result(&result);
+                }
                 publish_after_commit(&deltas, &result, queue_deltas);
                 let _ = reply.send(result);
             }
             Command::GatewayApprove { approval_id, reply } => {
+                if breaker.as_ref().is_some_and(|b| b.is_tripped()) {
+                    let _ = reply.send(Err(GatewayError::AuditBackboneDown));
+                    continue;
+                }
                 let mut queue_deltas = Vec::new();
                 let result =
                     gateway.approve_collecting(&mut store, &approval_id, &mut queue_deltas);
+                if let Some(b) = &breaker {
+                    b.observe_gateway_result(&result);
+                }
                 publish_after_commit(&deltas, &result, queue_deltas);
                 let _ = reply.send(result);
             }
@@ -436,9 +599,16 @@ fn run_actor(
                 reason,
                 reply,
             } => {
+                if breaker.as_ref().is_some_and(|b| b.is_tripped()) {
+                    let _ = reply.send(Err(GatewayError::AuditBackboneDown));
+                    continue;
+                }
                 let mut queue_deltas = Vec::new();
                 let result =
                     gateway.deny_collecting(&mut store, &approval_id, &reason, &mut queue_deltas);
+                if let Some(b) = &breaker {
+                    b.observe_gateway_result(&result);
+                }
                 publish_after_commit(&deltas, &result, queue_deltas);
                 let _ = reply.send(result);
             }
@@ -447,6 +617,44 @@ fn run_actor(
                 reply,
             } => {
                 let _ = reply.send(gateway.preview_action(&mut store, &action_request_id));
+            }
+            // C2 — the live INV-SEC-1 interception: the adjudication ActionRequest commits on this
+            // single writer (audit-before-verdict). With a bound alarm, `route_intercept_live` raises
+            // the §17 alarm on an audit-WRITE-fault (call-2); without one (tests), the no-alarm route.
+            // No delta publish — the agent-mutation approval row folds in-band (the UI reads it via
+            // get_projection; the live approval-queue delta on intercept is a flagged follow-on).
+            Command::GatewayIntercept { payload, reply } => {
+                // RULED-B gate: a latched breaker refuses the agent tool-call WITHOUT routing it
+                // through the Gateway (no audit-write attempt) — fail-closed Deny (the agent is blocked
+                // while the audit backbone is down).
+                if breaker.as_ref().is_some_and(|b| b.is_tripped()) {
+                    let _ = reply.send(InterceptOutcome::Resolved(MutationVerdict::Deny {
+                        reason:
+                            "audit backbone down (§17 systemic) — mutation refused, fail-closed"
+                                .to_string(),
+                    }));
+                    continue;
+                }
+                let outcome = match &alarm {
+                    // the live path feeds BOTH the per-incident alarm AND the daemon-wide breaker
+                    // (the intercept's GatewayError is consumed here, so the breaker is fed via the route).
+                    Some(a) => route_intercept_live(
+                        &gateway,
+                        &mut store,
+                        &payload,
+                        a.as_ref(),
+                        breaker.as_deref(),
+                    ),
+                    None => route_intercept(&gateway, &mut store, &payload),
+                };
+                if reply.send(outcome).is_err() {
+                    // the intercept connection dropped before the verdict — the adjudication audit
+                    // event already committed (the hook fails closed, no verdict). Log for triage: the
+                    // awaiting_approval row resolves via approve/deny or is swept by cancel_session.
+                    eprintln!(
+                        "nexusopsd: intercept reply channel dropped (hook gone); audit committed, verdict discarded"
+                    );
+                }
             }
             Command::Shutdown => break,
         }

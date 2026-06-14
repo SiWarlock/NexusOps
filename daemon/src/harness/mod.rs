@@ -4,10 +4,10 @@
 //! normalized return types in `shared/src/harness.rs` (TelemetrySample, MetricQuality,
 //! TranscriptRef, HarnessCapabilities) and the §5.1 `Session` machine as `NormalizedStatus`.
 //! The trait, `MutationIntercept` (carrying the non-serializable daemon-side `decision_sink`),
-//! the per-harness mutation-coverage matrix, and `ResumeResult` are all **daemon-only** (not a
-//! `shared/` wire contract — Q5): the UI degrades off `HarnessCapabilities`, not the matrix,
-//! and the conformance suite and docs are the matrix's consumers. `ResumeResult`/survival is
-//! daemon-internal here and freezes in `shared/` at Phase 4 (§8/§17) to avoid a P4 reshape.
+//! and the per-harness mutation-coverage matrix are **daemon-only** (not a `shared/` wire contract —
+//! Q5): the UI degrades off `HarnessCapabilities`, not the matrix, and the conformance suite and docs
+//! are the matrix's consumers. `ResumeResult`/`ResumeMode`/`RecoveryState` (the §8/§9.1 survival
+//! contract) are FROZEN in `shared/` at 4.1a (CONTRACT 0.29.0) — re-exported here.
 //!
 //! **Safety #9** — status is derived from SDK/app-server streams, NEVER scraped from the PTY
 //! (`stream_status` returns the structured `NormalizedStatus`; the PTY is display-only).
@@ -18,10 +18,20 @@
 //! satisfiable + object-safe); the real adapters + their async drive loop land in 3.2/3.3.
 
 pub mod claude;
+pub mod codex;
+pub mod resume;
 
 use nexusops_shared::harness::{
-    HarnessCapabilities, MetricQuality, NormalizedStatus, TelemetrySample, TranscriptRef,
+    HarnessCapabilities, NormalizedStatus, TelemetrySample, TranscriptRef,
 };
+// MetricQuality is used only by the `test-support`-gated `FakeHarness::telemetry_heartbeat`.
+#[cfg(any(test, feature = "test-support"))]
+use nexusops_shared::harness::MetricQuality;
+// Re-export the §8/§9.1 SURVIVAL contract frozen in `shared/` at 4.1a (CONTRACT 0.29.0) — the trait
+// signature + the daemon adapters reference it as `crate::harness::{ResumeMode, ResumeResult}`
+// (replacing the old daemon-internal `ResumeResult{resumed_live,…}` bool). The daemon-internal
+// `decide_resume` ladder (`resume.rs`, 4.1a commit 2) is what produces a `ResumeResult`.
+pub use nexusops_shared::harness::{ResumeMode, ResumeResult};
 
 // ---- mutation interception (the can_use_tool / app-server approval surface, §9.1) ------------
 
@@ -152,17 +162,10 @@ pub fn coverage_of(harness: Harness, channel: MutationChannel) -> Option<Mutatio
         .map(|c| c.coverage)
 }
 
-// ---- ResumeResult (DAEMON-INTERNAL — survival/resume freezes in shared/ at Phase 4, §8/§17) --
-
-/// The outcome of resuming a session (§9.1 `resume`). **Daemon-internal**, NOT a `shared/` frozen
-/// type: resume/survival is a Phase-4 §8/§17 design (the ui's provisional already pins a `ResumeMode`
-/// enum) — freezing a wire shape now would collide at P4. `resumed_live` = re-attached to a live
-/// process; `false` = replayed/relaunched (the §11.4 "resumed-(live) vs replayed-(relaunched)" bit).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ResumeResult {
-    pub resumed_live: bool,
-    pub replayed_event_count: u64,
-}
+// ---- ResumeResult: FROZEN in shared/ at 4.1a (CONTRACT 0.29.0) — re-exported above. --
+// The §9.1 `resume()` return is now the shared `ResumeResult{mode: ResumeMode, replayed_event_count}`
+// (the deep-dive §7.2 B2-strict freeze); the daemon-internal `decide_resume` ladder (`resume.rs`)
+// produces it. (Was a daemon-internal `{resumed_live, …}` bool until 4.1a.)
 
 // ---- the HarnessAdapter trait (DAEMON-INTERNAL + UNFROZEN — only the data types are §2.5-seam) -
 
@@ -194,6 +197,13 @@ pub trait HarnessAdapter: Send {
     fn telemetry_heartbeat(&self) -> Option<TelemetrySample>;
     /// Resume an existing session (resume-or-replay; §8/§17).
     fn resume(&self) -> ResumeResult;
+    /// (4.0c) Drive one telemetry pump tick: drain the latest cumulative usage reading from the
+    /// adapter's live source + emit its per-heartbeat DELTA via the bound telemetry sink. The
+    /// session-actor's telemetry tick calls this at the statusLine refresh cadence. **Default no-op** —
+    /// only an adapter wired with a `UsageSource` + a `TelemetryEventSink` (the `ClaudeAdapter`) does
+    /// work; `FakeHarness`/Codex inherit the no-op. A non-mutation OBSERVATION path (LESSON §23) —
+    /// never the Gateway, and never the DB from `session/` (the sink is opaque, injected from `runtime/`).
+    fn poll_telemetry(&mut self) {}
 }
 
 // ---- FakeHarness — the §14 test double (proves the trait is satisfiable + object-safe) --------
@@ -201,16 +211,23 @@ pub trait HarnessAdapter: Send {
 /// A capability-respecting test double for the [`HarnessAdapter`] trait (the real adapters land
 /// 3.2/3.3). It surfaces capability-gated degradation HONESTLY — an unsupported capability returns
 /// `None`, never a fabricated value (§9.1/§11.4) — so the conformance scaffold exercises the contract.
+///
+/// **`test-support`-gated (P4.0b-2 L3):** now that the live `ClaudeAdapter` is the production adapter
+/// (C2), `FakeHarness` is TEST-ONLY — it compiles only for the daemon's own unit tests (`cfg(test)`)
+/// or integration/bench targets (`feature = "test-support"`), never `cargo build`/release.
+#[cfg(any(test, feature = "test-support"))]
 pub struct FakeHarness {
     caps: HarnessCapabilities,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl FakeHarness {
     pub fn new(caps: HarnessCapabilities) -> Self {
         Self { caps }
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl HarnessAdapter for FakeHarness {
     fn capabilities(&self) -> HarnessCapabilities {
         self.caps.clone()
@@ -267,8 +284,11 @@ impl HarnessAdapter for FakeHarness {
     }
 
     fn resume(&self) -> ResumeResult {
+        // 4.1a (Q4, uniform rule): a test double defaults to the NEUTRAL non-live `Replayed` (the old
+        // vestigial bool is discarded; `ReattachedLive` is produced ONLY by `decide_resume`). The real
+        // decision reads `supports_resume` (a capability), not this stub's mode.
         ResumeResult {
-            resumed_live: true,
+            mode: ResumeMode::Replayed,
             replayed_event_count: 0,
         }
     }
@@ -350,7 +370,7 @@ mod tests {
             .telemetry_heartbeat()
             .expect("usage metadata supported");
         assert_eq!(sample.metric_quality, MetricQuality::Exact);
-        // resume() → ResumeResult (DAEMON-INTERNAL — not a shared/ frozen type; survival freezes P4)
+        // resume() → the shared `ResumeResult` (FROZEN at 4.1a, CONTRACT 0.29.0)
         let _r: ResumeResult = adapter.resume();
         // intercept_mutation() → Option<MutationIntercept> (None when nothing pending)
         assert!(

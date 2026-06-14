@@ -30,6 +30,12 @@ use crate::terminal::TerminalSession;
 /// with push-based hook/transcript-stream ingestion feeding the adapter.
 const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
+/// The telemetry pump cadence (4.0c) — the statusLine `refreshInterval` (§9.1/§11.4). Each tick calls
+/// `adapter.poll_telemetry()` (drain the live usage source → emit a `TelemetrySampled` DELTA via the
+/// injected sink). `MissedTickBehavior::Delay` so a slow tick never bursts a backlog (LESSON §9). The
+/// pump emits nothing until the live `UsageSource` is wired (P4); the sink-bind + cadence are 4.0c.
+const TELEMETRY_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+
 /// The per-actor command mailbox depth (control messages: small + bursty).
 const COMMAND_MAILBOX_CAPACITY: usize = 16;
 
@@ -80,7 +86,7 @@ async fn run(
 
     // launch is blocking (the real launch forks a process); move the boxed adapter through
     // spawn_blocking and back (`Box<dyn HarnessAdapter>` is `Send`).
-    let (adapter, launched) = tokio::task::spawn_blocking(move || {
+    let (mut adapter, launched) = tokio::task::spawn_blocking(move || {
         let mut adapter = adapter;
         let launched = adapter.launch();
         (adapter, launched)
@@ -94,6 +100,12 @@ async fn run(
             return (session_id, current);
         }
     }
+
+    // P4.0b-2 L3 — grab the cross-thread PTY killer BEFORE the pump takes ownership of the terminal,
+    // so we can break the pump's BLOCKED read on Kill/shutdown (below). A `spawn_blocking` read can't
+    // be `abort()`ed; a live long-running agent never EOFs on its own → without this the pump (and the
+    // actor's `pump.await`) would hang forever, blocking daemon shutdown.
+    let killer = terminal.killer();
 
     // the terminal read-pump on a blocking thread (`read_step` blocks on the PTY read; LESSON §9).
     // 4.0a DROPS the display output frames (no client; the UDS forward is 6.3d) and lets the pump's
@@ -113,6 +125,11 @@ async fn run(
     // actor on shutdown, so a SUPERVISED actor never orphans. (A direct caller that drops all senders
     // without a Kill on a non-terminating adapter would leave the actor polling — a documented misuse.)
     let mut ticker = tokio::time::interval(STATUS_POLL_INTERVAL);
+    // the 4.0c telemetry pump tick (statusLine refresh cadence). `MissedTickBehavior::Delay` so a
+    // backlog never bursts (LESSON §9); it rides the same `select!` as the status poll + the mailbox,
+    // so it NEVER blocks the command mailbox (poll_telemetry is a cheap drain + a fire-and-forget emit).
+    let mut telemetry_tick = tokio::time::interval(TELEMETRY_REFRESH_INTERVAL);
+    telemetry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut mailbox_open = true;
     loop {
         tokio::select! {
@@ -137,16 +154,22 @@ async fn run(
                     }
                 }
             }
+            _ = telemetry_tick.tick() => {
+                // 4.0c — the telemetry pump: drain the live usage source → emit a TelemetrySampled
+                // DELTA via the adapter's injected sink (a non-mutation OBSERVATION; the cat-1
+                // boundary holds — the sink is opaque, this actor never imports `WriteHandle`). A
+                // no-op until the live `UsageSource` is wired (P4). Cheap + non-blocking (inline).
+                adapter.poll_telemetry();
+            }
         }
     }
 
-    // await the read-pump's completion (LESSON §9 await-on-shutdown: no orphan task). NOTE:
-    // `spawn_blocking` tasks CANNOT be aborted — `abort()` is a no-op on a started blocking closure —
-    // so we await the pump's NATURAL termination. For 4.0a's benign / EOF-terminating programs
-    // (FakePty, /bin/echo) the pump returns promptly. A live long-running agent needs a
-    // kill-to-unblock-the-blocking-read path (`pty.kill()` to break the pump's blocked `read`) BEFORE
-    // its pump ends on `Kill` — that kill-path is the cat-1 4.0b / 4.2 concern (the live drive loop
-    // owns it). In 4.0a the supervisor holds no live sessions, so daemon shutdown drains an empty set.
+    // P4.0b-2 L3 — break the pump's BLOCKED read so its task can terminate (`spawn_blocking` can't be
+    // `abort()`ed). Kill the PTY child: the blocked `read` returns EOF → the pump's loop ends → the
+    // await below completes promptly even for a LIVE long-running agent (daemon shutdown stays
+    // time-bounded). Idempotent + best-effort (the child may have already exited on a self-terminating
+    // run). THEN await the pump's natural termination (LESSON §9 await-on-shutdown: no orphan task).
+    killer.kill();
     let _ = pump.await;
     (session_id, current)
 }

@@ -7,19 +7,35 @@
 //! disconnect via [`IpcError`].
 
 use std::path::Path;
+use std::time::Duration;
 
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
 
-use nexusops_shared::actions::{ActionPlan, ActionRequest};
-use nexusops_shared::ipc::{
-    Capabilities, GetProjectionParams, IpcErrorCode, ProjectionName, RpcRequest, RpcResponse,
-    SubscribeParams, WireError,
+use nexusops_shared::actions::{
+    ActionPlan, ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
 };
+use nexusops_shared::ids::{ActionRequestId, ProjectId};
+use nexusops_shared::ipc::{
+    Capabilities, DiffResult, GetDiffParams, GetProjectionParams, IpcErrorCode, ProjectionName,
+    RpcRequest, RpcResponse, SubscribeParams, WireError,
+};
+use nexusops_shared::projections::ApprovalQueueRow;
+use nexusops_shared::status::ActionRequest as ActionRequestStatus;
+use nexusops_shared::time::Timestamp;
 
 use super::IpcError;
+use crate::decisions::DecisionRegistry;
 use crate::gateway::GatewayError;
-use crate::runtime::WriteHandle;
+use crate::harness::claude::decision::resolve_verdict;
+use crate::harness::claude::intercept::{HookPayload, InterceptOutcome};
+use crate::harness::MutationVerdict;
+use crate::runtime::{InterceptWaitClass, WriteHandle};
+
+/// The §6.2 wall-clock approval-wait for an intercepted mutating agent tool (call 1, LOCKED default
+/// ~5 min; fail-closed on timeout/cancel/death). The agent's `PreToolUse` hook blocks for up to this
+/// long while the human decides; every non-Allow terminal → Deny.
+const APPROVAL_WAIT: Duration = Duration::from_secs(300);
 
 /// The `proj_*` table backing each §6.1 projection name (the §7 registry → DATA_MODEL §2.3 map).
 /// The mapped name is a compile-time constant — never client input — so it is safe to interpolate
@@ -47,19 +63,32 @@ pub(crate) fn dispatch(
     req: &RpcRequest,
     db_path: &Path,
     write: &WriteHandle,
+    registry: &DecisionRegistry,
+    wait_class: &InterceptWaitClass,
 ) -> Result<RpcResponse, IpcError> {
     let outcome: Result<serde_json::Value, IpcErrorCode> = match req.method.as_str() {
         "get_capabilities" => Ok(capabilities_value()),
         "get_projection" => get_projection(&req.params, db_path)?,
+        // P4.0b-ui1 — the §6.1 hunk-structured diff READ (the ui-6.3e source). Resolves
+        // worktree_id→proj_worktree.path (read-only WAL) then reads git2 LIVE read-only; NO mutation.
+        "get_diff" => get_diff(&req.params, db_path)?,
         "subscribe" => subscribe_ack(&req.params),
         // §6.1 mutation methods (2.1b) — run the Gateway pipeline on the write-actor (the sole
         // mutator, forbidden #2/#3). A `GatewayError` → a structured `IpcErrorCode` response; the
         // write-actor being gone is an infra failure → `Err(IpcError)` (disconnect).
         "submit_action" => submit_action(&req.params, write)?,
         "submit_action_plan" => submit_action_plan(&req.params, write)?,
-        "approve" => approve(&req.params, write)?,
-        "deny" => deny(&req.params, write)?,
+        // approve/deny ALSO fire the per-session decision_sink (resolve a pending agent-mutation
+        // interception waiting on this approval) — the registry is a no-op for a non-adjudication.
+        "approve" => approve(&req.params, write, registry)?,
+        "deny" => deny(&req.params, write, registry)?,
         "preview_action" => preview_action(&req.params, write)?,
+        // P4.0b-2 C2 (CAT-1) — the reachable session.create (the UI/IPC live-launch path) + the live
+        // INV-SEC-1 interception (the Claude PreToolUse hook → adjudication → verdict, with the
+        // per-session decision_sink wait). These make a live agent reachable WITH the interception
+        // (the call-5 atomicity is at the main.rs register/swap; pinned by the inverted guard).
+        "session.create" => session_create(&req.params, write)?,
+        "intercept" => intercept(&req.params, write, registry, wait_class)?,
         _ => Err(IpcErrorCode::UnknownMethod),
     };
     Ok(match outcome {
@@ -130,6 +159,10 @@ fn gateway_error_to_code(e: &GatewayError) -> IpcErrorCode {
         // distinct from the re-approvable precondition_stale (the Q7/§11.5 safety-card distinction).
         GatewayError::FencingConflict => IpcErrorCode::FencingConflict,
         GatewayError::Serialize(_) => IpcErrorCode::ProtocolError,
+        // P4.0b-2c — the audit-backbone breaker is latched (systemic audit failure). The mutation is
+        // refused before any audit-write; surfaced as the §6.4 fail-closed `internal_error` (the loud
+        // distinguishable signal is the durable systemic alarm + the latched breaker state).
+        GatewayError::AuditBackboneDown => IpcErrorCode::InternalError,
     }
 }
 
@@ -174,18 +207,22 @@ fn str_param<'a>(params: &'a serde_json::Value, key: &str) -> Result<&'a str, Ip
 fn approve(
     params: &serde_json::Value,
     write: &WriteHandle,
+    registry: &DecisionRegistry,
 ) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
     let approval_id = match str_param(params, "approval_id") {
         Ok(s) => s.to_string(),
         Err(c) => return Ok(Err(c)),
     };
-    gateway_result(write.approve_blocking(approval_id))
+    let result = write.approve_blocking(approval_id);
+    fire_decision_sink(registry, &result);
+    gateway_result(result)
 }
 
 /// `deny` — `{approval_id, reason}`.
 fn deny(
     params: &serde_json::Value,
     write: &WriteHandle,
+    registry: &DecisionRegistry,
 ) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
     let approval_id = match str_param(params, "approval_id") {
         Ok(s) => s.to_string(),
@@ -195,7 +232,205 @@ fn deny(
         Ok(s) => s.to_string(),
         Err(c) => return Ok(Err(c)),
     };
-    gateway_result(write.deny_blocking(approval_id, reason))
+    let result = write.deny_blocking(approval_id, reason);
+    fire_decision_sink(registry, &result);
+    gateway_result(result)
+}
+
+/// Fire the per-session decision_sink for a resolved approve/deny (C2). If the resolved action is an
+/// agent-mutation adjudication a live `PreToolUse` hook is awaiting, the registry delivers its §6.2
+/// terminal status → the waiting `resolve_verdict` yields the verdict (Approved→Allow / Denied→Deny).
+/// A no-op for a non-adjudication approval (its id was never registered) — safe to call always. Only
+/// fires on a committed Ok (a failed approve/deny leaves the action — and the wait — untouched).
+fn fire_decision_sink(
+    registry: &DecisionRegistry,
+    result: &Result<
+        Result<nexusops_shared::ipc::ActionAck, GatewayError>,
+        crate::runtime::RuntimeError,
+    >,
+) {
+    if let Ok(Ok(ack)) = result {
+        registry.resolve(&ack.action_request_id, ack.status);
+    }
+}
+
+/// `session.create` — the reachable UI/IPC live-launch path (C2). Builds the server-side
+/// `ActionRequest` ([`build_session_create_request`]) then runs the pipeline. The risk-0 auto-execute
+/// path drives the `SessionExecutor` → the live `ClaudeAdapter` launch.
+fn session_create(
+    params: &serde_json::Value,
+    write: &WriteHandle,
+) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
+    let req = match build_session_create_request(params) {
+        Ok(r) => r,
+        Err(c) => return Ok(Err(c)),
+    };
+    gateway_result(write.submit_action_blocking(req))
+}
+
+/// Build the `session.create` `ActionRequest` server-side from the IPC params (extracted so the
+/// param→inputs thread is unit-testable without a `WriteHandle`). The daemon SETS `requester_type =
+/// User` (PIN e — UI/IPC-initiated ONLY; an agent path is denied), the project as the catalog-required
+/// resource_ref, and the optional `execution_profile_id` (the §15 #8 binding records it at start) +
+/// the optional `initial_prompt` (the Option-G dev-drive, brief 053) in inputs. Risk is recorded-not-
+/// trusted (the §6.3 catalog reconciles it to the authoritative risk-0 at submit, LESSON §19).
+/// `project_id` is required (the catalog resource_ref) → a missing one is a client protocol violation.
+fn build_session_create_request(params: &serde_json::Value) -> Result<ActionRequest, IpcErrorCode> {
+    let project_id = str_param(params, "project_id")?.to_string();
+    // build inputs from the optional params present (both are ad-hoc JSON — NO frozen `shared/` type,
+    // NO CONTRACT bump; same handling as the existing `execution_profile_id`).
+    let mut inputs = serde_json::Map::new();
+    if let Some(p) = params.get("execution_profile_id").and_then(|v| v.as_str()) {
+        inputs.insert(
+            "execution_profile_id".to_string(),
+            serde_json::Value::String(p.to_string()),
+        );
+    }
+    if let Some(prompt) = params.get("initial_prompt").and_then(|v| v.as_str()) {
+        inputs.insert(
+            "initial_prompt".to_string(),
+            serde_json::Value::String(prompt.to_string()),
+        );
+    }
+    Ok(ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        // the envelope project_id (Option) — None if it doesn't parse; the resource_ref carries the
+        // raw id for the audit either way.
+        project_id: ProjectId::parse(&project_id).ok(),
+        action_type: "session.create".to_string(),
+        // the daemon SETS the requester (NOT client-trusted) — UI/IPC is `User` (PIN e); no agent path.
+        requester_type: RequesterType::User,
+        requester_id: "ui".to_string(),
+        resource_refs: vec![ResourceRef {
+            resource_type: ResourceType::Project,
+            id: project_id,
+            uri: None,
+        }],
+        inputs: serde_json::Value::Object(inputs),
+        // recorded-not-trusted (§15) — `CatalogPolicy` overwrites to the authoritative locked_risk.
+        risk_level: RiskLevel::Level0,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        // a placeholder — `request::insert` stamps `created_at` from the daemon Clock (this constant
+        // always parses); never gates anything.
+        created_at: Timestamp::parse("1970-01-01T00:00:00Z")
+            .expect("placeholder created_at — insert stamps the real daemon-clock time"),
+    })
+}
+
+/// `intercept` — the live INV-SEC-1 interception transport (C2, CAT-1). The Claude `PreToolUse` hook
+/// (via the `nexusopsd hook` subcommand over UDS) pipes the tool call here; the daemon routes it
+/// through the Gateway on the write-actor (the adjudication ActionRequest commits — audit-before-
+/// verdict; an audit-fault raises the §17 alarm). A `Resolved` verdict returns NOW (a risk-0 auto-
+/// allow, or any deny); a mutating tool rests at `awaiting_approval` and this handler WAITS (the
+/// per-session `decision_sink`) for the human's approve/deny up to [`APPROVAL_WAIT`] — **fail-closed**
+/// on timeout/cancel/session-death (every non-Allow terminal → Deny). The verdict is returned as
+/// `{decision, reason}`; the hook subcommand translates it to Claude's hook output.
+fn intercept(
+    params: &serde_json::Value,
+    write: &WriteHandle,
+    registry: &DecisionRegistry,
+    wait_class: &InterceptWaitClass,
+) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
+    let payload: HookPayload = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(_) => return Ok(Err(IpcErrorCode::ProtocolError)),
+    };
+    // the daemon session id (the hook subcommand set `session_id` from NEXUSOPS_SESSION_ID) — the
+    // decision_sink key. UNTRUSTED input, usable ONLY as a drop-only cancel_session predicate (a spoof
+    // can only Deny another session's pendings, never Allow — the wait keys on `action_request_id`).
+    let session_id = payload.session_id.clone();
+
+    // route on the write-actor (the adjudication commits + is audited FIRST — audit-before-verdict,
+    // §15 #5; the §17 alarm fires there on an audit-fault). The wait-class gate is AFTER this, so an
+    // exhausted-class intercept's attempt is still AUDITED, then fail-closed-denied (F2).
+    let outcome = match write.intercept_blocking(payload) {
+        Ok(o) => o,
+        // the write-actor being gone is infra failure → disconnect (the hook then fails closed).
+        Err(_) => return Err(IpcError::Read("write-actor unavailable".to_string())),
+    };
+
+    // F2 — the wait-class permit class (§6.4/§10). A `Resolved` verdict (risk-0 auto-allow / any deny)
+    // returns immediately, touching no permit. An `AwaitingApproval` mutating tool tries to PARK in the
+    // intercept-wait class: saturated → fail-closed Deny WITHOUT entering the wait (no register, no
+    // bridge); a slot acquired → register the per-session decision_sink + WAIT for the human (the
+    // permit held across the wait, released on EVERY terminal — verdict/timeout/cancel/death/bridge-drop).
+    let verdict = intercept_verdict_with_wait_class(outcome, wait_class, |action_request_id| {
+        // the runtime to spawn the async `resolve_verdict` wait on. The production serve thread is a
+        // `spawn_blocking` task → the runtime context IS present. If absent (off the accept loop) there
+        // is no safe way to wait → fail closed (Deny). `try_current` never panics.
+        let rt = match tokio::runtime::Handle::try_current() {
+            Ok(h) => h,
+            Err(_) => {
+                return MutationVerdict::Deny {
+                    reason: "no async runtime for the approval wait — fail-closed".to_string(),
+                }
+            }
+        };
+        let decision = registry.register(action_request_id.clone(), session_id);
+        let (vtx, vrx) = std::sync::mpsc::sync_channel::<MutationVerdict>(1);
+        rt.spawn(async move {
+            let v = resolve_verdict(decision, APPROVAL_WAIT).await;
+            let _ = vtx.send(v);
+        });
+        // block this serve thread on the bridge; a dropped bridge sender (the spawned task died)
+        // fails closed to Deny. The waiter then REMOVES its registry entry (carry-forward b — a late
+        // approve/deny finds nothing, no re-deliver).
+        let v = vrx.recv().unwrap_or_else(|_| MutationVerdict::Deny {
+            reason: "decision bridge dropped — fail-closed".to_string(),
+        });
+        registry.remove(&action_request_id);
+        v
+    });
+    Ok(Ok(verdict_response(&verdict)))
+}
+
+/// The fail-closed reason on intercept-wait class exhaustion (§6.4/§10, F2) — content-free + DISTINCT
+/// from the timeout Deny so the operator can tell "saturated" from "timed out".
+pub const INTERCEPT_SATURATED_REASON: &str =
+    "approval capacity saturated — fail-closed (try again)";
+
+/// The F2 wait-class decision (the pure, testable core of [`intercept`]). A `Resolved` verdict touches
+/// NO wait-class permit (the gate semantics are unchanged). An `AwaitingApproval` mutating tool tries
+/// to PARK: saturated (`try_park`→None) → fail-closed Deny ([`INTERCEPT_SATURATED_REASON`], **the wait
+/// is NEVER entered** — `register_and_wait` is not called, no bypass); a slot acquired → hold the permit
+/// across `register_and_wait(action_request_id)` (the real register+bridge+remove), released on the
+/// return (every terminal path) via the `OwnedSemaphorePermit` RAII. INV-SEC-1 preserved (fail-safe).
+pub fn intercept_verdict_with_wait_class<F>(
+    outcome: InterceptOutcome,
+    wait_class: &InterceptWaitClass,
+    register_and_wait: F,
+) -> MutationVerdict
+where
+    F: FnOnce(String) -> MutationVerdict,
+{
+    match outcome {
+        InterceptOutcome::Resolved(v) => v,
+        InterceptOutcome::AwaitingApproval { action_request_id } => {
+            let _permit = match wait_class.try_park() {
+                Some(p) => p,
+                None => {
+                    return MutationVerdict::Deny {
+                        reason: INTERCEPT_SATURATED_REASON.to_string(),
+                    }
+                }
+            };
+            register_and_wait(action_request_id)
+        }
+    }
+}
+
+/// The `intercept` verdict as the JSON the `nexusopsd hook` subcommand consumes + translates to
+/// Claude's `PreToolUse` hook output. Content-free reason (§15).
+fn verdict_response(verdict: &MutationVerdict) -> serde_json::Value {
+    match verdict {
+        MutationVerdict::Allow => serde_json::json!({ "decision": "allow" }),
+        MutationVerdict::Deny { reason } => {
+            serde_json::json!({ "decision": "deny", "reason": reason })
+        }
+    }
 }
 
 /// `preview_action` — `{action_request_id}` → the catalog-class `ActionPreview` (2.3 L2).
@@ -233,12 +468,115 @@ fn get_projection(
         Ok(p) => p,
         Err(_) => return Ok(Err(IpcErrorCode::ProtocolError)),
     };
+    // P4.0b-ui2 / pin #2 — the ApprovalQueue projection is served TYPED (the frozen ApprovalQueueRow),
+    // not loose JSON, because it is the safety-critical human-approval surface. Other projections keep
+    // the generic row→JSON serve.
+    if params.name == ProjectionName::ApprovalQueue {
+        return Ok(match read_approval_queue_typed(db_path) {
+            Ok(typed) => Ok(serde_json::to_value(typed).unwrap_or(serde_json::Value::Null)),
+            Err(code) => Err(code),
+        });
+    }
     let table = projection_table(params.name);
     // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
     let conn =
         crate::eventstore::open_read_only(db_path).map_err(|e| IpcError::Read(e.to_string()))?;
     let rows = read_table_as_json(&conn, table)?;
     Ok(Ok(rows))
+}
+
+/// (P4.0b-ui2 / pin #2) Read `proj_approval_queue` served TYPED as the frozen [`ApprovalQueueRow`] —
+/// no loose JSON on the §11.5 human-approval path. Reads the row JSON over a read-only WAL conn,
+/// parses the redacted `policy_decision_json` TEXT into the typed `policy_decision: Option<PolicyDecision>`
+/// (NULL → None — the plan-level approve-all case), drops the internal `sort_key`/`updated_at_seq`,
+/// and deserializes each row STRICTLY (reject-unknown). A row that no longer deserializes is a
+/// contract/corruption error → `InternalError` (fail-closed, never a silent skip).
+pub fn read_approval_queue_typed(db_path: &Path) -> Result<Vec<ApprovalQueueRow>, IpcErrorCode> {
+    // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
+    let conn =
+        crate::eventstore::open_read_only(db_path).map_err(|_| IpcErrorCode::InternalError)?;
+    let json = read_table_as_json(&conn, "proj_approval_queue")
+        .map_err(|_| IpcErrorCode::InternalError)?;
+    let serde_json::Value::Array(raw_rows) = json else {
+        return Err(IpcErrorCode::InternalError);
+    };
+    let mut out = Vec::with_capacity(raw_rows.len());
+    for mut row in raw_rows {
+        let serde_json::Value::Object(obj) = &mut row else {
+            return Err(IpcErrorCode::InternalError);
+        };
+        // the redacted policy_decision_json TEXT → the typed `policy_decision` field; SQL NULL → None.
+        let pd = match obj.remove("policy_decision_json") {
+            Some(serde_json::Value::String(s)) => serde_json::from_str::<serde_json::Value>(&s)
+                .map_err(|_| IpcErrorCode::InternalError)?,
+            // NULL (plan-level approve-all) or the column absent → None.
+            Some(serde_json::Value::Null) | None => serde_json::Value::Null,
+            // the column is TEXT, so any other JSON type is a corrupt/mis-typed row → fail-closed
+            // (never silently coerce to None on the safety-critical approval read).
+            Some(_) => return Err(IpcErrorCode::InternalError),
+        };
+        obj.insert("policy_decision".to_string(), pd);
+        // drop the internal bookkeeping columns — not on the frozen wire row (deny_unknown_fields).
+        obj.remove("sort_key");
+        obj.remove("updated_at_seq");
+        let typed: ApprovalQueueRow =
+            serde_json::from_value(row).map_err(|_| IpcErrorCode::InternalError)?;
+        out.push(typed);
+    }
+    Ok(out)
+}
+
+/// `get_diff` (§6.1; P4.0b-ui1) — the hunk-structured diff read for the ui-6.3e per-hunk review.
+/// Bad/malformed params → `protocol_error`; an unresolved worktree_id → `not_found`; success → the
+/// serialized [`DiffResult`]. Pure read (no write-actor, no mutation).
+fn get_diff(
+    params: &serde_json::Value,
+    db_path: &Path,
+) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
+    let params: GetDiffParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(_) => return Ok(Err(IpcErrorCode::ProtocolError)),
+    };
+    match read_worktree_diff(db_path, &params.worktree_id, &params.file) {
+        Ok(diff) => Ok(Ok(
+            serde_json::to_value(diff).unwrap_or(serde_json::Value::Null)
+        )),
+        Err(code) => Ok(Err(code)),
+    }
+}
+
+/// Resolve `worktree_id → proj_worktree.path` over a READ-ONLY WAL conn, then read `file`'s
+/// HEAD→workdir diff LIVE via git2 (read-only). The testable core of [`get_diff`]. **No mutation, no
+/// write-actor** (the §7.2 worktree-live-read precedent / Forbidden #3). An unpopulated worktree_id
+/// (`proj_worktree` fills at P5.2/edges) OR a path that isn't a readable git repo → [`IpcErrorCode::NotFound`].
+pub fn read_worktree_diff(
+    db_path: &Path,
+    worktree_id: &str,
+    file: &str,
+) -> Result<DiffResult, IpcErrorCode> {
+    use rusqlite::OptionalExtension as _;
+    // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
+    let conn =
+        crate::eventstore::open_read_only(db_path).map_err(|_| IpcErrorCode::InternalError)?;
+    let path: Option<String> = conn
+        .query_row(
+            "SELECT path FROM proj_worktree WHERE worktree_id = ?1",
+            [worktree_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|_| IpcErrorCode::InternalError)?;
+    // an unpopulated worktree_id (proj_worktree empty until P5) → typed NotFound (NOT precondition_stale
+    // — that's the re-approvable mutation card; this is a read not-found).
+    let Some(path) = path else {
+        return Err(IpcErrorCode::NotFound);
+    };
+    crate::git::read_diff(Path::new(&path), file).map_err(|e| match e {
+        // the worktree path isn't a readable git repo (e.g. moved/not-yet-created) → NotFound.
+        crate::git::GitReadError::Open { .. } => IpcErrorCode::NotFound,
+        // a genuine diff-read fault → internal.
+        crate::git::GitReadError::Diff(_) => IpcErrorCode::InternalError,
+    })
 }
 
 /// `SELECT *` a projection table → a JSON array (one object per row). `table` is the compile-time
@@ -278,4 +616,76 @@ fn sqlite_to_json(v: ValueRef) -> serde_json::Value {
 
 fn read_err(e: rusqlite::Error) -> IpcError {
     IpcError::Read(e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_create_request_threads_initial_prompt() {
+        // spec(§9.1) — the IPC boundary threads `initial_prompt` from the params into the
+        // `ActionRequest.inputs` (the Option-G dev-drive, brief 053). The thread is complete from the
+        // wire, not just inside the executor.
+        let params =
+            serde_json::json!({ "project_id": "proj_x", "initial_prompt": "do the thing" });
+        let req = build_session_create_request(&params).expect("builds the session.create request");
+        assert_eq!(req.action_type, "session.create");
+        assert_eq!(
+            req.inputs.get("initial_prompt").and_then(|v| v.as_str()),
+            Some("do the thing"),
+            "initial_prompt is threaded from the params into inputs"
+        );
+    }
+
+    #[test]
+    fn session_create_request_no_prompt_omits_it() {
+        // additive/opt-in — no initial_prompt param → inputs carries none (back-compat).
+        let params = serde_json::json!({ "project_id": "proj_x" });
+        let req = build_session_create_request(&params).expect("builds");
+        assert!(
+            req.inputs.get("initial_prompt").is_none(),
+            "no param → no inputs.initial_prompt"
+        );
+    }
+
+    #[test]
+    fn session_create_request_threads_profile_and_prompt_together() {
+        // both optional params coexist (the `smoke create --prompt --profile` path) — the existing
+        // execution_profile_id thread (§15 #8) is preserved alongside the new initial_prompt.
+        let params = serde_json::json!({
+            "project_id": "proj_x",
+            "execution_profile_id": "prof_y",
+            "initial_prompt": "go"
+        });
+        let req = build_session_create_request(&params).expect("builds");
+        assert_eq!(
+            req.inputs
+                .get("execution_profile_id")
+                .and_then(|v| v.as_str()),
+            Some("prof_y")
+        );
+        assert_eq!(
+            req.inputs.get("initial_prompt").and_then(|v| v.as_str()),
+            Some("go")
+        );
+        // forward-drift guard — ONLY the two known optional inputs are threaded (a future stray field
+        // would trip this rather than silently riding into `inputs`).
+        assert_eq!(
+            req.inputs.as_object().map(|o| o.len()),
+            Some(2),
+            "exactly the two known inputs (execution_profile_id + initial_prompt) are threaded"
+        );
+    }
+
+    #[test]
+    fn session_create_request_missing_project_is_protocol_error() {
+        // project_id is required (the catalog `requires_resource_refs` ref) — a missing one is a
+        // client protocol violation, not a silent default.
+        let params = serde_json::json!({ "initial_prompt": "go" });
+        assert!(matches!(
+            build_session_create_request(&params),
+            Err(IpcErrorCode::ProtocolError)
+        ));
+    }
 }

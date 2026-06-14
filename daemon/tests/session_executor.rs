@@ -78,7 +78,11 @@ fn gateway_with_session_executor() -> (
     tokio::task::JoinHandle<()>,
 ) {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let (join, handle): (_, SupervisorHandle) = spawn_supervisor_task(shutdown_rx);
+    let (join, handle): (_, SupervisorHandle) = spawn_supervisor_task(
+        shutdown_rx,
+        std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
+        Box::new(nexusopsd::session::NullSessionDeathSink),
+    );
     let launches = Arc::new(AtomicUsize::new(0));
     let launcher = RecordingLauncher {
         inner: FakeLauncher::new(full_caps()),
@@ -212,12 +216,48 @@ async fn test_session_create_drives_supervisor_non_live() {
 }
 
 #[test]
-fn test_no_reachable_live_caller() {
-    // 🔴 the binding condition (deep-dive §8 / the lead's #1 ask) — 4.0b-1 ships NO reachable live
-    // un-intercepted agent. Enforced STRUCTURALLY: (1) the session executor constructs NO ClaudeAdapter
-    // / never touches the live `harness::claude` launch path (the launcher seam is the only spawn path,
-    // swapped to live at 4.0b-2); (2) `main.rs` does NOT wire the SessionExecutor into the production
-    // Gateway (it keeps `CatalogExecutor`), so there is no reachable production session.create caller.
+fn test_live_session_create_has_interception() {
+    // 🔴 the call-5 ATOMICITY PIN (P4.0b-2 C2 — the binding-FLIP): a live agent becomes reachable (the
+    // registered SessionExecutor + the live PtyLauncher) ONLY TOGETHER with the interception
+    // (AgentMutationPolicy + the per-session decision_sink registry + the §17 alarm). Pinned
+    // STRUCTURALLY by main.rs co-residency: the reachable session.create cannot exist in a shipped
+    // state WITHOUT the interception, because they are wired in the SAME file (this commit). This is
+    // the INVERSE of 4.0b-1's `test_no_reachable_live_caller` — the binding flips from
+    // BY-CONSTRUCTION to ENFORCED-BY-THE-INTERCEPTION.
+    let main_src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+        .expect("main.rs present");
+
+    // the live-REACHABLE wiring (session.create is dispatchable + the real ClaudeAdapter launches):
+    assert!(
+        main_src.contains("ExecutorKind::Session") && main_src.contains("SessionExecutor::new"),
+        "main.rs registers the live SessionExecutor under ExecutorKind::Session (reachable session.create)"
+    );
+    assert!(
+        main_src.contains("select_survival_backend") && main_src.contains("PortablePtySpawner"),
+        "main.rs wires the LIVE launcher — the 4.1b-2 survival backend (TmuxLauncher/PtyLauncher, the \
+         real ClaudeAdapter) over the real PortablePtySpawner; the launcher constructor moved into \
+         select_survival_backend, still co-resident with the interception below"
+    );
+    // ...co-landed WITH the interception (every one of these MUST be present alongside the live launch):
+    assert!(
+        main_src.contains("AgentMutationPolicy"),
+        "the production policy is AgentMutationPolicy (the live INV-SEC-1 interception + deny-rules)"
+    );
+    assert!(
+        main_src.contains("DecisionRegistry"),
+        "the per-session decision_sink registry is wired (the intercept wait + the approve/deny resolve)"
+    );
+    assert!(
+        main_src.contains("spawn_with_alarm_and_breaker")
+            && main_src.contains("FileIntegrityAlarm")
+            && main_src.contains("AuditBackboneBreaker"),
+        "the §17 durable integrity alarm AND the daemon-wide audit-backbone circuit-breaker (P4.0b-2c) \
+         are bound at the write-actor (call-2 per-incident alarm + the systemic quiesce-and-refuse gate)"
+    );
+
+    // the SessionExecutor itself stays LAUNCHER-AGNOSTIC — it constructs no ClaudeAdapter / live spawn
+    // path; the real launcher is INJECTED (main.rs builds it). So the cat-1 live spawn lives at the
+    // `PtyLauncher` (#10, Option A), not the executor — the executor can't smuggle an un-intercepted launch.
     let exec_src = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/gateway/session_executor.rs"
@@ -226,15 +266,8 @@ fn test_no_reachable_live_caller() {
     for tok in ["ClaudeAdapter", "harness::claude", "PortablePtySpawner"] {
         assert!(
             !exec_src.contains(tok),
-            "the session executor must not reference `{tok}` — NO live launch in 4.0b-1 (the real \
-             launcher swaps in behind the SessionLauncher seam at the cat-1 4.0b-2)"
+            "the session executor must stay launcher-agnostic (no `{tok}`) — the live launcher is \
+             injected via the SessionLauncher seam (Option A; #10 lives at PtyLauncher)"
         );
     }
-    let main_src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
-        .expect("main.rs present");
-    assert!(
-        !main_src.contains("SessionExecutor"),
-        "main.rs must NOT wire the SessionExecutor into the production Gateway — no reachable \
-         production session.create caller in 4.0b-1 (the IPC method + the live wiring are 4.0b-2)"
-    );
 }

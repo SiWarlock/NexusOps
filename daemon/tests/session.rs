@@ -18,14 +18,15 @@ use nexusops_shared::harness::{
 };
 use nexusops_shared::ids::SessionId;
 use nexusops_shared::status::Session;
-use nexusopsd::harness::{FakeHarness, HarnessAdapter, MutationIntercept, ResumeResult};
+use nexusopsd::harness::{
+    FakeHarness, HarnessAdapter, MutationIntercept, ResumeMode, ResumeResult,
+};
 use nexusopsd::session::{
-    spawn_session_actor, FakeLauncher, LaunchedSession, PtyLauncher, SessionCommand,
-    SessionLauncher, SessionSupervisor,
+    spawn_session_actor, FakeLauncher, LaunchedSession, SessionCommand, SessionLauncher,
+    SessionSupervisor,
 };
 use nexusopsd::terminal::{
-    ExitStatus, FakePty, PortablePtySpawner, PtyRead, TerminalEventSink, TerminalId,
-    TerminalSession,
+    ExitStatus, FakePty, PtyRead, TerminalEventSink, TerminalId, TerminalSession,
 };
 
 // ---- test doubles -------------------------------------------------------------------------------
@@ -94,8 +95,10 @@ impl HarnessAdapter for ScriptedHarness {
         None
     }
     fn resume(&self) -> ResumeResult {
+        // 4.1a (Q5 split): preserve this double's deliberate value — the old `resumed_live: true`
+        // (re-attached to a live process) maps to `ReattachedLive`. Unread by any assertion; safe.
         ResumeResult {
-            resumed_live: true,
+            mode: ResumeMode::ReattachedLive,
             replayed_event_count: 0,
         }
     }
@@ -251,24 +254,9 @@ async fn test_launcher_seam_fake_and_pty() {
         "the FakeLauncher seam produced a drivable session"
     );
 
-    // PtyLauncher (daemon-owned PTY) constructs + produces a LaunchedSession over a REAL PTY running a
-    // BENIGN program (`/bin/echo`, NEVER a real claude/codex — a live un-intercepted agent is the
-    // INV-SEC-1 gap the cat-1 4.0b closes). Smoke: it launches + drives to a terminal state.
-    let pty_launcher = PtyLauncher::new(
-        Box::new(PortablePtySpawner),
-        "/bin/echo",
-        vec!["ready".to_string()],
-        std::env::temp_dir(),
-        full_caps(),
-    );
-    let launched = pty_launcher
-        .launch_session()
-        .expect("daemon-owned-PTY launch (benign /bin/echo)");
-    assert_eq!(
-        drive_to_kill(launched).await,
-        Session::Killed,
-        "the PtyLauncher seam produced a drivable real-PTY session (benign program)"
-    );
+    // (The `PtyLauncher` spawn-seam smoke MOVED to `tests/session_live.rs`: P4.0b-2 Option A makes the
+    // launcher spawn the live `claude` via the O-13 #10 spec, so it's pinned there over a FAKE spawner
+    // — never a real `claude` in CI, never an un-intercepted live agent in this seam test.)
 }
 
 // ---- L3: the SessionSupervisor (tests 2, 3, 6, 7) -----------------------------------------------
@@ -398,4 +386,42 @@ async fn test_supervisor_clean_shutdown() {
         drained, 3,
         "every actor was Kill'd + its handle awaited (no orphan task)"
     );
+}
+
+// ---- L3: the live-agent kill-path bounds shutdown (test) ----------------------------------------
+
+#[tokio::test]
+async fn test_kill_path_unblocks_pump() {
+    // spec(§17 / P4.0b-2 L3) — a LIVE long-running agent's PTY read-pump BLOCKS forever (the looping
+    // FakePty's read never EOFs on its own). The `spawn_blocking` pump can't be `abort()`ed, so on
+    // Kill the actor must `pty.kill()` (the extracted `PtyKiller`) to BREAK the blocked read → the
+    // pump ends → `pump.await` completes → the actor returns. WITHOUT the kill-path the actor hangs on
+    // `pump.await` (this test would then TIME OUT). `FakeHarness` never reaches a terminal §5.1 state
+    // → only the `Kill` ends the actor, exercising the kill-path.
+    let adapter = Box::new(FakeHarness::new(full_caps()));
+    let exits = Arc::new(Mutex::new(Vec::new()));
+    let terminal = TerminalSession::new(
+        TerminalId::from_raw("term_kill"),
+        Box::new(FakePty::looping()),
+        Box::new(CollectingTerminalSink {
+            exits: exits.clone(),
+        }),
+    );
+    let (status_tx, _status_rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = spawn_session_actor(SessionId::new(), adapter, terminal, status_tx);
+
+    // Kill — the actor breaks its drive loop and must kill the PTY to unblock the looping pump.
+    handle
+        .commands
+        .send(SessionCommand::Kill)
+        .await
+        .expect("send Kill");
+
+    // the actor MUST terminate promptly (the kill-path unblocked the pump). A bounded wait proves it
+    // does NOT hang — without the kill-path the looping read never returns and this times out.
+    let (_id, status) = tokio::time::timeout(std::time::Duration::from_secs(5), handle.join)
+        .await
+        .expect("the kill-path unblocks the pump — the actor must NOT hang on pump.await")
+        .expect("actor task joins");
+    assert_eq!(status, Session::Killed, "Kill → terminal Killed");
 }

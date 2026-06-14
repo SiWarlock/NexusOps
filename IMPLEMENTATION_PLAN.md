@@ -971,7 +971,7 @@ The orchestrator's framing of each round, date-stamped. **Bounded, not unbounded
 - **Hold:** the **user** directed (via the lead) an idle at this clean boundary — the user is coordinating a cross-track **ui↔edges merge** and wants main STABLE. The team holds idle (NO 3.3c) until the lead relays the user's resume → then 3.3c (the cat-1 interception).
 - **Next session target:** **3.3c — the CAT-1 Codex INV-SEC-1 interception** (PreToolUse→Gateway [reuse the 4.0b-2 loop] + the `--sandbox` defense-in-depth; design surfaces lead→user before sign-off). HELD for the user's resume.
 - **Push:** NONE — USER-GATED (LOCAL).
-- Reference: brief 064 + the 3 commit messages (the impl handed off after the per-slice done-wake for the seal; no separate 3.3b session doc — the narrow-round 4.3/3.3a pattern).
+- Reference: brief 064 + the 3 commit messages + **session doc `026-2026-06-14-background-jobs-and-codex-arc-3.3ab.md`** (`fc65fa1`, written at the implementer's cycle `/session-end` AFTER this round seal — it retroactively covers the 4.3 + 3.3a + 3.3b narrow-round seals; cross-doc audit clean, no unrouted Step-9 item, all follow-ups match this round's Carry-forward triage).
 
 ### 2026-06-14 — P3.3a (CodexAdapter parsing + normalization observe core) — round SEALED (LOCAL, no push); the head of the Codex arc; ORCHESTRATOR ACTION-cycle at 78%
 

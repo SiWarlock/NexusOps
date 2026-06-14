@@ -22,6 +22,7 @@ use nexusops_shared::status::Session;
 
 use crate::harness::{HarnessAdapter, MutationIntercept, ResumeMode, ResumeResult};
 
+pub mod auth;
 pub mod parse;
 pub mod status;
 pub mod stream;
@@ -86,6 +87,7 @@ impl CodexAdapter {
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
+
 }
 
 impl HarnessAdapter for CodexAdapter {

@@ -10,7 +10,12 @@
 //! daemon's `nexusopsd smoke` dev-client (`daemon/src/smoke.rs` `call()`) + the codec
 //! (`daemon/src/ipc/transport.rs`). Depends ONLY on `nexusops-shared` — never the daemon crate.
 //!
-//! **NON-cat-1: reads only** — no `submit_action`/`approve`/`deny`. INV-SEC-1 stays daemon-side.
+//! **Mutation-intent RPCs (L2-A):** the crate also carries `submit_action`/`preview_action`/
+//! `approve`/`deny` — transport only (each SENDS a typed RPC to the daemon's Action Gateway, the
+//! INV-SEC-1 chokepoint; no execution/mutation here, L2-D1 pure pass-through). They REUSE `call` +
+//! `demux_rpc_response` so the verbatim §6.4 `WireError`→code path is inherited identically. NO UI
+//! consumer reaches them yet — the Tauri command + the TS caller are L2-B; the live submit-enable is
+//! L2-C (USER-gated). INV-SEC-1 stays daemon-side regardless.
 
 use std::io::{Read, Write};
 use std::ops::ControlFlow;
@@ -18,8 +23,9 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use nexusops_shared::actions::{ActionPreview, ActionRequest};
 use nexusops_shared::ipc::{
-    Capabilities, DiffResult, GetDiffParams, GetProjectionParams, HelloAck, HelloFrame,
+    ActionAck, Capabilities, DiffResult, GetDiffParams, GetProjectionParams, HelloAck, HelloFrame,
     IpcErrorCode, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, ServerFrame,
     SubscribeParams, VersionSkewError, PROTOCOL_VERSION,
 };
@@ -240,6 +246,67 @@ pub fn get_capabilities<S: Read + Write>(
     id: u64,
 ) -> Result<Capabilities, ClientError> {
     let value = call(stream, "get_capabilities", serde_json::json!({}), id)?;
+    Ok(serde_json::from_value(value)?)
+}
+
+// ─── typed mutation-intent helpers (L2-A; transport only, INV-SEC-1 daemon-side) ──────────────
+// Each SENDS a typed §6.1 RPC + returns the daemon's typed result — NO execution/mutation here
+// (L2-D1 pure pass-through). They reuse `call`/`demux_rpc_response`, so a `WireError{code}` →
+// `Err(Wire(code))` VERBATIM (never collapsed — L2-D6, the distinct §11.5 rejection cards at L2-C
+// depend on it) and the fail-closed frame discipline (non-RpcResponse/id-mismatch/dual-None →
+// `Protocol`; a mis-typed result → `Serde`) are inherited identically from the read path.
+
+/// `submit_action` — serializes the `ActionRequest` AS-IS (its `idempotency_key`/`fencing_token`/
+/// `resource_refs` ride OPAQUELY to the daemon, which owns dedup+fencing — L2-O4 pass-through; the
+/// crate forms no tokens) + calls; deserializes the typed `ActionAck`.
+pub fn submit_action<S: Read + Write>(
+    stream: &mut S,
+    request: &ActionRequest,
+    id: u64,
+) -> Result<ActionAck, ClientError> {
+    let value = call(stream, "submit_action", serde_json::to_value(request)?, id)?;
+    Ok(serde_json::from_value(value)?)
+}
+
+/// `preview_action` — forms `{action_request_id}` (methods.rs:441) for a prior-submitted action +
+/// calls; deserializes the typed `ActionPreview`. (L2-O2: the preview helper lands in slice A
+/// alongside submit, so the L2-C modal can fetch the daemon's real risk/consequences before approving.)
+pub fn preview_action<S: Read + Write>(
+    stream: &mut S,
+    action_request_id: &str,
+    id: u64,
+) -> Result<ActionPreview, ClientError> {
+    let params = serde_json::json!({ "action_request_id": action_request_id });
+    let value = call(stream, "preview_action", params, id)?;
+    Ok(serde_json::from_value(value)?)
+}
+
+/// `approve` — forms `{approval_id, step_id?}` (methods.rs:212; `step_id` is accepted-but-RESERVED
+/// by the daemon in 2.1c — included only when `Some`, absent [not null] when `None`) + calls;
+/// deserializes the typed `ActionAck`.
+pub fn approve<S: Read + Write>(
+    stream: &mut S,
+    approval_id: &str,
+    step_id: Option<&str>,
+    id: u64,
+) -> Result<ActionAck, ClientError> {
+    let params = match step_id {
+        Some(step) => serde_json::json!({ "approval_id": approval_id, "step_id": step }),
+        None => serde_json::json!({ "approval_id": approval_id }),
+    };
+    let value = call(stream, "approve", params, id)?;
+    Ok(serde_json::from_value(value)?)
+}
+
+/// `deny` — forms `{approval_id, reason}` (methods.rs:227) + calls; deserializes the typed `ActionAck`.
+pub fn deny<S: Read + Write>(
+    stream: &mut S,
+    approval_id: &str,
+    reason: &str,
+    id: u64,
+) -> Result<ActionAck, ClientError> {
+    let params = serde_json::json!({ "approval_id": approval_id, "reason": reason });
+    let value = call(stream, "deny", params, id)?;
     Ok(serde_json::from_value(value)?)
 }
 
@@ -761,5 +828,193 @@ mod tests {
         });
         assert!(r.is_ok());
         assert_eq!(count, 1, "Break after the first delta stops the loop");
+    }
+
+    // ─── 055 / L2-A — the mutation-intent RPC helpers (transport only; exposed-ahead) ──────────
+    // submit_action / preview_action / approve / deny mirror the read helpers + REUSE call +
+    // demux_rpc_response → the verbatim §6.4 WireError code + the fail-closed frame discipline are
+    // inherited identically (L2-D6). The UI never mutates — these SEND a typed RPC; the daemon's
+    // Action Gateway is the INV-SEC-1 chokepoint (L2-D1 pure pass-through).
+    use nexusops_shared::actions::{
+        ActionPreview, ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
+    };
+    use nexusops_shared::ids::ActionRequestId;
+    use nexusops_shared::status::ActionRequest as ActionRequestStatus;
+    use nexusops_shared::time::Timestamp;
+
+    /// A sample ActionRequest carrying an idempotency_key + fencing_token + a resource_ref so the
+    /// L2-O4 pass-through pin can assert they ride to the daemon opaquely (the crate forms none).
+    fn sample_action_request() -> ActionRequest {
+        ActionRequest {
+            action_request_id: ActionRequestId::new(),
+            project_id: None,
+            action_type: "git.stage_hunk".to_string(),
+            requester_type: RequesterType::User,
+            requester_id: "ui".to_string(),
+            resource_refs: vec![ResourceRef {
+                resource_type: ResourceType::File,
+                id: "wt_1\u{1f}a.ts\u{1f}1,1,1,1".to_string(),
+                uri: None,
+            }],
+            inputs: serde_json::json!({}),
+            risk_level: RiskLevel::Level2,
+            idempotency_key: Some("idem-abc".to_string()),
+            fencing_token: Some(42),
+            status: ActionRequestStatus::Submitted,
+            preview: None,
+            created_at: Timestamp::parse("2026-06-14T00:00:00Z").unwrap(),
+        }
+    }
+    fn sample_ack() -> ActionAck {
+        ActionAck {
+            action_request_id: "act_test".to_string(),
+            status: ActionRequestStatus::Submitted,
+        }
+    }
+    fn sample_preview() -> ActionPreview {
+        ActionPreview {
+            action_request_id: ActionRequestId::new(),
+            generated_at: Timestamp::parse("2026-06-14T00:00:00Z").unwrap(),
+            risk_level: RiskLevel::Level2,
+            risk_reasons: vec!["touches a tracked file".to_string()],
+            summary: "Would stage 1 hunk.".to_string(),
+            changed_resources: vec![],
+            cannot_preview_reason: None,
+        }
+    }
+
+    #[test]
+    fn submit_action_forms_params_and_returns_ack() {
+        // spec(§6.1) — submit_action serializes the ActionRequest AS-IS into params + calls +
+        // deserializes the typed ActionAck. L2-O4: idempotency_key/fencing_token/resource_refs ride
+        // OPAQUELY (the crate forms none — pure pass-through).
+        let req = sample_action_request();
+        let mut s = FakeStream::new(rpc_ok(11, serde_json::to_value(sample_ack()).unwrap()));
+        let ack = submit_action(&mut s, &req, 11).unwrap();
+        assert_eq!(ack.action_request_id, "act_test");
+        assert!(matches!(ack.status, ActionRequestStatus::Submitted));
+        // the request carried the submit_action method + the ActionRequest fields verbatim.
+        let sent: RpcRequest = serde_json::from_slice(&s.writes[4..]).unwrap();
+        assert_eq!(sent.method, "submit_action");
+        assert_eq!(sent.params["action_type"], "git.stage_hunk");
+        assert_eq!(sent.params["idempotency_key"], "idem-abc"); // rides opaquely (L2-O4)
+        assert_eq!(sent.params["fencing_token"], 42); // rides opaquely (L2-O4)
+        // and round-trips back to the SAME ActionRequest (no field dropped/reshaped by the crate).
+        let echoed: ActionRequest = serde_json::from_value(sent.params).unwrap();
+        assert_eq!(echoed, req);
+    }
+
+    #[test]
+    fn preview_action_returns_typed_preview() {
+        // spec(§6.1 / L2-O2) — preview_action forms {action_request_id} + deserializes ActionPreview.
+        let preview = sample_preview();
+        let mut s = FakeStream::new(rpc_ok(12, serde_json::to_value(&preview).unwrap()));
+        let got = preview_action(&mut s, "act_xyz", 12).unwrap();
+        assert_eq!(got, preview);
+        let sent: RpcRequest = serde_json::from_slice(&s.writes[4..]).unwrap();
+        assert_eq!(sent.method, "preview_action");
+        assert_eq!(sent.params["action_request_id"], "act_xyz");
+    }
+
+    #[test]
+    fn approve_forms_params_and_returns_ack() {
+        // spec(§6.1) — approve forms {approval_id, step_id?} + deserializes ActionAck. step_id is
+        // included only when Some (the daemon accepts-but-reserves it, 2.1c).
+        let mut s = FakeStream::new(rpc_ok(13, serde_json::to_value(sample_ack()).unwrap()));
+        let ack = approve(&mut s, "appr_1", Some("step_2"), 13).unwrap();
+        assert_eq!(ack.action_request_id, "act_test");
+        assert!(matches!(ack.status, ActionRequestStatus::Submitted)); // both ack fields verified
+        let sent: RpcRequest = serde_json::from_slice(&s.writes[4..]).unwrap();
+        assert_eq!(sent.method, "approve");
+        assert_eq!(sent.params["approval_id"], "appr_1");
+        assert_eq!(sent.params["step_id"], "step_2");
+    }
+
+    #[test]
+    fn approve_omits_step_id_when_none() {
+        // spec(§6.1) — step_id None → the field is ABSENT (not null); the single-action L2 core.
+        let mut s = FakeStream::new(rpc_ok(14, serde_json::to_value(sample_ack()).unwrap()));
+        approve(&mut s, "appr_1", None, 14).unwrap();
+        let sent: RpcRequest = serde_json::from_slice(&s.writes[4..]).unwrap();
+        assert_eq!(sent.params["approval_id"], "appr_1");
+        assert!(
+            sent.params.get("step_id").is_none(),
+            "step_id is absent (not null) when None"
+        );
+    }
+
+    #[test]
+    fn deny_forms_params_and_returns_ack() {
+        // spec(§6.1) — deny forms {approval_id, reason} + deserializes ActionAck.
+        let mut s = FakeStream::new(rpc_ok(15, serde_json::to_value(sample_ack()).unwrap()));
+        let ack = deny(&mut s, "appr_9", "not now", 15).unwrap();
+        assert!(matches!(ack.status, ActionRequestStatus::Submitted));
+        assert_eq!(ack.action_request_id, "act_test"); // both ack fields verified
+        let sent: RpcRequest = serde_json::from_slice(&s.writes[4..]).unwrap();
+        assert_eq!(sent.method, "deny");
+        assert_eq!(sent.params["approval_id"], "appr_9");
+        assert_eq!(sent.params["reason"], "not now");
+    }
+
+    #[test]
+    fn mutation_wire_error_returns_verbatim_code() {
+        // spec(L2-D6 / §6.4) — a WireError on a mutation → Err(Wire(code)) VERBATIM, never collapsed
+        // (so L2-C routes fencing_conflict→hard-conflict / precondition_stale→re-approvable). Pinned
+        // on submit_action (fencing_conflict) + approve (precondition_stale): two methods, two codes.
+        let wire = |code| {
+            frame_json(&ServerFrame::RpcResponse(nexusops_shared::ipc::RpcResponse {
+                id: 7,
+                result: None,
+                error: Some(nexusops_shared::ipc::WireError { code }),
+            }))
+        };
+        let mut s1 = FakeStream::new(wire(IpcErrorCode::FencingConflict));
+        assert!(matches!(
+            submit_action(&mut s1, &sample_action_request(), 7),
+            Err(ClientError::Wire(IpcErrorCode::FencingConflict))
+        ));
+        let mut s2 = FakeStream::new(wire(IpcErrorCode::PreconditionStale));
+        assert!(matches!(
+            approve(&mut s2, "appr_1", None, 7),
+            Err(ClientError::Wire(IpcErrorCode::PreconditionStale))
+        ));
+    }
+
+    #[test]
+    fn mutation_malformed_result_is_serde_error() {
+        // spec(§5.0) — a structurally valid RpcResponse whose result is NOT an ActionAck → Serde
+        // (the typed-deserialize fail-closed path), never a bad partial value.
+        let mut s = FakeStream::new(rpc_ok(3, serde_json::json!({ "not_an_ack": true })));
+        assert!(matches!(
+            submit_action(&mut s, &sample_action_request(), 3),
+            Err(ClientError::Serde(_))
+        ));
+    }
+
+    #[test]
+    fn mutation_non_rpcresponse_or_id_mismatch_is_protocol() {
+        // spec(§6.4) — a non-RpcResponse frame / an id-mismatch on a mutation call → Protocol
+        // (inherited from demux_rpc_response; re-pinned on a mutation path).
+        let term = ServerFrame::TerminalOutput(nexusops_shared::ipc::TerminalOutputFrame {
+            terminal_id: "t1".into(),
+            seq: 0,
+            data: "aGk=".into(),
+        });
+        let mut s = FakeStream::new(frame_json(&term));
+        assert!(matches!(
+            deny(&mut s, "appr_1", "x", 7),
+            Err(ClientError::Protocol(_))
+        ));
+        // an id-mismatch is also Protocol (a stale/uncorrelated response, even carrying a valid ack).
+        let mismatch = frame_json(&ServerFrame::RpcResponse(nexusops_shared::ipc::RpcResponse {
+            id: 99,
+            result: Some(serde_json::to_value(sample_ack()).unwrap()),
+            error: None,
+        }));
+        let mut s2 = FakeStream::new(mismatch);
+        assert!(matches!(
+            submit_action(&mut s2, &sample_action_request(), 7),
+            Err(ClientError::Protocol(_))
+        ));
     }
 }

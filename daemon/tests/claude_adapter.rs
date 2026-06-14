@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use nexusops_shared::status::Session;
 use nexusopsd::harness::claude::{ClaudeAdapter, ClaudeLaunchSpec, CLAUDE_CAPABILITIES};
-use nexusopsd::harness::HarnessAdapter;
+use nexusopsd::harness::{HarnessAdapter, ResumeMode};
 
 /// a live `ClaudeAdapter` for the observe-path tests (capability/status/transcript/telemetry). Option A
 /// (P4.0b-2): the adapter no longer spawns or holds a PTY — the `PtyLauncher` owns the live-claude
@@ -412,9 +412,10 @@ fn test_observe_path_stubs_marked() {
         "intercept_mutation → None (the live hook wiring is P4)"
     );
     let r = adapter.resume();
-    assert!(
-        !r.resumed_live,
-        "resume → minimal, not re-attached live (survival is P4)"
+    assert_ne!(
+        r.mode,
+        ResumeMode::ReattachedLive,
+        "resume → minimal, NOT re-attached live (the live broker reattach comes only from decide_resume, 4.1b)"
     );
 
     // telemetry_heartbeat is NO LONGER an always-None stub (044): None before any reading, Some

@@ -4,10 +4,10 @@
 //! normalized return types in `shared/src/harness.rs` (TelemetrySample, MetricQuality,
 //! TranscriptRef, HarnessCapabilities) and the §5.1 `Session` machine as `NormalizedStatus`.
 //! The trait, `MutationIntercept` (carrying the non-serializable daemon-side `decision_sink`),
-//! the per-harness mutation-coverage matrix, and `ResumeResult` are all **daemon-only** (not a
-//! `shared/` wire contract — Q5): the UI degrades off `HarnessCapabilities`, not the matrix,
-//! and the conformance suite and docs are the matrix's consumers. `ResumeResult`/survival is
-//! daemon-internal here and freezes in `shared/` at Phase 4 (§8/§17) to avoid a P4 reshape.
+//! and the per-harness mutation-coverage matrix are **daemon-only** (not a `shared/` wire contract —
+//! Q5): the UI degrades off `HarnessCapabilities`, not the matrix, and the conformance suite and docs
+//! are the matrix's consumers. `ResumeResult`/`ResumeMode`/`RecoveryState` (the §8/§9.1 survival
+//! contract) are FROZEN in `shared/` at 4.1a (CONTRACT 0.29.0) — re-exported here.
 //!
 //! **Safety #9** — status is derived from SDK/app-server streams, NEVER scraped from the PTY
 //! (`stream_status` returns the structured `NormalizedStatus`; the PTY is display-only).
@@ -25,6 +25,11 @@ use nexusops_shared::harness::{
 // MetricQuality is used only by the `test-support`-gated `FakeHarness::telemetry_heartbeat`.
 #[cfg(any(test, feature = "test-support"))]
 use nexusops_shared::harness::MetricQuality;
+// Re-export the §8/§9.1 SURVIVAL contract frozen in `shared/` at 4.1a (CONTRACT 0.29.0) — the trait
+// signature + the daemon adapters reference it as `crate::harness::{ResumeMode, ResumeResult}`
+// (replacing the old daemon-internal `ResumeResult{resumed_live,…}` bool). The daemon-internal
+// `decide_resume` ladder (`resume.rs`, 4.1a commit 2) is what produces a `ResumeResult`.
+pub use nexusops_shared::harness::{ResumeMode, ResumeResult};
 
 // ---- mutation interception (the can_use_tool / app-server approval surface, §9.1) ------------
 
@@ -155,17 +160,10 @@ pub fn coverage_of(harness: Harness, channel: MutationChannel) -> Option<Mutatio
         .map(|c| c.coverage)
 }
 
-// ---- ResumeResult (DAEMON-INTERNAL — survival/resume freezes in shared/ at Phase 4, §8/§17) --
-
-/// The outcome of resuming a session (§9.1 `resume`). **Daemon-internal**, NOT a `shared/` frozen
-/// type: resume/survival is a Phase-4 §8/§17 design (the ui's provisional already pins a `ResumeMode`
-/// enum) — freezing a wire shape now would collide at P4. `resumed_live` = re-attached to a live
-/// process; `false` = replayed/relaunched (the §11.4 "resumed-(live) vs replayed-(relaunched)" bit).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ResumeResult {
-    pub resumed_live: bool,
-    pub replayed_event_count: u64,
-}
+// ---- ResumeResult: FROZEN in shared/ at 4.1a (CONTRACT 0.29.0) — re-exported above. --
+// The §9.1 `resume()` return is now the shared `ResumeResult{mode: ResumeMode, replayed_event_count}`
+// (the deep-dive §7.2 B2-strict freeze); the daemon-internal `decide_resume` ladder (`resume.rs`)
+// produces it. (Was a daemon-internal `{resumed_live, …}` bool until 4.1a.)
 
 // ---- the HarnessAdapter trait (DAEMON-INTERNAL + UNFROZEN — only the data types are §2.5-seam) -
 
@@ -284,8 +282,11 @@ impl HarnessAdapter for FakeHarness {
     }
 
     fn resume(&self) -> ResumeResult {
+        // 4.1a (Q4, uniform rule): a test double defaults to the NEUTRAL non-live `Replayed` (the old
+        // vestigial bool is discarded; `ReattachedLive` is produced ONLY by `decide_resume`). The real
+        // decision reads `supports_resume` (a capability), not this stub's mode.
         ResumeResult {
-            resumed_live: true,
+            mode: ResumeMode::Replayed,
             replayed_event_count: 0,
         }
     }
@@ -367,7 +368,7 @@ mod tests {
             .telemetry_heartbeat()
             .expect("usage metadata supported");
         assert_eq!(sample.metric_quality, MetricQuality::Exact);
-        // resume() → ResumeResult (DAEMON-INTERNAL — not a shared/ frozen type; survival freezes P4)
+        // resume() → the shared `ResumeResult` (FROZEN at 4.1a, CONTRACT 0.29.0)
         let _r: ResumeResult = adapter.resume();
         // intercept_mutation() → Option<MutationIntercept> (None when nothing pending)
         assert!(

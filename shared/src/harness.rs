@@ -10,10 +10,11 @@
 //! §9.1 harness adapters map INTO"). Re-exported here so the §9.1 vocabulary reads as named,
 //! without forking the value set (pinned == `Session` by `test_normalized_status_is_session`).
 //!
-//! `ResumeResult` is deliberately ABSENT — it is **daemon-internal** (`daemon/src/harness/mod.rs`),
-//! NOT frozen here: resume/survival is a Phase-4 §8/§17 design and the ui's provisional already
-//! pins a `ResumeMode` enum; freezing a shape now would collide at P4 (a breaking reshape the
-//! §2.5-seam freeze discipline exists to prevent). It freezes in `shared/` with the P4 survival schema.
+//! `ResumeResult`/`ResumeMode`/`RecoveryState` are the §8/§9.1 SURVIVAL contract, **frozen here at
+//! 4.1a** (CONTRACT 0.29.0) — the deep-dive §7.2 B2-strict freeze: `ResumeMode`(4) carries the §11.4
+//! "resumed-(live) vs replayed-(relaunched)" indicator; `RecoveryState`(3) == the ui provisional. The
+//! resume/replay/reattach DECISION logic that produces a `ResumeResult` is daemon-internal
+//! (`daemon/src/harness/resume.rs`, 4.1a commit 2); the detachable-terminal broker is 4.1b.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -85,4 +86,61 @@ pub struct HarnessCapabilities {
     pub supports_subagents: bool,
     pub supports_hooks: bool,
     pub supports_cloud_tasks: bool,
+}
+
+/// How a session was brought back after a daemon restart (§8/§9.1 survival; the deep-dive §7.2
+/// B2-strict 4-value set). Carries the §11.4 "resumed-(live) vs replayed-(relaunched)" indicator.
+/// snake_case wire; reject-unknown (§15). Produced by the daemon-internal `decide_resume` ladder.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeMode {
+    /// a NEW process resumed from the harness transcript (`--resume` / `thread/resume`)
+    Resumed,
+    /// rebuilt from serialized scrollback, then relaunched (no native resume)
+    Replayed,
+    /// a fresh launch — nothing to resume or replay (the "restart session" affordance tail)
+    Relaunched,
+    /// the SURVIVING same-process in-flight turn, reattached via the detachable-terminal broker
+    /// (the user-ruled B2-strict §8 EXTENSION)
+    ReattachedLive,
+}
+
+impl ResumeMode {
+    /// Every variant, declaration order.
+    pub const ALL: &'static [Self] = &[
+        Self::Resumed,
+        Self::Replayed,
+        Self::Relaunched,
+        Self::ReattachedLive,
+    ];
+}
+
+/// The per-session recovery lifecycle state (§11.4 / §17) — frozen VERBATIM from the ui's provisional
+/// (a reconcile, no drift). snake_case wire; reject-unknown (§15). The post-restart recovery
+/// event/projection that drives it is 4.1b/4.3 (freeze-load-bearing-defer-the-rest, LESSON §14).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryState {
+    /// recovery in progress (rebuild projections, reclaim leases, decide-resume per session)
+    Recovering,
+    /// recovery complete — all sessions resumed/replayed/relaunched
+    Recovered,
+    /// recovery failed (a fail-closed terminal — the operator-surfaced degraded state)
+    RecoveryFailed,
+}
+
+impl RecoveryState {
+    /// Every variant, declaration order.
+    pub const ALL: &'static [Self] = &[Self::Recovering, Self::Recovered, Self::RecoveryFailed];
+}
+
+/// The result of a session's resume/replay/reattach decision (§9.1 `resume()` return) — produced by
+/// the daemon-internal `decide_resume` ladder (4.1a commit 2). `replayed_event_count` is non-zero
+/// ONLY on the `Replayed` path (0 on resumed/reattached/relaunched). Minimal field set (additive-later
+/// is non-breaking); `deny_unknown_fields` reject-unknown (§5.0/§15); no optionals (the set is total).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResumeResult {
+    pub mode: ResumeMode,
+    pub replayed_event_count: u64,
 }

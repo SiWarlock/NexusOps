@@ -2395,16 +2395,98 @@ fn test_action_denied_approval_id_optional() {
     );
 }
 
-// ---- P4.0b-2 RED — CONTRACT_VERSION bumped to 0.27.0 (the 3 split-tool-policy agent.* types) ----
+// =====================================================================================
+// P4.1a — the §8/§9.1 survival/recovery schema freeze (B2-strict; CONTRACT 0.29.0).
+// Freezes the `resume()`-return contract — `ResumeMode`(4), `RecoveryState`(3), and
+// `ResumeResult{mode, replayed_event_count}` — replacing the daemon-internal `{resumed_live,…}`
+// shape + reconciling the ui's provisional `ResumeMode`/`RecoveryState`. The 4th `ResumeMode`
+// (`reattached_live`) is the user-ruled B2-strict §8 EXTENSION (the SURVIVING in-flight turn).
+// deny_unknown_fields / reject-unknown end-to-end (§5.0/§15). 4.1a c2 = decision logic; 4.1b = broker.
+// =====================================================================================
+
+fn sample_resume_result() -> nexusops_shared::harness::ResumeResult {
+    use nexusops_shared::harness::{ResumeMode, ResumeResult};
+    // a VALID combo for the shape/round-trip snapshot: `replayed_event_count` is non-zero ONLY on the
+    // `Replayed` rung (the producer invariant `decide_resume` enforces), so the fixture uses Replayed.
+    ResumeResult {
+        mode: ResumeMode::Replayed,
+        replayed_event_count: 42,
+    }
+}
 
 #[test]
-fn test_contract_version_bumped_0_27_0() {
+fn test_resume_mode_enum_frozen_4_values() {
+    // spec(§9.1) — the deep-dive §7.2 B2-strict 4-value set: `resumed` (a NEW process resumed from
+    // the harness transcript), `replayed` (serialized-scrollback replay), `relaunched` (a fresh
+    // launch, no resume), `reattached_live` (the SURVIVING same-process in-flight turn — the B2-strict
+    // §8 EXTENSION). The frozen-enum snapshot is the anti-drift gate (LESSONS §14/§15); decl order.
+    use nexusops_shared::harness::ResumeMode;
+    check_values(
+        ResumeMode::ALL,
+        &["resumed", "replayed", "relaunched", "reattached_live"],
+    );
+    assert_eq!(ResumeMode::ALL.len(), 4, "B2-strict = the 4-value set");
+}
+
+#[test]
+fn test_recovery_state_enum_frozen_3_values() {
+    // spec(§11.4) — the ui's existing 3 recovery states, frozen VERBATIM (a reconcile, no drift):
+    // `recovering` / `recovered` / `recovery_failed`. snake_case wire; reject-unknown.
+    use nexusops_shared::harness::RecoveryState;
+    check_values(
+        RecoveryState::ALL,
+        &["recovering", "recovered", "recovery_failed"],
+    );
+    assert_eq!(
+        RecoveryState::ALL.len(),
+        3,
+        "the ui provisional, frozen as-is"
+    );
+}
+
+#[test]
+fn test_resume_result_shape() {
+    // spec(§9.1) — the `resume()` return; the §2.5-seam field-name set frozen (LESSONS §15 trap 3)
+    // + round-trips. Minimal `{mode, replayed_event_count}` (additive-later is non-breaking).
+    expect_fields(&sample_resume_result(), &["mode", "replayed_event_count"]);
+    let json = serde_json::to_string(&sample_resume_result()).unwrap();
+    let back: nexusops_shared::harness::ResumeResult = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, sample_resume_result(), "ResumeResult round-trips");
+}
+
+#[test]
+fn test_resume_mode_unknown_value_rejected() {
+    // spec(§5.0/§15) — reject-unknown end-to-end (fail-closed parse boundary).
+    use nexusops_shared::harness::ResumeMode;
+    assert!(serde_json::from_value::<ResumeMode>(serde_json::json!("teleported")).is_err());
+}
+
+#[test]
+fn test_recovery_state_unknown_value_rejected() {
+    // spec(§5.0/§15) — reject-unknown end-to-end (fail-closed parse boundary).
+    use nexusops_shared::harness::RecoveryState;
+    assert!(serde_json::from_value::<RecoveryState>(serde_json::json!("half_recovered")).is_err());
+}
+
+#[test]
+fn test_resume_result_rejects_unknown_field() {
+    // spec(§5.0/§15) — `deny_unknown_fields` on the struct: an extra key fails to deserialize (the
+    // frozen-struct boundary, like every other §2.5-seam struct).
+    let r: Result<nexusops_shared::harness::ResumeResult, _> = serde_json::from_value(
+        serde_json::json!({"mode": "replayed", "replayed_event_count": 3, "extra": true}),
+    );
+    assert!(r.is_err(), "deny_unknown_fields rejects an extra key");
+}
+
+// ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
+
+#[test]
+fn test_contract_version_bumped_0_29_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.26.0 =
-    // the edges-R1 Phase-5/7 wiring event-type freeze; **0.27.0** = the P4.0b-2 split tool-policy — 3
-    // new `agent.*` catalog types (`agent.todo_write` risk-0 benign auto-allow + `agent.web_fetch`/
-    // `agent.web_search` risk-2 egress). Machine-internal (MVP-22 untouched); additive (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.28.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.28.0 =
+    // the P4.0b-ui1 get_diff + git.* catalog freeze; **0.29.0** = the P4.1a survival-schema freeze
+    // (`ResumeMode`/`RecoveryState`/`ResumeResult`, §8 B2-strict). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.29.0");
 }
 
 // =================================================================================================

@@ -21,7 +21,7 @@ use nexusops_shared::harness::{
 };
 use nexusops_shared::status::Session;
 
-use crate::harness::{HarnessAdapter, MutationIntercept, ResumeResult};
+use crate::harness::{HarnessAdapter, MutationIntercept, ResumeMode, ResumeResult};
 use crate::terminal::EnvMutation;
 
 pub mod decision;
@@ -510,9 +510,11 @@ impl HarnessAdapter for ClaudeAdapter {
     }
 
     fn resume(&self) -> ResumeResult {
-        // → Phase 4 (survival §8/§17). A minimal "did not re-attach live" stub for now.
+        // A minimal non-live stub (4.1a Q4 uniform rule: `Replayed`, the neutral non-live default).
+        // The real strategy is the daemon-internal `decide_resume` ladder (4.1a commit 2), driven by
+        // the bootstrap restart path (4.1b); `ReattachedLive` comes ONLY from there (the live broker).
         ResumeResult {
-            resumed_live: false,
+            mode: ResumeMode::Replayed,
             replayed_event_count: 0,
         }
     }

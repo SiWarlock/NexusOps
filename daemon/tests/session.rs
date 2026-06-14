@@ -18,7 +18,9 @@ use nexusops_shared::harness::{
 };
 use nexusops_shared::ids::SessionId;
 use nexusops_shared::status::Session;
-use nexusopsd::harness::{FakeHarness, HarnessAdapter, MutationIntercept, ResumeResult};
+use nexusopsd::harness::{
+    FakeHarness, HarnessAdapter, MutationIntercept, ResumeMode, ResumeResult,
+};
 use nexusopsd::session::{
     spawn_session_actor, FakeLauncher, LaunchedSession, SessionCommand, SessionLauncher,
     SessionSupervisor,
@@ -93,8 +95,10 @@ impl HarnessAdapter for ScriptedHarness {
         None
     }
     fn resume(&self) -> ResumeResult {
+        // 4.1a (Q5 split): preserve this double's deliberate value — the old `resumed_live: true`
+        // (re-attached to a live process) maps to `ReattachedLive`. Unread by any assertion; safe.
         ResumeResult {
-            resumed_live: true,
+            mode: ResumeMode::ReattachedLive,
             replayed_event_count: 0,
         }
     }

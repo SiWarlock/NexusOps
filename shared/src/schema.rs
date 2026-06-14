@@ -23,9 +23,9 @@ use crate::events::{
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
     AuditIntegrityViolation, BranchCreated, DeviceRegistered, GithubSyncFailed,
     IntegrationConnectionRegistered, LinearSyncFailed, LocalRunnerRegistered, ProjectRescanned,
-    Provider, PullRequestSynced, SensitiveOutputRedacted, SessionRecovered, SessionStarted,
-    TelemetrySampled, TerminalProcessExited, WorktreeCreated, WorktreeDeleted, WorktreeLocked,
-    WorktreeMerged, WorktreePrunable,
+    Provider, PullRequestSynced, SensitiveOutputRedacted, SessionFailed, SessionRecovered,
+    SessionStarted, TelemetrySampled, TerminalProcessExited, WorktreeCreated, WorktreeDeleted,
+    WorktreeLocked, WorktreeMerged, WorktreePrunable,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::harness::{
@@ -213,6 +213,10 @@ struct ContractBundle {
     // resumed-vs-replayed bit + the §17 "restart session" affordance). System-actor, write-actor, NOT
     // a Gateway Action (Q1=(a)); §15 #8 profile preserved. Additive (shared/src/events.rs).
     session_recovered: SessionRecovered,
+    // P4.2 (CONTRACT 0.32.0) — the §17 supervised-child-death OBSERVATION event (a session's child died,
+    // daemon alive → proj_session status=Failed → the §11.4 restart affordance). Empty-payload
+    // (WorktreeMerged precedent); System-actor, write-actor, NOT a Gateway Action. Additive (events.rs).
+    session_failed: SessionFailed,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

@@ -130,4 +130,7 @@ pub mod time;
 /// 0.31.0 (P4.1b-1) adds the §8.1 daemon-restart `SessionRecovered` OBSERVATION event (`shared/src/events.rs`:
 /// the §11.4 resumed-vs-replayed bit + the §17 "restart session" affordance; System-actor, write-actor,
 /// NOT a Gateway Action [Q1=(a)]; §15 #8 profile preserved). Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.31.0";
+/// 0.32.0 (P4.2) adds the §17 supervised-child-death `SessionFailed` OBSERVATION event (`shared/src/events.rs`:
+/// a session's child died, daemon alive → proj_session status=Failed → the §11.4 restart affordance;
+/// empty-payload, System-actor, write-actor, NOT a Gateway Action). Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.32.0";

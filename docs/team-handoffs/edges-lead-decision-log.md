@@ -161,3 +161,13 @@ Fresh pair (orch + impl) spawned post-R5-cycle from the edges-R5-wiring-plan PLA
 **REQUIRED safety add (lead-mandated, not optional):** a `tokio::time::timeout` on EVERY external-call executor's network future. The single write-actor serializes ALL daemon mutations → an unbounded octocrab/Linear hang would freeze the entire mutation path (LIVENESS). Mandatory on every Wave-D external executor.
 
 **RETURN-REVIEW / CROSS-TRACK (hardening) — slow-external-executor on the write-actor:** even with the timeout, a slow external executor serializes mutation throughput on the single write-actor. Proper fix = move slow external executors OFF the write-actor thread (daemon-core write-actor territory → cross-track, same class as subscribe-delta). SPREAD as a hardening TODO → human return-review.
+
+---
+
+## Round 7 (final in-lane drain) — SEALED `7b4fd37` · EDGES AT IN-LANE CEILING, ready for the user-gated merge · 2026-06-14
+
+Impl-only-cycled fresh impl (R7); orch persisted from R6. R7 = the thin drain: **edges-026** §7.2 worktree live-read refresh + git-watcher `c195c7f` (+ fmt fixup `d800ef1`) · **edges-027** §18 project.rescan bench `44ce907` (median **0.44 ms** ≪ the 3 s SLO; guard <50 ms) · **cargo audit** (orch-run). 612→620/0, 0.26.0 held. impl doc edges-013 (`58d90eb`); orch round-seal edges-014.
+
+**RETURN-REVIEW (SECURITY) — cargo-audit RUSTSEC-2023-0071 [lead-ENDORSED accept-and-document]:** 1 NEW MEDIUM vs the P2 0-baseline — `rsa` 0.9.10 (Marvin Attack timing sidechannel, **NO FIX**), transitive **octocrab → jsonwebtoken → rsa** (GitHub-App RS256-JWT auth). **Exposure LOW** — edges never exercises GitHub-App JWT (auth deferred; planned model = bearer-token `gh auth token`/OAuth, NOT RS256-JWT; local trust boundary). Disposition: ACCEPT + document + a follow-up octocrab feature-prune (drop the unused jsonwebtoken/rsa app-auth path) + a CI RUSTSEC-ignore. Full: `docs/audits/edges-P5-P7-cargo-audit.md`.
+
+**EDGES IN-LANE COMPLETE (62 commits ahead of origin/track/edges, unpushed/unmerged).** Remaining = the **user-gated edges→main phase-exit merge**: re-sync with main's latest (daemon advanced past the 0c637a8/0.26.0 edges merged) · MIGRATION_9 assigned at the merge (daemon owns the global sequence) · the D8-deferred Wave-C `integration_connections` + P5.1 registry projector built then · /phase-exit 5+7 · reconcile the cross-track ledger with the daemon track (the additive gateway bridge edits · subscribe-delta [daemon-owned] · §5.0). **Team HELD UP (idle)** pending the user's merge direction.

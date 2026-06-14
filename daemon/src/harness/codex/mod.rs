@@ -23,12 +23,15 @@ use nexusops_shared::status::Session;
 use crate::harness::{HarnessAdapter, MutationIntercept, ResumeMode, ResumeResult};
 
 pub mod auth;
+pub mod launch;
 pub mod parse;
 pub mod perms;
 pub mod status;
 pub mod stream;
 
 pub use status::{derive_status, CodexSignal, CodexToolKind};
+
+use crate::harness::resume::ResumeInputs;
 
 // ---- the 10 Codex HarnessCapabilities (research §5/§6; 3.3a) ------------------------------------
 
@@ -89,6 +92,23 @@ impl CodexAdapter {
         &self.session_id
     }
 
+    /// The §8.1 survival inputs this Codex session feeds the harness-agnostic `decide_resume` (3.3b):
+    /// Codex `supports_resume` + a resume handle iff a resumable rollout exists. The production consumer
+    /// is the bootstrap restart path (`recover_sessions_on_restart` builds `ResumeInputs` from the
+    /// recovered session); this is the per-adapter seam that bit feeds.
+    pub fn resume_inputs(&self) -> ResumeInputs {
+        // a resume handle exists iff a PRIOR rollout file is present — a fresh, never-run session has
+        // none, so `decide_resume` falls through to `Relaunched`, NOT a spurious `Resumed`. The Codex
+        // resume id IS the rollout UUIDv7 (== session_id); the file's existence is the resumability
+        // signal (NOT merely a non-empty daemon session id, which is always set).
+        let resumable = self.rollout_path.exists() && !self.session_id.is_empty();
+        let rollout_uuid = resumable.then_some(self.session_id.as_str());
+        ResumeInputs {
+            supports_resume: CODEX_CAPABILITIES.supports_resume,
+            has_resume_handle: launch::has_resume_handle(rollout_uuid),
+            ..ResumeInputs::default()
+        }
+    }
 }
 
 impl HarnessAdapter for CodexAdapter {

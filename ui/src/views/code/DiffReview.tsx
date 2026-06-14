@@ -123,6 +123,9 @@ function ReviewTab({ gateway }: { gateway: GatewayPort }) {
   const [pendingApproval, setPendingApproval] =
     useState<GatewayApprovalEnrichment | null>(null);
   const [submitResult, setSubmitResult] = useState<IntentResult<ActionAck> | null>(null);
+  // The submit succeeded but the approval-card enrichment re-fetch (053b) failed → an honest
+  // degrade (never a silent stall, §11.7), kept separate from the intent-rejection surface.
+  const [enrichFailed, setEnrichFailed] = useState(false);
 
   // Source the diff LIVE from get_diff (no static fixture). An error/not_found → an
   // honest unavailable state (the code carried verbatim), never a fabricated diff.
@@ -169,7 +172,20 @@ function ReviewTab({ gateway }: { gateway: GatewayPort }) {
     const r = await seam.submitAction(request);
     if ("ok" in r) {
       setSubmitResult(null);
-      setPendingApproval(enrichHunkAction(actionType, r.ok));
+      setEnrichFailed(false);
+      try {
+        // 053b: source the daemon's REAL risk/policy by re-fetching the ApprovalQueue + matching the
+        // minted action_request_id (no UI-derived fixture); absent → an honest awaiting placeholder.
+        setPendingApproval(await enrichHunkAction(gateway, r.ok));
+      } catch (e) {
+        // The intent WAS recorded (the daemon acked); only the approval-card enrichment re-fetch
+        // failed — a malformed ApprovalQueue payload (BoundaryValidationError) or a transport fault.
+        // Degrade HONESTLY (the get_diff read-degrade pattern above, §11.7): log + an honest notice,
+        // NEVER a silent stall and NEVER a card built from un-parsed data (forbidden #2). The approval
+        // is still in the global queue; a read failure must not crash the cockpit (no re-throw).
+        console.error("enrichHunkAction (ApprovalQueue re-fetch) failed", e);
+        setEnrichFailed(true);
+      }
     } else {
       setSubmitResult(r);
     }
@@ -199,6 +215,15 @@ function ReviewTab({ gateway }: { gateway: GatewayPort }) {
       {submitResult ? (
         <div style={{ marginBottom: 12 }}>
           <ResultNotice result={submitResult} onReapprove={() => setSubmitResult(null)} />
+        </div>
+      ) : null}
+
+      {enrichFailed ? (
+        <div data-testid="enrich-unavailable" style={{ marginBottom: 12 }}>
+          <div style={NOTE}>
+            The action was submitted, but its approval preview couldn’t load (the daemon’s approval
+            queue read failed). Find it in the approval queue to approve or deny.
+          </div>
         </div>
       ) : null}
 

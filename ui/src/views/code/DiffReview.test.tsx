@@ -4,10 +4,13 @@ import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/re
 afterEach(cleanup);
 import { DiffReview } from "./DiffReview";
 import { ReadOnlyProvider, type ConnectionStatus } from "../../connection/read-only";
+import { ZodError } from "zod";
 import { MockGatewayPort } from "../../gateway-client/mock";
+import { BoundaryValidationError } from "../../gateway-client/boundary";
 import { hunkResourceRef } from "../../intent/hunk-resource-ref";
+import { makeApprovalRow } from "../../projections/fixtures/proj_approval_queue";
 import { diffReviewContext } from "../display-fixtures";
-import type { DiffResult, WireError } from "../../contracts/index";
+import type { ApprovalQueuePage, DiffResult, WireError } from "../../contracts/index";
 
 const CONNECTED: ConnectionStatus = { connection: "connected", version: "compatible" };
 const DEGRADED: ConnectionStatus = { connection: "connecting", version: "unknown" };
@@ -154,13 +157,66 @@ describe("DiffReview L2 — per-hunk intent submission (cat-1)", () => {
   });
 
   it("submit_opens_gateway_modal_with_daemon_policy_not_ui_risk", async () => {
-    // spec(Q4) — on submit the GatewayModal renders the DAEMON's PolicyDecision (read from
-    // the daemon-shaped enrichment), never a UI-derived risk; the hunk bar shows no risk.
+    // spec(Q4) — on submit the GatewayModal renders the DAEMON's PolicyDecision, never a
+    // UI-derived risk; the hunk bar shows no risk. With the default mock the freshly-minted
+    // approval isn't in the ApprovalQueue snapshot yet (053b absent-row timing) → the honest
+    // awaiting placeholder, whose status is still "require_approval".
     renderReview();
     fireEvent.click(await screen.findByRole("button", { name: /^Discard hunk/ }));
     expect(await screen.findByTestId("gateway-modal")).toBeTruthy();
-    // the card's policy status is the daemon's (require_approval), read from PolicyDecision
     expect((await screen.findByTestId("policy-status")).textContent).toBe("require_approval");
+  });
+
+  it("per_hunk_modal_shows_real_row_policy_on_match", async () => {
+    // spec(§11.5/044) — 053b: on submit, enrichHunkAction re-fetches the ApprovalQueue, matches
+    // the minted action_request_id, and the modal renders the daemon ROW's REAL policy (not a
+    // UI-invented per-hunk reason). The mock mints ar_mock_0001 → serve a row with that id.
+    const port = new MockGatewayPort();
+    // Typed as ApprovalQueuePage so the mock payload's SHAPE is compiler-checked (not silenced with
+    // `as never`); the cast only bridges the generic get_projection spy's union return.
+    const realRowPage: ApprovalQueuePage = {
+      projection: "ApprovalQueue",
+      rows: [
+        makeApprovalRow({
+          approval_id: "appr_live",
+          action_request_id: "ar_mock_0001",
+          risk_level: 4,
+          policy_decision: {
+            status: "deny",
+            reasons: ["Daemon: discards tracked content outside the worktree."],
+            required_approvals: [{ kind: "project_owner" }],
+            constraints: [],
+            safer_alt: null,
+          },
+        }),
+      ],
+      cursor: null,
+    };
+    vi.spyOn(port, "get_projection").mockResolvedValue(realRowPage);
+    renderReview({ port });
+    fireEvent.click(await screen.findByRole("button", { name: /^Discard hunk/ }));
+    await screen.findByTestId("gateway-modal");
+    // the modal's policy reasons are the daemon ROW's REAL policy, verbatim (not UI-invented).
+    expect((await screen.findByTestId("policy-reasons")).textContent).toMatch(
+      /discards tracked content outside the worktree/i,
+    );
+  });
+
+  it("per_hunk_enrich_refetch_failure_degrades_honestly", async () => {
+    // spec(§11.7/forbidden#2) — 053b: if the post-submit ApprovalQueue re-fetch fails (a malformed
+    // payload → BoundaryValidationError, or a transport fault), the UI surfaces an HONEST notice (the
+    // intent was recorded; the card preview couldn't load), NEVER a silent stall or a card built from
+    // un-parsed data. The approval is still reachable in the global queue.
+    const port = new MockGatewayPort();
+    vi.spyOn(port, "get_projection").mockRejectedValue(
+      new BoundaryValidationError("ApprovalQueue", new ZodError([])),
+    );
+    renderReview({ port });
+    fireEvent.click(await screen.findByRole("button", { name: /^Discard hunk/ }));
+    // an honest degraded notice surfaces…
+    expect(await screen.findByTestId("enrich-unavailable")).toBeTruthy();
+    // …and NO card is opened from un-enriched / un-parsed data.
+    expect(screen.queryByTestId("gateway-modal")).toBeNull();
   });
 
   it("discard_preview_is_daemon_actionpreview_not_fabricated", async () => {

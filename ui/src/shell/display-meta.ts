@@ -15,11 +15,11 @@ import type {
   ActionAck,
   Approval,
   ApprovalQueueRow,
-  PerHunkGitActionType,
   PolicyDecision,
   SessionRow,
   UsageRow,
 } from "../contracts/index";
+import type { GatewayPort } from "../gateway-client/types";
 
 /** Kit HarnessBadge kinds (NexusOps-ui-kit components/badges/HarnessBadge). */
 export type HarnessKind = "claude-code" | "codex-cli" | "codex-cloud" | "shell";
@@ -229,39 +229,45 @@ export function enrichApproval(row: ApprovalQueueRow): GatewayApprovalEnrichment
   };
 }
 
-// ─── Per-hunk git-action enrichment (PROVISIONAL — the 6.3e submit→card stand-in) ──
-// After the UI SUBMITS a per-hunk git ActionRequest, the daemon mints an Approval +
-// PolicyDecision (its policy engine is authoritative). Until the real daemon projection +
-// preview/policy RPC land, this supplies a daemon-SHAPED {Approval, PolicyDecision} keyed
-// off the just-returned ActionAck — the SAME 044 `gatewayApprovalEnrichment` pattern + the
-// SAME [med] carry-forward: ⚠️ SWAP for the REAL daemon projection/policy BEFORE any real
-// human approves against these fixture values. The component RENDERS this PolicyDecision
-// (never recomputes risk — Q4); the modal fetches the ActionPreview via `preview_action` (Q5).
-export function enrichHunkAction(
-  actionType: PerHunkGitActionType,
+// ─── Per-hunk git-action enrichment (053b — the real-row swap completes the 044 [med]) ──
+// The DiffReview per-hunk git action (stage/unstage/discard) has NO ApprovalQueueRow in hand — the
+// submit ack carries an `action_request_id`, not an `approval_id`. So sourcing the daemon's
+// AUTHORITATIVE risk/policy means RE-FETCHING get_projection("ApprovalQueue") and matching the row by
+// EXACT action_request_id (the ApprovalQueue isn't subscribed — 052 Q3). On a match → enrichApproval
+// (the 053 Layer C real-row builder, reused for DRY): the card renders the daemon's real risk/policy,
+// no fixture (LESSON 17 — resolves the 044 [med] on the per-hunk path too). On NO match (timing — the
+// daemon mints the approval row async) → an HONEST awaiting placeholder, never a fabricated/UI-derived
+// decision (forbidden #2). Parse-don't-trust is intrinsic: get_projection boundary-validates the page
+// (a malformed payload → BoundaryValidationError, never a fabricated row — LESSON 22). The handle is
+// typed `Pick<…,"get_projection">` → compile-time NO mutation reach; the per-hunk submit stays L2-HELD.
+export async function enrichHunkAction(
+  gateway: Pick<GatewayPort, "get_projection">,
   ack: ActionAck,
-): GatewayApprovalEnrichment {
-  const destructive = actionType === "git.discard_hunk";
+): Promise<GatewayApprovalEnrichment> {
+  const page = await gateway.get_projection("ApprovalQueue");
+  // EXACT, non-null string match: ApprovalQueueRow.action_request_id is Option<String>; a null/absent
+  // row id must NEVER collapse-match the ack (a wrong-approval false match). The ack id is always a
+  // non-null string and `===` makes null/undefined never equal it — no fuzzy/first-row fallback.
+  const row = page.rows.find((r) => r.action_request_id === ack.action_request_id);
+  if (row) return enrichApproval(row); // the daemon's real risk + policy (DRY w/ 053 Layer C)
+  // Absent: the daemon hasn't surfaced the approval row in the queue snapshot yet. An honest awaiting
+  // placeholder — the card's SHOWN risk comes from the live preview_action (previewRisk), so this
+  // risk_level is a NON-displayed structural field, set FAIL-SAFE to 4 (over-warn, never under-warn;
+  // §17 spirit) — it can never surface as a fabricated shown number (the modal reads the preview).
   return {
     approval: {
       approval_id: `appr_for_${ack.action_request_id}`,
       required_approver: { kind: "current_user" },
-      status: "awaiting_approval",
       // single_action ONLY — a per-hunk action is never standing-/bulk-granted here
       // (git.discard_hunk is non-standing-grantable daemon-side regardless; LESSON §32).
       scope: "single_action",
-      // daemon-SHAPED risk (the stand-in): discard = risk-3 (destructive), stage/unstage =
-      // risk-2. The UI never DERIVES this — the card reads it from here (the daemon's role).
-      risk_level: destructive ? 3 : 2,
+      status: "awaiting_approval",
+      risk_level: 4,
       action_request_id: ack.action_request_id,
     },
     policyDecision: {
       status: "require_approval",
-      reasons: [
-        destructive
-          ? "Discards a hunk — irreversible content loss; always requires per-action approval."
-          : "Applies a hunk change to the git index.",
-      ],
+      reasons: ["Awaiting the daemon's policy decision."],
       required_approvals: [{ kind: "current_user" }],
       constraints: [],
       safer_alt: null,

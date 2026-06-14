@@ -31,7 +31,10 @@ use nexusopsd::runtime::{
     bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor,
     WriteActorTelemetrySinkFactory, MAX_CONNECTIONS,
 };
-use nexusopsd::session::{spawn_supervisor_task, PtyLauncher};
+use nexusopsd::session::spawn_supervisor_task;
+use nexusopsd::session::tmux::{
+    select_survival_backend, tmux_probe, SurvivalBackend, SystemCommandRunner,
+};
 use nexusopsd::terminal::PortablePtySpawner;
 
 /// outbox drain cadence (§12) — deliver due rows a few times a minute.
@@ -132,8 +135,35 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // OBSERVATION events via the write-actor; the pump's live `UsageSource` ingress is the P4 follow-on.
     let (telemetry_factory, telemetry_slot) =
         WriteActorTelemetrySinkFactory::deferred(Arc::new(SystemClock));
-    let launcher = PtyLauncher::new(Box::new(PortablePtySpawner), project_cwd, hook_receiver)
-        .with_telemetry_sink_factory(Box::new(telemetry_factory));
+    // P4.1b-2 — probe tmux ONCE at startup (Q2: the backend is fixed for the daemon's life) → select a
+    // CONSISTENT survival backend (launcher ⇔ broker always agree, pin #3/#7). tmux present →
+    // survivable sessions (`TmuxLauncher`, the `env`-wrapped O-13 spec) + survivor detection
+    // (`TmuxBroker`, so `ReattachedLive` is reachable); absent → graceful-degrade to the non-surviving
+    // `PtyLauncher` + `NoSurvivorBroker` (B2-achievable: resume/replay, NEVER reattach-live). The
+    // telemetry factory threads into whichever launcher is selected.
+    let tmux_available = tmux_probe(&SystemCommandRunner);
+    let backend = select_survival_backend(
+        tmux_available,
+        Box::new(PortablePtySpawner),
+        project_cwd,
+        hook_receiver,
+        Some(Box::new(telemetry_factory)),
+    );
+    eprintln!(
+        "nexusopsd: survival backend = {:?} (tmux {})",
+        backend.kind,
+        if tmux_available {
+            "present"
+        } else {
+            "absent — degraded"
+        }
+    );
+    // the launcher → the SessionExecutor (write-actor); the broker → restart recovery (held below).
+    let SurvivalBackend {
+        kind: _,
+        launcher,
+        broker: survival_broker,
+    } = backend;
 
     // the session.create/kill executor (the live launcher + the supervisor), REGISTERED under
     // `ExecutorKind::Session` in the production CatalogExecutor — this is the reachable session.create
@@ -141,7 +171,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut catalog_exec = CatalogExecutor::new();
     catalog_exec.register(
         ExecutorKind::Session,
-        Arc::new(SessionExecutor::new(Box::new(launcher), supervisor_handle)),
+        Arc::new(SessionExecutor::new(launcher, supervisor_handle)),
     );
 
     // the production policy is now `AgentMutationPolicy` (the catalog-authoritative risk engine + the
@@ -199,7 +229,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // re-materialization is 4.1b-2 (LIVE survival = HITL); here the recovery DECISION is made + audited.
     match open_read_only(&db_path) {
         Ok(conn) => {
-            let recovered = run_restart_recovery(&conn, &handle, Arc::new(SystemClock));
+            // pass the SELECTED survival broker (4.1b-2: `TmuxBroker` when tmux is present so a survivor
+            // reaches `ReattachedLive`, else `NoSurvivorBroker` — graceful degrade).
+            let recovered = run_restart_recovery(
+                &conn,
+                survival_broker.as_ref(),
+                &handle,
+                Arc::new(SystemClock),
+            );
             if recovered > 0 {
                 eprintln!("nexusopsd: restart recovery — {recovered} session(s) recovered");
             }

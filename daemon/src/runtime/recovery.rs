@@ -22,7 +22,7 @@ use nexusops_shared::status::Session;
 use crate::clock::Clock;
 use crate::eventstore::AppendIntent;
 use crate::runtime::WriteHandle;
-use crate::session::broker::{Broker, BrokerReattach};
+use crate::session::broker::Broker;
 use crate::session::recovery::{
     recover_sessions_on_restart, RecoverableSession, RecoveryAction, RecoveryDispatch,
     RecoverySignal, RecoverySignalSink,
@@ -167,20 +167,6 @@ impl RecoverySignalSink for WriteActorRecoverySink {
     }
 }
 
-/// The conservative production [`Broker`] — a fresh daemon has NO surviving in-flight PTYs (the real
-/// detachable-terminal broker that holds them across a restart lands 4.1b-2; LIVE survival = HITL). It
-/// reports no survivor for every session → the §8.1 ladder never takes the `ReattachedLive` rung in
-/// production until 4.1b-2 swaps the real broker in behind this seam.
-struct NoSurvivorBroker;
-
-impl Broker for NoSurvivorBroker {
-    fn reattach_outcome(&self, _session_id: &SessionId) -> BrokerReattach {
-        BrokerReattach {
-            has_live_session: false,
-        }
-    }
-}
-
 /// The production recovery [`RecoveryDispatch`] — DEFERRED. The live re-materialization (the
 /// identity-preserving launcher relaunch + the broker reattach) is the 4.1b-2 / 0.1-0.3-HITL follow-on;
 /// at this slice the recovery EFFECT is the audited `SessionRecovered` signal the sink emits (for
@@ -202,11 +188,13 @@ impl RecoveryDispatch for DeferredRecoveryDispatch {
 
 /// The reachable restart-recovery entry — `main.rs` calls this post-supervisor, BEFORE the accept-loop
 /// serves clients (the §16 restart path). Enumerates the live-at-shutdown sessions from `proj_session`
-/// (read-only `conn`) → drives the deterministic `recover_sessions_on_restart` over the conservative
-/// production broker/dispatch + the write-actor `SessionRecovered` sink. The PRODUCTION caller of
+/// (read-only `conn`) → drives the deterministic `recover_sessions_on_restart` over the SELECTED
+/// survival `broker` (4.1b-2: `TmuxBroker` when tmux is present, else `NoSurvivorBroker` — graceful
+/// degrade) + the deferred dispatch + the write-actor `SessionRecovered` sink. The PRODUCTION caller of
 /// `decide_resume` (4.1a) — closes its Step-7.5 reachability. Returns the recovered-session count.
 pub fn run_restart_recovery(
     conn: &Connection,
+    broker: &dyn Broker,
     handle: &WriteHandle,
     clock: Arc<dyn Clock>,
 ) -> usize {
@@ -220,8 +208,7 @@ pub fn run_restart_recovery(
     if sessions.is_empty() {
         return 0;
     }
-    let broker = NoSurvivorBroker;
     let dispatch = DeferredRecoveryDispatch;
     let sink = WriteActorRecoverySink::new(handle.clone(), clock);
-    recover_sessions_on_restart(&sessions, &broker, &dispatch, &sink).len()
+    recover_sessions_on_restart(&sessions, broker, &dispatch, &sink).len()
 }

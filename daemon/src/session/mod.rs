@@ -15,6 +15,7 @@ pub mod actor;
 pub mod broker;
 pub mod launcher;
 pub mod recovery;
+pub mod tmux;
 
 pub use actor::{spawn_session_actor, SessionActorHandle, SessionCommand};
 #[cfg(any(test, feature = "test-support"))]

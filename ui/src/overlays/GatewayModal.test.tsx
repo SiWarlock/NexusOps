@@ -60,6 +60,19 @@ describe("GatewayModal — cat-1 consumer pins (full modal)", () => {
     expect(approveSpy).not.toHaveBeenCalled();
   });
 
+  it("approve_deny_disabled_when_mutations_not_enabled", async () => {
+    // spec(L2-B 🔒 L2-O3 / §11.7) — even CONNECTED (canSubmitIntent true), the approve/deny controls
+    // stay disabled while the port's `mutationsEnabled` gate is false (the L2-B honest disabled state —
+    // wired-but-not-yet-enabled; the go-live enable is L2-C). NOT an enabled-button-that-throws.
+    const port = new MockGatewayPort({ mutationsEnabled: false });
+    const approveSpy = vi.spyOn(port, "approve");
+    renderModal({ status: CONNECTED, port });
+    expect(screen.getByRole("button", { name: /approve/i })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /deny/i })).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByRole("button", { name: /approve/i })); // disabled → no-op
+    expect(approveSpy).not.toHaveBeenCalled();
+  });
+
   it("card_risk_and_requirement_read_from_policydecision_never_ui_derived", async () => {
     // spec(§6.2) — the requirement is READ from the daemon's PolicyDecision: a DIFFERENT
     // PolicyDecision changes the displayed requirement (proves read, not hardcoded).

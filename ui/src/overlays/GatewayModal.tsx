@@ -38,7 +38,10 @@ export function GatewayModal({
   onClose: () => void;
 }) {
   const seam = useSubmitIntent(port);
-  const canSubmit = useCanSubmitIntent();
+  // The effective mutation-submit gate (056/L2-B): a live link AND the L2 go-live enable. While
+  // `mutationsEnabled` is false (the L2-B honest disabled state), approve/deny stay disabled + the
+  // seam returns readOnly — the controls never offer an enabled-button-that-throws (§11.7).
+  const canSubmit = useCanSubmitIntent() && port.mutationsEnabled;
   const [preview, setPreview] = useState<IntentResult<ActionPreview> | null>(null);
   const [result, setResult] = useState<IntentResult<ActionAck> | null>(null);
   const [denyReason, setDenyReason] = useState("");

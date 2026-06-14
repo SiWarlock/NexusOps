@@ -90,4 +90,13 @@ export interface GatewayPort {
    * the arg and gates the read-path UPGRADE while degraded; DEGRADE always flows (fail-safe).
    */
   notifyConnectionState(next: ConnectionState): void;
+
+  /**
+   * The L2 go-live gate (cat-1, 056/L2-B). The SINGLE flag both the transport (a mutation method
+   * throws-not-enabled + never reaches the daemon when false) AND the UI submit controls (disabled
+   * when false) honor — so L2-C is one flip that lights up the wire + the controls together.
+   * `UdsGatewayPort` defaults it FALSE (production: no live mutation until the USER-gated L2-C enable);
+   * `MockGatewayPort` defaults it TRUE (a fully-working test/dev port). NOT a §6.1 RPC method.
+   */
+  readonly mutationsEnabled: boolean;
 }

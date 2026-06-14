@@ -128,6 +128,17 @@ describe("DiffReview L2 — per-hunk intent submission (cat-1)", () => {
     expect(screen.getByRole("button", { name: /^Discard hunk/ })).toHaveProperty("disabled", true);
   });
 
+  it("per_hunk_buttons_disabled_when_mutations_not_enabled", async () => {
+    // spec(L2-B 🔒 L2-O3) — even CONNECTED (canSubmitIntent true), the per-hunk git buttons stay
+    // disabled while the port's `mutationsEnabled` gate is false (the L2-B honest disabled state —
+    // wired-but-not-yet-enabled; the go-live enable is L2-C). L2-B enables nothing in the UI.
+    renderReview({ status: CONNECTED, port: new MockGatewayPort({ mutationsEnabled: false }) });
+    const stage = await screen.findByRole("button", { name: /^Stage hunk/ });
+    expect(stage).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /^Unstage hunk/ })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /^Discard hunk/ })).toHaveProperty("disabled", true);
+  });
+
   it("stage_hunk_submits_typed_intent_never_executes", async () => {
     // spec(Q1/§4.2) — clicking Stage submits a typed git.stage_hunk ActionRequest via the
     // seam → the single GatewayPort; the UI NEVER performs a git op (pure submitter).

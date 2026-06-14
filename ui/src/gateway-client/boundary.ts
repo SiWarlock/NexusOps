@@ -11,6 +11,8 @@
 // branch into read-only / degraded mode with structured context.
 import type { ZodError } from "zod";
 import {
+  ActionAck,
+  ActionPreview,
   ApprovalQueuePage,
   AuditTrailPage,
   Capabilities,
@@ -98,6 +100,26 @@ export function parseCapabilities(payload: unknown): Capabilities {
   const result = Capabilities.safeParse(payload);
   if (!result.success) {
     throw new BoundaryValidationError("capabilities", result.error);
+  }
+  return result.data;
+}
+
+/** Validate a `submit_action`/`approve`/`deny` result (the daemon's `ActionAck`) at the boundary —
+ *  parse-don't-trust the mutation ack before it reaches the consumer (L2-B; LESSON 22 fail-closed). */
+export function parseAck(payload: unknown): ActionAck {
+  const result = ActionAck.safeParse(payload);
+  if (!result.success) {
+    throw new BoundaryValidationError("ActionAck", result.error);
+  }
+  return result.data;
+}
+
+/** Validate a `preview_action` result (the daemon's `ActionPreview`) at the boundary (same fail-closed
+ *  posture) — the human approves against the daemon's real risk/consequences, never a fabricated one. */
+export function parsePreview(payload: unknown): ActionPreview {
+  const result = ActionPreview.safeParse(payload);
+  if (!result.success) {
+    throw new BoundaryValidationError("ActionPreview", result.error);
   }
   return result.data;
 }

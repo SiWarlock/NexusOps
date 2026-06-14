@@ -4,13 +4,18 @@
 //! daemon method incl. the L2 mutations). Each command marshals the params, calls the 049
 //! nexusops-gateway-uds transport crate's `connect_and_call`, and returns the raw daemon JSON
 //! `Value` (the TS layer Zod-parses it at 051) or a serializable, leak-free `GatewayCommandError`.
-//! NON-cat-1 (reads only) — no submit_action/approve/deny; INV-SEC-1 stays daemon-side.
+//! L2-B: the bridge now ALSO carries the 4 §6.1 MUTATION commands (submit_action / preview_action /
+//! approve / deny) — one typed #[tauri::command] per method (the NARROW allowlist; STILL no generic
+//! gateway_call). Each marshals params + calls the SAME `call_daemon` (verbatim §6.4 `Wire{code}` via
+//! `map_client_error`). The live mutation path is gated OFF on the TS side (`mutationsEnabled=false`)
+//! until L2-C — the UI still never mutates; the daemon Gateway is the INV-SEC-1 chokepoint.
 //!
 //! The TDD core is the two PURE fns (`map_client_error` + the param marshaling); the
 //! #[tauri::command] wrappers + the socket connect are infra (the gated smoke test covers the
 //! round-trip end-to-end against a real daemon).
 
 use nexusops_gateway_uds::{connect_and_call, connect_and_subscribe, ClientError};
+use nexusops_shared::actions::ActionRequest;
 use nexusops_shared::ipc::{
     GetDiffParams, GetProjectionParams, IpcErrorCode, ProjectionName, ProjectionScope,
 };
@@ -121,6 +126,36 @@ pub fn get_diff_params(worktree_id: String, file: String) -> Result<Value, Gatew
     })
 }
 
+// ── the L2-B mutation param marshaling (== the daemon's methods.rs shapes; L2-D1/O4 opaque) ────
+
+/// Marshal `submit_action` params: the `ActionRequest` serialized AS-IS (its idempotency_key /
+/// fencing_token / resource_refs ride OPAQUELY to the daemon, which owns dedup+fencing — L2-O4).
+pub fn submit_action_params(request: ActionRequest) -> Result<Value, GatewayCommandError> {
+    serde_json::to_value(request).map_err(|e| GatewayCommandError::Serde {
+        message: e.to_string(),
+    })
+}
+
+/// Marshal `preview_action` params == the daemon's `{action_request_id}` (methods.rs:441).
+pub fn preview_action_params(action_request_id: String) -> Value {
+    serde_json::json!({ "action_request_id": action_request_id })
+}
+
+/// Marshal `approve` params == the daemon's `{approval_id, step_id?}` (methods.rs:212; step_id is
+/// accepted-but-RESERVED in 2.1c). This Rust marshal OMITS the key when `None`; the TS caller sends
+/// `stepId: null` — both map to the daemon's `Option<String>` `None` (Tauri deserializes JSON null → None).
+pub fn approve_params(approval_id: String, step_id: Option<String>) -> Value {
+    match step_id {
+        Some(step) => serde_json::json!({ "approval_id": approval_id, "step_id": step }),
+        None => serde_json::json!({ "approval_id": approval_id }),
+    }
+}
+
+/// Marshal `deny` params == the daemon's `{approval_id, reason}` (methods.rs:227).
+pub fn deny_params(approval_id: String, reason: String) -> Value {
+    serde_json::json!({ "approval_id": approval_id, "reason": reason })
+}
+
 // ── the #[tauri::command] read allowlist (registered in lib.rs run()) ─────────────────────────
 
 #[tauri::command]
@@ -144,6 +179,41 @@ pub async fn gateway_get_diff(
 #[tauri::command]
 pub async fn gateway_get_capabilities() -> Result<Value, GatewayCommandError> {
     call_daemon("get_capabilities", serde_json::json!({})).await
+}
+
+// ── the #[tauri::command] L2 MUTATION allowlist (registered in lib.rs; STILL no gateway_call) ──
+// One typed command per §6.1 mutation method (L2-D2). Each marshals + calls the SAME call_daemon —
+// so the verbatim §6.4 Wire{code} rides through map_client_error identically to the reads (L2-D6). The
+// UI never mutates: a command SENDS a typed intent; the daemon Gateway is the INV-SEC-1 chokepoint
+// (L2-D1 pure pass-through). The live path is gated OFF on the TS side until L2-C.
+
+#[tauri::command]
+pub async fn gateway_submit_action(request: ActionRequest) -> Result<Value, GatewayCommandError> {
+    let params = submit_action_params(request)?;
+    call_daemon("submit_action", params).await
+}
+
+#[tauri::command]
+pub async fn gateway_preview_action(
+    action_request_id: String,
+) -> Result<Value, GatewayCommandError> {
+    call_daemon("preview_action", preview_action_params(action_request_id)).await
+}
+
+#[tauri::command]
+pub async fn gateway_approve(
+    approval_id: String,
+    step_id: Option<String>,
+) -> Result<Value, GatewayCommandError> {
+    call_daemon("approve", approve_params(approval_id, step_id)).await
+}
+
+#[tauri::command]
+pub async fn gateway_deny(
+    approval_id: String,
+    reason: String,
+) -> Result<Value, GatewayCommandError> {
+    call_daemon("deny", deny_params(approval_id, reason)).await
 }
 
 /// A frame streamed to the frontend over the subscribe `Channel` (052). A tagged enum so the TS
@@ -331,5 +401,89 @@ mod tests {
         // the nested error is the verbatim §6.4 code (the 050 wire-code path), nothing else leaked.
         assert_eq!(err["error"]["kind"], "wire");
         assert_eq!(err["error"]["code"], "not_found");
+    }
+
+    // ─── L2-B — the mutation bridge param marshaling (the TDD core; the commands are infra) ────
+    // The 4 mutation commands marshal params == the daemon's methods.rs shapes + reuse call_daemon +
+    // map_client_error (the verbatim §6.4 code is shared with the reads). The wire is built here but
+    // gated OFF on the TS side (mutationsEnabled=false) until L2-C.
+
+    fn sample_action_request() -> nexusops_shared::actions::ActionRequest {
+        use nexusops_shared::actions::{RequesterType, ResourceRef, ResourceType, RiskLevel};
+        use nexusops_shared::ids::ActionRequestId;
+        use nexusops_shared::status::ActionRequest as ActionRequestStatus;
+        use nexusops_shared::time::Timestamp;
+        nexusops_shared::actions::ActionRequest {
+            action_request_id: ActionRequestId::new(),
+            project_id: None,
+            action_type: "git.stage_hunk".to_string(),
+            requester_type: RequesterType::User,
+            requester_id: "ui".to_string(),
+            resource_refs: vec![ResourceRef {
+                resource_type: ResourceType::File,
+                id: "wt_1\u{1f}a.ts\u{1f}1,1,1,1".to_string(),
+                uri: None,
+            }],
+            inputs: serde_json::json!({}),
+            risk_level: RiskLevel::Level2,
+            idempotency_key: Some("idem-abc".to_string()),
+            fencing_token: Some(42),
+            status: ActionRequestStatus::Submitted,
+            preview: None,
+            created_at: Timestamp::parse("2026-06-14T00:00:00Z").unwrap(),
+        }
+    }
+
+    #[test]
+    fn submit_action_params_match_daemon() {
+        // spec(§6.1/L2-D1/O4) — submit_action_params serializes the ActionRequest AS-IS; it round-trips
+        // back into the daemon's frozen ActionRequest (no field dropped/reshaped — opaque pass-through;
+        // idempotency_key/fencing_token ride to the daemon, which owns dedup+fencing).
+        let req = sample_action_request();
+        let params = submit_action_params(req.clone()).unwrap();
+        assert_eq!(params["action_type"], "git.stage_hunk");
+        assert_eq!(params["idempotency_key"], "idem-abc"); // rides opaquely (L2-O4)
+        assert_eq!(params["fencing_token"], 42);
+        let parsed: nexusops_shared::actions::ActionRequest =
+            serde_json::from_value(params).unwrap();
+        assert_eq!(parsed, req);
+    }
+
+    #[test]
+    fn approve_deny_preview_params_match_daemon() {
+        // spec(§6.1) — the marshal fns produce the EXACT daemon-expected param shapes (methods.rs):
+        // approve={approval_id,step_id?} · deny={approval_id,reason} · preview={action_request_id}.
+        let approve_some = approve_params("appr_1".to_string(), Some("step_2".to_string()));
+        assert_eq!(approve_some["approval_id"], "appr_1");
+        assert_eq!(approve_some["step_id"], "step_2");
+        let approve_none = approve_params("appr_1".to_string(), None);
+        assert_eq!(approve_none["approval_id"], "appr_1");
+        assert!(
+            approve_none.get("step_id").is_none(),
+            "step_id absent (not null) when None"
+        );
+        let deny = deny_params("appr_9".to_string(), "no".to_string());
+        assert_eq!(deny["approval_id"], "appr_9");
+        assert_eq!(deny["reason"], "no");
+        let preview = preview_action_params("act_xyz".to_string());
+        assert_eq!(preview["action_request_id"], "act_xyz");
+    }
+
+    #[test]
+    fn mutation_commands_reuse_verbatim_wire_code() {
+        // spec(L2-D6/§6.4) — map_client_error (shared with the reads) carries the §6.4 code VERBATIM on
+        // the mutation path: fencing_conflict / precondition_stale stay DISTINCT (→ the §11.5 cards —
+        // a collapsed code would break #6's never-auto-resolved hard-conflict at L2-C).
+        let fc = serde_json::to_value(map_client_error(ClientError::Wire(
+            IpcErrorCode::FencingConflict,
+        )))
+        .unwrap();
+        assert_eq!(fc["kind"], "wire");
+        assert_eq!(fc["code"], "fencing_conflict");
+        let ps = serde_json::to_value(map_client_error(ClientError::Wire(
+            IpcErrorCode::PreconditionStale,
+        )))
+        .unwrap();
+        assert_eq!(ps["code"], "precondition_stale");
     }
 }

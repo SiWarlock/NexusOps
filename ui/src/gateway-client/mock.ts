@@ -89,6 +89,10 @@ export interface MockGatewayOptions {
   /** When set, the mutation methods REJECT with this `WireError` (the daemon's §6.4
    *  error path) instead of resolving — so the seam's verbatim-error pin is exercised. */
   mutationError?: WireError;
+  /** The L2 go-live gate the UI controls consult (056). Default TRUE — the Mock is a fully-working
+   *  test/dev port (its mutations resolve), so Mock-driven UI-flow tests keep enabled controls; set
+   *  false to exercise the L2-B honest-disabled state (wired-but-not-enabled). */
+  mutationsEnabled?: boolean;
 }
 
 export class MockGatewayPort implements GatewayPort {
@@ -96,11 +100,14 @@ export class MockGatewayPort implements GatewayPort {
   private readonly protocolVersion: number;
   private readonly mutationError?: WireError;
   private readonly listeners = new Set<(state: ConnectionState) => void>();
+  /** The L2 go-live gate the UI controls consult (056) — default TRUE (the Mock is a working port). */
+  readonly mutationsEnabled: boolean;
 
   constructor(options: MockGatewayOptions = {}) {
     this.connection = options.connection ?? "connected";
     this.protocolVersion = options.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
     this.mutationError = options.mutationError;
+    this.mutationsEnabled = options.mutationsEnabled ?? true;
   }
 
   async get_projection<K extends ProjectionName>(

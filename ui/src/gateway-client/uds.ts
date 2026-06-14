@@ -14,10 +14,11 @@
 //   • a TRANSPORT/host fault (io / protocol / serde / version_skew / internal) → an
 //     Error instance (an honest degrade, §11.7) — never faked as a wire code.
 //
-// NON-cat-1: reads only. The mutation methods (submit_action/approve/deny/preview_action)
-// + the streaming subscribe + subscribe_terminal are NOT wired here (no Tauri mutation/
-// subscribe command exists) — they throw a not-wired error so the read client can NEVER
-// reach a mutation (the L2 mutation transport is cat-1 HELD; subscribe streaming = 052).
+// L2-B: the mutation methods (submit_action/approve/deny/preview_action) are NOW WIRED — each
+// invokes its typed Tauri mutation command + boundary-parses the result — but GATED behind
+// `mutationsEnabled` (default false): when false they throw + never invoke, so NO production path
+// reaches a live mutation until the USER-gated L2-C flips it. The streaming subscribe is wired (052);
+// subscribe_terminal stays a P4 not-wired surface. INV-SEC-1 stays daemon-side regardless.
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
   GatewayPort,
@@ -37,9 +38,11 @@ import type {
   TerminalOutputFrame,
 } from "../contracts/index";
 import {
+  parseAck,
   parseCapabilities,
   parseDelta,
   parseDiff,
+  parsePreview,
   parseProjectionPage,
 } from "./boundary";
 import {
@@ -66,8 +69,8 @@ function isGatewayCommandError(e: unknown): e is GatewayCommandError {
   );
 }
 
-const NOT_WIRED_L2 =
-  "UdsGatewayPort: the mutation transport is not wired (L2 — cat-1 HELD on the daemon 0.30.0 ②-mini)";
+const MUTATIONS_NOT_ENABLED =
+  "UdsGatewayPort: L2 mutation submit is not enabled (the wire is built but gated off until the USER-gated L2-C go-live; mutationsEnabled=false)";
 
 /** A frame received over the subscribe `Channel` (the TS mirror of the 050 bridge's
  *  `SubscriptionEvent`): `delta` carries a raw daemon delta (boundary-parsed before it's yielded),
@@ -136,6 +139,16 @@ export class UdsGatewayPort implements GatewayPort {
   // Fail-safe: starts "connecting" (read-only) until a daemon response confirms it (LESSON §4).
   private connection: ConnectionState = INITIAL_CONNECTION_STATE;
   private readonly listeners = new Set<(state: ConnectionState) => void>();
+
+  /** The L2 go-live gate (056) — default FALSE: no live mutation reaches the daemon until the
+   *  USER-gated L2-C constructs the port with `{mutationsEnabled:true}`. Read by BOTH the mutation
+   *  methods (throw-not-enabled + never invoke when false) AND the UI submit controls (disabled when
+   *  false) — the single switch L2-C flips to light up the wire + the controls together. */
+  readonly mutationsEnabled: boolean;
+
+  constructor(opts: { mutationsEnabled?: boolean } = {}) {
+    this.mutationsEnabled = opts.mutationsEnabled ?? false;
+  }
 
   // ── the §6.1 read surface (single-shot — invoke + boundary-parse) ──────────────────
 
@@ -273,21 +286,38 @@ export class UdsGatewayPort implements GatewayPort {
     for (const cb of this.listeners) cb(next);
   }
 
-  // ── un-wired surfaces (reads-only L1) — the read client can NEVER reach these ────────
+  // ── the §6.1 mutation-intent surface (L2-B) — invoke the typed command + boundary-parse, GATED ──
+  // The cat-1 crux: when `mutationsEnabled` is false (the production default) each method THROWS +
+  // NEVER `invoke`s → no production path reaches a live mutation (the enable is the USER-gated L2-C).
+  // When enabled, each reuses the read-command invoke path (`invokeRead` — invoke + markConnected
+  // [054-suppressed] + boundary-parse), so the wire-rejection (plain {code}) vs transport-fault (Error)
+  // classification is inherited identically (LESSON 22). The UI still never mutates: a submit SENDS a
+  // typed intent; the daemon Gateway is the INV-SEC-1 chokepoint (defense-in-depth: the control is
+  // disabled + the seam returns readOnly + this throws — three layers when not enabled).
+  private assertMutationsEnabled(): void {
+    if (!this.mutationsEnabled) throw new Error(MUTATIONS_NOT_ENABLED);
+  }
 
-  // The §6.1 mutation-intent surface — L2, cat-1 HELD. No Tauri mutation command exists;
-  // these reject so a mutation can never be submitted through the read client.
-  async submit_action(_request: ActionRequest): Promise<ActionAck> {
-    throw new Error(NOT_WIRED_L2);
+  async submit_action(request: ActionRequest): Promise<ActionAck> {
+    this.assertMutationsEnabled();
+    return this.invokeRead(parseAck, "gateway_submit_action", { request });
   }
-  async preview_action(_action_request_id: string): Promise<ActionPreview> {
-    throw new Error(NOT_WIRED_L2);
+  async preview_action(action_request_id: string): Promise<ActionPreview> {
+    this.assertMutationsEnabled();
+    return this.invokeRead(parsePreview, "gateway_preview_action", {
+      actionRequestId: action_request_id,
+    });
   }
-  async approve(_approval_id: string, _step_id?: string): Promise<ActionAck> {
-    throw new Error(NOT_WIRED_L2);
+  async approve(approval_id: string, step_id?: string): Promise<ActionAck> {
+    this.assertMutationsEnabled();
+    return this.invokeRead(parseAck, "gateway_approve", {
+      approvalId: approval_id,
+      stepId: step_id ?? null,
+    });
   }
-  async deny(_approval_id: string, _reason: string): Promise<ActionAck> {
-    throw new Error(NOT_WIRED_L2);
+  async deny(approval_id: string, reason: string): Promise<ActionAck> {
+    this.assertMutationsEnabled();
+    return this.invokeRead(parseAck, "gateway_deny", { approvalId: approval_id, reason });
   }
 
   // The streaming subscribe (§6.1 ProjectionDelta) — WIRED at 052. Opens a dedicated persistent

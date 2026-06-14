@@ -65,6 +65,20 @@ const validDiff = {
 };
 const validCaps = { protocol_version: 1, contract_version: "0.28.0" };
 
+// L2-B mutation fixtures — contract-valid ActionAck / ActionPreview the boundary parsers accept.
+const validAck = { action_request_id: "act_1", status: "submitted" };
+const validPreview = {
+  action_request_id: "act_1",
+  generated_at: "2026-06-14T00:00:00Z",
+  risk_level: 2,
+  risk_reasons: ["touches a file"],
+  summary: "Would stage 1 hunk.",
+  changed_resources: [],
+  cannot_preview_reason: null,
+};
+// the request rides to the daemon opaquely (the daemon validates) — a minimal cast for the invoke-arg pin.
+const sampleRequest = { action_type: "git.stage_hunk" } as ActionRequest;
+
 beforeEach(() => {
   mockInvoke.mockReset();
 });
@@ -230,22 +244,99 @@ describe("UdsGatewayPort — single-shot reads (Layer A)", () => {
     expect(port.getConnectionState()).toBe("connected");
   });
 
-  it("the MUTATION methods throw a not-wired (L2) error and NEVER invoke a command (reads-only; cat-1 HELD)", async () => {
+  it("mutation_methods_throw_not_enabled_by_default_and_never_invoke", async () => {
+    // spec(L2 cat-1 crux) — the default port (mutationsEnabled=false) THROWS "not enabled" on EVERY
+    // mutation method AND never `invoke`s → NO production path reaches a live mutation (the enable is
+    // L2-C, USER-gated). This is the no-production-reach guard the whole L2-B wire is built behind.
     const port = new UdsGatewayPort();
 
-    // a minimal cast — the method throws before it ever reads the request (reads-only client).
     await expect(
-      port.submit_action({ action_type: "git.stage_hunk" } as ActionRequest),
-    ).rejects.toThrow(/not wired|L2/i);
-    await expect(port.preview_action("ar_1")).rejects.toThrow(/not wired|L2/i);
-    await expect(port.approve("appr_1")).rejects.toThrow(/not wired|L2/i);
-    await expect(port.deny("appr_1", "no")).rejects.toThrow(/not wired|L2/i);
-    // the §6.4 terminal demux is a P4 surface — not wired in L1 either.
-    expect(() => port.subscribe_terminal("t1")).toThrow(/not wired|L2|P4/i);
-    // (subscribe is now WIRED at 052 — covered by its own tests below; it is a READ, not a mutation.)
+      port.submit_action(sampleRequest),
+    ).rejects.toThrow(/not enabled/i);
+    await expect(port.preview_action("act_1")).rejects.toThrow(/not enabled/i);
+    await expect(port.approve("appr_1")).rejects.toThrow(/not enabled/i);
+    await expect(port.deny("appr_1", "no")).rejects.toThrow(/not enabled/i);
 
-    // the read client can NEVER reach a mutation command — no Tauri mutation command exists.
+    // THE cat-1 crux: NOT ONE invoke happened — the guard short-circuits BEFORE any transport reach.
     expect(mockInvoke).not.toHaveBeenCalled();
+    // subscribe_terminal stays a P4 not-wired surface (unchanged; a READ-channel, not a mutation).
+    expect(() => port.subscribe_terminal("t1")).toThrow(/not wired|P4/i);
+  });
+
+  it("mutation_methods_invoke_and_parse_when_enabled", async () => {
+    // spec(§6.1) — with the flag forced ON (test-only; production stays false until L2-C), each
+    // mutation method invokes its typed Tauri command + boundary-parses the typed result.
+    const port = new UdsGatewayPort({ mutationsEnabled: true });
+
+    mockInvoke.mockResolvedValueOnce(validAck);
+    const ack = await port.submit_action(sampleRequest);
+    expect(ack.action_request_id).toBe("act_1");
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: sampleRequest });
+
+    mockInvoke.mockResolvedValueOnce(validPreview);
+    const preview = await port.preview_action("act_1");
+    expect(preview.summary).toBe("Would stage 1 hunk.");
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_preview_action", { actionRequestId: "act_1" });
+
+    mockInvoke.mockResolvedValueOnce(validAck);
+    await port.approve("appr_1", "step_2");
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_approve", {
+      approvalId: "appr_1",
+      stepId: "step_2",
+    });
+
+    // step_id omitted → stepId:null on the wire (Tauri deserializes null → the Rust Option<String> None,
+    // matching the daemon's "absent" shape) — pin the None path so a future null↔None drift is caught.
+    mockInvoke.mockResolvedValueOnce(validAck);
+    await port.approve("appr_1");
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_approve", {
+      approvalId: "appr_1",
+      stepId: null,
+    });
+
+    mockInvoke.mockResolvedValueOnce(validAck);
+    await port.deny("appr_1", "no");
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_deny", { approvalId: "appr_1", reason: "no" });
+  });
+
+  it("mutation_wire_rejection_is_plain_data_not_error", async () => {
+    // spec(L2-D6/LESSON 22) — on an ENABLED submit, a daemon WireError → the verbatim code as PLAIN
+    // {code} (NOT an Error instance) so describeRejection routes the §6.4 code; a transport fault →
+    // an Error (honest degrade). Same classification as the reads (the shared handleError path).
+    const port = new UdsGatewayPort({ mutationsEnabled: true });
+
+    mockInvoke.mockRejectedValueOnce({ kind: "wire", code: "fencing_conflict" });
+    const wireErr = await port.submit_action(sampleRequest).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(wireErr).not.toBeInstanceOf(Error); // a daemon rejection is DATA, not a runtime fault
+    expect(WireError.safeParse(wireErr).success).toBe(true);
+    expect((wireErr as { code: string }).code).toBe("fencing_conflict"); // verbatim §6.4 code
+
+    // a transport fault → an Error instance (honest degrade, never faked as a wire code).
+    mockInvoke.mockRejectedValueOnce({ kind: "io", message: "down" });
+    await expect(port.approve("appr_1", "step_2")).rejects.toBeInstanceOf(Error);
+  });
+
+  it("mutation_malformed_result_is_boundary_error", async () => {
+    // spec(§5.0/LESSON 22) — a non-ActionAck result from the daemon → BoundaryValidationError (the
+    // parseAck fail-closed path), never a fabricated ack; symmetric with the reads' parse-don't-trust.
+    const port = new UdsGatewayPort({ mutationsEnabled: true });
+    mockInvoke.mockResolvedValueOnce({ not_an_ack: true });
+    await expect(port.submit_action(sampleRequest)).rejects.toBeInstanceOf(
+      BoundaryValidationError,
+    );
+  });
+
+  it("mutation_malformed_preview_is_boundary_error", async () => {
+    // spec(§5.0/LESSON 22) — a non-ActionPreview result → BoundaryValidationError (parsePreview
+    // fail-closed); the human never approves against a fabricated/un-parsed preview.
+    const port = new UdsGatewayPort({ mutationsEnabled: true });
+    mockInvoke.mockResolvedValueOnce({ not_a_preview: true });
+    await expect(port.preview_action("act_1")).rejects.toBeInstanceOf(
+      BoundaryValidationError,
+    );
   });
 });
 

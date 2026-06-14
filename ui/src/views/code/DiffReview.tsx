@@ -117,7 +117,10 @@ type Tab = "Review" | "Worktrees" | "Pull requests";
  *  not_found renders an honest unavailable state (never a fabricated diff, forbidden #2). */
 function ReviewTab({ gateway }: { gateway: GatewayPort }) {
   const seam = useSubmitIntent(gateway);
-  const canSubmit = useCanSubmitIntent();
+  // The effective per-hunk submit gate (056/L2-B): a live link AND the L2 go-live enable. While
+  // `mutationsEnabled` is false (the L2-B honest disabled state), the per-hunk buttons stay disabled
+  // — L2-B enables nothing in the UI (the go-live is the USER-gated L2-C single flip).
+  const canSubmit = useCanSubmitIntent() && gateway.mutationsEnabled;
   const { worktreeId, file } = diffReviewContext;
   const [state, setState] = useState<DiffState>({ kind: "loading" });
   const [pendingApproval, setPendingApproval] =

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { GatewayPort } from "../gateway-client/types";
-import { MockGatewayPort } from "../gateway-client/mock";
+import { UdsGatewayPort } from "../gateway-client/uds";
 import type {
   ApprovalQueueRow,
   AuditEventRow,
@@ -111,7 +111,10 @@ export function Shell({
   safety?: SafetyState;
 }) {
   // Stable client across renders (a fresh default per render would loop the effect).
-  const [client] = useState<GatewayPort>(() => gateway ?? new MockGatewayPort());
+  // PRODUCTION DEFAULT = the real UdsGatewayPort (L1 read-swap, 051) — the initial
+  // get_projection/get_capabilities load now shows REAL daemon data over the 050 invoke
+  // bridge. The MockGatewayPort stays the injectable test/dev seam (passed via `gateway`).
+  const [client] = useState<GatewayPort>(() => gateway ?? new UdsGatewayPort());
   const [data, setData] = useState<ShellData | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [connection, setConnection] = useState<ConnectionState>(() =>
@@ -225,11 +228,11 @@ export function Shell({
   // no-projects guard). resolveActiveProject guards the stale-ID case.
   const activeProjectId = resolveActiveProject(data.projects, rawActiveProjectId);
   const activeProject = data.projects.find((p) => p.project_id === activeProjectId);
-  // The "checking" (connected + version-unknown) window surfaces at the real
-  // daemon-1.5 reconnect re-handshake; the MockGatewayPort resolves version
-  // together with data (one Promise.all behind the !data load gate), so the
-  // window is trigger-pending here (wired, not yet driven). See the ui↔daemon-1.5
-  // Carry-forward spread.
+  // The "checking" (connected + version-unknown) window: the real UdsGatewayPort now
+  // drives connection→"connected" during get_capabilities while `version` resolves in
+  // the same load Promise.all, so a transient checking frame is possible; after load it
+  // settles to connected+compatible→ok. The live reconnect re-handshake that re-enters
+  // this window is the 052 subscribe-recovery path.
   const degraded = deriveDegradedState(connection, version);
 
   // Global waiting-on-you count (the HIQ badge in TopBar + Sidebar): summed

@@ -25,9 +25,10 @@ import "@xterm/xterm/css/xterm.css";
 import { Shell } from "./shell/Shell";
 
 // 6.1b: mount the shell as the production entry point. <Shell/> instantiates the
-// gateway-client (MockGatewayPort for now) and reads projections through the
-// boundary validator — closing 6.1a's foundation reachability gap. The real
-// UdsGatewayPort backs this once daemon 1.5 is live.
+// gateway-client and reads projections through the boundary validator. As of the L1
+// read-swap (051) the production default is the real UdsGatewayPort — the initial
+// load reads REAL daemon data over the 050 invoke bridge (the MockGatewayPort is now
+// the injectable test/dev seam). The live subscribe stream + recovery land in 052.
 const rootEl = document.getElementById("root");
 if (rootEl) {
   createRoot(rootEl).render(

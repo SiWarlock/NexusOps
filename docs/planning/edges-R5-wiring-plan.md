@@ -303,10 +303,9 @@ to the inner stub. Net Wave-B/C/D unchanged; one fewer slice.
   projector write lacks a live subscribe-push — `WorktreeCreated`→`proj_worktree` AND the daemon's own
   `SessionStarted`→`proj_session`. Reads work via `get_projection`; subscribers see it on reconnect. A
   gateway/pipeline delta-threading fix (daemon-track-owned; benefits its own emitted events). NOT blocking.
-- **TODO (live-read status refresh; P5.2 follow-on):** `read_worktree_status` (git/reads.rs exists) →
-  `proj_worktree` dirty_state/ahead/behind/git_checked_at via `derive_worktree_status` (§7.2 live-read cache).
-  Its own slice; the projector's ON CONFLICT DO UPDATE preserves those columns on re-fold/rebuild. The
-  rebuild-compare coverage boundary (5 always-NULL columns) revisits here.
+- **TODO (live-read status refresh; P5.2 follow-on) — ✅ CONSUMED edges-026 (R7):** `read_worktree_status`
+  → `proj_worktree` git-axis cache via a non-Gateway/non-event write-actor command + a git-watcher task. See
+  the R7 block below.
 - **Completed-work ticks (hold):** P5.1 = PARTIAL (executor + emission landed edges-019; registry projector
   MIGRATION_9-deferred). P5.2 = mutators (edges-020/021) + read vertical (edges-022) COMPLETE; live-read status
   refresh deferred (TODO above).
@@ -314,3 +313,76 @@ to the inner stub. Net Wave-B/C/D unchanged; one fewer slice.
   `EmittedEvent::Namespaced` bridge — 1 variant + 1 arm, additive, edges-owned per the lead) + MIGRATION_9
   **deferred to the final merge (D8)** — Wave-C takes the then-next-free number after the daemon's schema settles.
   Both lead-ruled + logged to the cross-track ledger for the final merge.
+
+---
+
+## R7 round progress (the thin in-lane drain → then PAUSE) — accumulated hot-routing
+
+**R7 slice ledger:**
+- **edges-026** P5.2 **§7.2 worktree-status live-read cache refresh** — LANDED `c195c7f`
+  (620/0; code-quality 2-fixed-in-slice [usize→i64 saturating; git-watcher error/panic logging]; security NOT
+  required [read-only git2, no event, no secret]; reachability YES). `read_worktree_status` (git2) →
+  `proj_worktree` git-axis cache (`dirty_state`/`ahead_count`/`behind_count`/`last_commit_sha`/`git_checked_at`
+  + recomputed `status`) via a NEW **non-Gateway, non-event** write-actor command `RefreshWorktreeStatus` (the
+  drain_once/reap_leases precedent; single-writer forbidden #3; §7.1 — **NO `WorktreeStatusRefreshed` event**,
+  the git-axis is a live-read cache) triggered by a 30s **git-watcher** interval task (drainer/reaper precedent,
+  ARCHITECTURE.md:340). **Layer-clean:** persistence-core stays git-free (the UPDATE takes plain computed
+  values; the git read + `derive_worktree_status` live in the runtime layer — the edges-022 LESSON-17 rule).
+  Rebuild RESETS the live-read cache (not event-sourced); the edges-022 rebuild-equivalence holds.
+  _(+ `style(edges-026)` follow-up `d800ef1`: cargo-fmt the 5 reflow files — c195c7f shipped
+  unformatted, the 407be7c precedent; ZERO behavior change.)_
+- **edges-027** P5.4 **§18 `project.rescan` detection-latency benchmark** (NON-TDD bench) — LANDED
+  `44ce907` (the bench IS the coverage, no RED→GREEN; the event_write.rs precedent).
+  NEW `benches/project_rescan.rs` (`fn main()`, harness=false) + the `[[bench]]` Cargo.toml entry; drives the
+  AS-BUILT detection core (`detect_git`+`detect_workflow`) over a representative committed temp repo, 1000
+  warm-cache iters → **median 0.44 ms** (p95 0.50/p99 0.60/max 1.07; the sub-ms band of the ~1.029 ms
+  edges-007 baseline; ~6800× under the §18 3 s SLO). CI guard = **median < 50 ms** (LESSON 22 — tighter than
+  the SLO, median-gated, gate-last). Invisible to `cargo test --workspace`; runs via `cargo bench`.
+
+**R7 PLAN-DELTA additions (apply at the phase-exit merge; held):**
+- **Arch-doc note (edges-027):** the §18 `project.rescan` perf budget is benched + guarded (median ~0.44 ms
+  ≪ 3 s; guard median < 50 ms, calibrated tighter than the SLO per LESSON 22).
+- **Held-for-merge (edges-027):** register `project_rescan` in the `/phase-exit` perf row + `.github/
+  nightly.yml` at the edges→main merge (CI files are shared-root; the bench target + file land now, the CI
+  registration is the merge note).
+- **Convention candidate (process gap, edges-026/027 — held-for-merge):** `/tdd` Step 8 runs `check`+`clippy`
+  but NOT `cargo fmt --check`, so a slice can ship unformatted (edges-026 `c195c7f` did → the `style` follow-up;
+  the 0.5/407be7c precedent). FIX: add `cargo fmt --check` to `/tdd` Step 8 (or run `/preflight` per-slice) +
+  an enforcement note in daemon/CLAUDE.md (the "fmt-check is FIRST" note exists for `/preflight`; extend it to
+  the per-slice gate). NOT a lead escalation (code correct; fmt cosmetic; the round-seal fmt-check is the net).
+  `(origin: 2026-06-13 edges-027)`
+- **LESSON candidate (live-read-cache refresh pattern, edges-026)** — a non-Gateway/non-event write-actor
+  command (the DrainOnce/ReapLeases family) + a git-watcher interval trigger + read-time `git_checked_at`
+  staleness; a rebuild RESETS the cache (live-read, not event-sourced); persistence-core stays git-free
+  (read+derive in the runtime layer). (LESSON 33 candidate — next-free after edges took §30/§31/§32.)
+- **Arch-doc note (edges-026):** §7.2 worktree live-read cache is LIVE (the git-watcher task wired,
+  ARCHITECTURE.md:340); `WorktreeStatusRefreshed`-is-NOT-an-event confirmed as-built (§7.1, the git-axis is a
+  live-read projection cache).
+- **Future TODO (overlay-source follow-on, MIGRATION_9-deferred, edges-026):** `status` recompute uses a
+  hardcoded `Creating` overlay (the only emitted overlay). When `WorktreeMerged`/`Locked`/`Prunable`/… emitters
+  land, a clean overlay source is needed (an `overlay` column = MIGRATION_9, or an event-sourced overlay read)
+  — else a merged/locked worktree's status would wrongly re-derive to a git-axis value each watcher tick.
+  Not testable without an overlay emitter. `last-consumer-slice: a worktree-overlay-emitter slice (post-merge)`.
+- **SPREAD (UNIFIED, edges-026 + edges-023/024) — write-actor-I/O-offload hardening:** move slow write-actor
+  I/O off-thread — covers the git-watcher git reads (edges-026; a BOUNDED local read, not the unbounded-network
+  class) + `drain_once` outbox I/O + the edges-023/024 external executors (the bounded-network case, already
+  timeout-guarded). ONE item. `last-consumer-slice: a write-actor-I/O-offload hardening slice`. `(origin:
+  2026-06-13 edges-023; unified edges-026)`
+- **Carry (edges-026):** the git-watcher reads `proj_worktree.path`, which is §15-redaction-masked for a
+  high-entropy component (tempdir hash) → the SAME over-redaction FP class as the edges-020 §7.2 return-review
+  item (invariant HOLDS, production-low — real worktree paths low-entropy survive). NOT a new finding; folds
+  into the existing §7.2-redacted-operational-inputs return-review.
+
+- **FINDING — `cargo audit` (R7 ops task, orch-run): 1 NEW MEDIUM vs the P2 0-baseline** — RUSTSEC-2023-0071
+  (`rsa` 0.9.10, Marvin Attack timing sidechannel, no fix), transitive via **octocrab → jsonwebtoken → rsa**
+  (GitHub-App JWT auth). **Exposure LOW** — edges never exercises it (auth deferred; the planned `gh auth
+  token`/OAuth model is bearer-token, NOT GitHub-App RS256-JWT; local trust boundary). **Disposition: accept-
+  and-document** (medium, no fix, unexercised, local) → **human return-review** (surfaced to the lead in the
+  R7 seal report). Full report: `docs/audits/edges-P5-P7-cargo-audit.md`. Preferred fix (a follow-up slice):
+  octocrab `default-features = false` feature-prune to drop the unused jsonwebtoken/rsa app-auth path. CI:
+  add the RUSTSEC-2023-0071 ignore + rationale to the `/phase-exit` dep-audit row + `.github/` at the merge.
+
+**R7 COMPLETE (then PAUSE):** §7.2 live-read (edges-026) · P5.4 bench (edges-027, median 0.44 ms) · `cargo
+audit` (1 new medium, accept-and-documented) — all DONE → seal R7 → edges PAUSES for the user-gated
+`/phase-exit 5`+`7` + the edges→main merge (NOT run by edges — the user drives it with the daemon track +
+the D8/MIGRATION_9 items: Wave-C `integration_connections` + the P5.1 registry projector).

@@ -3,7 +3,7 @@
 **Date:** 2026-06-13
 **Role:** edges-daemon-implementer (R7 — the thin final in-lane drain before the user-gated phase-exit pause)
 **Predecessor:** [edges-012-2026-06-13-r6-orchestrator-round-seal.md](edges-012-2026-06-13-r6-orchestrator-round-seal.md) (R6 orch round-seal, `c131803`)
-**Successor:** _(filled at the next session doc)_
+**Successor:** [edges-014-2026-06-13-r7-orchestrator-round-seal.md](edges-014-2026-06-13-r7-orchestrator-round-seal.md) (R7 orch round-seal)
 **Slice commits:** `c195c7f` (edges-026) · `d800ef1` (style fmt fixup) · `44ce907` (edges-027) · branch `track/edges` · **NOT pushed, NOT merged** (the edges→main merge is the user-gated phase-exit, not this round)
 
 > **Companion (the authoritative accumulated cross-track ledger):** `docs/planning/edges-R5-wiring-plan.md` — the R7 round-progress block + the held-for-merge PLAN-DELTA. This doc is the impl-side narrative.

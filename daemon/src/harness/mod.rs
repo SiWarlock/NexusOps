@@ -18,6 +18,7 @@
 //! satisfiable + object-safe); the real adapters + their async drive loop land in 3.2/3.3.
 
 pub mod claude;
+pub mod codex;
 pub mod resume;
 
 use nexusops_shared::harness::{

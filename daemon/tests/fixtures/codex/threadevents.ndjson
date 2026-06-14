@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"thr_test1"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"command_execution","command":"ls -la","exit_code":0}}
+{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"f.txt","kind":"modify"}]}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","server":"docs","tool":"query_docs"}}
+{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":300,"reasoning_output_tokens":50}}
+{"type":"some.future.unknown.event","note":"forward-compat: tolerated + skipped, never a panic"}

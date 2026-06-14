@@ -12,7 +12,9 @@
 //! are compile-time impossible (the live launch + interception + executor are 4.0b, deep-dive §8).
 
 pub mod actor;
+pub mod broker;
 pub mod launcher;
+pub mod recovery;
 
 pub use actor::{spawn_session_actor, SessionActorHandle, SessionCommand};
 #[cfg(any(test, feature = "test-support"))]

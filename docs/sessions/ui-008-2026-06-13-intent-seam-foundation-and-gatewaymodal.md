@@ -3,7 +3,7 @@
 - **Date:** 2026-06-13
 - **Phase:** Phase 6 (ui-resume) — P6.2 contract regens · P6.4b usage model · **P6.3d the intent seam (cat-1)**
 - **Predecessor:** [ui-007](ui-007-2026-06-09-prototype-faithful-styling-rebuild.md)
-- **Successor:** _(none yet)_
+- **Successor:** [ui-009](ui-009-2026-06-14-6.3e-completion-and-L1-read-transport.md)
 - **Track:** `track/ui` · implementer `ui-implementer` · orchestrator `ui-orchestrator` · lead `ui-team-lead`
 
 ## Why this session existed

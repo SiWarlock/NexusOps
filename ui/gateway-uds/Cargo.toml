@@ -1,0 +1,19 @@
+# nexusops-gateway-uds — the ui-side UDS read-transport core (P6.8 L1).
+# The §6.4 frame codec + handshake + single-shot read RPC over a generic stream, TDD'd
+# against a fake stream. Depends ONLY on the frozen `nexusops-shared` frame types — NEVER
+# the daemon crate, NEVER tauri (the Tauri host + the command bridge are slice 050).
+[package]
+name = "nexusops-gateway-uds"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+nexusops-shared = { path = "../../shared" }
+serde_json = "1.0"
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1.0"
+# test-only: the `frame_json<T: serde::Serialize>` helper names the trait (frames are shared types).
+serde = "1.0"

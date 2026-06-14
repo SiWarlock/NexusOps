@@ -408,6 +408,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexusops-gateway-uds"
+version = "0.0.0"
+dependencies = [
+ "nexusops-shared",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nexusops-shared"
 version = "0.0.0"
 dependencies = [

@@ -3,7 +3,7 @@
 - **Date:** 2026-06-14
 - **Phase:** Phase 4 (4.1b-1 · 4.1b-2 · 4.2)
 - **Predecessor:** [024-2026-06-13-telemetry-pump-survival-freeze-approval-queue-freeze.md](024-2026-06-13-telemetry-pump-survival-freeze-approval-queue-freeze.md)
-- **Successor:** _(next implementer — 4.3 background jobs / §17 failure-mode surfaces)_
+- **Successor:** [026-2026-06-14-background-jobs-and-codex-arc-3.3ab.md](026-2026-06-14-background-jobs-and-codex-arc-3.3ab.md)
 
 ## Why this session existed
 Fresh implementer (the prior hit HARD-STOP at 81%, closed clean at `ea0e93e`/②-mini `657bbd8`). Drove the head of the §8/§8.1 survival design into production + the §17 supervised-child-death surface — three pre-authored briefs (059/060/061), closed at a WARN cycle (clean boundary, nothing in flight).

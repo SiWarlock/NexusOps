@@ -3,7 +3,7 @@
 **Date:** 2026-06-13
 **Role:** edges-daemon-orchestrator (R6, fresh — opened post-R5-cycle; STAYS into R7 per the lead's impl-only cycle)
 **Predecessor:** `edges-011-2026-06-13-r6-p7-1-wave-d-e.md` (impl session doc, `fd30065`)
-**Successor:** _(filled at the next /orchestrate-end)_
+**Successor:** [edges-013-2026-06-13-r7-worktree-refresh-and-rescan-bench.md](edges-013-2026-06-13-r7-worktree-refresh-and-rescan-bench.md) (R7 impl session doc)
 **Round-seal commit:** _(this commit)_ · branch `track/edges` · **NOT pushed, NOT merged to main** (round close-out only; the edges→main merge is the user-gated phase-exit, not this round)
 
 > **Companion (the authoritative accumulated cross-track ledger):** `docs/planning/edges-R5-wiring-plan.md` — the R6 round-progress block + the R6 PLAN-DELTA applied at the final merge. This doc is the round's orchestrator framing.

@@ -38,7 +38,7 @@ import {
   deriveDegradedState,
   type VersionCompat,
 } from "../connection/version";
-import { canTransition, type ConnectionState } from "../connection/state";
+import type { ConnectionState } from "../connection/state";
 import { DegradedBanner } from "../connection/DegradedBanner";
 import { RecoveryBanner } from "../recovery/RecoveryBanner";
 import { resumeModesBySessionId } from "../recovery/model";
@@ -240,8 +240,11 @@ export function Shell({
         const page = await client.get_projection("Session");
         setData((prev) => (prev ? recountFrom(prev, page.rows) : prev));
       },
-      setConnection: (next) =>
-        setConnection((prev) => (canTransition(prev, next) ? next : prev)),
+      // 054: drive the port — the SINGLE connection-state authority — NOT a 2nd raw React setter.
+      // The port applies the guarded transition + suppresses the read-path upgrade while the stream
+      // is degraded; `onConnectionChange` (the effect above) stays the Shell's ONE React connection
+      // writer, so an ad-hoc read can never mask this stream-degrade (the 052 Finding; forbidden #6).
+      setConnection: (next) => client.notifyConnectionState(next),
       delay: (attempt) =>
         new Promise((resolve) =>
           setTimeout(

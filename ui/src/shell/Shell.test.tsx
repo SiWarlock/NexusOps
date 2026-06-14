@@ -1,6 +1,14 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { act, cleanup, render, screen, fireEvent, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 
 // xterm is a canvas lib (not jsdom-renderable) — mock it so opening a live session
 // (fixture_2 has a terminalId → TerminalDisplay) doesn't boot real xterm. Its
@@ -29,6 +37,12 @@ import { Shell } from "./Shell";
 import { MockGatewayPort } from "../gateway-client/mock";
 import { BoundaryValidationError } from "../gateway-client/boundary";
 import { SessionProjectionPage } from "../contracts/index";
+import type {
+  ProjectionDelta,
+  ProjectionName,
+  ProjectionPageByName,
+} from "../contracts/index";
+import type { ProjectionScope, ProjectionPageParams } from "../gateway-client/types";
 import type { GatewayPort } from "../gateway-client/types";
 import { projectActivityFixture } from "../projections/fixtures/proj_project_activity";
 import { fencingConflictFixture } from "../safety/fixtures";
@@ -79,7 +93,39 @@ const rejectingGateway: GatewayPort = {
   getConnectionState: () => "connected",
   onConnectionChange: () => () => {},
   reconnect: () => {},
+  notifyConnectionState: () => {},
 };
+
+// A gateway whose live stream CLOSES once (→ the supervisor degrades) then stays open, with the
+// recovery refetch hanging — so the connection sits STABLY degraded (no recovery flicker) for the
+// single-writer assertion. Reads otherwise reuse MockGatewayPort.
+class ClosingStreamGateway extends MockGatewayPort {
+  private firstStream = true;
+  private sessionLoads = 0;
+  // The first stream is an empty async generator that closes immediately (a yield-less return),
+  // simulating a daemon lag-close; subsequent streams stay open (a live stream).
+  // eslint-disable-next-line require-yield
+  async *subscribe(): AsyncIterable<ProjectionDelta> {
+    if (this.firstStream) {
+      this.firstStream = false;
+      return; // the first stream ends immediately → the supervisor degrades
+    }
+    await new Promise<void>(() => {}); // then stay open (a live stream)
+  }
+  async get_projection<K extends ProjectionName>(
+    name: K,
+    scope?: ProjectionScope,
+    page?: ProjectionPageParams,
+  ): Promise<ProjectionPageByName[K]> {
+    if (name === "Session") {
+      this.sessionLoads += 1;
+      // the initial load (1st) resolves; the supervisor's recovery refetch (2nd) hangs → the
+      // connection stays degraded (no recovery flicker — a stable surface for the assertion).
+      if (this.sessionLoads > 1) await new Promise<never>(() => {});
+    }
+    return super.get_projection(name, scope, page);
+  }
+}
 
 describe("Shell", () => {
   it("shell_renders_projects_from_projection", async () => {
@@ -144,6 +190,22 @@ describe("Shell", () => {
       mock.setConnectionState("disconnected");
     });
     expect(await screen.findByRole("alert")).toBeTruthy(); // degraded banner shown
+  });
+
+  it("shell_supervisor_drives_connection_through_the_port_single_writer", async () => {
+    // spec(052 Finding / §11.4) — 054: the subscribe supervisor's degrade reaches React connection
+    // state THROUGH the port (notifyConnectionState → onConnectionChange), NOT a second raw React
+    // setter. A closing stream → the supervisor degrades → the port's single authority → the banner.
+    // (The Shell's only React connection writer is onConnectionChange.)
+    const mock = new ClosingStreamGateway();
+    const notifySpy = vi.spyOn(mock, "notifyConnectionState");
+    render(<Shell gateway={mock} />);
+    await awaitLoaded();
+
+    // the supervisor drove its degrade THROUGH the port's drive method (the single authority)…
+    await waitFor(() => expect(notifySpy).toHaveBeenCalledWith("disconnected"));
+    // …and it reached React connection state (the degraded banner) via onConnectionChange.
+    expect(await screen.findByRole("alert")).toBeTruthy();
   });
 
   it("sidebar_nav_mounts_project_graph", async () => {

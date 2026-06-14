@@ -235,7 +235,28 @@ export class UdsGatewayPort implements GatewayPort {
     this.setConnection("reconnecting");
   }
 
+  /** True while the subscribe supervisor reports the live stream down/recovering (054). The
+   *  read-path UPGRADE is suppressed while set, so an ad-hoc read can't mask a down stream. */
+  private streamDegraded = false;
+
+  /** The subscribe supervisor's connection-state drive — the SINGLE authority (054). Infers the
+   *  stream-degraded axis from the reported lifecycle (`disconnected`/`reconnecting` = degraded,
+   *  `connected` = healthy) then drives the one guarded `setConnection`. Setting it here (the port),
+   *  not a second raw React setter in the Shell, is what makes the read-path suppression possible. */
+  notifyConnectionState(next: ConnectionState): void {
+    this.setConnection(next);
+    // Derive streamDegraded from the COMMITTED state (this.connection after the guarded transition),
+    // NOT the requested arg — a rejected/no-op hop must never flip the suppression flag for a state
+    // the port never actually entered (else a later read upgrade would be wrongly suppressed).
+    this.streamDegraded =
+      this.connection === "disconnected" || this.connection === "reconnecting";
+  }
+
   private markConnected(): void {
+    // Suppress the read-path UPGRADE while the subscribe stream is supervisor-degraded — a successful
+    // ad-hoc read (e.g. a Code-view get_diff) must NOT re-assert `connected` over a down/recovering
+    // live stream (the 052 masking; forbidden #6 / LESSON 4). DEGRADE is never suppressed (below).
+    if (this.streamDegraded) return;
     this.setConnection("connected");
   }
 

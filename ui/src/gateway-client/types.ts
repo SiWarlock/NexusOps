@@ -82,4 +82,12 @@ export interface GatewayPort {
   onConnectionChange(cb: (state: ConnectionState) => void): () => void;
   /** Attempt to (re)establish the transport — the Retry/Repair action. */
   reconnect(): void;
+  /**
+   * The subscribe supervisor's connection-state drive (054 — the single authority). The supervisor
+   * reports its computed live-stream lifecycle (`disconnected`/`reconnecting`/`connected`); the port
+   * is the SINGLE writer of connection state (no second raw React setter), so an ad-hoc read can
+   * never mask a down stream (forbidden #6 / LESSON 4). The port infers the stream-degraded axis from
+   * the arg and gates the read-path UPGRADE while degraded; DEGRADE always flows (fail-safe).
+   */
+  notifyConnectionState(next: ConnectionState): void;
 }

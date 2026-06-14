@@ -32,7 +32,7 @@ import {
   TerminalOutputFrame,
 } from "../contracts/index";
 import { terminalOutputFixture } from "./terminal-fixture";
-import type { ConnectionState } from "../connection/state";
+import { canTransition, type ConnectionState } from "../connection/state";
 import { approvalQueueFixture } from "../projections/fixtures/proj_approval_queue";
 import { auditTrailFixture } from "../projections/fixtures/proj_audit_trail";
 import { projectActivityFixture } from "../projections/fixtures/proj_project_activity";
@@ -209,6 +209,17 @@ export class MockGatewayPort implements GatewayPort {
     // Simulated transport recovery: reconnecting → connected (both legal hops).
     this.setConnectionState("reconnecting");
     this.setConnectionState("connected");
+  }
+
+  /** The subscribe supervisor's connection-state drive (054) — mirrors the real port: a GUARDED
+   *  transition (illegal/no-op hops skipped) + notify, so the Shell's supervisor binding behaves the
+   *  same against the mock. DISTINCT from `setConnectionState` (the raw, unguarded test-staging setter
+   *  below). The mock has no read-upgrade path, so it needs no streamDegraded suppression of its own. */
+  notifyConnectionState(next: ConnectionState): void {
+    if (this.connection === next) return;
+    if (!canTransition(this.connection, next)) return;
+    this.connection = next;
+    for (const cb of this.listeners) cb(next);
   }
 
   // Test/dev helper: drive a connection transition and notify subscribers. This

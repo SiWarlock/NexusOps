@@ -322,3 +322,121 @@ describe("UdsGatewayPort — subscribe streaming (Layer B-TS)", () => {
     );
   });
 });
+
+// ── 054 — connection single-authority (the 052 two-writer reconcile) ──────────
+// The port is the SINGLE connection-state authority: the subscribe supervisor drives it via
+// `notifyConnectionState` (not a 2nd raw React setter), the port tracks a stream-degraded axis, and
+// the read-path UPGRADE (markConnected) is SUPPRESSED while the stream is degraded — so an ad-hoc
+// read can never mask a down stream (forbidden #6 / LESSON 4). DEGRADE always flows (fail-safe).
+describe("UdsGatewayPort — connection single-authority (054)", () => {
+  it("read_success_does_not_upgrade_while_stream_degraded", async () => {
+    // spec(§11.4/forbidden#6) — the core fix: the supervisor degraded the stream; a later ad-hoc read
+    // SUCCESS must NOT re-assert `connected` (the 052 masking — canSubmitIntent stays false).
+    const port = new UdsGatewayPort();
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities();
+    expect(port.getConnectionState()).toBe("connected");
+
+    port.notifyConnectionState("disconnected"); // the supervisor: the live stream is down
+    expect(port.getConnectionState()).toBe("disconnected");
+
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities(); // an unrelated read succeeds…
+    // …but the read-path UPGRADE is suppressed while the stream is degraded → still disconnected.
+    expect(port.getConnectionState()).toBe("disconnected");
+  });
+
+  it("read_success_suppressed_during_reconnecting_too", async () => {
+    // spec(§11.4/§11.7) — streamDegraded covers BOTH {disconnected, reconnecting}: a read-success
+    // MID-RECOVERY (the supervisor drove `reconnecting`, before its refetch→connected) is ALSO
+    // suppressed → never prematurely `connected` before the snapshot refetch confirms. A regression
+    // narrowing the suppression-set to {disconnected} would re-open this premature-upgrade window.
+    const port = new UdsGatewayPort();
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities(); // connected
+    port.notifyConnectionState("disconnected");
+    port.notifyConnectionState("reconnecting"); // mid-recovery (refetch not yet confirmed)
+    expect(port.getConnectionState()).toBe("reconnecting");
+
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities(); // a read succeeds mid-recovery…
+    // …still suppressed (reconnecting ∈ streamDegraded) → never a premature `connected`.
+    expect(port.getConnectionState()).toBe("reconnecting");
+  });
+
+  it("read_success_upgrades_when_stream_healthy", async () => {
+    // spec(LESSON 22) — the control case: with NO stream degrade, a read success upgrades to
+    // connected (the normal initial-connect path is unaffected by the suppression).
+    const port = new UdsGatewayPort();
+    mockInvoke.mockResolvedValue(validCaps);
+    await port.get_capabilities();
+    expect(port.getConnectionState()).toBe("connected");
+  });
+
+  it("both_axes_degrade_fail_safe", async () => {
+    // spec(LESSON 4) — DEGRADE is never suppressed on EITHER axis: a subscribe-stream degrade
+    // (notify) AND a read transport fault both drop to disconnected. UPGRADE is the only suppressed
+    // direction.
+    const port = new UdsGatewayPort();
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities();
+
+    // axis 1 — the subscribe stream degrades:
+    port.notifyConnectionState("disconnected");
+    expect(port.getConnectionState()).toBe("disconnected");
+
+    // recover via the supervisor, then axis 2 — a read transport fault still degrades:
+    port.notifyConnectionState("reconnecting");
+    port.notifyConnectionState("connected");
+    expect(port.getConnectionState()).toBe("connected");
+    mockInvoke.mockRejectedValueOnce({ kind: "io", message: "down" });
+    await expect(port.get_capabilities()).rejects.toBeInstanceOf(Error);
+    expect(port.getConnectionState()).toBe("disconnected");
+  });
+
+  it("stream_recovery_returns_to_connected_and_clears_suppression", async () => {
+    // spec(§11.7) — after the supervisor recovers (disconnected→reconnecting→connected), the exposed
+    // connection returns to connected AND the read-upgrade suppression clears (a later read success is
+    // no longer suppressed → canSubmitIntent can be true again).
+    const port = new UdsGatewayPort();
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities(); // connected
+
+    port.notifyConnectionState("disconnected"); // stream down → upgrade suppressed
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities();
+    expect(port.getConnectionState()).toBe("disconnected"); // suppressed
+
+    port.notifyConnectionState("reconnecting");
+    port.notifyConnectionState("connected"); // the supervisor recovered the stream
+    expect(port.getConnectionState()).toBe("connected");
+
+    // suppression cleared: a read fault then success now upgrades normally (stream healthy).
+    mockInvoke.mockRejectedValueOnce({ kind: "io", message: "blip" });
+    await expect(port.get_capabilities()).rejects.toBeInstanceOf(Error);
+    expect(port.getConnectionState()).toBe("disconnected");
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities();
+    expect(port.getConnectionState()).toBe("connected"); // no longer suppressed
+  });
+
+  it("notify_connection_state_applies_guarded_transition_and_notifies", async () => {
+    // spec(§11.4) — notifyConnectionState (the supervisor's single drive) applies the guarded
+    // canTransition spec (illegal hops skipped) + notifies onConnectionChange (the Shell's one React
+    // writer receives it). From connecting, connecting→reconnecting is illegal → skipped.
+    const port = new UdsGatewayPort();
+    const seen: string[] = [];
+    port.onConnectionChange((s) => seen.push(s));
+
+    port.notifyConnectionState("reconnecting"); // illegal from connecting → no-op
+    expect(port.getConnectionState()).toBe("connecting");
+
+    // the REJECTED hop must NOT have set streamDegraded for a state the port never entered — proven
+    // behaviorally: a subsequent read SUCCESS still upgrades (not wrongly suppressed). streamDegraded
+    // derives from the COMMITTED state, not the rejected arg.
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities();
+    expect(port.getConnectionState()).toBe("connected"); // read upgrade NOT suppressed
+    expect(seen).toEqual(["connected"]); // the illegal hop never notified; only the read did
+  });
+});

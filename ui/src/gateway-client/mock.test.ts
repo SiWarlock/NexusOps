@@ -63,6 +63,28 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     expect(result.hunks.length).toBeGreaterThan(0);
   });
 
+  it("mock_notify_connection_state_is_guarded_setconnectionstate_stays_raw", () => {
+    // spec(§11 / 054) — the mock implements the new notifyConnectionState (guarded canTransition +
+    // notify, mirroring the real port so the supervisor binding works in Shell tests), while
+    // setConnectionState stays the RAW, unguarded test-staging setter (the §11 DegradedBanner
+    // contract — Shell.test.tsx stages `disconnected` through it). Two methods, two purposes.
+    // start at the pre-handshake `connecting` (the mock defaults to `connected`) so the illegal hop
+    // connecting→reconnecting actually exercises the guard.
+    const mock = new MockGatewayPort({ connection: "connecting" });
+    const seen: string[] = [];
+    mock.onConnectionChange((s) => seen.push(s));
+
+    // notifyConnectionState is GUARDED: connecting→reconnecting is illegal → no-op (no notify).
+    mock.notifyConnectionState("reconnecting");
+    expect(mock.getConnectionState()).toBe("connecting");
+    expect(seen).toEqual([]);
+
+    // setConnectionState is RAW: it stages ANY state directly + notifies (drives the degraded banner).
+    mock.setConnectionState("reconnecting");
+    expect(mock.getConnectionState()).toBe("reconnecting");
+    expect(seen).toEqual(["reconnecting"]);
+  });
+
   it("mock_get_capabilities_reports_contract_version", async () => {
     const mock = new MockGatewayPort();
     const caps = await mock.get_capabilities();

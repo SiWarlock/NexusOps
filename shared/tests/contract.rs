@@ -2348,6 +2348,55 @@ fn test_terminal_process_exited_wire_contract() {
     assert_eq!(TerminalProcessExited::EVENT_TYPE, "TerminalProcessExited");
 }
 
+// ---- 4.1b-1 RED — the SessionRecovered observation event wire contract (§8.1/§7.1/§5.0/§15) ----
+
+#[test]
+fn test_session_recovered_wire_contract() {
+    // spec(§8.1) — the daemon-restart recovery OBSERVATION event (the §11.4 resumed-vs-replayed bit).
+    // System-actor, write-actor, NOT a Gateway Action (Q1=(a), lead/user-ruled). EventTypeRegistry
+    // single-home + reject-unknown (the TerminalProcessExited/TelemetrySampled observation precedent).
+    use nexusops_shared::events::SessionRecovered;
+    use nexusops_shared::harness::ResumeMode;
+    use nexusops_shared::ids::ExecutionProfileId;
+    let v = SessionRecovered {
+        mode: ResumeMode::Replayed,
+        replayed_event_count: 17,
+        execution_profile_id: Some(ExecutionProfileId::new()),
+    };
+    let j = serde_json::to_value(&v).unwrap();
+    assert_eq!(
+        serde_json::from_value::<SessionRecovered>(j).unwrap(),
+        v,
+        "SessionRecovered round-trips"
+    );
+    let mut rogue = serde_json::to_value(&v)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    rogue.insert("rogue".to_string(), serde_json::json!(1));
+    assert!(
+        serde_json::from_value::<SessionRecovered>(serde_json::Value::Object(rogue)).is_err(),
+        "unknown field rejected (deny_unknown_fields, §5.0/§15)"
+    );
+    assert_eq!(SessionRecovered::EVENT_TYPE, "SessionRecovered");
+    // §2.5-seam stability (LESSON §15 trap 3): no `skip_serializing_if`, so a non-`Replayed` count (0)
+    // and a `None` profile serialize as EXPLICIT `0` / `null` — never omitted (a stable field-name set).
+    let relaunched = serde_json::to_value(SessionRecovered {
+        mode: ResumeMode::Relaunched,
+        replayed_event_count: 0,
+        execution_profile_id: None,
+    })
+    .unwrap();
+    assert_eq!(relaunched["replayed_event_count"], serde_json::json!(0));
+    assert!(
+        relaunched
+            .get("execution_profile_id")
+            .is_some_and(|v| v.is_null()),
+        "a None profile serializes as explicit null, never omitted (trap 3)"
+    );
+}
+
 // ---- 043 L5 RED — ActionDenied.approval_id is OPTIONAL (the A1 record-then-deny forensic event) ----
 
 #[test]
@@ -2574,12 +2623,13 @@ fn test_approval_queue_row_rejects_unknown_field() {
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_30_0() {
+fn test_contract_version_bumped_0_31_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
     // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.29.0 =
-    // the P4.1a survival-schema freeze; **0.30.0** = the P4.0b-ui2 (②-mini) `ApprovalQueueRow` freeze
-    // (the first frozen projection-row + `policy_decision`). Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.30.0");
+    // the P4.1a survival-schema freeze; 0.30.0 = the P4.0b-ui2 (②-mini) `ApprovalQueueRow` freeze;
+    // **0.31.0** = the P4.1b-1 `SessionRecovered` observation event (the daemon-restart recovery
+    // signal). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.31.0");
 }
 
 // =================================================================================================

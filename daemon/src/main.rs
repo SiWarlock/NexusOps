@@ -17,7 +17,7 @@ use tokio::sync::watch;
 use nexusopsd::bootstrap::{cold_start, BootstrapConfig, DB_FILENAME};
 use nexusopsd::clock::SystemClock;
 use nexusopsd::decisions::DecisionRegistry;
-use nexusopsd::eventstore::{JsonlMirror, PrefixRedactor};
+use nexusopsd::eventstore::{open_read_only, JsonlMirror, PrefixRedactor};
 use nexusopsd::gateway::circuit_breaker::AuditBackboneBreaker;
 use nexusopsd::gateway::executor::CatalogExecutor;
 use nexusopsd::gateway::policy::AgentMutationPolicy;
@@ -26,6 +26,7 @@ use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
 use nexusopsd::integrity::{FileIntegrityAlarm, IntegrityAlarm};
 use nexusopsd::ipc::current_euid;
+use nexusopsd::runtime::recovery::run_restart_recovery;
 use nexusopsd::runtime::{
     bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor,
     WriteActorTelemetrySinkFactory, MAX_CONNECTIONS,
@@ -188,6 +189,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // bind the GatewayPort UDS (reclaiming a stale socket) + spawn the peer-auth'd accept-loop — the
     // registry is threaded in for the live `intercept` transport + the approve/deny decision_sink.
     let db_path = base_dir.join(DB_FILENAME);
+
+    // P4.1b-1 — the §16/§8.1 restart recovery: enumerate the sessions that were live at shutdown (from
+    // the rebuilt `proj_session`) → `decide_resume` per session → emit the System-actor `SessionRecovered`
+    // observation (Q1=(a), lead/user-ruled: the daemon re-materializing its OWN already-approved session,
+    // NOT a Gateway Action). The PRODUCTION caller of `decide_resume` — closes its 4.1a Step-7.5
+    // reachability. Runs post-write-actor + post-supervisor, BEFORE the accept-loop serves clients. The
+    // §15 #8 profile is preserved from the committed `SessionStarted`. The REAL broker/launcher
+    // re-materialization is 4.1b-2 (LIVE survival = HITL); here the recovery DECISION is made + audited.
+    match open_read_only(&db_path) {
+        Ok(conn) => {
+            let recovered = run_restart_recovery(&conn, &handle, Arc::new(SystemClock));
+            if recovered > 0 {
+                eprintln!("nexusopsd: restart recovery — {recovered} session(s) recovered");
+            }
+        }
+        Err(e) => eprintln!("nexusopsd: restart recovery skipped (proj_session unavailable): {e}"),
+    }
+
     let listener = bind(&base_dir.join(SOCKET_FILE))?;
     eprintln!("nexusopsd: GatewayPort listening at {SOCKET_FILE}");
     let accept = spawn_accept_loop(

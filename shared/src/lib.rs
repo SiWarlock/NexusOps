@@ -127,4 +127,7 @@ pub mod time;
 /// consumes, typed (the wire columns + `risk_level: RiskLevel` + `policy_decision: Option<PolicyDecision>`
 /// — the §6.2 decision now persisted §15-redacted at approval-open + sibling-read into the row). Served
 /// TYPED (no loose JSON on the approval path). Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.30.0";
+/// 0.31.0 (P4.1b-1) adds the §8.1 daemon-restart `SessionRecovered` OBSERVATION event (`shared/src/events.rs`:
+/// the §11.4 resumed-vs-replayed bit + the §17 "restart session" affordance; System-actor, write-actor,
+/// NOT a Gateway Action [Q1=(a)]; §15 #8 profile preserved). Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.31.0";

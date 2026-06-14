@@ -10,7 +10,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::harness::TelemetrySample;
+use crate::harness::{ResumeMode, TelemetrySample};
 use crate::ids::{ExecutionProfileId, WorktreeId};
 use crate::objects::{DeviceId, LocalRunnerId};
 use crate::status::{PullRequest, Session};
@@ -282,6 +282,35 @@ pub struct TerminalProcessExited {
 impl TerminalProcessExited {
     /// The EventTypeRegistry name — ONE home (the 3.4 terminal-host emit path; §7.1 single-home).
     pub const EVENT_TYPE: &'static str = "TerminalProcessExited";
+}
+
+/// The §8.1 daemon-restart recovery record (4.1b-1): how a session that was live at shutdown was brought
+/// back — the §11.4 "resumed-(live) vs replayed-(relaunched)" indicator + the §17 "restart session"
+/// affordance tail (`mode == Relaunched`). A **non-mutation OBSERVATION event**: a recovery is the daemon
+/// re-materializing its OWN already-approved prior session, so it follows the System-actor non-mutation-
+/// event precedent (`DeviceRegistered`/`TelemetrySampled`, LESSON §10/§23) — written via the single
+/// write-actor through the §15 redaction gate (#2/#3 hold), **NEVER through the Gateway** (Q1=(a),
+/// lead/user-ruled: INV-SEC-1 governs proposer-intent state *mutations*; the daemon re-materializing its
+/// own session is a lifecycle event, not a proposer intent). The §15 #8 `execution_profile_id` is
+/// PRESERVED from the original `SessionStarted` (no silent account-hop). The session IDENTITY
+/// (`session_id`/`occurred_at`) lives on the [`crate::event_envelope::EventEnvelope`] columns; this
+/// payload carries only the recovery outcome. Optionals serialize as explicit `null` (no
+/// `skip_serializing_if`) for a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct SessionRecovered {
+    /// how the session was recovered (the §8.1 B2-strict ladder outcome).
+    pub mode: ResumeMode,
+    /// the scrollback event count replayed (non-zero ONLY on `Replayed`, mirroring `ResumeResult`).
+    pub replayed_event_count: u64,
+    /// the §15 #8 ExecutionProfile PRESERVED from the original `SessionStarted` (no account-hop). `None`
+    /// only for a profile-less prior session (pre-§15-#8).
+    pub execution_profile_id: Option<ExecutionProfileId>,
+}
+
+impl SessionRecovered {
+    /// The EventTypeRegistry name — ONE home (the 4.1b recovery-sink emit path; §7.1 single-home).
+    pub const EVENT_TYPE: &'static str = "SessionRecovered";
 }
 
 // =================================================================================================

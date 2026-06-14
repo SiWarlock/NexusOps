@@ -23,9 +23,9 @@ use crate::events::{
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
     AuditIntegrityViolation, BranchCreated, DeviceRegistered, GithubSyncFailed,
     IntegrationConnectionRegistered, LinearSyncFailed, LocalRunnerRegistered, ProjectRescanned,
-    Provider, PullRequestSynced, SensitiveOutputRedacted, SessionStarted, TelemetrySampled,
-    TerminalProcessExited, WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged,
-    WorktreePrunable,
+    Provider, PullRequestSynced, SensitiveOutputRedacted, SessionRecovered, SessionStarted,
+    TelemetrySampled, TerminalProcessExited, WorktreeCreated, WorktreeDeleted, WorktreeLocked,
+    WorktreeMerged, WorktreePrunable,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::harness::{
@@ -209,6 +209,10 @@ struct ContractBundle {
     // proj_approval_queue read model the §11.5 approval card consumes, typed; risk_level +
     // policy_decision: Option<PolicyDecision>). Additive (shared/src/projections.rs).
     approval_queue_row: ApprovalQueueRow,
+    // P4.1b-1 (CONTRACT 0.31.0) — the §8.1 daemon-restart recovery OBSERVATION event (the §11.4
+    // resumed-vs-replayed bit + the §17 "restart session" affordance). System-actor, write-actor, NOT
+    // a Gateway Action (Q1=(a)); §15 #8 profile preserved. Additive (shared/src/events.rs).
+    session_recovered: SessionRecovered,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

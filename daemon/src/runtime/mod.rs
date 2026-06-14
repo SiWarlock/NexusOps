@@ -14,6 +14,7 @@
 
 mod drainer;
 mod listener;
+pub mod recovery;
 mod telemetry_sink;
 mod wait_class;
 mod writer;

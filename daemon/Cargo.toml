@@ -113,3 +113,12 @@ harness = false
 [[bench]]
 name = "terminal_attach"
 harness = false
+
+# P5.4 (edges-027) — the §18 project.rescan detection-latency benchmark. `harness = false`: a plain
+# `fn main()` (NOT the libtest harness), so it is INVISIBLE to `cargo test --workspace` (the per-slice
+# RED/GREEN loop) and its median guard never flakes there. Runs ONLY at its own cadence: `cargo bench
+# --bench project_rescan` (the /phase-exit perf-budgets runner + the nightly CI perf job). Drives the
+# AS-BUILT detection scan core (detect_git + detect_workflow) — the §18 `< 3 s` SLO part of the rescan.
+[[bench]]
+name = "project_rescan"
+harness = false

@@ -313,7 +313,7 @@ describe("053 L2-prep — ApprovalQueueRow frozen-shadow + survival drift-pins (
     // spec(§5.0) — RecoveryState is also a oneOf-of-const → drift-pinned shadow (values unchanged).
     const schema = readSchema();
     const frozen = (schema.$defs.RecoveryState!.oneOf ?? []).map((v) => v.const!);
-    expect(frozen.length).toBeGreaterThan(0);
+    expect(frozen.length).toBe(3); // exact count (symmetric with the ResumeMode pin)
     expect([...RecoveryState.options].toSorted()).toEqual([...frozen].toSorted());
   });
 });

@@ -70,6 +70,10 @@ export function deriveProjectSwitcherCounts(input: {
       (pr) => pr.project_id === pid && !CLOSED_PR.has(pr.status),
     ).length;
     const pendingApprovalCount = input.approvals.filter(
+      // The frozen ApprovalQueueRow made project_id OPTIONAL — a plan-level / workspace approval
+      // (project_id null) is cross-project, so the `=== pid` excludes it from every PER-project
+      // count by construction (it is not attributable to one project). A global "waiting" bucket for
+      // null-project approvals is a future product call (flagged at the 053 seal).
       (a) => a.project_id === pid && PENDING_APPROVAL.has(a.status),
     ).length;
     const waitingSessionCount = projectSessions.filter((s) =>

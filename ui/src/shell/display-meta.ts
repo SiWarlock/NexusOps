@@ -142,13 +142,12 @@ export const approvalDisplayFixture: Record<string, ApprovalDisplayMeta> = {
   approval_fixture_2: { risk: "low", who: "Claude · docs · Claude Team Work" },
 };
 
-// ─── GatewayModal enrichment (PROVISIONAL display side-map) ───────────────────
-// The GatewayModal renders the daemon's full Approval + PolicyDecision, but the
-// ApprovalQueue projection row is THIN ({approval_id, project_id, status, title?}).
-// Until the daemon enriches the projection (Carry-forward: projection-enrichment +
-// a preview/policy RPC), this side-map supplies the full shapes — fixture-driven,
-// keyed by approval_id, with a default for any unlisted row. The render path is real
-// (the modal is a pure renderer of this daemon-shaped data); only the source is a fixture.
+// ─── GatewayModal {Approval, PolicyDecision} SAMPLE (test fixture, post-053) ──
+// As of 053 Layer C the PRODUCTION path no longer uses this side-map: `enrichApproval`
+// reads the daemon's real `risk_level`/`policy_decision` from the now-frozen 14-field
+// ApprovalQueueRow (the ②-mini-enriched proj_approval_queue). This map remains only as a
+// daemon-SHAPED SAMPLE for GatewayModal.test.tsx (a valid {Approval, PolicyDecision} to
+// render). A later cleanup may relocate it to a test fixture / build it via enrichApproval.
 export interface GatewayApprovalEnrichment {
   approval: Approval;
   policyDecision: PolicyDecision;
@@ -191,31 +190,43 @@ export const gatewayApprovalEnrichment: Record<string, GatewayApprovalEnrichment
   },
 };
 
-/** Enrich a thin ApprovalQueue row → the full {Approval, PolicyDecision} the modal
- *  renders. A default covers any unlisted row (still daemon-SHAPED, never UI-derived risk). */
+/** Build the {Approval, PolicyDecision} the GatewayModal renders from the FROZEN ApprovalQueueRow
+ *  (053 Layer C — the real-row swap). The card sources the daemon's AUTHORITATIVE `risk_level` +
+ *  `policy_decision` directly from the row (no fixture side-map, no UI-derived risk — LESSON 17;
+ *  resolves the 044 [med]: no real human approves against fixture risk). The row carries
+ *  `risk_level` (always) + `policy_decision` (the ②-mini-enriched proj_approval_queue); an absent
+ *  policy is a transparent "awaiting" placeholder — never a fabricated decision (the risk stays the
+ *  row's real value, forbidden #2/#4). The projection row carries no `scope` → default `single_action`
+ *  (not risk-bearing; the modal renders risk/policy, never a scope-derived risk). */
 export function enrichApproval(row: ApprovalQueueRow): GatewayApprovalEnrichment {
-  return (
-    gatewayApprovalEnrichment[row.approval_id] ?? {
-      approval: {
-        approval_id: row.approval_id,
-        required_approver: { kind: "current_user" },
-        status: row.status,
-        scope: "single_action",
-        risk_level: 2,
-        // NULL (not the approval_id) for an unlisted row — an approval_id is NOT an
-        // action_request_id (distinct daemon namespaces); the modal suppresses the
-        // preview fetch honestly until the real daemon projection supplies the link.
-        action_request_id: null,
-      },
-      policyDecision: {
-        status: "require_approval",
-        reasons: ["This action requires human approval."],
-        required_approvals: [{ kind: "current_user" }],
-        constraints: [],
-        safer_alt: null,
-      },
-    }
-  );
+  // The Approval's single required_approver is a best-effort mirror of the policy's first approver
+  // (falls back to current_user when policy is absent OR carries an empty list). NOTE: the modal
+  // renders the daemon's full `policyDecision.required_approvals` list VERBATIM (below) — this single
+  // field is not the displayed approval requirement, so the fallback never fabricates the shown list.
+  const requiredApprover = row.policy_decision?.required_approvals?.[0] ?? {
+    kind: "current_user",
+  };
+  return {
+    approval: {
+      approval_id: row.approval_id,
+      required_approver: requiredApprover,
+      status: row.status,
+      scope: "single_action",
+      risk_level: row.risk_level, // REAL daemon risk (was the fixture side-map)
+      action_request_id: row.action_request_id ?? null,
+      expires_at: row.expires_at ?? null,
+      plan_id: row.plan_id ?? null,
+    },
+    policyDecision: row.policy_decision ?? {
+      // absent (the daemon hasn't enriched yet) → an honest "awaiting" placeholder, NOT a
+      // fabricated specific decision; the risk above is still the row's real value.
+      status: "require_approval",
+      reasons: ["Awaiting the daemon's policy decision."],
+      required_approvals: [requiredApprover],
+      constraints: [],
+      safer_alt: null,
+    },
+  };
 }
 
 // ─── Per-hunk git-action enrichment (PROVISIONAL — the 6.3e submit→card stand-in) ──

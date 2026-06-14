@@ -3,7 +3,10 @@ import { deriveProjectSwitcherCounts, deriveActivityFeed } from "./derive";
 import { projectActivityFixture } from "../projections/fixtures/proj_project_activity";
 import { sessionPageFixture } from "../projections/fixtures/proj_session";
 import { pullRequestFixture } from "../projections/fixtures/proj_pull_request";
-import { approvalQueueFixture } from "../projections/fixtures/proj_approval_queue";
+import {
+  approvalQueueFixture,
+  makeApprovalRow,
+} from "../projections/fixtures/proj_approval_queue";
 import { auditTrailFixture } from "../projections/fixtures/proj_audit_trail";
 
 const input = {
@@ -31,6 +34,27 @@ describe("deriveProjectSwitcherCounts", () => {
       openPRs: 1,
       waitingOnYou: 1,
     });
+  });
+
+  it("derive_counts_exclude_a_null_project_approval_from_every_per_project_count", () => {
+    // The frozen ApprovalQueueRow made project_id optional. A plan-level / workspace pending approval
+    // (project_id null) is cross-project → it must NOT be attributed to any single project's
+    // waitingOnYou (the === pid filter excludes null by construction). Adding one leaves every count
+    // unchanged vs the baseline. (A global "waiting" bucket for these is a future product call.)
+    const baseline = deriveProjectSwitcherCounts(input);
+    const withNullProject = deriveProjectSwitcherCounts({
+      ...input,
+      approvals: [
+        ...approvalQueueFixture.rows,
+        makeApprovalRow({
+          approval_id: "appr_plan_level",
+          project_id: null,
+          plan_id: "plan_1",
+          status: "awaiting_approval",
+        }),
+      ],
+    });
+    expect(withNullProject).toEqual(baseline);
   });
 
   it("derive_counts_empty_projection_is_zeroed_not_absent", () => {

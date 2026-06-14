@@ -693,6 +693,91 @@
       ],
       "type": "string"
     },
+    "ApprovalQueueRow": {
+      "additionalProperties": false,
+      "description": "One open row of the `proj_approval_queue` read model (§7 / §11.5) — an approval awaiting a human\ndecision. The bookkeeping `sort_key`/`updated_at_seq` columns are NOT on the wire row (internal —\nthe UI sorts off `risk_level` + `requested_at`). The load-bearing typed fields: `risk_level`\n(the authoritative §6.3 risk) + `policy_decision` (the frozen §6.2 decision, persisted §15-redacted\nat approval-open in C1; `None` for a plan-level approve-all). `status`/`requester_type` are the\nfrozen §5.1/§6.2 enums (reject-unknown — no loose JSON on the approval path). `action_request_id`\nis `None` for a plan-level approve-all approval. Optionals serialize as explicit `null` (no\n`skip_serializing_if`) so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
+      "properties": {
+        "action_request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent_team_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approval_id": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plan_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "policy_decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicyDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preview_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested_at": {
+          "type": "string"
+        },
+        "requester_id": {
+          "type": "string"
+        },
+        "requester_type": {
+          "$ref": "#/$defs/RequesterType"
+        },
+        "risk_level": {
+          "$ref": "#/$defs/RiskLevel"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/ApprovalStatus"
+        }
+      },
+      "required": [
+        "approval_id",
+        "risk_level",
+        "status",
+        "requester_type",
+        "requester_id",
+        "requested_at"
+      ],
+      "type": "object"
+    },
     "ApprovalScope": {
       "description": "The approval's authority scope (§6.2 Approval).",
       "enum": [
@@ -2657,6 +2742,9 @@
     "approval_model": {
       "$ref": "#/$defs/Approval"
     },
+    "approval_queue_row": {
+      "$ref": "#/$defs/ApprovalQueueRow"
+    },
     "approval_scope": {
       "$ref": "#/$defs/ApprovalScope"
     },
@@ -3030,9 +3118,10 @@
     "pull_request_synced",
     "integration_connection_registered",
     "github_sync_failed",
-    "linear_sync_failed"
+    "linear_sync_failed",
+    "approval_queue_row"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.29.0"
+  "x-contract-version": "0.30.0"
 }

@@ -26,6 +26,9 @@ mod transport;
 // P4.0b-ui1 — the §6.1 get_diff read core (resolve worktree_id→path + git2 read-only); pub for the
 // integration test + a future direct caller. The RPC dispatch routes "get_diff" to it.
 pub use methods::read_worktree_diff;
+// P4.0b-ui2 (②-mini / pin #2) — the typed ApprovalQueue serve (proj_approval_queue → frozen
+// ApprovalQueueRow); pub for the integration test. `get_projection` routes ApprovalQueue to it.
+pub use methods::read_approval_queue_typed;
 // P4.0b-2-F2 — the pure intercept-wait-class decision (the testable core the live `intercept` handler
 // delegates to); pub for the unit test. `INTERCEPT_SATURATED_REASON` = the fail-closed exhaustion reason.
 pub use methods::{intercept_verdict_with_wait_class, INTERCEPT_SATURATED_REASON};

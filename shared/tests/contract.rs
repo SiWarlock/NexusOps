@@ -2478,15 +2478,108 @@ fn test_resume_result_rejects_unknown_field() {
     assert!(r.is_err(), "deny_unknown_fields rejects an extra key");
 }
 
+// =====================================================================================
+// P4.0b-ui2 (②-mini) C2 — the FIRST frozen projection-row: ApprovalQueueRow (CONTRACT 0.30.0).
+// The `proj_approval_queue` read model the ui's human-approval card consumes, typed in shared/ (no
+// loose-JSON on the approval path, pin #2): the wire columns + `risk_level: RiskLevel` +
+// `policy_decision: Option<PolicyDecision>` (the frozen §6.2 type — the C1-persisted decision). Field
+// names match the ui provisional where aligned (approval_id/project_id/status, pin #1). The
+// bookkeeping `sort_key`/`updated_at_seq` are NOT on the wire row (internal). deny_unknown_fields.
+// =====================================================================================
+
+fn sample_approval_queue_row() -> nexusops_shared::projections::ApprovalQueueRow {
+    use nexusops_shared::actions::{
+        PolicyDecision, PolicyDecisionStatus, RequesterType, RiskLevel,
+    };
+    use nexusops_shared::projections::ApprovalQueueRow;
+    use nexusops_shared::status::Approval;
+    // fully populated (all Options Some) so the field-name snapshot sees every key.
+    ApprovalQueueRow {
+        approval_id: "appr_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        action_request_id: Some("act_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        plan_id: Some("aplan_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        project_id: Some("prj_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        session_id: Some("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        agent_team_id: Some("team_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        risk_level: RiskLevel::Level2,
+        status: Approval::AwaitingApproval,
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        preview_summary: Some("create worktree feature/x".to_string()),
+        requested_at: "2026-06-11T00:00:00Z".to_string(),
+        expires_at: Some("2026-06-11T01:00:00Z".to_string()),
+        policy_decision: Some(PolicyDecision {
+            status: PolicyDecisionStatus::RequireApproval,
+            reasons: vec!["risk-2 requires approval".to_string()],
+            required_approvals: vec![],
+            constraints: vec![],
+            safer_alt: None,
+        }),
+    }
+}
+
+#[test]
+fn test_approval_queue_row_frozen_shape() {
+    // spec(§7 / §2.5-seam) — the FIRST frozen projection-row. The field-name set is frozen (LESSON §15)
+    // + round-trips; `risk_level: RiskLevel` (typed) + `policy_decision: Option<PolicyDecision>` (the
+    // frozen §6.2 type — no loose JSON on the approval path, pin #2). `sort_key`/`updated_at_seq` are
+    // NOT wire fields.
+    expect_fields(
+        &sample_approval_queue_row(),
+        &[
+            "approval_id",
+            "action_request_id",
+            "plan_id",
+            "project_id",
+            "session_id",
+            "agent_team_id",
+            "risk_level",
+            "status",
+            "requester_type",
+            "requester_id",
+            "preview_summary",
+            "requested_at",
+            "expires_at",
+            "policy_decision",
+        ],
+    );
+    let json = serde_json::to_string(&sample_approval_queue_row()).unwrap();
+    let back: nexusops_shared::projections::ApprovalQueueRow =
+        serde_json::from_str(&json).expect("ApprovalQueueRow round-trips");
+    assert_eq!(
+        back.risk_level,
+        nexusops_shared::actions::RiskLevel::Level2,
+        "risk_level is the typed RiskLevel"
+    );
+    assert!(
+        back.policy_decision.is_some(),
+        "policy_decision is the typed Option<PolicyDecision>"
+    );
+}
+
+#[test]
+fn test_approval_queue_row_rejects_unknown_field() {
+    // spec(§5.0/§15) — deny_unknown_fields on the frozen row (the §2.5-seam struct boundary): a valid
+    // row + ONE extra key fails to deserialize.
+    let mut v = serde_json::to_value(sample_approval_queue_row()).unwrap();
+    v.as_object_mut()
+        .unwrap()
+        .insert("rogue".to_string(), serde_json::json!(true));
+    assert!(
+        serde_json::from_value::<nexusops_shared::projections::ApprovalQueueRow>(v).is_err(),
+        "deny_unknown_fields rejects an extra key"
+    );
+}
+
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_29_0() {
+fn test_contract_version_bumped_0_30_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.28.0 =
-    // the P4.0b-ui1 get_diff + git.* catalog freeze; **0.29.0** = the P4.1a survival-schema freeze
-    // (`ResumeMode`/`RecoveryState`/`ResumeResult`, §8 B2-strict). Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.29.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.29.0 =
+    // the P4.1a survival-schema freeze; **0.30.0** = the P4.0b-ui2 (②-mini) `ApprovalQueueRow` freeze
+    // (the first frozen projection-row + `policy_decision`). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.30.0");
 }
 
 // =================================================================================================

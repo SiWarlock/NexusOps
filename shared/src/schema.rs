@@ -41,6 +41,7 @@ use crate::ipc::{
     TerminalOutputFrame, VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
+use crate::projections::ApprovalQueueRow;
 use crate::status::{
     ActionRequest, AgentTeam, Approval, ExecutionProfile, ProjectBrain, PullRequest, Session, Task,
     WorkflowInstance, WorktreeGit, WorktreeOverlay,
@@ -204,6 +205,10 @@ struct ContractBundle {
     integration_connection_registered: IntegrationConnectionRegistered,
     github_sync_failed: GithubSyncFailed,
     linear_sync_failed: LinearSyncFailed,
+    // P4.0b-ui2 (CONTRACT 0.30.0) — the FIRST frozen projection-row: ApprovalQueueRow (the
+    // proj_approval_queue read model the §11.5 approval card consumes, typed; risk_level +
+    // policy_decision: Option<PolicyDecision>). Additive (shared/src/projections.rs).
+    approval_queue_row: ApprovalQueueRow,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

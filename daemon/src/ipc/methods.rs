@@ -20,6 +20,7 @@ use nexusops_shared::ipc::{
     Capabilities, DiffResult, GetDiffParams, GetProjectionParams, IpcErrorCode, ProjectionName,
     RpcRequest, RpcResponse, SubscribeParams, WireError,
 };
+use nexusops_shared::projections::ApprovalQueueRow;
 use nexusops_shared::status::ActionRequest as ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
 
@@ -467,12 +468,62 @@ fn get_projection(
         Ok(p) => p,
         Err(_) => return Ok(Err(IpcErrorCode::ProtocolError)),
     };
+    // P4.0b-ui2 / pin #2 — the ApprovalQueue projection is served TYPED (the frozen ApprovalQueueRow),
+    // not loose JSON, because it is the safety-critical human-approval surface. Other projections keep
+    // the generic row→JSON serve.
+    if params.name == ProjectionName::ApprovalQueue {
+        return Ok(match read_approval_queue_typed(db_path) {
+            Ok(typed) => Ok(serde_json::to_value(typed).unwrap_or(serde_json::Value::Null)),
+            Err(code) => Err(code),
+        });
+    }
     let table = projection_table(params.name);
     // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
     let conn =
         crate::eventstore::open_read_only(db_path).map_err(|e| IpcError::Read(e.to_string()))?;
     let rows = read_table_as_json(&conn, table)?;
     Ok(Ok(rows))
+}
+
+/// (P4.0b-ui2 / pin #2) Read `proj_approval_queue` served TYPED as the frozen [`ApprovalQueueRow`] —
+/// no loose JSON on the §11.5 human-approval path. Reads the row JSON over a read-only WAL conn,
+/// parses the redacted `policy_decision_json` TEXT into the typed `policy_decision: Option<PolicyDecision>`
+/// (NULL → None — the plan-level approve-all case), drops the internal `sort_key`/`updated_at_seq`,
+/// and deserializes each row STRICTLY (reject-unknown). A row that no longer deserializes is a
+/// contract/corruption error → `InternalError` (fail-closed, never a silent skip).
+pub fn read_approval_queue_typed(db_path: &Path) -> Result<Vec<ApprovalQueueRow>, IpcErrorCode> {
+    // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
+    let conn =
+        crate::eventstore::open_read_only(db_path).map_err(|_| IpcErrorCode::InternalError)?;
+    let json = read_table_as_json(&conn, "proj_approval_queue")
+        .map_err(|_| IpcErrorCode::InternalError)?;
+    let serde_json::Value::Array(raw_rows) = json else {
+        return Err(IpcErrorCode::InternalError);
+    };
+    let mut out = Vec::with_capacity(raw_rows.len());
+    for mut row in raw_rows {
+        let serde_json::Value::Object(obj) = &mut row else {
+            return Err(IpcErrorCode::InternalError);
+        };
+        // the redacted policy_decision_json TEXT → the typed `policy_decision` field; SQL NULL → None.
+        let pd = match obj.remove("policy_decision_json") {
+            Some(serde_json::Value::String(s)) => serde_json::from_str::<serde_json::Value>(&s)
+                .map_err(|_| IpcErrorCode::InternalError)?,
+            // NULL (plan-level approve-all) or the column absent → None.
+            Some(serde_json::Value::Null) | None => serde_json::Value::Null,
+            // the column is TEXT, so any other JSON type is a corrupt/mis-typed row → fail-closed
+            // (never silently coerce to None on the safety-critical approval read).
+            Some(_) => return Err(IpcErrorCode::InternalError),
+        };
+        obj.insert("policy_decision".to_string(), pd);
+        // drop the internal bookkeeping columns — not on the frozen wire row (deny_unknown_fields).
+        obj.remove("sort_key");
+        obj.remove("updated_at_seq");
+        let typed: ApprovalQueueRow =
+            serde_json::from_value(row).map_err(|_| IpcErrorCode::InternalError)?;
+        out.push(typed);
+    }
+    Ok(out)
 }
 
 /// `get_diff` (§6.1; P4.0b-ui1) — the hunk-structured diff read for the ui-6.3e per-hunk review.

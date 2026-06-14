@@ -15,6 +15,7 @@ pub mod harness;
 pub mod ids;
 pub mod ipc;
 pub mod objects;
+pub mod projections;
 pub mod schema;
 pub mod status;
 pub mod time;
@@ -121,4 +122,9 @@ pub mod time;
 /// `ResumeResult{mode, replayed_event_count}` (replacing the daemon-internal `{resumed_live,…}`;
 /// `replayed_event_count` non-zero only on the Replayed path). Additive, no frozen type reshaped (§5.0).
 /// The `decide_resume` ladder is daemon-internal (4.1a commit 2); the broker subsystem is 4.1b.
-pub const CONTRACT_VERSION: &str = "0.29.0";
+/// 0.30.0 (P4.0b-ui2, the ②-mini, Fork B) freezes the FIRST projection-row — `ApprovalQueueRow`
+/// (`shared/src/projections.rs`): the `proj_approval_queue` read model the §11.5 human-approval card
+/// consumes, typed (the wire columns + `risk_level: RiskLevel` + `policy_decision: Option<PolicyDecision>`
+/// — the §6.2 decision now persisted §15-redacted at approval-open + sibling-read into the row). Served
+/// TYPED (no loose JSON on the approval path). Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.30.0";

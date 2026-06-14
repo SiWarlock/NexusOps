@@ -81,6 +81,7 @@ fn gateway_with_session_executor() -> (
     let (join, handle): (_, SupervisorHandle) = spawn_supervisor_task(
         shutdown_rx,
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
+        Box::new(nexusopsd::session::NullSessionDeathSink),
     );
     let launches = Arc::new(AtomicUsize::new(0));
     let launcher = RecordingLauncher {

@@ -15,6 +15,7 @@
 mod drainer;
 mod listener;
 pub mod recovery;
+pub mod session_death;
 mod telemetry_sink;
 mod wait_class;
 mod writer;

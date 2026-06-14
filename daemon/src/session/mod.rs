@@ -202,17 +202,56 @@ impl SupervisorHandle {
     }
 }
 
+/// The seam the supervisor emits a supervised-child DEATH through (§17, 4.2): a `Failed` reap →
+/// `SessionFailed`. The production impl (in `runtime/session_death.rs`) appends via the write-actor;
+/// **`session/` holds only `Box<dyn SessionDeathSink>`, NEVER a `WriteHandle`** — the cat-1 boundary
+/// (LESSON 28; the `RecoverySignalSink`/`TelemetrySinkFactory` precedent). `Send` (moved into the
+/// supervisor task).
+pub trait SessionDeathSink: Send {
+    /// A supervised child died — the supervisor reaped its session as `Failed`. Emit `SessionFailed`.
+    fn emit_failed(&self, session_id: &SessionId);
+}
+
+/// A no-op [`SessionDeathSink`] for tests that don't exercise the §17 death path (the supervisor still
+/// needs a sink to be constructed). `test-support`-gated (the `FakeBroker`/`FakeLauncher` precedent).
+#[cfg(any(test, feature = "test-support"))]
+pub struct NullSessionDeathSink;
+
+#[cfg(any(test, feature = "test-support"))]
+impl SessionDeathSink for NullSessionDeathSink {
+    fn emit_failed(&self, _session_id: &SessionId) {}
+}
+
+/// Route a batch of reaped sessions: cancel each one's pending agent-mutation interceptions (fail-closed,
+/// the 4.0b drop-the-decision-sender behavior) AND, for a `Failed` reap, emit `SessionFailed` over the
+/// injected sink (§17 supervised-child-death surface). A clean `Killed`/`Completed` reap is NOT a failure
+/// → no emit (Q3). Pure routing over the injected seam — no DB/`WriteHandle` (cat-1 boundary held).
+pub fn handle_reaped(
+    reaped: &[(SessionId, Session)],
+    registry: &DecisionRegistry,
+    death_sink: &dyn SessionDeathSink,
+) {
+    for (id, status) in reaped {
+        registry.cancel_session(id.as_str());
+        if *status == Session::Failed {
+            death_sink.emit_failed(id);
+        }
+    }
+}
+
 /// Spawn the §10 supervisor background task (alongside the drainer/reaper/accept-loop in `main.rs`),
 /// stopped by the shutdown watch (LESSON §9 await-on-shutdown). Returns its `JoinHandle` + the
 /// [`SupervisorHandle`] (the 4.0b session.create driver entry). **C2 (carry-forward a):** when a
 /// session reaches a terminal §5.1 state (the reaper harvests it), the supervisor
 /// [`cancel_session`](DecisionRegistry::cancel_session)s its pending agent-mutation decisions —
 /// DROPPING their senders so a live `PreToolUse` hook awaiting the human resolves to Deny **fast**
-/// (never hanging to the 5-min wall-clock). The supervisor stays an EDGE (the registry is pure
-/// in-memory coordination — no DB / write-actor / gateway, so the cat-1 import-boundary holds).
+/// (never hanging to the 5-min wall-clock). **4.2:** a `Failed` reap ALSO emits `SessionFailed` via the
+/// injected [`SessionDeathSink`] (§17). The supervisor stays an EDGE (the registry + the sink trait are
+/// pure coordination — no DB / write-actor / gateway in `session/`, so the cat-1 import-boundary holds).
 pub fn spawn_supervisor_task(
     mut shutdown: watch::Receiver<bool>,
     registry: Arc<DecisionRegistry>,
+    death_sink: Box<dyn SessionDeathSink>,
 ) -> (JoinHandle<()>, SupervisorHandle) {
     let (control_tx, mut control_rx) = mpsc::unbounded_channel();
     let join = tokio::spawn(async move {
@@ -233,10 +272,9 @@ pub fn spawn_supervisor_task(
                     None => break,
                 },
                 _ = reaper.tick() => {
-                    // a reaped (terminal) session → cancel its pending interceptions (fail-closed).
-                    for (id, _status) in supervisor.try_reap() {
-                        registry.cancel_session(id.as_str());
-                    }
+                    // a reaped session → cancel its pending interceptions (fail-closed) + (4.2) emit
+                    // SessionFailed for a `Failed` reap (§17 child-death; clean Killed/Completed = no emit).
+                    handle_reaped(&supervisor.try_reap(), &registry, death_sink.as_ref());
                 }
             }
         }

@@ -183,6 +183,7 @@ fn gateway_with(
     let (join, handle): (_, SupervisorHandle) = spawn_supervisor_task(
         shutdown_rx,
         Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
+        Box::new(nexusopsd::session::NullSessionDeathSink),
     );
     let executor = SessionExecutor::new(Box::new(launcher), handle);
     let gateway = Gateway::new(

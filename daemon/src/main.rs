@@ -27,6 +27,7 @@ use nexusopsd::idgen::UlidGen;
 use nexusopsd::integrity::{FileIntegrityAlarm, IntegrityAlarm};
 use nexusopsd::ipc::current_euid;
 use nexusopsd::runtime::recovery::run_restart_recovery;
+use nexusopsd::runtime::session_death::WriteActorSessionDeathSink;
 use nexusopsd::runtime::{
     bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor,
     WriteActorTelemetrySinkFactory, MAX_CONNECTIONS,
@@ -115,10 +116,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let registry = Arc::new(DecisionRegistry::new());
 
+    // P4.2 — the §17 supervised-child-death sink (deferred: the supervisor holding it is spawned BELOW,
+    // BEFORE the write-actor exists, so the handle binds via `death_slot` once the actor is up). A
+    // `Failed` reap → `SessionFailed` via the write-actor (System-actor observation, NOT the Gateway);
+    // `session/` holds only `Box<dyn SessionDeathSink>` (the cat-1 boundary, LESSON 28).
+    let (death_sink, death_slot) = WriteActorSessionDeathSink::deferred(Arc::new(SystemClock));
+
     // the §10 opt-3 session supervisor (spawned before the write-actor — it needs only the runtime +
-    // the shutdown watch + the registry). Its `SupervisorHandle` DRIVES the SessionExecutor.
+    // the shutdown watch + the registry + the death sink). Its `SupervisorHandle` DRIVES the SessionExecutor.
     let (supervisor, supervisor_handle) =
-        spawn_supervisor_task(shutdown_rx.clone(), registry.clone());
+        spawn_supervisor_task(shutdown_rx.clone(), registry.clone(), Box::new(death_sink));
 
     // the LIVE launcher — the real `ClaudeAdapter` via the `PortablePtySpawner` (the O-13 #10
     // enforcement surface + the env-hygiene/correlation, P4.0b-2 Option A). cwd = the daemon's project
@@ -203,6 +210,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // up; this is before the accept-loop below serves any session.create → make_sink). The per-session
     // sinks the launcher mints now reach the live write-actor.
     telemetry_slot.bind(handle.clone());
+    // P4.2 — bind the handle into the death-sink slot NOW (the actor is up; before any session can reach
+    // a `Failed` reap). A supervised-child death → `SessionFailed` via the write-actor.
+    death_slot.bind(handle.clone());
     // the post-commit broadcast sender for the accept-loop's per-connection live subscribers (1.6d).
     let deltas = handle.delta_sender();
 

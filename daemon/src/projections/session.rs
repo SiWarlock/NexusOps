@@ -8,7 +8,8 @@
 use rusqlite::{params, Transaction};
 
 use nexusops_shared::event_envelope::EventEnvelope;
-use nexusops_shared::events::SessionStarted;
+use nexusops_shared::events::{SessionFailed, SessionStarted};
+use nexusops_shared::status::Session;
 
 use super::{wire_value, ProjectionError, Projector};
 
@@ -20,8 +21,28 @@ impl Projector for SessionProjector {
     }
 
     fn apply(&self, tx: &Transaction, env: &EventEnvelope) -> Result<(), ProjectionError> {
+        // 4.2 — a §17 supervised-child death: fold the row to status=Failed (+completed_at). The status
+        // is derived from the EVENT TYPE (SessionFailed → Session::Failed), never a row's current value,
+        // so a rebuild re-derives it identically (LESSON §17 rebuild-safety). A SessionFailed for an
+        // unknown session is a healthy no-op (UPDATE affects 0 rows) — never a degrade.
+        if env.event_type == SessionFailed::EVENT_TYPE {
+            let Some(session_id) = &env.session_id else {
+                return Ok(());
+            };
+            tx.execute(
+                "UPDATE proj_session SET status=?1, completed_at=?2, updated_at_seq=?3 \
+                 WHERE session_id=?4",
+                params![
+                    wire_value(&Session::Failed)?,
+                    env.occurred_at,
+                    env.seq,
+                    session_id.as_str(),
+                ],
+            )?;
+            return Ok(());
+        }
         if env.event_type != "SessionStarted" {
-            return Ok(()); // 1.2 folds only SessionStarted (lifecycle events → Phase 3)
+            return Ok(()); // 1.2 folds SessionStarted; 4.2 folds SessionFailed (above)
         }
         // a SessionStarted without identity is not projectable — skip (healthy no-op,
         // not a degrade): proj_session.session_id/project_id are NOT NULL.

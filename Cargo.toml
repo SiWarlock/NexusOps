@@ -4,5 +4,5 @@
 # listed in `exclude` belt-and-suspenders).
 [workspace]
 resolver = "2"
-members = ["shared", "daemon", "ui/gateway-uds"]
+members = ["shared", "daemon", "ui/gateway-uds", "ui/src-tauri"]
 exclude = ["daemon/spikes/sqlite-loadtest", "daemon/spikes/git2-worktree-check"]

@@ -3,7 +3,7 @@
 **Date:** 2026-06-13
 **Role:** edges-daemon-orchestrator (R7 — STAYED through the R6 impl-only cycle)
 **Predecessor:** `edges-013-2026-06-13-r7-worktree-refresh-and-rescan-bench.md` (R7 impl session doc, `58d90eb`)
-**Successor:** _(filled at the next /orchestrate-end — likely the user-driven phase-exit)_
+**Successor:** [edges-015-2026-06-14-r8-main-to-edges-merge.md](edges-015-2026-06-14-r8-main-to-edges-merge.md) (R8 main→edges merge impl session doc)
 **Round-seal commit:** _(this commit)_ · branch `track/edges` · **NOT pushed, NOT merged to main**
 
 > **Companion (the authoritative accumulated cross-track ledger):** `docs/planning/edges-R5-wiring-plan.md` R7 block + the R7 PLAN-DELTA. This doc is the round's orchestrator framing. **`docs/audits/edges-P5-P7-cargo-audit.md`** is the cargo-audit finding record.

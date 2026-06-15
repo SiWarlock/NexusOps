@@ -386,3 +386,39 @@ to the inner stub. Net Wave-B/C/D unchanged; one fewer slice.
 audit` (1 new medium, accept-and-documented) — all DONE → seal R7 → edges PAUSES for the user-gated
 `/phase-exit 5`+`7` + the edges→main merge (NOT run by edges — the user drives it with the daemon track +
 the D8/MIGRATION_9 items: Wave-C `integration_connections` + the P5.1 registry projector).
+
+---
+
+## R8 — the phase-exit/merge round, STEP 1: main→edges re-sync (USER topology A)
+
+**User chose topology A** (finish edges phase-exit → user coordinates edges→main → main→ui). R8 STEP 1 =
+re-sync edges with main's latest before the phase-exit (the slices are R9, a fresh post-cycle pair).
+
+- **MERGE `536ac04`** (2 parents `1f1f14f` edges + `df19f89` main; 47 main commits) — absorbed **CONTRACT
+  0.26→0.32** (daemon Phase-4 [4.0b-2 interception · 4.0c telemetry · 4.1a/b survival+tmux · 4.2 SessionFailed
+  · 4.3 bg jobs] + Codex-3.3). Edges' `shared/` untouched → clean absorb. **7 conflicts** = additive unions +
+  2 reconciliations (git/mod.rs add/add: edges' git submodules + main's `read_diff` ui-backend COEXIST ·
+  main.rs CAT-1: edges' 4 executors folded into main's live INV-SEC-1 drive loop under AgentMutationPolicy +
+  SessionExecutor + alarm/breaker). **2 beyond-plan resolutions (impl-caught):** a `[dependencies]` git2 TOML
+  dup-key dedup (kept edges' vendored) + Cargo.lock `--theirs`+regen. **Green 760/0/0** (edges 620 + main's
+  arc); both cat-1 pins pass; no semantic drift.
+- **SECURITY (the load-bearing gate) — `INV-SEC-1: PASS (no-bypass confirmed)`** (6 criteria, file:line):
+  edges' 4 mutators reachable ONLY via Gateway policy→approval→execute→audit (sole exec `pipeline.rs:976`;
+  executors hold no WriteHandle/SQL); AgentMutationPolicy only raises agent.*→Deny else CatalogPolicy → edges'
+  risk-2/3 STILL approval-gated, risk-0 project.rescan auto = read-only intentional; FailedWithEvents audited
+  atomic+breaker-gated; §15 secrets clean.
+- **D8 RESOLVED:** main holds **MIGRATION_9 = `MIGRATION_9_POLICY_DECISION`** (②-mini, 0.30.0) → edges' Wave-C
+  `integration_connections` = **MIGRATION_10** (next-free; no renumber — Wave-C unbuilt). The R5 deferral vindicated.
+- **cargo audit (merged tree):** same single finding (RUSTSEC-2023-0071, rsa) — NO new advisories from main's
+  P4/Codex deps; the R7 accept-and-document still covers it.
+- **PLAN-DELTA STAYS HELD:** the R5–R7 PLAN-DELTA (LESSONs 30/31/32/33-cand · arch-notes · SPREADs · ticks ·
+  the cargo-audit FINDING · the fmt-gap convention) is UNCHANGED — the R8 main→edges merge did NOT apply it
+  (cross-track rule holds: the daemon track is live on main at 3.3c; edges editing the merged-in shared root
+  docs would re-conflict at edges→main). The integration owner applies it at the edges→main merge.
+- **R8 sealed (merge clean cut) + CYCLE BOTH** → fresh R9 pair. Seal: merge `536ac04` + impl doc `ae1106e`
+  (edges-015) + orch seal edges-016. NOT pushed, NOT merged.
+
+**R9 (fresh phase-exit pair) target:** Wave-C `integration_connections` (MIGRATION_10) + `IntegrationConnectionRegistered`
+(keychain_ref pointer-ONLY §15 #4; security-reviewer + INV-SEC-1 + LESSON-31 guard) + the P5.1 registry projector
+(projects/repositories) + `/phase-exit 5`+`7` (verify-only — the gated §6.3/§15/§8 anchors now LIVE) → SEAL →
+HOLD for the user's edges→main coordination (NOT run by edges).

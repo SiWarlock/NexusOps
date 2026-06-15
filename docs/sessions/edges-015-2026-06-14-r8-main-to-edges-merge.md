@@ -3,7 +3,7 @@
 **Date:** 2026-06-14
 **Role:** edges-daemon-implementer (R8 — the phase-exit/merge round; single merge actor)
 **Predecessor:** [edges-014-2026-06-13-r7-orchestrator-round-seal.md](edges-014-2026-06-13-r7-orchestrator-round-seal.md) (R7 orch round-seal, `7b4fd37`)
-**Successor:** _(filled at the next session doc)_
+**Successor:** [edges-016-2026-06-14-r8-orchestrator-merge-seal.md](edges-016-2026-06-14-r8-orchestrator-merge-seal.md) (R8 orch merge-round seal)
 **Merge commit:** `536ac04` (2 parents: `1f1f14f` track/edges + `df19f89` main) · branch `track/edges` · **NOT pushed, NOT merged to main** (the edges→main merge is the user's later coordination)
 
 > **Companion (the authoritative accumulated cross-track ledger):** `docs/planning/edges-R5-wiring-plan.md`. This doc is the merge-side narrative.

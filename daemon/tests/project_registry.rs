@@ -394,10 +394,15 @@ fn test_rebuild_equivalence() {
 
 #[test]
 fn test_migration_10_applies() {
-    // spec(LESSON 8 forward-only migration): a fresh store opens at user_version=10 with both new tables.
+    // spec(LESSON 8 forward-only migration): once MIGRATION_10 is applied both tables exist. Asserted as
+    // a FLOOR (>= 10), not the exact latest — later migrations (e.g. MIGRATION_11) raise the version
+    // while MIGRATION_10's tables persist (cumulative); the projections.rs `>= 3` convention.
     let (_d, path) = temp_db();
     let store = open(&path);
-    assert_eq!(store.user_version().unwrap(), 10, "fresh DB at v10");
+    assert!(
+        store.user_version().unwrap() >= 10,
+        "MIGRATION_10 applied (v10+)"
+    );
 
     let conn = open_read_only(&path).unwrap();
     for t in ["proj_project", "proj_repository"] {
@@ -410,11 +415,8 @@ fn test_migration_10_applies() {
             .unwrap();
         assert_eq!(n, 1, "MIGRATION_10 must create `{t}`");
     }
-    assert_eq!(
-        nexusopsd::eventstore::SUPPORTED_USER_VERSION,
-        10,
-        "SUPPORTED_USER_VERSION bumped to 10"
-    );
+    // (the runtime user_version >= 10 above + the table existence prove MIGRATION_10 applied; the
+    // const SUPPORTED_USER_VERSION is pinned at the exact latest by gateway_plan's runtime assertion.)
 }
 
 // ---- Test 8 — the projector folds ONLY ProjectRescanned -------------------

@@ -26,4 +26,5 @@ pub(crate) const REBUILD_TABLES: &[&str] = &[
     "proj_usage_ledger",
     "proj_project",
     "proj_repository",
+    "proj_integration_connection",
 ];

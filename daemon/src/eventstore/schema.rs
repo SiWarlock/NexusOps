@@ -486,3 +486,24 @@ CREATE TABLE proj_repository (
   updated_at_seq INTEGER NOT NULL
 );
 ";
+
+/// Migration 11 (P7.1 Wave-C, edges-030) — the event-fed integration-connection read model. Folds
+/// `IntegrationConnectionRegistered` (the edges-029 `integration.connect` executor) into
+/// `proj_integration_connection`, keyed by the PAYLOAD `connection_id` (the mutator minted it — UNLIKE
+/// the envelope-keyed `proj_project`). `keychain_ref` is the §15 #4 NON-SECRET pointer (written through
+/// from the already-redacted committed event; never a token). `status` is a plain TEXT resting state
+/// (`connected`) — there is no frozen §5.1 Connection status machine; a future disconnect/expire event
+/// flips it (mutable-from-event-type, LESSON 17). An **event-fed projection** (rebuildable, in
+/// `REBUILD_TABLES`), NOT the DATA_MODEL §2.8 durable-registry direct-write row (the
+/// `workspace_id`/`scopes_json`/`expires_at` + disconnect/refresh lifecycle are the deferred fuller
+/// model). CONTRACT-neutral (no `shared/` surface; the IPC read RPC is deferred).
+pub const MIGRATION_11_INTEGRATION_CONNECTIONS: &str = "\
+CREATE TABLE proj_integration_connection (
+  connection_id  TEXT PRIMARY KEY,
+  provider       TEXT NOT NULL,
+  keychain_ref   TEXT NOT NULL,
+  account        TEXT,
+  status         TEXT NOT NULL,
+  updated_at_seq INTEGER NOT NULL
+);
+";

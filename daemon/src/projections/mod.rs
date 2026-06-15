@@ -15,6 +15,7 @@ mod activity;
 mod approval_queue;
 mod audit;
 mod graph;
+mod integration_connections;
 mod object_refs;
 mod project_registry;
 mod pull_request;
@@ -98,6 +99,10 @@ fn projectors() -> Vec<Box<dyn Projector>> {
         // proj_project + proj_repository registry read model (event-fed; self-contained payload +
         // envelope identity, NO LESSON-17 sibling-read). Closes the P5.1 read vertical.
         Box::new(project_registry::ProjectRegistryProjector),
+        // P7.1 Wave-C (edges-030) — folds the edges integration.connect IntegrationConnectionRegistered
+        // event into the proj_integration_connection read model (event-fed; keyed by the PAYLOAD
+        // connection_id, NO sibling-read). Closes the Wave-C connection vertical.
+        Box::new(integration_connections::IntegrationConnectionProjector),
     ]
 }
 

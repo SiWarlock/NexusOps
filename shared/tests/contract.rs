@@ -1499,8 +1499,8 @@ fn test_action_type_catalog_covers_mvp_set() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        27,
-        "the §6.3 MVP set is 27 types (24 + git.stage_hunk/unstage_hunk/discard_hunk, P4.0b-ui1)"
+        28,
+        "the §6.3 MVP set is 28 types (27 + integration.connect, P7.1 Wave-C edges-029)"
     );
     for at in MVP_ACTION_TYPES {
         let e = lookup(at).unwrap_or_else(|| panic!("catalog missing the MVP type {at}"));
@@ -1735,6 +1735,7 @@ fn test_adjudication_outcome_class() {
         ExecutorKind::Linear,
         ExecutorKind::Code,
         ExecutorKind::Review,
+        ExecutorKind::Integration,
     ] {
         assert_ne!(
             real,
@@ -1742,6 +1743,42 @@ fn test_adjudication_outcome_class() {
             "Adjudication is its own class, not a real-executor namespace"
         );
     }
+}
+
+// ---- edges-029 Wave-C — the integration.connect catalog entry + ExecutorKind::Integration (0.33) ----
+
+#[test]
+fn test_integration_connect_catalog_entry_0_33() {
+    // spec(§6.3) — the P7.1 Wave-C add: integration.connect (risk-2, ExecutorKind::Integration,
+    // requires_resource_refs=false, standing_grant_eligible) is catalogued + in MVP_ACTION_TYPES; the
+    // new ExecutorKind::Integration is a frozen value with wire `integration` (LESSON §2 wire-is-contract).
+    use nexusops_shared::actions::RiskLevel;
+    use nexusops_shared::catalog::{lookup, ExecutorKind, MVP_ACTION_TYPES};
+
+    assert!(
+        MVP_ACTION_TYPES.contains(&"integration.connect"),
+        "integration.connect is in the MVP set"
+    );
+    let e = lookup("integration.connect").expect("integration.connect catalogued");
+    assert_eq!(e.locked_risk, RiskLevel::Level2);
+    assert_eq!(e.executor, ExecutorKind::Integration);
+    assert!(!e.requires_resource_refs);
+    assert!(
+        !e.standing_grant_eligible,
+        "credential registration is NON-standing-grantable (§6.2 floor; security-reviewer-ruled)"
+    );
+
+    assert!(ExecutorKind::ALL.contains(&ExecutorKind::Integration));
+    assert_eq!(
+        serde_json::to_value(ExecutorKind::Integration).unwrap(),
+        serde_json::json!("integration"),
+        "ExecutorKind::Integration wire value = `integration`"
+    );
+    assert_eq!(
+        serde_json::from_value::<ExecutorKind>(serde_json::json!("integration")).unwrap(),
+        ExecutorKind::Integration,
+        "round-trips from the wire value"
+    );
 }
 
 // ---- 043 L1 RED #3 — the agent-mutation family snapshot (§2.5-seam: the catalog is line-138) ----
@@ -1758,8 +1795,8 @@ fn test_agent_mutation_family_snapshot_spec_6_3() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        27,
-        "the human-facing §6.3 MVP set is 27 — the agent family stays a separate machine-internal const"
+        28,
+        "the human-facing §6.3 MVP set is 28 — the agent family stays a separate machine-internal const"
     );
     assert_eq!(
         AGENT_MUTATION_ACTION_TYPES.len(),
@@ -2652,13 +2689,14 @@ fn test_approval_queue_row_rejects_unknown_field() {
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_32_0() {
+fn test_contract_version_bumped_0_33_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.30.0 =
-    // the P4.0b-ui2 (②-mini) `ApprovalQueueRow` freeze; 0.31.0 = the P4.1b-1 `SessionRecovered` event;
-    // **0.32.0** = the P4.2 `SessionFailed` observation event (the §17 supervised-child-death surface
-    // head). Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.32.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.31.0 =
+    // the P4.1b-1 `SessionRecovered` event; 0.32.0 = the P4.2 `SessionFailed` observation event;
+    // **0.33.0** = the P7.1 Wave-C `integration.connect` catalog add + `ExecutorKind::Integration`
+    // (edges-029; edges-branch-local — the daemon ratifies the action_type + assigns the final version
+    // at the edges→main merge, like the MIGRATION numbers). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.33.0");
 }
 
 // =================================================================================================

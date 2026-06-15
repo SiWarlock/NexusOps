@@ -26,6 +26,7 @@ use nexusopsd::gateway::Gateway;
 use nexusopsd::git::cli::SystemGitCli;
 use nexusopsd::git::executor::GitExecutor;
 use nexusopsd::idgen::UlidGen;
+use nexusopsd::integrations::connect::IntegrationExecutor;
 use nexusopsd::integrations::executor::{GithubExecutor, LinearExecutor};
 use nexusopsd::integrations::github_write::OctocrabGithubWriteClient;
 use nexusopsd::integrations::linear_write::LinearGraphqlWriteClient;
@@ -242,6 +243,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             tokio::runtime::Handle::current(),
             Box::new(SystemClock),
         )),
+    );
+    // P7.1 Wave-C (edges-029) — integration.connect (ExecutorKind::Integration): registration-only
+    // (§15 #4 — inputs carry the keychain_ref POINTER, never a token; the token→keychain write is a
+    // deferred non-Gateway mechanism). risk-2 (approval-gated); emits IntegrationConnectionRegistered.
+    catalog_exec.register(
+        ExecutorKind::Integration,
+        Arc::new(IntegrationExecutor::new(Box::new(UlidGen))),
     );
 
     // the production policy is now `AgentMutationPolicy` (the catalog-authoritative risk engine + the

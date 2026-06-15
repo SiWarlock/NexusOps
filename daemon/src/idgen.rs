@@ -18,6 +18,10 @@ pub trait IdGen: Send + Sync {
     /// — NOT one of the 22 frozen `shared/` IDs (a connection/session-scoped handle, re-minted on
     /// resume; the `subscription_id` precedent), so it is a plain `String` wrapped by `terminal::TerminalId`.
     fn new_terminal_id(&self) -> String;
+    /// A fresh `conn_<ULID>` integration-connection id (P7.1 Wave-C, edges-029). Daemon-internal — NOT
+    /// one of the 22 frozen `shared/` IDs (an edges-private connection-registry id; the `out_`/`term_`
+    /// bare-String precedent), so it is a plain `String` carried in `IntegrationConnectionRegistered`.
+    fn new_connection_id(&self) -> String;
 }
 
 /// Production generator — real time+random ULIDs.
@@ -34,6 +38,9 @@ impl IdGen for UlidGen {
     fn new_terminal_id(&self) -> String {
         format!("term_{}", ulid::Ulid::new())
     }
+    fn new_connection_id(&self) -> String {
+        format!("conn_{}", ulid::Ulid::new())
+    }
 }
 
 /// Deterministic generator for tests / golden-log replay — yields `evt_` ULIDs
@@ -48,6 +55,9 @@ pub struct FixedIdGen {
     // likewise a SEPARATE counter for terminal runtime-handle ids (3.4) — minting a
     // terminal id never shifts the event-id sequence (golden-log replay byte-identical).
     terminal_counter: AtomicU64,
+    // likewise a SEPARATE counter for integration-connection ids (P7.1 Wave-C) — minting a
+    // connection id never shifts the event-id sequence (golden-log replay byte-identical).
+    connection_counter: AtomicU64,
 }
 
 impl FixedIdGen {
@@ -72,5 +82,9 @@ impl IdGen for FixedIdGen {
     fn new_terminal_id(&self) -> String {
         let n = self.terminal_counter.fetch_add(1, Ordering::Relaxed);
         format!("term_{}", ulid::Ulid::from(n as u128))
+    }
+    fn new_connection_id(&self) -> String {
+        let n = self.connection_counter.fetch_add(1, Ordering::Relaxed);
+        format!("conn_{}", ulid::Ulid::from(n as u128))
     }
 }

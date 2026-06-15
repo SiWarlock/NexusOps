@@ -3,7 +3,7 @@
 **Date:** 2026-06-14
 **Role:** edges-daemon-orchestrator (R8 — the phase-exit/merge round, STEP 1: re-sync)
 **Predecessor:** `edges-015-2026-06-14-r8-main-to-edges-merge.md` (R8 impl merge session doc, `ae1106e`)
-**Successor:** _(R9 — the fresh phase-exit pair, post-cycle)_
+**Successor:** [edges-017-2026-06-15-r9-p5-p7-wave-c-wiring.md](edges-017-2026-06-15-r9-p5-p7-wave-c-wiring.md) (R9 impl — the P5/P7.1 wiring slices)
 **Round-seal commit:** _(this commit)_ · branch `track/edges` · **NOT pushed, NOT merged to main** (`536ac04` stays local; the edges→main merge is the USER's later cross-track coordination)
 
 > **Companion (the authoritative accumulated cross-track ledger):** `docs/planning/edges-R5-wiring-plan.md` R8 block + the R5–R8 PLAN-DELTA. This doc is the merge-round orchestrator framing.

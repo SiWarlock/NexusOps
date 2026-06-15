@@ -453,3 +453,36 @@ pub const MIGRATION_9_POLICY_DECISION: &str = "\
 ALTER TABLE approvals ADD COLUMN policy_decision_json TEXT;
 ALTER TABLE proj_approval_queue ADD COLUMN policy_decision_json TEXT;
 ";
+
+/// Migration 10 (P5.1, edges-028) — the event-fed project registry read model. `ProjectRescanned`
+/// (edges-019 `project.rescan` executor) folds into TWO tables split by axis (the DATA_MODEL §2.8
+/// `projects`/`repositories` structure, so the eventual durable-registry model is a natural evolution):
+/// `proj_project` carries the project-IDENTITY fields, `proj_repository` the git-DETECTION fields,
+/// both keyed by the envelope `project_id` (1:1 MVP — `ProjectRescanned` carries no `repo_id`; multi-repo
+/// is a deferred `repo_` ULID + join). These are **event-fed projections** (rebuildable, in
+/// `REBUILD_TABLES`), NOT the DATA_MODEL §2.8 durable-registry direct-write rows (the canonical
+/// `name`/`workspace_id`/`policy_json`/`created_at` + a `register_project` mutator are the deferred fuller
+/// model). `scanned_at` = the detection time (staleness UX); `updated_at_seq` = the event watermark
+/// (ordering) — distinct axes. CONTRACT-neutral (no `shared/` surface; the IPC read RPC is deferred).
+pub const MIGRATION_10_PROJECT_REGISTRY: &str = "\
+CREATE TABLE proj_project (
+  project_id     TEXT PRIMARY KEY,
+  workflow_pack  INTEGER NOT NULL,
+  cc_crew        INTEGER NOT NULL,
+  plan_file      TEXT,
+  brain          INTEGER NOT NULL,
+  scanned_at     TEXT NOT NULL,
+  updated_at_seq INTEGER NOT NULL
+);
+CREATE TABLE proj_repository (
+  project_id     TEXT PRIMARY KEY,
+  is_git         INTEGER NOT NULL,
+  repo_root      TEXT,
+  remote_url     TEXT,
+  branch         TEXT,
+  detached       INTEGER NOT NULL,
+  is_dirty       INTEGER NOT NULL,
+  scanned_at     TEXT NOT NULL,
+  updated_at_seq INTEGER NOT NULL
+);
+";

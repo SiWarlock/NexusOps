@@ -16,6 +16,7 @@ mod approval_queue;
 mod audit;
 mod graph;
 mod object_refs;
+mod project_registry;
 mod pull_request;
 mod schema;
 mod session;
@@ -93,6 +94,10 @@ fn projectors() -> Vec<Box<dyn Projector>> {
         // proj_pull_request read cache (§7.2; sibling-reads action_requests for repo_id, LESSON 17;
         // pr_id = the {repo_id}#{pr_number} rebuild-safe composite). Closes the github read vertical.
         Box::new(pull_request::PullRequestProjector),
+        // P5.1 (edges-028) — folds the edges project.rescan ProjectRescanned event into the
+        // proj_project + proj_repository registry read model (event-fed; self-contained payload +
+        // envelope identity, NO LESSON-17 sibling-read). Closes the P5.1 read vertical.
+        Box::new(project_registry::ProjectRegistryProjector),
     ]
 }
 

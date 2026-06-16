@@ -278,9 +278,14 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
         // eligibility axis is blast-radius, NOT risk class — LESSON 32; the discard_hunk precedent). The
         // IntegrationExecutor (X::Integration) registers on the live CatalogExecutor; the token→keychain
         // WRITE is a separate deferred non-Gateway mechanism.
-        "integration.connect" => {
-            entry_no_standing_grant(R::Level2, P::Api, I::FromInputs, X::Integration, false, true)
-        }
+        "integration.connect" => entry_no_standing_grant(
+            R::Level2,
+            P::Api,
+            I::FromInputs,
+            X::Integration,
+            false,
+            true,
+        ),
         "git.create_worktree" => {
             entry(R::Level2, P::Git, I::NaturalResourceRef, X::Git, true, true)
         }

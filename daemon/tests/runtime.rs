@@ -1022,19 +1022,26 @@ async fn test_gateway_approval_publishes_queue_delta() {
     .expect("write-actor reachable")
     .expect("submit");
     assert!(ack.action_request_id.starts_with("act_"));
-    let delta = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-        .await
-        .expect("a queue delta was published within 2s")
-        .expect("a committed gateway submit published a queue delta");
-    assert_eq!(delta.projection, ProjectionName::ApprovalQueue);
-    assert!(matches!(delta.kind, DeltaKind::Upsert));
-    let appr_id = delta
+    // drain-and-find: a committed submit publishes an ApprovalQueue Upsert keyed by the appr_ id AMONG
+    // its deltas (D4b: every gateway command ALSO nudges AuditTrail, so don't rely on a single recv /
+    // push order). ApprovalQueue is NOT regressed; AuditTrail is the new per-command blanket.
+    let deltas = drain_deltas(&mut rx);
+    let queue = deltas
+        .iter()
+        .find(|d| d.projection == ProjectionName::ApprovalQueue)
+        .expect("a committed gateway submit published an ApprovalQueue delta");
+    assert!(matches!(queue.kind, DeltaKind::Upsert));
+    let appr_id = queue
         .id
         .clone()
         .expect("the delta is keyed by the approval_id");
     assert!(
         appr_id.starts_with("appr_"),
         "keyed by the appr_ approval_id"
+    );
+    assert!(
+        has_upsert(&deltas, ProjectionName::AuditTrail),
+        "the committed gateway command also nudges AuditTrail (D4b per-command blanket)"
     );
 
     // a committed approve ALSO publishes a queue delta (the row status advances) — exercises the
@@ -1046,11 +1053,11 @@ async fn test_gateway_approval_publishes_queue_delta() {
         .unwrap()
         .expect("write-actor reachable")
         .expect("approve");
-    let approve_delta = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-        .await
-        .expect("a queue delta was published within 2s")
-        .expect("a committed gateway approve published a queue delta");
-    assert_eq!(approve_delta.projection, ProjectionName::ApprovalQueue);
+    let deltas = drain_deltas(&mut rx);
+    let approve_delta = deltas
+        .iter()
+        .find(|d| d.projection == ProjectionName::ApprovalQueue)
+        .expect("a committed gateway approve published an ApprovalQueue delta");
     assert_eq!(
         approve_delta.id.as_deref(),
         Some(appr_id.as_str()),

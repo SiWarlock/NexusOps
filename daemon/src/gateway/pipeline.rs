@@ -3,9 +3,10 @@
 
 use nexusops_shared::actions::{
     ActionError, ActionPlan, ActionPreview, ActionRequest, ApprovalMode, PolicyDecisionStatus,
-    RequiredApprover, RiskLevel,
+    RequiredApprover, ResourceType, RiskLevel,
 };
 use nexusops_shared::catalog;
+use nexusops_shared::events::{PullRequestSynced, WorktreeCreated};
 use nexusops_shared::gateway_ids::ApprovalId;
 use nexusops_shared::ipc::{
     ActionAck, DeltaKind, PlanAck, PlanStepAck, ProjectionDelta, ProjectionName,
@@ -14,13 +15,14 @@ use nexusops_shared::status::{ActionRequest as ARStatus, Approval as ApprovalSta
 use nexusops_shared::time::Timestamp;
 
 use crate::eventstore::{EventStore, GatewayTxn};
-use crate::gateway::executor::ExecutionOutcome;
+use crate::gateway::executor::{EmittedEvent, ExecutionOutcome};
 use crate::gateway::precondition::PreconditionStatus;
 use crate::gateway::{
     approval, db_err, enum_wire, idempotency, lease_err, plan, preview, request, Gateway,
     GatewayError,
 };
 use crate::locks::{FencingToken, LeaseError, LeaseKind, OwnerId, ResourceId};
+use crate::projections::{deltas_for_event, EventDeltaIds};
 
 /// The TTL (seconds) of an action's execution lease (2.4 L3). A bound, conservative window for the
 /// synchronous stub execute; the real long-running executors (Phase 3+) renew it via the heartbeat seam.
@@ -82,6 +84,50 @@ pub(crate) fn approval_queue_delta(approval_id: &str) -> ProjectionDelta {
         kind: DeltaKind::Upsert,
         row: None,
         id: Some(approval_id.to_string()),
+    }
+}
+
+/// D4b — map a gateway `EmittedEvent` (+ the action `req` for the envelope/resource ids) to its
+/// projection-delta nudges, via the SHARED [`deltas_for_event`] (ONE mapping for both paths, §51). The
+/// gateway path is the one that HAS the payload — so it supplies the PAYLOAD ids (`worktree_id`/`pr_id`),
+/// where the Command::Append path is payload-agnostic. `session_id` comes from the typed `SessionStarted`
+/// variant; `project_id` from `req`. `pr_id` = `{repo_id}#{pr_number}` (repo_id = the action's Repo
+/// resource_ref) to match the `proj_pull_request` row PK — absent → coarse `None` (the workspace re-reads).
+fn emitted_event_deltas(req: &ActionRequest, ev: &EmittedEvent) -> Vec<ProjectionDelta> {
+    let project_id = req.project_id.as_ref().map(|p| p.as_str().to_string());
+    match ev {
+        EmittedEvent::SessionStarted { session_id, .. } => deltas_for_event(
+            "SessionStarted",
+            &EventDeltaIds {
+                session_id: Some(session_id.as_str().to_string()),
+                project_id,
+                ..Default::default()
+            },
+        ),
+        EmittedEvent::Namespaced {
+            event_type,
+            payload_json,
+        } => {
+            let mut ids = EventDeltaIds {
+                project_id,
+                ..Default::default()
+            };
+            if *event_type == WorktreeCreated::EVENT_TYPE {
+                if let Ok(w) = serde_json::from_str::<WorktreeCreated>(payload_json) {
+                    ids.worktree_id = Some(w.worktree_id.as_str().to_string());
+                }
+            } else if *event_type == PullRequestSynced::EVENT_TYPE {
+                if let Ok(p) = serde_json::from_str::<PullRequestSynced>(payload_json) {
+                    let repo_id = req
+                        .resource_refs
+                        .iter()
+                        .find(|r| r.resource_type == ResourceType::Repo)
+                        .map(|r| r.id.clone());
+                    ids.pr_id = repo_id.map(|r| format!("{r}#{}", p.pr_number));
+                }
+            }
+            deltas_for_event(event_type, &ids)
+        }
     }
 }
 
@@ -289,7 +335,7 @@ impl Gateway {
             // §7.2 read-source: the executor runs off the IN-MEMORY reconciled `req` (raw inputs) —
             // NOT a re-read of the §15-redacted row (a redaction FP must not break a legit
             // execution while the row stays redacted at rest). Pinned by tests/executor.rs #12.
-            Routed::Execute(req) => self.execute(store, &req),
+            Routed::Execute(req) => self.execute(store, &req, deltas),
         }
     }
 
@@ -680,7 +726,7 @@ impl Gateway {
         // possibly post-restart). It carries the §15-redacted inputs; the real-input-fidelity concern
         // (a redaction FP breaking a legit real execution) is owned when real executors land (later
         // phases). Pinned by tests/executor.rs #13.
-        self.execute(store, &req)
+        self.execute(store, &req, deltas)
     }
 
     /// `approve` a PLAN-LEVEL approve-all approval (O-3 cascade) — drive EVERY non-critical step of
@@ -783,7 +829,7 @@ impl Gateway {
         // rows, not 1). Benign in 2.1c (the stub executor never fails); 2.4's orphaned-`queued`
         // reconciliation by idempotency key MUST cover the cascade case, not just the single step.
         for req in &steps {
-            self.execute(store, req)?;
+            self.execute(store, req, deltas)?;
         }
         // the ack reflects the cascade: `action_request_id` carries the plan-level approval_id (a
         // plan approve has no single action — Step-9 field-reuse note), status the overall outcome.
@@ -869,6 +915,7 @@ impl Gateway {
         &self,
         store: &mut EventStore,
         req: &ActionRequest,
+        deltas: &mut Vec<ProjectionDelta>,
     ) -> Result<ActionAck, GatewayError> {
         let act_id = req.action_request_id.as_str().to_string();
 
@@ -1062,7 +1109,23 @@ impl Gateway {
         });
 
         match terminal {
-            Ok(ack) => Ok(ack),
+            Ok(ack) => {
+                // D4b — post-commit / fire-and-forget: nudge the projections the COMMITTED emitted events
+                // fed, via the SHARED `deltas_for_event` mapping (the §51 one-list discipline, identical to
+                // the Command::Append path). Built AFTER the txn-B closure committed → a parse/build here can
+                // NEVER affect the fail-closed commit; published by `publish_after_commit` (result.is_ok()-
+                // gated, double-gating with the commit). The FINDING fix: production SessionStarted (gateway
+                // emitted, NOT Command::Append) now nudges Session+ProjectActivity+ProjectGraph.
+                let emitted: &[EmittedEvent] = match &outcome {
+                    ExecutionOutcome::Succeeded { emitted_events, .. }
+                    | ExecutionOutcome::FailedWithEvents { emitted_events, .. } => emitted_events,
+                    ExecutionOutcome::Failed(_) => &[],
+                };
+                for ev in emitted {
+                    deltas.extend(emitted_event_deltas(req, ev));
+                }
+                Ok(ack)
+            }
             // txn-B could not write the terminal event (§15/§17 fail-closed). The next step depends on
             // whether a DURABLE side effect was applied that can no longer be un-done:
             Err(audit_err) => {

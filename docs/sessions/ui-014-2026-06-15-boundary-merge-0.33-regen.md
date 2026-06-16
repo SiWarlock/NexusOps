@@ -3,7 +3,7 @@
 - **Date:** 2026-06-15
 - **Phase:** Phase 6 (ui-resume) — **P6.8 / §5.0** (the live `UdsGatewayPort` contract layer; the boundary-merge regen — same home as the 047/053 regens; NON-cat-1)
 - **Predecessor:** [ui-013](ui-013-2026-06-14-l2-c-go-live-mutation-transport-live.md)
-- **Successor:** _(none yet)_
+- **Successor:** [ui-015](ui-015-2026-06-15-approvalqueue-live-subscription.md)
 - **Track:** `track/ui` · implementer `ui-implementer` · orchestrator `ui-orchestrator` · lead `team-lead`
 
 ## Why this session existed

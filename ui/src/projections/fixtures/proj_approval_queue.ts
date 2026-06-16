@@ -1,7 +1,11 @@
 // Fixture data for the ApprovalQueue projection. §14 test/dev infrastructure.
 // approval_fixture_2 is already decided (approved) → excluded from waitingOnYou
 // (only pending approvals count).
-import type { ApprovalQueuePage, ApprovalQueueRow } from "../../contracts/index";
+import type {
+  ApprovalQueuePage,
+  ApprovalQueueRow,
+  ProjectionDelta,
+} from "../../contracts/index";
 
 /** Build a valid frozen 14-field ApprovalQueueRow with overrides — test convenience so call sites
  *  don't inline all 14 fields. Defaults are a pending, current-user, risk-2 approval. */
@@ -80,4 +84,15 @@ export const approvalQueueFixture: ApprovalQueuePage = {
     },
   ],
   cursor: null,
+};
+
+// A daemon-shaped `row:None` NUDGE for the ApprovalQueue subscribe stream (ui-059). The daemon emits an
+// id-nudge ("this projection changed") on every submit/approve/deny (gateway/pipeline.rs:79), NOT the
+// row — so this carries NO `row`, distinct from `sessionDeltaFixture` (which carries a row and thus
+// masked the row:None gap). The live queue consumes it via refetch-on-nudge (re-read get_projection),
+// never a row-apply reducer (which would no-op on the absent row).
+export const approvalQueueDeltaFixture: ProjectionDelta = {
+  projection: "ApprovalQueue",
+  kind: "upsert",
+  id: "approval_fixture_1",
 };

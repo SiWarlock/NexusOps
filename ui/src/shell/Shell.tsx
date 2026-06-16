@@ -3,6 +3,7 @@ import type { GatewayPort } from "../gateway-client/types";
 import { UdsGatewayPort } from "../gateway-client/uds";
 import { runSubscriptionSupervisor } from "../gateway-client/subscribe-recovery";
 import { applySessionDelta } from "../gateway-client/delta-reducer";
+import { createNudgeCoalescer } from "../gateway-client/refetch-on-nudge";
 import type {
   ApprovalQueueRow,
   AuditEventRow,
@@ -268,6 +269,66 @@ export function Shell({
       // (e.g. a synchronous fault setting up a re-subscribe). Log it — don't crash the cockpit
       // (a live-read recovery fault must never take down the whole shell, §11.7).
       console.error("subscription supervisor exited unexpectedly", e);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // Live ApprovalQueue subscribe stream (ui-059) — the cockpit's ACTION surface stays live as the daemon
+  // mutates. The daemon emits an ApprovalQueue ProjectionDelta on every submit/approve/deny, but as a
+  // `row:None` id-NUDGE (gateway/pipeline.rs:79) — so this consumes it via REFETCH-ON-NUDGE (a coalesced
+  // re-read get_projection("ApprovalQueue")), NOT a row-apply reducer (which would no-op on the absent
+  // row). A 2nd stream composing with Session via the port's per-stream connection aggregation
+  // (notifyConnectionState("ApprovalQueue", …) → worst-of; a healthy stream can't mask the other's
+  // degrade). Recomputes the switcher counts so a live approval change is consistent across the queue
+  // AND the derived waiting-on-you counts.
+  useEffect(() => {
+    let cancelled = false;
+    const recountFromApprovals = (
+      prev: ShellData,
+      approvals: ApprovalQueueRow[],
+    ): ShellData => ({
+      ...prev,
+      approvals,
+      counts: deriveProjectSwitcherCounts({
+        projects: prev.projects,
+        sessions: prev.sessions,
+        pullRequests: prev.pullRequests,
+        approvals,
+      }),
+    });
+    // The re-read-the-snapshot work — shared by the coalesced nudge path AND the recovery refetch.
+    // Guard the setData with `cancelled` so an in-flight re-read that resolves after unmount (the
+    // coalescer can hold work past cleanup) doesn't write to a torn-down effect's state.
+    const refetchApprovals = async (): Promise<void> => {
+      const page = await client.get_projection("ApprovalQueue");
+      if (cancelled) return;
+      setData((prev) => (prev ? recountFromApprovals(prev, page.rows) : prev));
+    };
+    // Coalesce a burst of nudges into a bounded number of re-reads (at-most-one-in-flight + one-trailing).
+    const coalescer = createNudgeCoalescer(refetchApprovals);
+    runSubscriptionSupervisor({
+      subscribe: () => client.subscribe({ projection: "ApprovalQueue" }),
+      // a row:None nudge → coalesced refetch (ignore the delta content; the daemon's nudge carries no row).
+      onDelta: () => coalescer.nudge(),
+      refetch: refetchApprovals, // the supervisor's recovery snapshot reset (the 052 ground-truth re-read)
+      // ui-059: drive the port as the "ApprovalQueue" stream — the per-stream aggregate keeps this from
+      // masking (or being masked by) the Session stream; the port stays the SINGLE connection authority.
+      setConnection: (next) => client.notifyConnectionState("ApprovalQueue", next),
+      delay: (attempt) =>
+        new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SUBSCRIBE_BACKOFF_MAX_MS,
+              SUBSCRIBE_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+            ),
+          ),
+        ),
+      shouldContinue: () => !cancelled,
+    }).catch((e: unknown) => {
+      console.error("ApprovalQueue subscription supervisor exited unexpectedly", e);
     });
     return () => {
       cancelled = true;

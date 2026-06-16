@@ -37,7 +37,10 @@ import {
   worstOfConnection,
   type ConnectionState,
 } from "../connection/state";
-import { approvalQueueFixture } from "../projections/fixtures/proj_approval_queue";
+import {
+  approvalQueueFixture,
+  approvalQueueDeltaFixture,
+} from "../projections/fixtures/proj_approval_queue";
 import { auditTrailFixture } from "../projections/fixtures/proj_audit_trail";
 import { projectActivityFixture } from "../projections/fixtures/proj_project_activity";
 import { pullRequestFixture } from "../projections/fixtures/proj_pull_request";
@@ -126,14 +129,18 @@ export class MockGatewayPort implements GatewayPort {
   }
 
   async *subscribe(params: SubscribeParams): AsyncIterable<ProjectionDelta> {
-    // Symmetric with get_projection: an unrecognized projection fails fast
-    // rather than silently streaming nothing (which would mask wiring bugs).
-    if (params.projection !== "Session") {
+    // Symmetric with get_projection: an unrecognized projection fails fast rather than silently
+    // streaming nothing (which would mask wiring bugs). Session yields a row-bearing delta; ApprovalQueue
+    // (ui-059) yields a daemon-shaped `row:None` NUDGE (consumed via refetch-on-nudge, never row-apply).
+    if (params.projection === "Session") {
+      yield parseDelta(sessionDeltaFixture);
+    } else if (params.projection === "ApprovalQueue") {
+      yield parseDelta(approvalQueueDeltaFixture);
+    } else {
       throw new Error(
         `MockGatewayPort: no fixture for subscribe projection "${params.projection}"`,
       );
     }
-    yield parseDelta(sessionDeltaFixture);
     // Then STAY OPEN — a real subscribe stream blocks on the next push until the daemon
     // closes it on lag (it does NOT end after one delta). Blocking here keeps the live
     // subscribe supervisor (052) from spinning recovery in Mock-backed tests; consumers

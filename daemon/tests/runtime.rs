@@ -9,6 +9,7 @@
 
 use nexusops_shared::actor::ActorType;
 use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType};
+use nexusops_shared::events::{SessionFailed, SessionRecovered};
 use nexusops_shared::ids::{SessionId, WorkspaceId};
 use nexusops_shared::ipc::{
     DeltaKind, GetProjectionParams, HelloAck, HelloFrame, ProjectionName, RpcRequest, RpcResponse,
@@ -87,6 +88,29 @@ fn session_intent(session_id: &str) -> AppendIntent {
     let mut i = test_intent();
     i.session_id = Some(SessionId::parse(session_id).unwrap());
     i.payload_json = r#"{"status":"active"}"#.to_string();
+    i
+}
+
+/// a SessionFailed intent with a session_id (4.2 — empty-payload) → the live delta source maps it to
+/// a Session-projection Upsert nudge (L4, D3).
+fn session_failed_intent(session_id: &str) -> AppendIntent {
+    let mut i = test_intent();
+    i.event_type = SessionFailed::EVENT_TYPE.to_string();
+    i.session_id = Some(SessionId::parse(session_id).unwrap());
+    i.payload_json = "{}".to_string(); // SessionFailed is empty-payload
+    i
+}
+
+/// a SessionRecovered intent with a session_id (D2/4.4) → the live delta source maps it to a
+/// Session-projection Upsert nudge (L4, D3). The payload BINDS cleanly (no Decode-degrade noise); the
+/// in-band fold itself is a healthy no-op in these tests (no prior SessionStarted row for the id), and
+/// the delta fires regardless — it is payload-agnostic (reads only event_type + session_id).
+fn session_recovered_intent(session_id: &str) -> AppendIntent {
+    let mut i = test_intent();
+    i.event_type = SessionRecovered::EVENT_TYPE.to_string();
+    i.session_id = Some(SessionId::parse(session_id).unwrap());
+    i.payload_json =
+        r#"{"mode":"replayed","replayed_event_count":3,"execution_profile_id":null}"#.to_string();
     i
 }
 
@@ -614,6 +638,131 @@ async fn test_append_publishes_delta_after_commit() {
         "a rolled-back append publishes no delta"
     );
     actor2.shutdown().await;
+}
+
+// ---- D3 (P4.5) — the live Session nudge on every proj_session-mutating event ------------------
+
+#[tokio::test]
+async fn test_session_failed_publishes_delta_after_commit() {
+    // spec(§7/§11.4) — proj_session is mutated by SessionFailed (4.2 fold, LESSON §17) → the §6.1
+    // subscriber must be nudged to re-read or the §11.4 Failed-session restart card goes stale.
+    // Publish-after-commit (LESSON §9).
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    handle
+        .append(session_failed_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"))
+        .await
+        .expect("committed append");
+    let delta = rx
+        .recv()
+        .await
+        .expect("a committed SessionFailed published a delta");
+    assert_eq!(delta.projection, ProjectionName::Session);
+    assert!(matches!(delta.kind, DeltaKind::Upsert));
+    assert_eq!(delta.id.as_deref(), Some("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"));
+    actor.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_session_recovered_publishes_delta_after_commit() {
+    // spec(§11.4) — without the nudge the resumed/replayed recovery banner never refreshes after restart
+    // recovery; the D2/4.4 fold mutates resume_mode/replayed_event_count/recovered_at (status unchanged,
+    // but the ROW changes — the subscriber must re-read).
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    handle
+        .append(session_recovered_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"))
+        .await
+        .expect("committed append");
+    let delta = rx
+        .recv()
+        .await
+        .expect("a committed SessionRecovered published a delta");
+    assert_eq!(delta.projection, ProjectionName::Session);
+    assert!(matches!(delta.kind, DeltaKind::Upsert));
+    assert_eq!(delta.id.as_deref(), Some("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"));
+    actor.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_session_event_without_session_id_publishes_no_delta() {
+    // spec — the delta carries the id (row: None); no session_id → nothing to nudge (parity with the
+    // SessionStarted `if let Some(sid)` guard). A SessionFailed without a session_id publishes no delta.
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    let mut intent = session_failed_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    intent.session_id = None;
+    handle.append(intent).await.expect("committed append");
+    assert!(
+        rx.try_recv().is_err(),
+        "a session event without a session_id publishes no delta"
+    );
+    actor.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_proj_session_folded_events_each_publish_a_session_delta() {
+    // spec(LESSON §50, generalized to delta-source↔projector) — EVERY event type the SessionProjector
+    // folds into proj_session MUST publish a Session Upsert nudge (a row-mutating event without a delta is
+    // a silent stale-UI bug). If a future proj_session-folding event is added to `SessionProjector::apply`,
+    // add its arm to `deltas_for_append` too — extend BOTH lists together (the keep-two-lists-honest guard).
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    // the event types keyed on the SAME token-form both lists use (consts where they exist; the
+    // SessionStarted literal — it has no EVENT_TYPE const, and the projector uses the literal too).
+    let cases = [
+        (
+            "SessionStarted",
+            session_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+        ),
+        (
+            SessionFailed::EVENT_TYPE,
+            session_failed_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAW"),
+        ),
+        (
+            SessionRecovered::EVENT_TYPE,
+            session_recovered_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAX"),
+        ),
+    ];
+    for (label, intent) in cases {
+        let sid = intent.session_id.as_ref().unwrap().as_str().to_string();
+        handle
+            .append(intent)
+            .await
+            .unwrap_or_else(|_| panic!("{label} commits"));
+        let delta = rx
+            .recv()
+            .await
+            .unwrap_or_else(|_| panic!("{label} publishes a delta"));
+        assert_eq!(delta.projection, ProjectionName::Session, "{label}");
+        assert!(matches!(delta.kind, DeltaKind::Upsert), "{label}");
+        assert_eq!(delta.id.as_deref(), Some(sid.as_str()), "{label}");
+    }
+    actor.shutdown().await;
 }
 
 // ---- P2.1c L1 — a committed gateway approval publishes an ApprovalQueue delta -----------------

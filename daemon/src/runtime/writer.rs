@@ -15,6 +15,7 @@ use std::thread::JoinHandle;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use nexusops_shared::actions::{ActionPlan, ActionPreview, ActionRequest};
+use nexusops_shared::events::{SessionFailed, SessionRecovered};
 use nexusops_shared::ids::EventId;
 use nexusops_shared::ipc::{ActionAck, DeltaKind, PlanAck, ProjectionDelta, ProjectionName};
 use nexusops_shared::status::WorktreeOverlay;
@@ -713,13 +714,24 @@ pub fn compute_worktree_cache(path: &Path, base: Option<&str>) -> Option<Worktre
 
 /// The live `ProjectionDelta`(s) an appended event produces — derived from its typed identity +
 /// `event_type` (mirrors the `object_refs::derive_refs` pattern: rebuildable, decoupled from the
-/// projector internals). 1.6b feeds only `SessionStarted` → a Session-projection Upsert; later
-/// event types add their mappings additively. The delta carries the id; the subscriber re-reads
-/// the full row via `get_projection` (row enrichment is a future improvement, consistent with the
-/// lag-resync policy).
+/// projector internals). The delta carries the id; the subscriber re-reads the full row via
+/// `get_projection` (row enrichment is a future improvement, consistent with the lag-resync policy).
+///
+/// **D3 (P4.5):** EVERY event type the `SessionProjector` folds into `proj_session` mutates the row, so
+/// each must nudge a live subscriber to re-read (else the §11.4 Failed/recovery cards go stale). That set
+/// is `SessionStarted` (1.2) · `SessionFailed` (4.2) · `SessionRecovered` (D2/4.4). **KEEP THIS SET IN
+/// SYNC with `SessionProjector::apply` (`projections/session.rs`)** — a future `proj_session`-folding
+/// event added there without an arm here is a silent stale-UI bug (extend BOTH lists together; pinned by
+/// `test_proj_session_folded_events_each_publish_a_session_delta`, the LESSON §50 keep-two-lists guard).
+/// Keyed on the SAME token-form both lists use: the `EVENT_TYPE` consts where they exist (so a wire-value
+/// rename follows both), the `SessionStarted` literal otherwise (it has no const; the projector uses the
+/// literal too). Payload-agnostic — only `event_type` + `session_id` are read, never the payload.
 fn deltas_for_append(intent: &AppendIntent) -> Vec<ProjectionDelta> {
     let mut out = Vec::new();
-    if intent.event_type == "SessionStarted" {
+    let mutates_proj_session = intent.event_type == "SessionStarted"
+        || intent.event_type == SessionFailed::EVENT_TYPE
+        || intent.event_type == SessionRecovered::EVENT_TYPE;
+    if mutates_proj_session {
         if let Some(sid) = &intent.session_id {
             out.push(ProjectionDelta {
                 projection: ProjectionName::Session,

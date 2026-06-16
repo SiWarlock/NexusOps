@@ -17,9 +17,10 @@ use nexusops_shared::actions::{
 use nexusops_shared::actor::ActorType;
 use nexusops_shared::catalog::ExecutorKind;
 use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType, Visibility};
-use nexusops_shared::events::{PullRequestSynced, WorktreeCreated};
+use nexusops_shared::events::{PullRequestSynced, SessionRecovered, WorktreeCreated};
+use nexusops_shared::harness::ResumeMode;
 use nexusops_shared::ids::{ActionRequestId, ProjectId, SessionId, WorkspaceId, WorktreeId};
-use nexusops_shared::status::{ActionRequestStatus, PullRequest};
+use nexusops_shared::status::{ActionRequestStatus, PullRequest, Session};
 use nexusops_shared::time::Timestamp;
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{
@@ -1985,4 +1986,199 @@ fn test_pull_request_typed_serve_fails_closed() {
         IpcErrorCode::InternalError,
         "a corrupt/unbindable row → InternalError (fail-closed, never a silent skip)"
     );
+}
+
+// =============================================================================
+// D2 (P4.4) — the SessionRecovered fold (§8.1/§11.4 survival display) + the typed SessionRow serve
+// =============================================================================
+
+/// a SessionRecovered intent linked to `session_id` (the recovery-fold UPDATE key).
+fn session_recovered_intent(session_id: &SessionId, payload: &str) -> AppendIntent {
+    let mut i = intent(payload);
+    i.event_type = SessionRecovered::EVENT_TYPE.to_string();
+    i.session_id = Some(session_id.clone());
+    i
+}
+
+fn session_recovered_payload(mode: ResumeMode, replayed: u64) -> String {
+    serde_json::to_string(&SessionRecovered {
+        mode,
+        replayed_event_count: replayed,
+        execution_profile_id: None,
+    })
+    .unwrap()
+}
+
+/// (resume_mode, replayed_event_count, recovered_at) for a proj_session row.
+fn proj_session_recovery(
+    path: &std::path::Path,
+    session_id: &str,
+) -> (Option<String>, Option<i64>, Option<String>) {
+    nexusopsd::eventstore::open_read_only(path)
+        .unwrap()
+        .query_row(
+            "SELECT resume_mode, replayed_event_count, recovered_at FROM proj_session \
+             WHERE session_id=?1",
+            [session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+}
+
+#[test]
+fn test_session_recovered_folds_recovery_fields() {
+    // spec(§7/§8.1/§11.4) — a SessionRecovered folds the recovery OUTCOME onto proj_session (the
+    // resumed-vs-replayed-vs-reattached banner source). resume_mode binds the §8.1 ResumeMode wire value;
+    // replayed_event_count + recovered_at (= the event occurred_at) populate.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"active\"}"))
+        .expect("SessionStarted folds the base row");
+    store
+        .append(session_recovered_intent(
+            &sid,
+            &session_recovered_payload(ResumeMode::Replayed, 7),
+        ))
+        .expect("SessionRecovered folds in-band");
+    let (mode, replayed, recovered_at) = proj_session_recovery(&path, sid.as_str());
+    assert_eq!(mode.as_deref(), Some("replayed"));
+    assert_eq!(replayed, Some(7));
+    assert_eq!(recovered_at.as_deref(), Some("2026-06-08T00:00:00Z"));
+}
+
+#[test]
+fn test_session_recovered_unknown_session_noop() {
+    // spec — a SessionRecovered for an absent session = a healthy no-op (UPDATE affects 0 rows, no
+    // degrade; the SessionFailed precedent). No proj_session row materializes.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    store
+        .append(session_recovered_intent(
+            &sid,
+            &session_recovered_payload(ResumeMode::Resumed, 0),
+        ))
+        .expect("a SessionRecovered for an unknown session is a healthy no-op");
+    assert_eq!(count(&path, "SELECT COUNT(*) FROM proj_session"), 0);
+}
+
+#[test]
+fn test_session_recovered_rebuild_equivalence() {
+    // spec(LESSON §17) — the recovery fields derive from the EVENT (type/payload), so a full rebuild
+    // re-derives them identically (mutable-from-event-type, rebuild-safe).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"active\"}"))
+        .unwrap();
+    store
+        .append(session_recovered_intent(
+            &sid,
+            &session_recovered_payload(ResumeMode::ReattachedLive, 0),
+        ))
+        .unwrap();
+    let before = proj_session_recovery(&path, sid.as_str());
+    store.rebuild_projections().unwrap();
+    let after = proj_session_recovery(&path, sid.as_str());
+    assert_eq!(
+        before, after,
+        "rebuild re-derives the recovery fields identically"
+    );
+    assert_eq!(before.0.as_deref(), Some("reattached_live"));
+}
+
+#[test]
+fn test_resume_mode_binds_enum() {
+    // spec(§5.1/§8.1) — resume_mode binds the §8.1 ResumeMode (reject-unknown): a SessionRecovered whose
+    // payload carries an UNKNOWN mode wire value fails to bind → the projector degrades + skips (never
+    // stores raw); the recovery columns stay NULL.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"active\"}"))
+        .unwrap();
+    // a bogus mode → the SessionRecovered payload doesn't bind → Decode-degrade (skip), not raw-store.
+    store
+        .append(session_recovered_intent(
+            &sid,
+            "{\"mode\":\"not_a_mode\",\"replayed_event_count\":0,\"execution_profile_id\":null}",
+        ))
+        .expect("a degrade-skip commits the append (logic error, not Db error)");
+    let (mode, _replayed, _recovered_at) = proj_session_recovery(&path, sid.as_str());
+    assert_eq!(
+        mode, None,
+        "an unknown ResumeMode degrades+skips — never stored raw"
+    );
+}
+
+// ---- C2 — the Session projection is served TYPED (the ApprovalQueue/PullRequest precedent) ----
+
+#[test]
+fn test_get_projection_serves_typed_session_row() {
+    // spec(§6.1/§7.2/§11.4) — get_projection("Session") is served TYPED via read_session_typed (no loose
+    // JSON). A recovered row carries resume_mode/replayed_event_count/recovered_at; a never-recovered row
+    // carries them None. Both deserialize strictly into the frozen SessionRow.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let pid = ProjectId::new();
+    let recovered = SessionId::new();
+    let fresh = SessionId::new();
+    store
+        .append(session_intent(&recovered, &pid, "{\"status\":\"active\"}"))
+        .unwrap();
+    store
+        .append(session_recovered_intent(
+            &recovered,
+            &session_recovered_payload(ResumeMode::Resumed, 0),
+        ))
+        .unwrap();
+    store
+        .append(session_intent(&fresh, &pid, "{\"status\":\"active\"}"))
+        .unwrap();
+
+    let rows = nexusopsd::ipc::read_session_typed(&path).expect("typed session read");
+    assert_eq!(rows.len(), 2, "both sessions served");
+    let rec = rows
+        .iter()
+        .find(|r| r.session_id == recovered.as_str())
+        .unwrap();
+    assert_eq!(rec.status, Session::Active, "status is the typed §5.1 enum");
+    assert_eq!(rec.resume_mode, Some(ResumeMode::Resumed));
+    assert_eq!(rec.recovered_at.as_deref(), Some("2026-06-08T00:00:00Z"));
+    let new = rows
+        .iter()
+        .find(|r| r.session_id == fresh.as_str())
+        .unwrap();
+    assert_eq!(new.resume_mode, None, "a never-recovered row carries None");
+    assert_eq!(new.replayed_event_count, None);
+}
+
+#[test]
+fn test_session_typed_serve_fails_closed() {
+    // spec(LESSON §37) — the typed serve FAILS CLOSED on a proj_session row that no longer deserializes
+    // (a corrupt status) → InternalError, never a silent skip. (Direct writable conn = test-only fixture
+    // corruption; production never writes this.)
+    use nexusops_shared::ipc::IpcErrorCode;
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"active\"}"))
+        .unwrap();
+    {
+        let c = rusqlite::Connection::open(&path).expect("fixture conn");
+        c.execute("UPDATE proj_session SET status = 'not_a_real_status'", [])
+            .expect("corrupt the status");
+    }
+    let err = nexusopsd::ipc::read_session_typed(&path)
+        .expect_err("a row that doesn't deserialize fails closed");
+    assert_eq!(err, IpcErrorCode::InternalError);
 }

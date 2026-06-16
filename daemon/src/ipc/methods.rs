@@ -20,7 +20,7 @@ use nexusops_shared::ipc::{
     Capabilities, DiffResult, GetDiffParams, GetProjectionParams, IpcErrorCode, ProjectionName,
     RpcRequest, RpcResponse, SubscribeParams, WireError,
 };
-use nexusops_shared::projections::{ApprovalQueueRow, PullRequestRow};
+use nexusops_shared::projections::{ApprovalQueueRow, PullRequestRow, SessionRow};
 use nexusops_shared::status::ActionRequest as ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
 
@@ -488,6 +488,14 @@ fn get_projection(
             Err(code) => Err(code),
         });
     }
+    // D2/P4.4 — the Session projection served TYPED (the frozen SessionRow), not loose JSON, so the ui
+    // per-session recovery indicator + RecoveryState banner (§11.4) consume a contract. The precedent above.
+    if params.name == ProjectionName::Session {
+        return Ok(match read_session_typed(db_path) {
+            Ok(typed) => serde_json::to_value(typed).map_err(|_| IpcErrorCode::InternalError),
+            Err(code) => Err(code),
+        });
+    }
     let table = projection_table(params.name);
     // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
     let conn =
@@ -565,6 +573,57 @@ pub fn read_pull_request_typed(db_path: &Path) -> Result<Vec<PullRequestRow>, Ip
         // STRICT deserialize (reject-unknown; `status` binds the §5.1 PullRequest enum). A row that no
         // longer binds is corrupt/contract-broken → fail-closed, never a silent skip (LESSON §37).
         let typed: PullRequestRow =
+            serde_json::from_value(row).map_err(|_| IpcErrorCode::InternalError)?;
+        out.push(typed);
+    }
+    Ok(out)
+}
+
+/// The `SessionRow` wire fields — the SUBSET of `proj_session`'s ~22 columns surfaced on the typed serve
+/// (basic-now + SPREAD). `read_session_typed` RETAINS only these (proj_session is far wider than the row,
+/// so the drop-only-internal approach of `read_approval_queue_typed`/`read_pull_request_typed` doesn't
+/// fit). Kept drift-proof by the `session_row_wire_fields_match_struct` test (this const must equal the
+/// `SessionRow` serialized field set — a typo or a struct-field add fails that test, so a wire field can
+/// never be silently dropped).
+const SESSION_ROW_WIRE_FIELDS: &[&str] = &[
+    "session_id",
+    "project_id",
+    "status",
+    "display_name",
+    "harness",
+    "model",
+    "execution_profile_id",
+    "resume_mode",
+    "replayed_event_count",
+    "recovered_at",
+];
+
+/// (D2/P4.4) Read `proj_session` served TYPED as the frozen [`SessionRow`] — no loose JSON on the ui
+/// per-session recovery indicator + `RecoveryState` banner read path (the `read_approval_queue_typed` /
+/// `read_pull_request_typed` precedent, LESSON §37). `proj_session` carries ~22 columns vs the 10-field
+/// wire row (basic-now + SPREAD), so each row is REDUCED to [`SESSION_ROW_WIRE_FIELDS`] before the STRICT
+/// deserialize (additive-column-safe: a future SPREAD column won't trip `deny_unknown_fields`). A row that
+/// no longer deserializes (corrupt / contract-broken — e.g. an unbindable `status`) is an integrity error
+/// → `InternalError` (fail-closed, never a silent skip).
+pub fn read_session_typed(db_path: &Path) -> Result<Vec<SessionRow>, IpcErrorCode> {
+    // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
+    let conn =
+        crate::eventstore::open_read_only(db_path).map_err(|_| IpcErrorCode::InternalError)?;
+    let json =
+        read_table_as_json(&conn, "proj_session").map_err(|_| IpcErrorCode::InternalError)?;
+    let serde_json::Value::Array(raw_rows) = json else {
+        return Err(IpcErrorCode::InternalError);
+    };
+    let mut out = Vec::with_capacity(raw_rows.len());
+    for mut row in raw_rows {
+        let serde_json::Value::Object(obj) = &mut row else {
+            return Err(IpcErrorCode::InternalError);
+        };
+        // RETAIN only the wire fields — proj_session is wider than the row; the not-yet-surfaced columns
+        // are intentional SPREAD columns, not drift. The STRICT deserialize then fails closed on a bad
+        // value (e.g. an unbindable `status`/`resume_mode`).
+        obj.retain(|k, _| SESSION_ROW_WIRE_FIELDS.contains(&k.as_str()));
+        let typed: SessionRow =
             serde_json::from_value(row).map_err(|_| IpcErrorCode::InternalError)?;
         out.push(typed);
     }
@@ -666,6 +725,42 @@ fn read_err(e: rusqlite::Error) -> IpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_row_wire_fields_match_struct() {
+        // drift-proof: the retain-whitelist MUST equal SessionRow's actual serialized field set, so a
+        // typo or a struct-field add/rename can't silently drop a wire field from the typed serve.
+        use nexusops_shared::harness::ResumeMode;
+        use nexusops_shared::status::Session;
+        use std::collections::BTreeSet;
+        let sample = SessionRow {
+            session_id: "s".into(),
+            project_id: "p".into(),
+            status: Session::Active,
+            display_name: None,
+            harness: None,
+            model: None,
+            execution_profile_id: None,
+            resume_mode: Some(ResumeMode::Resumed),
+            replayed_event_count: Some(0),
+            recovered_at: None,
+        };
+        let struct_fields: BTreeSet<String> = serde_json::to_value(&sample)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let whitelist: BTreeSet<String> = SESSION_ROW_WIRE_FIELDS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            struct_fields, whitelist,
+            "read_session_typed whitelist drifted from SessionRow fields"
+        );
+    }
 
     #[test]
     fn session_create_request_threads_initial_prompt() {

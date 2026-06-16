@@ -2330,6 +2330,75 @@
       ],
       "type": "object"
     },
+    "SessionRow": {
+      "additionalProperties": false,
+      "description": "One row of the `proj_session` read model (§7.2 / §11.4) — the derived current state of a session, the\n3rd frozen projection-row (after [`ApprovalQueueRow`]/[`PullRequestRow`], D2). Carries the\nuser-meaningful columns + `status: Session` (the frozen §5.1 enum, reject-unknown) + the §8.1/§11.4\nsurvival-recovery fields (`resume_mode`/`replayed_event_count`/`recovered_at` — the\nresumed-vs-replayed-vs-reattached banner source, folded from the now-consumed `SessionRecovered`).\nThe not-yet-consumed `proj_session` columns (worktree/linked_*/token_usage/pending_approvals/…) are a\nlater SPREAD; the internal `updated_at_seq` is NOT a wire field. **Nullability matches the DDL:**\n`session_id` (PK) / `project_id` (NOT NULL — the fold guarantees it) / `status` (NOT NULL) are\nnon-Option; the rest are `Option`. `display_name` is the daemon-canonical name (the ui provisional's\n`title` maps to it on regen). Optionals serialize as explicit `null` (no `skip_serializing_if`) so the\n§2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
+      "properties": {
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_profile_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "recovered_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "replayed_event_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "resume_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResumeMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/Session"
+        }
+      },
+      "required": [
+        "session_id",
+        "project_id",
+        "status"
+      ],
+      "type": "object"
+    },
     "SessionStarted": {
       "additionalProperties": false,
       "description": "`SessionStarted` payload. The session's **identity** (`session_id`/`project_id`)\nlives on the [`crate::event_envelope::EventEnvelope`] typed fields (so projectors\nderive `object_refs` + read-models from columns that survive a rebuild); this\npayload carries the type-specific session attributes the `proj_session` projector\nfolds. `status` binds to the frozen §5.1 [`Session`] machine — an unknown wire\nvalue fails closed at the parse boundary (reject-unknown, §15).",
@@ -3035,6 +3104,9 @@
     "session_recovered": {
       "$ref": "#/$defs/SessionRecovered"
     },
+    "session_row": {
+      "$ref": "#/$defs/SessionRow"
+    },
     "session_started": {
       "$ref": "#/$defs/SessionStarted"
     },
@@ -3226,9 +3298,10 @@
     "approval_queue_row",
     "session_recovered",
     "session_failed",
-    "pull_request_row"
+    "pull_request_row",
+    "session_row"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.34.0"
+  "x-contract-version": "0.35.0"
 }

@@ -142,4 +142,10 @@ pub mod time;
 /// typed (the BASIC columns the edges-P7.1 projector folds; `status: PullRequest`). Served TYPED (no
 /// loose JSON; `read_pull_request_typed`, fail-closed). `mergeable`/`checks_summary` are a later SPREAD
 /// (no projection column yet). Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.34.0";
+/// 0.35.0 (D2/P4.4) freezes the 3rd projection-row — `SessionRow` (`shared/src/projections.rs`): the
+/// `proj_session` read model the ui per-session recovery indicator + `RecoveryState` banner (§11.4)
+/// consume, typed (`status: Session` + the §8.1/§11.4 recovery fields `resume_mode`/
+/// `replayed_event_count`/`recovered_at` folded from the now-CONSUMED `SessionRecovered`). Served TYPED
+/// (`read_session_typed`, fail-closed). The not-yet-consumed `proj_session` columns are a later SPREAD.
+/// Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.35.0";

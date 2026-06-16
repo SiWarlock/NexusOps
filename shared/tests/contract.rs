@@ -2777,17 +2777,96 @@ fn test_pull_request_row_rejects_unknown_field() {
     );
 }
 
+// =====================================================================================
+// D2 (P4.4) — the 3rd frozen projection-row: SessionRow (CONTRACT 0.35.0). The proj_session
+// read model the ui per-session recovery indicator + RecoveryState banner (§11.4) consume,
+// typed in shared/ (the ②-mini/ApprovalQueueRow→P7.2/PullRequestRow precedent, LESSON §37).
+// The user-meaningful columns + status: Session (§5.1) + the §8.1/§11.4 survival-recovery fields
+// (resume_mode/replayed_event_count/recovered_at, folded from the now-consumed SessionRecovered).
+// The not-yet-consumed proj_session columns are a SPREAD; updated_at_seq is NOT a wire field.
+// deny_unknown_fields. display_name = the daemon-canonical name (the ui provisional's `title`).
+// =====================================================================================
+
+fn sample_session_row() -> nexusops_shared::projections::SessionRow {
+    use nexusops_shared::harness::ResumeMode;
+    use nexusops_shared::projections::SessionRow;
+    use nexusops_shared::status::Session;
+    // fully populated (all Options Some) so the field-name snapshot sees every key.
+    SessionRow {
+        session_id: "sess_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        project_id: "prj_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        status: Session::Active,
+        display_name: Some("claude on feature/x".to_string()),
+        harness: Some("claude".to_string()),
+        model: Some("claude-opus-4-8".to_string()),
+        execution_profile_id: Some("prof_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        resume_mode: Some(ResumeMode::Replayed),
+        replayed_event_count: Some(12),
+        recovered_at: Some("2026-06-14T00:00:00Z".to_string()),
+    }
+}
+
+#[test]
+fn test_session_row_frozen_shape() {
+    // spec(§7.2/§11.4 / §2.5-seam) — the 3rd frozen projection-row. Field set frozen (LESSON §15) +
+    // round-trips; `status: Session` (typed §5.1) + `resume_mode: Option<ResumeMode>` (typed §8.1). The
+    // not-yet-consumed proj_session columns are a SPREAD; `updated_at_seq` is NOT a wire field.
+    expect_fields(
+        &sample_session_row(),
+        &[
+            "session_id",
+            "project_id",
+            "status",
+            "display_name",
+            "harness",
+            "model",
+            "execution_profile_id",
+            "resume_mode",
+            "replayed_event_count",
+            "recovered_at",
+        ],
+    );
+    let json = serde_json::to_string(&sample_session_row()).unwrap();
+    let back: nexusops_shared::projections::SessionRow =
+        serde_json::from_str(&json).expect("SessionRow round-trips");
+    assert_eq!(
+        back.status,
+        nexusops_shared::status::Session::Active,
+        "status is the typed Session enum"
+    );
+    assert_eq!(
+        back.resume_mode,
+        Some(nexusops_shared::harness::ResumeMode::Replayed),
+        "resume_mode is the typed Option<ResumeMode>"
+    );
+}
+
+#[test]
+fn test_session_row_rejects_unknown_field() {
+    // spec(§5.0/§15) — deny_unknown_fields on the frozen row: a valid row + an unfrozen column (here a
+    // not-yet-consumed proj_session column, `worktree_id`) fails to deserialize — the contract↔projection
+    // drift guard the typed serve relies on (read_session_typed retains only the wire fields).
+    let mut v = serde_json::to_value(sample_session_row()).unwrap();
+    v.as_object_mut()
+        .unwrap()
+        .insert("worktree_id".to_string(), serde_json::json!("wt_x"));
+    assert!(
+        serde_json::from_value::<nexusops_shared::projections::SessionRow>(v).is_err(),
+        "deny_unknown_fields rejects an unfrozen column (a SPREAD column, not yet a field)"
+    );
+}
+
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_34_0() {
+fn test_contract_version_bumped_0_35_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.31.0 =
-    // the P4.1b-1 `SessionRecovered` event; 0.32.0 = the P4.2 `SessionFailed` observation event;
-    // 0.33.0 = the P7.1 Wave-C `integration.connect` catalog add + `ExecutorKind::Integration`
-    // (edges-029, ratified at the edges→main merge); **0.34.0** = the P7.2 `PullRequestRow` frozen
-    // projection-row (the 2nd, after ApprovalQueueRow). Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.34.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.32.0 =
+    // the P4.2 `SessionFailed` event; 0.33.0 = the P7.1 Wave-C `integration.connect` catalog add
+    // (edges-029, ratified at the edges→main merge); 0.34.0 = the P7.2 `PullRequestRow` frozen
+    // projection-row (the 2nd); **0.35.0** = the D2 `SessionRow` frozen projection-row (the 3rd) +
+    // the now-consumed `SessionRecovered` fold. Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.35.0");
 }
 
 // =================================================================================================

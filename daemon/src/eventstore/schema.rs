@@ -507,3 +507,17 @@ CREATE TABLE proj_integration_connection (
   updated_at_seq INTEGER NOT NULL
 );
 ";
+
+/// Migration 12 (D2/P4.4) — the §8.1/§11.4 survival-recovery DISPLAY fold: surface the recovery OUTCOME
+/// on `proj_session` so the ui per-session recovery indicator + `RecoveryState` banner render
+/// resumed-vs-replayed-vs-reattached. The columns are folded from the (previously-DEAD) `SessionRecovered`
+/// event (4.1b-1's `recover_sessions_on_restart`). `ALTER ADD COLUMN`: additive nullable → historical /
+/// never-recovered rows carry NULL, and `proj_session` is in `REBUILD_TABLES` so a rebuild re-folds — no
+/// DROP+CREATE / offset-reset (the MIGRATION_9 precedent). The historical `proj_session` CREATE
+/// (MIGRATION_3) is deliberately UNCHANGED: editing it would duplicate-column-fail a fresh DB (CREATE
+/// with the columns at M3, then this ALTER at M12).
+pub const MIGRATION_12_SESSION_RECOVERY: &str = "\
+ALTER TABLE proj_session ADD COLUMN resume_mode TEXT;
+ALTER TABLE proj_session ADD COLUMN replayed_event_count INTEGER;
+ALTER TABLE proj_session ADD COLUMN recovered_at TEXT;
+";

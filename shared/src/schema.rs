@@ -41,7 +41,7 @@ use crate::ipc::{
     TerminalOutputFrame, VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
-use crate::projections::{ApprovalQueueRow, PullRequestRow};
+use crate::projections::{ApprovalQueueRow, PullRequestRow, SessionRow};
 use crate::status::{
     ActionRequest, AgentTeam, Approval, ExecutionProfile, ProjectBrain, PullRequest, Session, Task,
     WorkflowInstance, WorktreeGit, WorktreeOverlay,
@@ -222,6 +222,11 @@ struct ContractBundle {
     // edges-P7.1 projector folds — mergeable/checks_summary are a later SPREAD). Additive
     // (shared/src/projections.rs).
     pull_request_row: PullRequestRow,
+    // D2/P4.4 (CONTRACT 0.35.0) — the 3rd frozen projection-row: SessionRow (the proj_session read model
+    // the ui per-session recovery indicator + RecoveryState banner consume, typed; status: Session +
+    // the §8.1/§11.4 recovery fields folded from the now-consumed SessionRecovered). Additive
+    // (shared/src/projections.rs).
+    session_row: SessionRow,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

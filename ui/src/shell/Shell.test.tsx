@@ -204,7 +204,8 @@ describe("Shell", () => {
     await awaitLoaded();
 
     // the supervisor drove its degrade THROUGH the port's drive method (the single authority)…
-    await waitFor(() => expect(notifySpy).toHaveBeenCalledWith("disconnected"));
+    // ui-059: per-stream — the Session supervisor reports as the "Session" stream.
+    await waitFor(() => expect(notifySpy).toHaveBeenCalledWith("Session", "disconnected"));
     // …and it reached React connection state (the degraded banner) via onConnectionChange.
     expect(await screen.findByRole("alert")).toBeTruthy();
   });

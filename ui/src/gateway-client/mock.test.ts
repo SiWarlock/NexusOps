@@ -75,7 +75,7 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     mock.onConnectionChange((s) => seen.push(s));
 
     // notifyConnectionState is GUARDED: connecting→reconnecting is illegal → no-op (no notify).
-    mock.notifyConnectionState("reconnecting");
+    mock.notifyConnectionState("Session", "reconnecting");
     expect(mock.getConnectionState()).toBe("connecting");
     expect(seen).toEqual([]);
 
@@ -83,6 +83,23 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     mock.setConnectionState("reconnecting");
     expect(mock.getConnectionState()).toBe("reconnecting");
     expect(seen).toEqual(["reconnecting"]);
+  });
+
+  it("mock_notify_connection_state_aggregates_per_stream_worst_of", () => {
+    // spec(054 / ui-059) — the mock MIRRORS the real port's per-stream worst-of aggregate so Shell tests
+    // (which use the Mock) see faithful multi-stream behavior. The load-bearing non-masking invariant: a
+    // HEALTHY ApprovalQueue stream must NOT clear a DEGRADED Session stream (the global stays worst-of).
+    const mock = new MockGatewayPort(); // defaults to `connected`
+
+    mock.notifyConnectionState("Session", "disconnected"); // Session down
+    expect(mock.getConnectionState()).toBe("disconnected");
+    mock.notifyConnectionState("ApprovalQueue", "connected"); // ApprovalQueue healthy…
+    expect(mock.getConnectionState()).toBe("disconnected"); // …global stays degraded (worst-of)
+
+    // only when ALL reported streams are connected does the aggregate recover:
+    mock.notifyConnectionState("Session", "reconnecting");
+    mock.notifyConnectionState("Session", "connected");
+    expect(mock.getConnectionState()).toBe("connected");
   });
 
   it("mock_get_capabilities_reports_contract_version", async () => {

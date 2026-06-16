@@ -83,13 +83,15 @@ export interface GatewayPort {
   /** Attempt to (re)establish the transport — the Retry/Repair action. */
   reconnect(): void;
   /**
-   * The subscribe supervisor's connection-state drive (054 — the single authority). The supervisor
-   * reports its computed live-stream lifecycle (`disconnected`/`reconnecting`/`connected`); the port
-   * is the SINGLE writer of connection state (no second raw React setter), so an ad-hoc read can
-   * never mask a down stream (forbidden #6 / LESSON 4). The port infers the stream-degraded axis from
-   * the arg and gates the read-path UPGRADE while degraded; DEGRADE always flows (fail-safe).
+   * The subscribe supervisor's connection-state drive (054 — the single authority; ui-059 per-stream).
+   * Each live subscribe stream reports its computed lifecycle (`disconnected`/`reconnecting`/`connected`)
+   * keyed by `streamId` (e.g. "Session", "ApprovalQueue"). The port is the SINGLE writer of connection
+   * state (no second raw React setter), records each stream's last state, and drives the global to the
+   * WORST-OF aggregate — so an ad-hoc read can never mask a down stream AND a healthy stream can never
+   * clear another stream's degrade (forbidden #6 / LESSON 4). The stream-degraded axis derives from the
+   * committed aggregate; it gates the read-path UPGRADE while degraded; DEGRADE always flows (fail-safe).
    */
-  notifyConnectionState(next: ConnectionState): void;
+  notifyConnectionState(streamId: string, next: ConnectionState): void;
 
   /**
    * The L2 go-live gate (cat-1, 056/L2-B). The SINGLE flag both the transport (a mutation method

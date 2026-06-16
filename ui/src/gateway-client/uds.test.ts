@@ -428,7 +428,7 @@ describe("UdsGatewayPort — connection single-authority (054)", () => {
     await port.get_capabilities();
     expect(port.getConnectionState()).toBe("connected");
 
-    port.notifyConnectionState("disconnected"); // the supervisor: the live stream is down
+    port.notifyConnectionState("Session", "disconnected"); // the supervisor: the live stream is down
     expect(port.getConnectionState()).toBe("disconnected");
 
     mockInvoke.mockResolvedValueOnce(validCaps);
@@ -445,8 +445,8 @@ describe("UdsGatewayPort — connection single-authority (054)", () => {
     const port = new UdsGatewayPort();
     mockInvoke.mockResolvedValueOnce(validCaps);
     await port.get_capabilities(); // connected
-    port.notifyConnectionState("disconnected");
-    port.notifyConnectionState("reconnecting"); // mid-recovery (refetch not yet confirmed)
+    port.notifyConnectionState("Session", "disconnected");
+    port.notifyConnectionState("Session", "reconnecting"); // mid-recovery (refetch not yet confirmed)
     expect(port.getConnectionState()).toBe("reconnecting");
 
     mockInvoke.mockResolvedValueOnce(validCaps);
@@ -473,12 +473,12 @@ describe("UdsGatewayPort — connection single-authority (054)", () => {
     await port.get_capabilities();
 
     // axis 1 — the subscribe stream degrades:
-    port.notifyConnectionState("disconnected");
+    port.notifyConnectionState("Session", "disconnected");
     expect(port.getConnectionState()).toBe("disconnected");
 
     // recover via the supervisor, then axis 2 — a read transport fault still degrades:
-    port.notifyConnectionState("reconnecting");
-    port.notifyConnectionState("connected");
+    port.notifyConnectionState("Session", "reconnecting");
+    port.notifyConnectionState("Session", "connected");
     expect(port.getConnectionState()).toBe("connected");
     mockInvoke.mockRejectedValueOnce({ kind: "io", message: "down" });
     await expect(port.get_capabilities()).rejects.toBeInstanceOf(Error);
@@ -493,13 +493,13 @@ describe("UdsGatewayPort — connection single-authority (054)", () => {
     mockInvoke.mockResolvedValueOnce(validCaps);
     await port.get_capabilities(); // connected
 
-    port.notifyConnectionState("disconnected"); // stream down → upgrade suppressed
+    port.notifyConnectionState("Session", "disconnected"); // stream down → upgrade suppressed
     mockInvoke.mockResolvedValueOnce(validCaps);
     await port.get_capabilities();
     expect(port.getConnectionState()).toBe("disconnected"); // suppressed
 
-    port.notifyConnectionState("reconnecting");
-    port.notifyConnectionState("connected"); // the supervisor recovered the stream
+    port.notifyConnectionState("Session", "reconnecting");
+    port.notifyConnectionState("Session", "connected"); // the supervisor recovered the stream
     expect(port.getConnectionState()).toBe("connected");
 
     // suppression cleared: a read fault then success now upgrades normally (stream healthy).
@@ -519,15 +519,84 @@ describe("UdsGatewayPort — connection single-authority (054)", () => {
     const seen: string[] = [];
     port.onConnectionChange((s) => seen.push(s));
 
-    port.notifyConnectionState("reconnecting"); // illegal from connecting → no-op
+    port.notifyConnectionState("Session", "reconnecting"); // illegal from connecting → no-op
     expect(port.getConnectionState()).toBe("connecting");
 
     // the REJECTED hop must NOT have set streamDegraded for a state the port never entered — proven
     // behaviorally: a subsequent read SUCCESS still upgrades (not wrongly suppressed). streamDegraded
-    // derives from the COMMITTED state, not the rejected arg.
+    // derives from the COMMITTED state (the aggregate after the guarded transition), NOT the rejected
+    // requested arg — preserved verbatim under the ui-059 N-stream aggregate.
     mockInvoke.mockResolvedValueOnce(validCaps);
     await port.get_capabilities();
     expect(port.getConnectionState()).toBe("connected"); // read upgrade NOT suppressed
     expect(seen).toEqual(["connected"]); // the illegal hop never notified; only the read did
+  });
+});
+
+// ── ui-059 — per-stream connection aggregation (the 2nd subscribe stream composes with 054) ──────
+// notifyConnectionState is now (streamId, next): the port records each stream's last reported state and
+// drives the global to the WORST-OF aggregate (disconnected > reconnecting > connecting > connected).
+// LOAD-BEARING (not cosmetic): canSubmitIntent reads the global, so ANY degraded stream must keep the
+// global non-connected (§11.1 fail-safe). A healthy stream can NEVER clear another stream's degrade.
+describe("UdsGatewayPort — per-stream connection aggregation (ui-059)", () => {
+  it("approvalqueue_stream_degrade_suppresses_read_upgrade", async () => {
+    // spec(§11.1/§11.7) — 054's read-upgrade suppression generalized to N streams: with the
+    // ApprovalQueue stream degraded, an ad-hoc read SUCCESS must NOT re-assert connected.
+    const port = new UdsGatewayPort();
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities();
+    expect(port.getConnectionState()).toBe("connected");
+
+    port.notifyConnectionState("ApprovalQueue", "disconnected"); // the 2nd stream is down
+    expect(port.getConnectionState()).toBe("disconnected");
+
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities(); // an unrelated read succeeds…
+    expect(port.getConnectionState()).toBe("disconnected"); // …still suppressed (a stream is degraded)
+  });
+
+  it("healthy_stream_never_clears_other_streams_degrade", async () => {
+    // spec(054/§11.1) — the load-bearing multi-stream property: a HEALTHY ApprovalQueue stream must NOT
+    // clear a DEGRADED Session stream (and vice-versa). The global stays the worst-of (disconnected).
+    const port = new UdsGatewayPort();
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities();
+    expect(port.getConnectionState()).toBe("connected");
+
+    port.notifyConnectionState("Session", "disconnected"); // Session down
+    expect(port.getConnectionState()).toBe("disconnected");
+    port.notifyConnectionState("ApprovalQueue", "connected"); // ApprovalQueue healthy…
+    // …but the global stays disconnected (Session still degraded → worst-of). canSubmitIntent stays false.
+    expect(port.getConnectionState()).toBe("disconnected");
+
+    // and a read SUCCESS still can't upgrade while Session is degraded:
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities();
+    expect(port.getConnectionState()).toBe("disconnected");
+  });
+
+  it("both_streams_healthy_clears_degrade", async () => {
+    // spec(§11.7) — only when ALL reported streams are connected does the global return to connected and
+    // the read-upgrade suppression clear (the aggregate-recovery path).
+    const port = new UdsGatewayPort();
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities();
+
+    port.notifyConnectionState("Session", "disconnected"); // Session down → global disconnected
+    port.notifyConnectionState("ApprovalQueue", "connected"); // AQ healthy, but Session still degraded
+    expect(port.getConnectionState()).toBe("disconnected");
+
+    port.notifyConnectionState("Session", "reconnecting"); // Session recovering → worst-of reconnecting
+    expect(port.getConnectionState()).toBe("reconnecting");
+    port.notifyConnectionState("Session", "connected"); // both now connected → aggregate connected
+    expect(port.getConnectionState()).toBe("connected");
+
+    // suppression cleared — a read fault then success now upgrades normally (all streams healthy):
+    mockInvoke.mockRejectedValueOnce({ kind: "io", message: "blip" });
+    await expect(port.get_capabilities()).rejects.toBeInstanceOf(Error);
+    expect(port.getConnectionState()).toBe("disconnected");
+    mockInvoke.mockResolvedValueOnce(validCaps);
+    await port.get_capabilities();
+    expect(port.getConnectionState()).toBe("connected");
   });
 });

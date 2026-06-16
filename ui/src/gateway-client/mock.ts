@@ -32,7 +32,11 @@ import {
   TerminalOutputFrame,
 } from "../contracts/index";
 import { terminalOutputFixture } from "./terminal-fixture";
-import { canTransition, type ConnectionState } from "../connection/state";
+import {
+  canTransition,
+  worstOfConnection,
+  type ConnectionState,
+} from "../connection/state";
 import { approvalQueueFixture } from "../projections/fixtures/proj_approval_queue";
 import { auditTrailFixture } from "../projections/fixtures/proj_audit_trail";
 import { projectActivityFixture } from "../projections/fixtures/proj_project_activity";
@@ -218,15 +222,22 @@ export class MockGatewayPort implements GatewayPort {
     this.setConnectionState("connected");
   }
 
-  /** The subscribe supervisor's connection-state drive (054) — mirrors the real port: a GUARDED
-   *  transition (illegal/no-op hops skipped) + notify, so the Shell's supervisor binding behaves the
-   *  same against the mock. DISTINCT from `setConnectionState` (the raw, unguarded test-staging setter
-   *  below). The mock has no read-upgrade path, so it needs no streamDegraded suppression of its own. */
-  notifyConnectionState(next: ConnectionState): void {
-    if (this.connection === next) return;
-    if (!canTransition(this.connection, next)) return;
-    this.connection = next;
-    for (const cb of this.listeners) cb(next);
+  /** Per-stream last reported lifecycle (ui-059) — mirrors the real port so multi-stream behavior is
+   *  faithful against the mock. */
+  private readonly streamStates = new Map<string, ConnectionState>();
+
+  /** The subscribe supervisors' connection-state drive (054; ui-059 per-stream) — mirrors the real port:
+   *  records the stream's state, drives a GUARDED transition (illegal/no-op hops skipped) to the worst-of
+   *  aggregate + notifies, so the Shell's supervisor binding behaves the same against the mock. DISTINCT
+   *  from `setConnectionState` (the raw, unguarded test-staging setter below). The mock has no read-upgrade
+   *  path, so it needs no streamDegraded suppression of its own. */
+  notifyConnectionState(streamId: string, next: ConnectionState): void {
+    this.streamStates.set(streamId, next);
+    const aggregate = worstOfConnection([...this.streamStates.values()]);
+    if (aggregate === null || this.connection === aggregate) return;
+    if (!canTransition(this.connection, aggregate)) return;
+    this.connection = aggregate;
+    for (const cb of this.listeners) cb(aggregate);
   }
 
   // Test/dev helper: drive a connection transition and notify subscribers. This

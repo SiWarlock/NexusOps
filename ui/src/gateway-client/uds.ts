@@ -48,6 +48,7 @@ import {
 import {
   canTransition,
   INITIAL_CONNECTION_STATE,
+  worstOfConnection,
   type ConnectionState,
 } from "../connection/state";
 
@@ -248,19 +249,30 @@ export class UdsGatewayPort implements GatewayPort {
     this.setConnection("reconnecting");
   }
 
-  /** True while the subscribe supervisor reports the live stream down/recovering (054). The
-   *  read-path UPGRADE is suppressed while set, so an ad-hoc read can't mask a down stream. */
+  /** True while ANY supervised subscribe stream reports down/recovering (054 → ui-059 N-stream). The
+   *  read-path UPGRADE is suppressed while set, so an ad-hoc read can't mask a degraded stream. */
   private streamDegraded = false;
 
-  /** The subscribe supervisor's connection-state drive — the SINGLE authority (054). Infers the
-   *  stream-degraded axis from the reported lifecycle (`disconnected`/`reconnecting` = degraded,
-   *  `connected` = healthy) then drives the one guarded `setConnection`. Setting it here (the port),
-   *  not a second raw React setter in the Shell, is what makes the read-path suppression possible. */
-  notifyConnectionState(next: ConnectionState): void {
-    this.setConnection(next);
+  /** Each live subscribe stream's last reported lifecycle, keyed by streamId (054 → ui-059). The global
+   *  connection is driven to the WORST-OF these (worstOfConnection), so a 2nd stream can neither mask
+   *  the 1st's degrade nor be masked by it. */
+  private readonly streamStates = new Map<string, ConnectionState>();
+
+  /** The subscribe supervisors' connection-state drive — the SINGLE authority (054; ui-059 per-stream).
+   *  Records this stream's reported lifecycle, then drives the one guarded `setConnection` to the
+   *  worst-of aggregate across ALL streams. Setting it here (the port), not a second raw React setter in
+   *  the Shell, is what makes the read-path suppression + cross-stream non-masking possible. */
+  notifyConnectionState(streamId: string, next: ConnectionState): void {
+    this.streamStates.set(streamId, next);
+    // Drive the global to the worst-of aggregate of all reported streams (LOAD-BEARING — canSubmitIntent
+    // reads the global, so any-degraded must keep it non-connected, §11.1 fail-safe). An empty set can't
+    // occur here (we just set one), but worstOfConnection is null-safe; keep the current state if so.
+    const aggregate = worstOfConnection([...this.streamStates.values()]);
+    if (aggregate !== null) this.setConnection(aggregate);
     // Derive streamDegraded from the COMMITTED state (this.connection after the guarded transition),
-    // NOT the requested arg — a rejected/no-op hop must never flip the suppression flag for a state
-    // the port never actually entered (else a later read upgrade would be wrongly suppressed).
+    // NOT the requested aggregate — a rejected/no-op hop must never flip the suppression flag for a
+    // state the port never actually entered (else a later read upgrade would be wrongly suppressed).
+    // Preserved verbatim from 054, now over the N-stream aggregate.
     this.streamDegraded =
       this.connection === "disconnected" || this.connection === "reconnecting";
   }

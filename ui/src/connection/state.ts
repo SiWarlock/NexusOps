@@ -34,3 +34,30 @@ export function transition(
   }
   return to;
 }
+
+// Worst-of precedence over a set of per-stream connection states (ui-059 — the N-stream aggregate the
+// port drives the global connection to). `disconnected` > `reconnecting` > `connecting` > `connected`:
+// any non-connected stream keeps the aggregate non-connected, so canSubmitIntent (which reads the
+// global) stays fail-safe FALSE while ANY stream is degraded (§11.1). Returns null for an empty set
+// (no stream reported yet → the caller leaves the connection as-is; the mount load-reads own the
+// initial connecting→connected). The disconnected-vs-reconnecting label is the only cosmetic part.
+// NOTE: a subscribe supervisor only ever reports {disconnected, reconnecting, connected}; `connecting`
+// is included in the table for TOTALITY over the enum (and ranks non-connected, so it's still fail-safe).
+const CONNECTION_SEVERITY: Record<ConnectionState, number> = {
+  disconnected: 3,
+  reconnecting: 2,
+  connecting: 1,
+  connected: 0,
+};
+
+export function worstOfConnection(
+  states: readonly ConnectionState[],
+): ConnectionState | null {
+  let worst: ConnectionState | null = null;
+  for (const s of states) {
+    if (worst === null || CONNECTION_SEVERITY[s] > CONNECTION_SEVERITY[worst]) {
+      worst = s;
+    }
+  }
+  return worst;
+}

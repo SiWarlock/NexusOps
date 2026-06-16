@@ -249,7 +249,9 @@ export function Shell({
       // The port applies the guarded transition + suppresses the read-path upgrade while the stream
       // is degraded; `onConnectionChange` (the effect above) stays the Shell's ONE React connection
       // writer, so an ad-hoc read can never mask this stream-degrade (the 052 Finding; forbidden #6).
-      setConnection: (next) => client.notifyConnectionState(next),
+      // ui-059: per-stream — this is the "Session" stream (the ApprovalQueue stream is added as a 2nd
+      // subscribe effect in L2; the port aggregates the two via worst-of).
+      setConnection: (next) => client.notifyConnectionState("Session", next),
       delay: (attempt) =>
         new Promise((resolve) =>
           setTimeout(

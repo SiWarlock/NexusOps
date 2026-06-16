@@ -7,8 +7,9 @@ routes every Codex tool-call through the **EXISTING 4.0b-2 Gateway adjudication 
 daemon's verdict, fail-closed. **🔴 THE LOAD-BEARING CAT-1 PIN — DEFENSE-IN-DEPTH (genuinely-new vs
 Claude):** Codex's own docs call `PreToolUse` *"a guardrail, not a complete enforcement boundary"* — so the
 hook ALONE is **NOT** a sufficient INV-SEC-1 single-mutator guarantee. The hook is the **adjudication+audit**
-channel; **`--sandbox read-only|workspace-write`** (the OS-enforcement boundary, scoped to the approved
-worktree, network off) is the **containment** layer. Both together = INV-SEC-1 for Codex. **Mechanism-built,
+channel; **`--sandbox workspace-write`** (the OS-enforcement boundary, scoped to {the approved worktree +
+per-profile user-approved extra read/write paths}, network off by default) is the **containment** layer.
+Both together = INV-SEC-1 for Codex. **Mechanism-built,
 NO live agent** (the reachable live-codex spawn-site + the LIVE interception proof + the `--sandbox`
 containment proof = the **0.1/0.3-HITL follow-on**, the 4.0b-2-smoke analog). **OWN security-reviewer EVERY
 layer; the cat-1 design surfaces lead→user before Step-2.5 sign-off.**
@@ -53,11 +54,17 @@ The genuinely-new-vs-Claude safety design, stated explicitly for the lead→user
    every *intended* mutation into the Gateway (adjudication + audit-before-verdict) **AND (b)** `--sandbox`
    (the OS-enforcement boundary) contains anything that slips the hook. Layer (b) is the new load-bearing
    pin Claude didn't need.
-2. **The sandbox containment policy (the user-facing decision).** The launched Codex runs under
-   **`--sandbox workspace-write` scoped to the approved git worktree, `network_access=false`** — the agent
-   can write WITHIN the approved boundary the Gateway authorized, nothing outside, no network. (read-only is
-   maximally safe but breaks a coding agent that must edit; workspace-write-scoped is the production-correct
-   containment that still lets the agent work.) **This is the cat-1 decision to confirm.**
+2. **The sandbox containment policy — ✅ USER-CONFIRMED 2026-06-15 (via the lead).** The launched Codex runs
+   under **`--sandbox workspace-write`** scoped to **{the approved git worktree + the per-profile
+   user-approved extra read/write paths}**, **`network_access=false` (network-off default)** — the agent can
+   write WITHIN the Gateway-authorized boundary PLUS the explicit per-profile paths the user pre-approved
+   (honoring the user's "need to read/write outside the workspace sometimes"), nothing outside that set, no
+   network. The sandbox bounds writes to {worktree + approved paths}, **never arbitrary** — the hook+sandbox
+   defense-in-depth holds. (read-only is maximally safe but breaks a coding agent that must edit;
+   workspace-write-scoped-with-approved-extras is the production-correct containment.) **No longer a held
+   decision — the sandbox half is DESIGN-COMPLETE.** **At authoring (after D5b): verify the exact Codex
+   `writable_roots` / read-scope config grammar live** (the per-profile extra-path mechanism — part of the
+   OSS-version flag-grammar refresh carry-forward; the desktop build may diverge).
 3. **`codex_home` is daemon-resolved, not agent-controlled** (the 3.3b security NIT) — the hook-config dir +
    the sandbox scoping resolve from the daemon's `$HOME`/config, never an agent-supplied path.
 4. **Fail-closed everywhere** (the 043 posture): no daemon / unreachable / parse-fail / hook-miss / wait
@@ -86,9 +93,11 @@ The genuinely-new-vs-Claude safety design, stated explicitly for the lead→user
   mutation/adjudication path — the Codex envelope normalizes INTO the existing one). _(If the handler needs a
   harness discriminator, that's a Step-2.5 flag — default is the hook normalizes, handler untouched.)_
 - [ ] **The `--sandbox` defense-in-depth (the cat-1 pin):** assert 3.3b's `CodexLaunchSpec` carries
-  `--sandbox workspace-write` scoped to the approved worktree + `network_access=false` (the containment
+  `--sandbox workspace-write` scoped to {the approved worktree + the per-profile user-approved extra
+  read/write paths} + `network_access=false` (network-off default — the USER-CONFIRMED 2026-06-15 containment
   boundary) — and that there is NO path to `--dangerously-bypass-approvals-and-sandbox`/`--yolo` (already
-  pinned in 3.3b; re-assert here as the INV-SEC-1 enforcement layer). The LIVE containment proof = HITL.
+  pinned in 3.3b; re-assert here as the INV-SEC-1 enforcement layer). The exact Codex `writable_roots`/
+  read-scope config is verified live at authoring. The LIVE containment proof = HITL.
 - [ ] **The hook-config + trust-hash discipline:** the generated Codex `hooks.json`/`[hooks]` config wires
   `PreToolUse` (matcher on the mutating tool set — `^(Bash|apply_patch|shell|local_shell|…)$` or `*`,
   Step-2.5 Q) to the `nexusops-codex-gate` command, under a `codex_home` the daemon resolves; the
@@ -151,9 +160,10 @@ spawn-site** (`CodexLauncher`) — that's the HITL follow-on; flag if you think 
    `CoverageGap`→deny (conservative). Why: §6.3 / LESSONS §42 (classify by semantics; deny-unknown).
 7. **`test_codex_no_live_spawn`** — structural grep over `harness/codex/`: no `Command::new("codex")`/
    `.spawn(`/`SessionLauncher` impl (the binding condition). Why: no reachable un-intercepted live codex.
-8. **`test_sandbox_is_inv_sec_layer`** — the `CodexLaunchSpec` carries `--sandbox workspace-write` (never a
-   bypass flag); the hook-config wires `PreToolUse`→`nexusops-codex-gate` under a daemon-resolved
-   `codex_home`. Why: the defense-in-depth cat-1 pin (the spec + the hook config are the two layers).
+8. **`test_sandbox_is_inv_sec_layer`** — the `CodexLaunchSpec` carries `--sandbox workspace-write` scoped to
+   {worktree + per-profile approved extra paths}, `network_access=false` (never a bypass flag); the
+   hook-config wires `PreToolUse`→`nexusops-codex-gate` under a daemon-resolved `codex_home`. Why: the
+   defense-in-depth cat-1 pin (the spec + the hook config are the two layers; the USER-CONFIRMED policy).
 
 ## Cross-doc invariant impact (implementer flags at Step 9; orchestrator writes the docs)
 - **Model field changes:** likely **NONE** in `shared/` — the Codex hook + normalization are daemon-internal;
@@ -166,10 +176,13 @@ spawn-site** (`CodexLauncher`) — that's the HITL follow-on; flag if you think 
   human BEFORE Step-2.5 sign-off.
 
 ## Things to flag at Step 2.5 (the cat-1 design — surfaces lead→user)
-1. **The `--sandbox` containment policy (THE cat-1 decision).** Default vote: **`workspace-write` scoped to
-   the approved worktree + `network_access=false`** (production-correct — read-only breaks a coding agent;
-   workspace-write-scoped contains it to the Gateway-approved boundary). **This surfaces to the user** as the
-   genuinely-new defense-in-depth decision. Confirm the mode + the scoping + network-off.
+1. **The `--sandbox` containment policy — ✅ USER-CONFIRMED 2026-06-15 (no longer open).** The policy is
+   **`workspace-write` scoped to {the approved worktree + per-profile user-approved extra read/write paths} +
+   `network_access=false` (network-off default)** — production-correct (read-only breaks a coding agent;
+   workspace-write-scoped-with-approved-extras contains it to {Gateway-approved boundary + the explicit
+   user-approved paths}, honoring the out-of-workspace need, never arbitrary). Implement the confirmed policy;
+   **verify the exact Codex `writable_roots`/read-scope config grammar live at authoring** (don't re-ask the
+   user — the decision is made; the only open item is the live config-grammar check).
 2. **The PreToolUse matcher coverage.** `*` (every tool) vs `^(Bash|apply_patch|shell|local_shell|exec_command|
    mcp__*)$` (the mutating set). Default vote: **match `*`** (intercept every tool — the conservative
    coverage; the daemon classifies + auto-allows the benign read-only set per the §6.3 catalog, like Claude's

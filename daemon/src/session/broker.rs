@@ -24,6 +24,22 @@ pub trait Broker: Send {
     fn reattach_outcome(&self, session_id: &SessionId) -> BrokerReattach;
 }
 
+/// The degrade-default [`Broker`] — reports NO surviving session, ever. The production default behind
+/// [`select_survival_backend`](super::tmux::select_survival_backend) when the detachable-terminal broker
+/// is unavailable (no tmux): survival degrades to resume/replay/relaunch (B2-achievable), NEVER
+/// `ReattachedLive`. Also the `run_restart_recovery` fallback (4.1b-1). (Moved here from
+/// `runtime/recovery.rs` at 4.1b-2 — its natural home with the `Broker` seam; avoids a session→runtime
+/// back-edge now that `session/tmux.rs::select_survival_backend` constructs it.)
+pub struct NoSurvivorBroker;
+
+impl Broker for NoSurvivorBroker {
+    fn reattach_outcome(&self, _session_id: &SessionId) -> BrokerReattach {
+        BrokerReattach {
+            has_live_session: false,
+        }
+    }
+}
+
 /// A deterministic `Broker` for tests — reports a survivor ONLY for the session ids explicitly seeded
 /// via [`with_live`](FakeBroker::with_live); every other session has no survivor. `test-support`-gated
 /// (the `FakeLauncher`/`FakeHarness` precedent, P4.0b-2 L3).

@@ -81,6 +81,7 @@ fn gateway_with_session_executor() -> (
     let (join, handle): (_, SupervisorHandle) = spawn_supervisor_task(
         shutdown_rx,
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
+        Box::new(nexusopsd::session::NullSessionDeathSink),
     );
     let launches = Arc::new(AtomicUsize::new(0));
     let launcher = RecordingLauncher {
@@ -232,8 +233,10 @@ fn test_live_session_create_has_interception() {
         "main.rs registers the live SessionExecutor under ExecutorKind::Session (reachable session.create)"
     );
     assert!(
-        main_src.contains("PtyLauncher::new") && main_src.contains("PortablePtySpawner"),
-        "main.rs wires the LIVE launcher — the real ClaudeAdapter via PortablePtySpawner"
+        main_src.contains("select_survival_backend") && main_src.contains("PortablePtySpawner"),
+        "main.rs wires the LIVE launcher — the 4.1b-2 survival backend (TmuxLauncher/PtyLauncher, the \
+         real ClaudeAdapter) over the real PortablePtySpawner; the launcher constructor moved into \
+         select_survival_backend, still co-resident with the interception below"
     );
     // ...co-landed WITH the interception (every one of these MUST be present alongside the live launch):
     assert!(

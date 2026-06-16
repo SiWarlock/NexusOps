@@ -313,6 +313,27 @@ impl SessionRecovered {
     pub const EVENT_TYPE: &'static str = "SessionRecovered";
 }
 
+/// The §17 supervised-child-death record (4.2): a session's agent/PTY/app-server child died (daemon
+/// alive) — the supervisor reaped it as `Session::Failed`. A **non-mutation OBSERVATION event**: the
+/// daemon WITNESSES the death and records it, so it follows the System-actor non-mutation-event
+/// precedent (`SessionRecovered`/`TerminalProcessExited`, LESSON §10/§23) — written via the single
+/// write-actor through the §15 redaction gate (#2/#3 hold), **NEVER through the Gateway** (a death
+/// notification is not a state mutation; INV-SEC-1 governs mutations). **Empty payload** (the
+/// `WorktreeMerged`/`ActionStarted {}` precedent): the death fact + the envelope session_id + the
+/// folded `proj_session.status=Failed` fully drive the §11.4 "restart session" affordance; a structural
+/// `reason` is an additive-later follow-on (at the reap everything is indistinguishably `Failed` — the
+/// forensic "why" already lives in the correlated `TerminalProcessExited{exit_code,signal}`). The §17
+/// cascade ARMS (fail-in-flight-action, release-lease, the Codex pipe-drop distinction) attach to this
+/// head when their producers land. `deny_unknown_fields` reject-unknown (§5.0/§15 fail-closed).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct SessionFailed {}
+
+impl SessionFailed {
+    /// The EventTypeRegistry name — ONE home (the 4.2 death-driver emit path; §7.1 single-home).
+    pub const EVENT_TYPE: &'static str = "SessionFailed";
+}
+
 // =================================================================================================
 // P4.0b-R1b (CONTRACT 0.26.0) — the Phase-5/7 wiring EventTypeRegistry payloads (edges-R1 §2.5-seam).
 // `shared/`-only: edges' (dormant) Project/Git/Github/Linear executors EMIT these via `EmittedEvent`

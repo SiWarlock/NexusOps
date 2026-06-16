@@ -7,8 +7,9 @@
 //! corruption must not corrupt raw events").
 
 /// Every derived table a full rebuild truncates: `object_refs` + the FTS index + the
-/// 11 physical `proj_*` tables (ProjectGraph = node + edge). All are FK children of,
-/// or independent from, `events`, so truncating them in any order is FK-safe.
+/// 13 physical `proj_*` tables (ProjectGraph = node + edge; the P5.1 registry = project +
+/// repository). All are FK children of, or independent from, `events`, so truncating them
+/// in any order is FK-safe.
 pub(crate) const REBUILD_TABLES: &[&str] = &[
     "object_refs",
     "fts_events",
@@ -23,4 +24,7 @@ pub(crate) const REBUILD_TABLES: &[&str] = &[
     "proj_audit_trail",
     "proj_agent_team",
     "proj_usage_ledger",
+    "proj_project",
+    "proj_repository",
+    "proj_integration_connection",
 ];

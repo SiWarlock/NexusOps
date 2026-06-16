@@ -1184,7 +1184,8 @@
         "linear",
         "code",
         "review",
-        "adjudication"
+        "adjudication",
+        "integration"
       ],
       "type": "string"
     },
@@ -2235,6 +2236,11 @@
       ],
       "type": "string"
     },
+    "SessionFailed": {
+      "additionalProperties": false,
+      "description": "The §17 supervised-child-death record (4.2): a session's agent/PTY/app-server child died (daemon\nalive) — the supervisor reaped it as `Session::Failed`. A **non-mutation OBSERVATION event**: the\ndaemon WITNESSES the death and records it, so it follows the System-actor non-mutation-event\nprecedent (`SessionRecovered`/`TerminalProcessExited`, LESSON §10/§23) — written via the single\nwrite-actor through the §15 redaction gate (#2/#3 hold), **NEVER through the Gateway** (a death\nnotification is not a state mutation; INV-SEC-1 governs mutations). **Empty payload** (the\n`WorktreeMerged`/`ActionStarted {}` precedent): the death fact + the envelope session_id + the\nfolded `proj_session.status=Failed` fully drive the §11.4 \"restart session\" affordance; a structural\n`reason` is an additive-later follow-on (at the reap everything is indistinguishably `Failed` — the\nforensic \"why\" already lives in the correlated `TerminalProcessExited{exit_code,signal}`). The §17\ncascade ARMS (fail-in-flight-action, release-lease, the Codex pipe-drop distinction) attach to this\nhead when their producers land. `deny_unknown_fields` reject-unknown (§5.0/§15 fail-closed).",
+      "type": "object"
+    },
     "SessionRecovered": {
       "additionalProperties": false,
       "description": "The §8.1 daemon-restart recovery record (4.1b-1): how a session that was live at shutdown was brought\nback — the §11.4 \"resumed-(live) vs replayed-(relaunched)\" indicator + the §17 \"restart session\"\naffordance tail (`mode == Relaunched`). A **non-mutation OBSERVATION event**: a recovery is the daemon\nre-materializing its OWN already-approved prior session, so it follows the System-actor non-mutation-\nevent precedent (`DeviceRegistered`/`TelemetrySampled`, LESSON §10/§23) — written via the single\nwrite-actor through the §15 redaction gate (#2/#3 hold), **NEVER through the Gateway** (Q1=(a),\nlead/user-ruled: INV-SEC-1 governs proposer-intent state *mutations*; the daemon re-materializing its\nown session is a lifecycle event, not a proposer intent). The §15 #8 `execution_profile_id` is\nPRESERVED from the original `SessionStarted` (no silent account-hop). The session IDENTITY\n(`session_id`/`occurred_at`) lives on the [`crate::event_envelope::EventEnvelope`] columns; this\npayload carries only the recovery outcome. Optionals serialize as explicit `null` (no\n`skip_serializing_if`) for a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).",
@@ -2959,6 +2965,9 @@
     "session": {
       "$ref": "#/$defs/Session"
     },
+    "session_failed": {
+      "$ref": "#/$defs/SessionFailed"
+    },
     "session_recovered": {
       "$ref": "#/$defs/SessionRecovered"
     },
@@ -3151,9 +3160,10 @@
     "github_sync_failed",
     "linear_sync_failed",
     "approval_queue_row",
-    "session_recovered"
+    "session_recovered",
+    "session_failed"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.31.0"
+  "x-contract-version": "0.33.0"
 }

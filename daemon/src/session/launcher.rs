@@ -28,8 +28,9 @@ use crate::terminal::{ExitStatus, FakePty, PtyRead};
 use nexusops_shared::harness::HarnessCapabilities;
 
 /// The daemon-owned PTY window size for a launched session (the UI resizes via the §6.4 control path).
-const ROWS: u16 = 24;
-const COLS: u16 = 80;
+/// `pub(crate)` so the 4.1b-2 `TmuxLauncher` reuses the SAME display-PTY size (one source of truth).
+pub(crate) const ROWS: u16 = 24;
+pub(crate) const COLS: u16 = 80;
 
 /// A launched session bundle: the normalized [`HarnessAdapter`], the daemon-owned [`TerminalSession`]
 /// read-pump, and the minted [`SessionId`]. The [`SessionActor`](super::actor) drives this. The 4.1
@@ -57,7 +58,8 @@ impl TerminalEventSink for NullTerminalSink {
 
 /// The daemon runtime terminal handle derived from the session id (`term_<sess_…>` — matching the
 /// `TerminalId::mint` `term_<ULID>` underscore convention; one terminal per session in 4.0a).
-fn terminal_id_for(session_id: &SessionId) -> TerminalId {
+/// `pub(crate)` so the 4.1b-2 `TmuxLauncher` mints the SAME display-terminal id (one source of truth).
+pub(crate) fn terminal_id_for(session_id: &SessionId) -> TerminalId {
     TerminalId::from_raw(format!("term_{}", session_id.as_str()))
 }
 

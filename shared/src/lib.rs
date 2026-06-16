@@ -130,4 +130,11 @@ pub mod time;
 /// 0.31.0 (P4.1b-1) adds the §8.1 daemon-restart `SessionRecovered` OBSERVATION event (`shared/src/events.rs`:
 /// the §11.4 resumed-vs-replayed bit + the §17 "restart session" affordance; System-actor, write-actor,
 /// NOT a Gateway Action [Q1=(a)]; §15 #8 profile preserved). Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.31.0";
+/// 0.32.0 (P4.2) adds the §17 supervised-child-death `SessionFailed` OBSERVATION event (`shared/src/events.rs`:
+/// a session's child died, daemon alive → proj_session status=Failed → the §11.4 restart affordance;
+/// empty-payload, System-actor, write-actor, NOT a Gateway Action). Additive, no frozen type reshaped (§5.0).
+/// 0.33.0 (P7.1 Wave-C, edges-029) adds the `integration.connect` §6.3 catalog action_type (risk-2,
+/// registration-only) + `ExecutorKind::Integration` (`shared/src/catalog.rs`). EDGES-BRANCH-LOCAL: the
+/// daemon (catalog/CONTRACT owner) RATIFIES the action_type + assigns the final version at the
+/// edges→main merge (like the MIGRATION numbers). Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.33.0";

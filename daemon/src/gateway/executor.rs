@@ -32,10 +32,23 @@ use crate::gateway::preview;
 pub enum EmittedEvent {
     /// `SessionStarted` — the session-lifecycle record for a `session.create`. `session_id` is the
     /// ENVELOPE identity (the `proj_session` projector reads it from the column); `payload` is the
-    /// frozen `SessionStarted` (carrying the §15 #8 `execution_profile_id`).
+    /// frozen `SessionStarted` (carrying the §15 #8 `execution_profile_id`). Kept a TYPED variant
+    /// because it OVERRIDES an envelope column (`session_id`) — its genuine special case.
     SessionStarted {
         session_id: SessionId,
         payload: nexusops_shared::events::SessionStarted,
+    },
+    /// A namespaced edges lifecycle/observation event (P5/P7 — edges-019+; Q1=B). ONE variant for the
+    /// homogeneous edges family: the executor serializes its own FROZEN event struct and passes the
+    /// struct's `EVENT_TYPE` const + the JSON; the bridge ([`request::emitted_event_intent`]) appends
+    /// it via `gateway_event_intent` riding the action's envelope identity (`project_id`/
+    /// `correlation_id`/`action_request_id`), in txn-B ATOMIC with `ActionSucceeded`, through the §15
+    /// gate. NO envelope-column override — event-specific ids (worktree_id, pr_number, …) live in the
+    /// payload and projectors key off them (LESSON §10/§17). One gateway/ edit serves all ~11 edges
+    /// events (vs a typed variant per event) — the lowest cross-track contention.
+    Namespaced {
+        event_type: &'static str,
+        payload_json: String,
     },
 }
 
@@ -75,16 +88,29 @@ pub enum ExecutionOutcome {
     /// irreversible change (such a half-applied change is a `Succeeded { side_effect_applied: true }`
     /// the executor could not complete cleanly, OR a future rollback concern — never a `Failed`).
     Failed(String),
+    /// the executor FAILED but also emitted structured observation event(s) to record ATOMIC with
+    /// `ActionFailed` (P7.1 edges-023 — a TERMINAL non-auth external sync failure: `GithubSyncFailed`/
+    /// `LinearSyncFailed`). The pipeline's txn-B records `ActionFailed { ExecutorError { detail } }` AND
+    /// appends each `emitted_events` in the SAME txn — so the §17 sync-failure record is durable iff the
+    /// failure itself is (a write fault rolls the whole txn-B back). Like every `Failed`, **NO durable
+    /// side effect was applied** (`side_effect_applied()` is `false` → a txn-B fault rolls back cleanly,
+    /// the action stays `executing` → L5; never `ActionPartiallySucceeded`). The existing `Failed(String)`
+    /// sites are untouched (purely additive). Edges-owned daemon-internal gateway extension (R5).
+    FailedWithEvents {
+        detail: String,
+        emitted_events: Vec<EmittedEvent>,
+    },
 }
 
 impl ExecutionOutcome {
     /// Whether a **durable external side effect was applied** — the signal the 2.4 fail-closed path
     /// keys off (a terminal-event write that fails after a real change → `ActionPartiallySucceeded`,
     /// else a clean rollback that stays `executing`). `true` ONLY for `Succeeded { side_effect_applied:
-    /// true }`; `false` for a side-effect-free `Succeeded` AND for every `Failed` (a `Failed` never
-    /// applied a durable change — see the variant doc). Centralizing it here keeps the fail-closed
-    /// contract in ONE place, so a future `Failed`-with-detail variant can't silently skip the partial
-    /// path by being matched only against `Succeeded`.
+    /// true }`; `false` for a side-effect-free `Succeeded`, for every `Failed`, AND for
+    /// `FailedWithEvents` (neither a `Failed` nor a `FailedWithEvents` ever applied a durable change —
+    /// see the variant docs). Centralizing it here keeps the fail-closed contract in ONE place, so the
+    /// `FailedWithEvents` variant (and any future `Failed`-with-detail variant) can't silently skip the
+    /// partial path by being matched only against `Succeeded`.
     pub fn side_effect_applied(&self) -> bool {
         matches!(
             self,

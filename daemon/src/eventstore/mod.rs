@@ -153,6 +153,37 @@ pub struct EventStore {
     redactor: Box<dyn Redactor>,
 }
 
+/// The WAL checkpoint mode for [`EventStore::wal_checkpoint`] (§10). PASSIVE is the periodic
+/// non-blocking default (4.3 — won't contend with the read-only WAL readers); TRUNCATE additionally
+/// truncates the `-wal` file to zero (a future size-threshold path — the enum makes it a drop-in).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalCheckpointMode {
+    /// Checkpoint as many frames as possible WITHOUT blocking concurrent readers (best-effort).
+    Passive,
+    /// Checkpoint, then truncate the `-wal` file to zero bytes (may wait on a reader's snapshot).
+    Truncate,
+}
+
+impl WalCheckpointMode {
+    /// The `PRAGMA wal_checkpoint(<MODE>)` statement — a fixed enum-selected literal (no caller
+    /// input → no injection surface).
+    fn pragma_sql(self) -> &'static str {
+        match self {
+            WalCheckpointMode::Passive => "PRAGMA wal_checkpoint(PASSIVE)",
+            WalCheckpointMode::Truncate => "PRAGMA wal_checkpoint(TRUNCATE)",
+        }
+    }
+}
+
+/// The `PRAGMA wal_checkpoint` result triple (§10). `busy`=1 if a reader/lock prevented a full
+/// checkpoint; `log_frames`=frames in the WAL; `checkpointed_frames`=frames moved into the main db.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalCheckpointSummary {
+    pub busy: i64,
+    pub log_frames: i64,
+    pub checkpointed_frames: i64,
+}
+
 impl EventStore {
     /// Open (creating if needed) with WAL pragmas + forward-only migrations.
     /// Refuses a db newer than this binary understands (§16). The `redactor`
@@ -199,6 +230,30 @@ impl EventStore {
     /// rebuild path; a deterministic re-derivation of every read model from the spine.
     pub fn rebuild_projections(&mut self) -> Result<(), EventStoreError> {
         crate::projections::rebuild(&mut self.conn).map_err(projection_to_store_err)
+    }
+
+    /// Refresh one worktree's §7.2 live-read git-axis cache (edges-026, the P5.2 follow-on). A
+    /// **NON-event, NON-Gateway** write on the single writer (forbidden #3 — the git-watcher's call):
+    /// the git-axis is a live-read cache, NOT event-sourced (§7.1), so no event is appended and no
+    /// projector fold runs. `git` carries the runtime-computed values (`None` = a non-git / inaccessible
+    /// path → stamp `git_checked_at` only). One IMMEDIATE txn; `clock` stamps `git_checked_at` UTC-Z.
+    /// Returns the rows updated (0 = an unknown `worktree_id` → a safe no-op). The git read +
+    /// derivation happen in the runtime layer (the persistence core stays git-free, the edges-022 rule).
+    pub fn refresh_worktree_status(
+        &mut self,
+        clock: &dyn Clock,
+        worktree_id: &str,
+        git: Option<&crate::projections::WorktreeGitCache>,
+    ) -> Result<usize, EventStoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(EventStoreError::Write)?;
+        let rows =
+            crate::projections::refresh_git_cache(&tx, worktree_id, git, &clock.now_rfc3339())
+                .map_err(projection_to_store_err)?;
+        tx.commit().map_err(EventStoreError::Write)?;
+        Ok(rows)
     }
 
     /// Append one event. Assigns `seq` (canonical monotonic order), `event_id`, `recorded_at`.
@@ -512,6 +567,27 @@ impl EventStore {
         clock: &dyn Clock,
     ) -> Result<Vec<(ResourceId, LeaseKind)>, LeaseError> {
         locks::reap_once(&mut self.conn, clock)
+    }
+
+    /// Run a bounded WAL checkpoint (§10) on the writer's connection — the 4.3 background
+    /// checkpointer's deterministic `*_once` unit, commanded through the single write-actor so it
+    /// never opens a rogue writable connection (forbidden #3 / LESSON §9). PASSIVE = non-blocking
+    /// best-effort (flush as many frames as possible without blocking a reader); TRUNCATE also
+    /// truncates the `-wal` file to zero. Returns the `PRAGMA wal_checkpoint` triple. A read PRAGMA
+    /// on `&self.conn` (the write-actor owns the only writable connection).
+    pub fn wal_checkpoint(
+        &self,
+        mode: WalCheckpointMode,
+    ) -> Result<WalCheckpointSummary, EventStoreError> {
+        self.conn
+            .query_row(mode.pragma_sql(), [], |r| {
+                Ok(WalCheckpointSummary {
+                    busy: r.get(0)?,
+                    log_frames: r.get(1)?,
+                    checkpointed_frames: r.get(2)?,
+                })
+            })
+            .map_err(EventStoreError::Write)
     }
 
     /// The applied schema version (§16). Typed `Result<u32, _>` — a real read error is

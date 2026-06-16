@@ -8,6 +8,7 @@
 //! `reap_leases`) routes through this one thread; all reads use `open_read_only` and NEVER touch
 //! the actor. The L4 subscribe broadcast sender lives here, publishing **after commit**.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -16,17 +17,24 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use nexusops_shared::actions::{ActionPlan, ActionPreview, ActionRequest};
 use nexusops_shared::ids::EventId;
 use nexusops_shared::ipc::{ActionAck, DeltaKind, PlanAck, ProjectionDelta, ProjectionName};
+use nexusops_shared::status::WorktreeOverlay;
 
 use crate::clock::Clock;
-use crate::eventstore::{AppendIntent, Destination, DrainSummary, EventStore, EventStoreError};
+use crate::eventstore::{
+    AppendIntent, Destination, DrainSummary, EventStore, EventStoreError, WalCheckpointMode,
+    WalCheckpointSummary,
+};
 use crate::gateway::circuit_breaker::AuditBackboneBreaker;
 use crate::gateway::{Gateway, GatewayError};
+use crate::git::precedence::{derive_worktree_status, DerivedWorktreeStatus};
+use crate::git::reads::read_worktree_status;
 use crate::harness::claude::intercept::{
     route_intercept, route_intercept_live, HookPayload, InterceptOutcome,
 };
 use crate::harness::MutationVerdict;
 use crate::integrity::IntegrityAlarm;
 use crate::locks::{LeaseError, LeaseKind, ResourceId};
+use crate::projections::WorktreeGitCache;
 
 /// the bounded command-channel depth — backpressures a flood of mutation requests onto the
 /// senders rather than growing unbounded in front of the single writer.
@@ -66,6 +74,22 @@ enum Command {
     },
     ReapLeases {
         reply: oneshot::Sender<Result<Vec<(ResourceId, LeaseKind)>, LeaseError>>,
+    },
+    // edges-026 — the §7.2 worktree live-read cache refresh: a NON-Gateway, NON-event maintenance
+    // command (the DrainOnce/ReapLeases family) the git-watcher issues. The git2 read + the §5.1
+    // status derivation run in the handler (runtime layer); the non-event proj_worktree UPDATE on the
+    // single writer. NO event (the git-axis is a live-read cache, §7.1).
+    RefreshWorktreeStatus {
+        worktree_id: String,
+        path: String,
+        base: Option<String>,
+        reply: oneshot::Sender<Result<usize, EventStoreError>>,
+    },
+    // 4.3: a bounded WAL checkpoint (§10) — the background checkpointer rides the single write-actor
+    // (forbidden #3 / LESSON §9), never a rogue writable connection. A read PRAGMA, no state change.
+    WalCheckpoint {
+        mode: WalCheckpointMode,
+        reply: oneshot::Sender<Result<WalCheckpointSummary, EventStoreError>>,
     },
     // --- 2.1b Action Gateway mutation commands: the pipeline runs ON the write-actor (the single
     // writer, forbidden #3) so each transition's {row + authoritative event} is one atomic txn. ---
@@ -192,6 +216,48 @@ impl WriteHandle {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(Command::ReapLeases { reply })
+            .await
+            .map_err(|_| RuntimeError::ActorGone)?;
+        rx.await
+            .map_err(|_| RuntimeError::ActorGone)?
+            .map_err(RuntimeError::from)
+    }
+
+    /// Refresh one worktree's §7.2 live-read git-axis cache through the single writer (the git-watcher
+    /// loop's call). The actor reads git2 (read-only) at `path` (with `base` for ahead/behind) +
+    /// re-derives `status`, then writes the non-event `proj_worktree` cache. Returns the rows updated
+    /// (0 = an unknown `worktree_id` → a safe no-op).
+    pub async fn refresh_worktree_status(
+        &self,
+        worktree_id: String,
+        path: String,
+        base: Option<String>,
+    ) -> Result<usize, RuntimeError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(Command::RefreshWorktreeStatus {
+                worktree_id,
+                path,
+                base,
+                reply,
+            })
+            .await
+            .map_err(|_| RuntimeError::ActorGone)?;
+        rx.await
+            .map_err(|_| RuntimeError::ActorGone)?
+            .map_err(RuntimeError::from)
+    }
+
+    /// Run a bounded WAL checkpoint through the single writer (the 4.3 checkpointer loop's call) —
+    /// the checkpoint executes on the write-actor's own connection, so the WAL is bounded WITHOUT a
+    /// second writable connection (forbidden #3 / LESSON §9).
+    pub async fn wal_checkpoint(
+        &self,
+        mode: WalCheckpointMode,
+    ) -> Result<WalCheckpointSummary, RuntimeError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(Command::WalCheckpoint { mode, reply })
             .await
             .map_err(|_| RuntimeError::ActorGone)?;
         rx.await
@@ -450,6 +516,31 @@ fn run_actor(
             Command::ReapLeases { reply } => {
                 let _ = reply.send(store.reap_leases(clock.as_ref()));
             }
+            // edges-026 — read git2 (read-only) + derive the §5.1 status in the runtime layer (the
+            // persistence core stays git-free, the edges-022 rule), then write the non-event
+            // proj_worktree cache via the single writer. `None` (a non-git path) stamps git_checked_at
+            // only. A LOCAL read on this dedicated thread (bounded — it returns); the
+            // write-actor-I/O-offload hardening is a deferred SPREAD (unified with drain_once + the
+            // edges-023/024 external executors).
+            Command::RefreshWorktreeStatus {
+                worktree_id,
+                path,
+                base,
+                reply,
+            } => {
+                let cache = compute_worktree_cache(Path::new(&path), base.as_deref());
+                let _ = reply.send(store.refresh_worktree_status(
+                    clock.as_ref(),
+                    &worktree_id,
+                    cache.as_ref(),
+                ));
+            }
+            // 4.3: the bounded WAL checkpoint runs on this single writer's own connection — no rogue
+            // writable connection is ever opened (forbidden #3 / LESSON §9). A read PRAGMA; no event,
+            // no projection, no broadcast (it changes no observable state).
+            Command::WalCheckpoint { mode, reply } => {
+                let _ = reply.send(store.wal_checkpoint(mode));
+            }
             // 2.1b Action Gateway mutations run the pipeline against the single writable store
             // (each transition's row+event is its own atomic txn inside the method). The gateway's
             // events fold into projections in-band; 2.1c (Q6) accumulates the `proj_approval_queue`
@@ -584,6 +675,40 @@ fn publish_after_commit<T>(
             let _ = deltas.send(delta);
         }
     }
+}
+
+/// Read a worktree's live git truth (git2 READ-ONLY, forbidden #6) + derive its §7.2 cache values:
+/// the git-sync axis wire value (`dirty_state`), ahead/behind, the HEAD sha, and the §5.1 `status`
+/// recomputed against the Creating overlay. `None` = a non-git / inaccessible path (the caller stamps
+/// `git_checked_at` only). Lives in the runtime layer so the persistence core stays git-free (the
+/// edges-022 LESSON-17 layer rule). Pub so the live-read-cache logic is unit-testable over hermetic
+/// temp-repo fixtures without spinning the full write-actor.
+///
+/// **Overlay-source follow-on (MIGRATION_9-deferred).** `status` is recomputed against a HARDCODED
+/// `Creating` overlay because the overlay-lifecycle events (`WorktreeMerged`/`Locked`/`Prunable`/…)
+/// have no emitter yet, so the resting overlay of every live worktree is `Creating` (the only emitted
+/// overlay). When those emitters land a CLEAN overlay source is needed — an `overlay` column (a schema
+/// change → MIGRATION_9) or an event-sourced overlay read — else e.g. a merged/locked worktree's
+/// status would wrongly re-derive to a git-axis value on every refresh.
+pub fn compute_worktree_cache(path: &Path, base: Option<&str>) -> Option<WorktreeGitCache> {
+    let st = read_worktree_status(path, base)?;
+    Some(WorktreeGitCache {
+        // the within-axis git-sync status as the frozen snake_case wire value (`as_wire_str` is pinned
+        // byte-for-byte to the serde serialization by precedence.rs's `derived_wire_str_matches_serde`).
+        dirty_state: DerivedWorktreeStatus::Git(st.git_axis)
+            .as_wire_str()
+            .to_string(),
+        // commit counts are tiny in practice, but guard the usize→i64 narrowing (no silent wrap — the
+        // strict-typing posture; `graph_ahead_behind` is `usize`, the DDL column is i64 SQLite INTEGER).
+        ahead_count: st.ahead_count.map(|n| i64::try_from(n).unwrap_or(i64::MAX)),
+        behind_count: st
+            .behind_count
+            .map(|n| i64::try_from(n).unwrap_or(i64::MAX)),
+        last_commit_sha: st.last_commit_sha,
+        status: derive_worktree_status(st.git_axis, Some(WorktreeOverlay::Creating))
+            .as_wire_str()
+            .to_string(),
+    })
 }
 
 /// The live `ProjectionDelta`(s) an appended event produces — derived from its typed identity +

@@ -19,9 +19,11 @@ pub mod git;
 pub mod harness;
 pub mod hook;
 pub mod idgen;
+pub mod integrations;
 pub mod integrity;
 pub mod ipc;
 pub mod locks;
+pub mod project;
 pub mod projections;
 pub mod runtime;
 pub mod session;
@@ -30,3 +32,4 @@ pub mod session;
 #[cfg(feature = "dev-client")]
 pub mod smoke;
 pub mod terminal;
+pub mod workflow;

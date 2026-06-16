@@ -9,13 +9,27 @@
 //!   L2 (tests 4–9, 14) — in-band apply + the feedable projectors.   [added at L2]
 //!   L3 (tests 10–13) — catch-up replay / rebuild / degraded-skip.    [added at L3]
 
+use std::sync::Arc;
+
+use nexusops_shared::actions::{
+    ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
+};
 use nexusops_shared::actor::ActorType;
+use nexusops_shared::catalog::ExecutorKind;
 use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType, Visibility};
-use nexusops_shared::ids::{ProjectId, SessionId, WorkspaceId};
+use nexusops_shared::events::{PullRequestSynced, WorktreeCreated};
+use nexusops_shared::ids::{ActionRequestId, ProjectId, SessionId, WorkspaceId, WorktreeId};
+use nexusops_shared::status::{ActionRequestStatus, PullRequest};
+use nexusops_shared::time::Timestamp;
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{
     AppendIntent, EventStore, EventStoreError, PrefixRedactor, RedactionOutcome, Redactor,
 };
+use nexusopsd::gateway::executor::CatalogExecutor;
+use nexusopsd::gateway::policy::CatalogPolicy;
+use nexusopsd::gateway::Gateway;
+use nexusopsd::git::cli::FakeGitCli;
+use nexusopsd::git::executor::GitExecutor;
 
 // ---- fixtures ---------------------------------------------------------------
 
@@ -1185,4 +1199,717 @@ fn test_usage_ledger_sums_deltas_utc_bucketed() {
         day, "2026-06-08",
         "bucket_day == the UTC date of occurred_at"
     );
+}
+
+// =============================================================================
+// edges-022 — the proj_worktree projector (the gated 5.2-remainder)
+// =============================================================================
+//
+// Driven Gateway-end-to-end (the proj_approval_queue sibling-read precedent): a real
+// git.create_worktree (submit → approve → execute) creates the action_requests sibling
+// row AND emits WorktreeCreated, which the projector folds in-band → proj_worktree.
+
+/// A Gateway with the real GitExecutor over a FakeGitCli (emits WorktreeCreated on approve).
+fn gw_with_git() -> Gateway {
+    let mut cat = CatalogExecutor::new();
+    cat.register(
+        ExecutorKind::Git,
+        Arc::new(GitExecutor::new(Box::new(FakeGitCli::succeeding()))),
+    );
+    Gateway::new(Box::new(CatalogPolicy), Box::new(cat))
+}
+
+/// A `git.create_worktree` request. `repo_id`: Some → a Repository resource_ref carrying it (the repo
+/// identity the projector sibling-reads); None → a non-Repo ref (satisfies requires_resource_refs but
+/// has no repo identity → the projector skips). LOW-ENTROPY inputs (the §7.2 approve-path redaction).
+fn create_worktree_req(project_id: Option<ProjectId>, repo_id: Option<&str>) -> ActionRequest {
+    let resource_refs = match repo_id {
+        Some(rid) => vec![ResourceRef {
+            resource_type: ResourceType::Repo,
+            id: rid.to_string(),
+            uri: None,
+        }],
+        None => vec![ResourceRef {
+            resource_type: ResourceType::Worktree,
+            id: "wt_other".to_string(),
+            uri: None,
+        }],
+    };
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id,
+        action_type: "git.create_worktree".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs,
+        inputs: serde_json::json!({
+            "repo_path": "/repo", "worktree_path": "/repo/wt", "branch_name": "feature",
+            "base_branch": "main"
+        }),
+        risk_level: RiskLevel::Level2,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    }
+}
+
+fn approval_id_of(path: &std::path::Path) -> String {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("ro conn");
+    // deterministic single-approval lookup (each test uses one worktree per db → one approval).
+    conn.query_row(
+        "SELECT approval_id FROM approvals ORDER BY approval_id LIMIT 1",
+        [],
+        |r| r.get(0),
+    )
+    .expect("an approval")
+}
+
+/// submit + approve a git.create_worktree → drives WorktreeCreated + the in-band proj_worktree fold.
+fn create_worktree(
+    store: &mut EventStore,
+    gw: &Gateway,
+    path: &std::path::Path,
+    req: ActionRequest,
+) {
+    gw.submit_action(store, req).expect("submit");
+    gw.approve(store, &approval_id_of(path)).expect("approve");
+}
+
+/// the proj_worktree rows (the asserted columns), ordered by worktree_id, for byte-identical compare.
+#[derive(Debug, PartialEq)]
+struct WtRow {
+    worktree_id: String,
+    project_id: String,
+    repo_id: String,
+    path: String,
+    branch_name: Option<String>,
+    base_branch: Option<String>,
+    status: String,
+    dirty_state: Option<String>,
+    ahead_count: Option<i64>,
+    behind_count: Option<i64>,
+    git_checked_at: Option<String>,
+    updated_at_seq: i64,
+}
+
+fn proj_worktree_rows(path: &std::path::Path) -> Vec<WtRow> {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("ro conn");
+    let mut stmt = conn
+        .prepare(
+            "SELECT worktree_id, project_id, repo_id, path, branch_name, base_branch, status, \
+             dirty_state, ahead_count, behind_count, git_checked_at, updated_at_seq \
+             FROM proj_worktree ORDER BY worktree_id",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(WtRow {
+                worktree_id: r.get(0)?,
+                project_id: r.get(1)?,
+                repo_id: r.get(2)?,
+                path: r.get(3)?,
+                branch_name: r.get(4)?,
+                base_branch: r.get(5)?,
+                status: r.get(6)?,
+                dirty_state: r.get(7)?,
+                ahead_count: r.get(8)?,
+                behind_count: r.get(9)?,
+                git_checked_at: r.get(10)?,
+                updated_at_seq: r.get(11)?,
+            })
+        })
+        .unwrap();
+    rows.map(|r| r.unwrap()).collect()
+}
+
+#[test]
+fn test_worktree_created_inserts_proj_worktree_row() {
+    // spec(§7.2): git.create_worktree (submit→approve→execute) → a proj_worktree row with the payload +
+    // sibling-sourced project_id/repo_id + initial status + updated_at_seq.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    create_worktree(
+        &mut store,
+        &gw,
+        &path,
+        create_worktree_req(Some(pid.clone()), Some("repo_alpha")),
+    );
+
+    let rows = proj_worktree_rows(&path);
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert!(r.worktree_id.starts_with("wt_"));
+    assert_eq!(r.project_id, pid.as_str());
+    assert_eq!(r.repo_id, "repo_alpha");
+    assert_eq!(r.path, "/repo/wt");
+    assert_eq!(r.branch_name.as_deref(), Some("feature"));
+    assert_eq!(
+        r.base_branch.as_deref(),
+        Some("main"),
+        "base_branch round-trips from the payload"
+    );
+    assert_eq!(r.status, "creating");
+    assert!(r.updated_at_seq > 0);
+}
+
+#[test]
+fn test_worktree_projector_repo_id_from_sibling() {
+    // spec(LESSON 17): repo_id is the immutable sibling read of the action's Repository resource_ref.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    create_worktree(
+        &mut store,
+        &gw,
+        &path,
+        create_worktree_req(Some(ProjectId::new()), Some("repo_beta")),
+    );
+    assert_eq!(proj_worktree_rows(&path)[0].repo_id, "repo_beta");
+}
+
+#[test]
+fn test_worktree_projector_live_read_columns_null() {
+    // spec(§7.2 split): the live-read cache columns are inserted NULL (a separate refresh populates them).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    create_worktree(
+        &mut store,
+        &gw,
+        &path,
+        create_worktree_req(Some(ProjectId::new()), Some("repo_x")),
+    );
+    let r = &proj_worktree_rows(&path)[0];
+    assert_eq!(r.dirty_state, None);
+    assert_eq!(r.ahead_count, None);
+    assert_eq!(r.behind_count, None);
+    assert_eq!(r.git_checked_at, None);
+}
+
+#[test]
+fn test_worktree_projector_skips_identity_less() {
+    // spec(healthy skip): a WorktreeCreated with no project_id OR no repo ref → no row, no error
+    // (proj_worktree.project_id/repo_id are NOT NULL; the session.rs skip precedent).
+    // (a) no project_id:
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    create_worktree(
+        &mut store,
+        &gw,
+        &path,
+        create_worktree_req(None, Some("repo_x")),
+    );
+    assert_eq!(proj_worktree_rows(&path).len(), 0, "no project_id → skip");
+
+    // (b) no repo ref (a non-Repo resource_ref):
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    let gw2 = gw_with_git();
+    create_worktree(
+        &mut store2,
+        &gw2,
+        &path2,
+        create_worktree_req(Some(ProjectId::new()), None),
+    );
+    assert_eq!(proj_worktree_rows(&path2).len(), 0, "no repo ref → skip");
+}
+
+#[test]
+fn test_worktree_projector_skips_no_action_request_id() {
+    // spec(healthy skip): a WorktreeCreated whose envelope carries project_id but NO action_request_id
+    // (structurally possible — it's Option on the envelope) → no sibling to resolve repo_id → skip,
+    // no row, no error. Direct append (the Gateway always sets action_request_id, so this exercises the
+    // other half of the identity guard).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let payload = serde_json::to_string(&WorktreeCreated {
+        worktree_id: WorktreeId::new(),
+        path: "/repo/wt".to_string(),
+        branch_name: "feature".to_string(),
+        base_branch: None,
+    })
+    .unwrap();
+    let mut i = intent(&payload);
+    i.event_type = "WorktreeCreated".to_string();
+    i.project_id = Some(ProjectId::new()); // project_id present, action_request_id stays None
+    store.append(i).unwrap();
+    assert_eq!(
+        proj_worktree_rows(&path).len(),
+        0,
+        "no action_request_id → no sibling → skip"
+    );
+}
+
+#[test]
+fn test_worktree_projector_status_binds_5_1() {
+    // spec(§5.1): status is the canonical §5.1 Worktree wire value (overlay lifecycle "creating"), not raw.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    create_worktree(
+        &mut store,
+        &gw,
+        &path,
+        create_worktree_req(Some(ProjectId::new()), Some("repo_x")),
+    );
+    assert_eq!(proj_worktree_rows(&path)[0].status, "creating");
+}
+
+#[test]
+fn test_worktree_projector_rebuild_equivalent() {
+    // spec(LESSON 4/17): rebuild() reproduces byte-identical proj_worktree rows — the immutable
+    // sibling-read (action_requests read at final state) is deterministic.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    create_worktree(
+        &mut store,
+        &gw,
+        &path,
+        create_worktree_req(Some(ProjectId::new()), Some("repo_r")),
+    );
+    let before = proj_worktree_rows(&path);
+    assert_eq!(before.len(), 1);
+    store.rebuild_projections().unwrap();
+    let after = proj_worktree_rows(&path);
+    assert_eq!(
+        before, after,
+        "rebuild reproduces the incremental proj_worktree state"
+    );
+}
+
+#[test]
+fn test_worktree_projector_ignores_other_events() {
+    // spec: the projector folds ONLY WorktreeCreated — a non-WorktreeCreated event writes no proj_worktree.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    store
+        .append(session_intent(
+            &SessionId::new(),
+            &ProjectId::new(),
+            "{\"status\":\"active\"}",
+        ))
+        .unwrap();
+    assert_eq!(proj_worktree_rows(&path).len(), 0);
+}
+
+// =============================================================================
+// edges-025 — the proj_pull_request projector (Wave-E; closes the github read vertical)
+// =============================================================================
+//
+// Decoupled from the github write-client + runtime: `submit_action` is executor-agnostic (it persists
+// the action_requests sibling row at AwaitingApproval without invoking the executor), so a submit seeds
+// the sibling row and a DIRECT PullRequestSynced append drives the in-band proj_pull_request fold. The
+// PROJECTOR is what's under test here (edges-023's e2e already proved the github executor emits the
+// event). The exact edges-022 proj_worktree precedent.
+
+/// A github.create_pr request carrying a Repo resource_ref (the repo identity the projector
+/// sibling-reads). Some(repo_id) → a Repo ref; None → a non-Repo ref (no repo identity → projector skips).
+fn github_pr_req(project_id: Option<ProjectId>, repo_id: Option<&str>) -> ActionRequest {
+    let resource_refs = match repo_id {
+        Some(rid) => vec![ResourceRef {
+            resource_type: ResourceType::Repo,
+            id: rid.to_string(),
+            uri: None,
+        }],
+        None => vec![ResourceRef {
+            resource_type: ResourceType::Worktree,
+            id: "wt_other".to_string(),
+            uri: None,
+        }],
+    };
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id,
+        action_type: "github.create_pr".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs,
+        inputs: serde_json::json!({
+            "owner": "acme", "repo": "widget", "head": "feature", "base": "main", "title": "T"
+        }),
+        risk_level: RiskLevel::Level3,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    }
+}
+
+/// submit a github.create_pr (executor-agnostic → persists the action_requests sibling row at
+/// AwaitingApproval) → returns its action_request_id (the projector's LESSON-17 sibling-read key).
+fn seed_pr_action(
+    store: &mut EventStore,
+    gw: &Gateway,
+    project_id: Option<ProjectId>,
+    repo_id: Option<&str>,
+) -> ActionRequestId {
+    let req = github_pr_req(project_id, repo_id);
+    let arid = req.action_request_id.clone();
+    gw.submit_action(store, req)
+        .expect("submit seeds the action_requests sibling row");
+    arid
+}
+
+/// a PullRequestSynced append intent linked to `action_request_id` (the sibling-read key) + `project_id`.
+fn pr_synced_intent(
+    project_id: Option<ProjectId>,
+    action_request_id: Option<ActionRequestId>,
+    payload: &str,
+) -> AppendIntent {
+    let mut i = intent(payload);
+    i.event_type = "PullRequestSynced".to_string();
+    i.project_id = project_id;
+    i.action_request_id = action_request_id;
+    i
+}
+
+fn pr_payload(pr_number: u64, status: PullRequest, branch: &str, base: &str) -> String {
+    serde_json::to_string(&PullRequestSynced {
+        pr_number,
+        status,
+        branch: branch.to_string(),
+        base: base.to_string(),
+        mergeable: None,
+        checks_summary: None,
+        pr_checked_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    })
+    .unwrap()
+}
+
+/// the proj_pull_request rows (the asserted columns), ordered by pr_id, for byte-identical compare.
+#[derive(Debug, PartialEq)]
+struct PrRow {
+    pr_id: String,
+    project_id: Option<String>,
+    repo_id: Option<String>,
+    pr_number: Option<i64>,
+    title: Option<String>,
+    status: String,
+    head_branch: Option<String>,
+    base_branch: Option<String>,
+    pr_checked_at: Option<String>,
+    updated_at_seq: i64,
+}
+
+fn proj_pull_request_rows(path: &std::path::Path) -> Vec<PrRow> {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("ro conn");
+    let mut stmt = conn
+        .prepare(
+            "SELECT pr_id, project_id, repo_id, pr_number, title, status, head_branch, base_branch, \
+             pr_checked_at, updated_at_seq FROM proj_pull_request ORDER BY pr_id",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(PrRow {
+                pr_id: r.get(0)?,
+                project_id: r.get(1)?,
+                repo_id: r.get(2)?,
+                pr_number: r.get(3)?,
+                title: r.get(4)?,
+                status: r.get(5)?,
+                head_branch: r.get(6)?,
+                base_branch: r.get(7)?,
+                pr_checked_at: r.get(8)?,
+                updated_at_seq: r.get(9)?,
+            })
+        })
+        .unwrap();
+    rows.map(|r| r.unwrap()).collect()
+}
+
+#[test]
+fn test_pull_request_synced_folds_to_proj() {
+    // spec(§7.2/§7): a PullRequestSynced append → one proj_pull_request row with pr_number/head_branch/
+    // base_branch/pr_checked_at from the payload, project_id from the envelope, repo_id from the sibling ref.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &pr_payload(42, PullRequest::Open, "feature", "main"),
+        ))
+        .expect("append folds in-band");
+    let rows = proj_pull_request_rows(&path);
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert_eq!(r.project_id.as_deref(), Some(pid.as_str()));
+    assert_eq!(r.repo_id.as_deref(), Some("repo_alpha"));
+    assert_eq!(r.pr_number, Some(42));
+    assert_eq!(r.head_branch.as_deref(), Some("feature"));
+    assert_eq!(r.base_branch.as_deref(), Some("main"));
+    assert_eq!(r.pr_checked_at.as_deref(), Some("2026-06-08T00:00:00Z"));
+    assert!(r.updated_at_seq > 0);
+}
+
+#[test]
+fn test_pr_id_composite_deterministic() {
+    // spec(Q1 — rebuild-safe key): pr_id = the {repo_id}#{pr_number} composite; two folds of the same
+    // (repo, pr_number) hit the SAME row (NOT a minted ULID — proj_pull_request is in REBUILD_TABLES).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid.clone()),
+            &pr_payload(7, PullRequest::Open, "f", "m"),
+        ))
+        .unwrap();
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid),
+            &pr_payload(7, PullRequest::Merged, "f", "m"),
+        ))
+        .unwrap();
+    let rows = proj_pull_request_rows(&path);
+    assert_eq!(
+        rows.len(),
+        1,
+        "same (repo, pr_number) → one row (composite key)"
+    );
+    assert_eq!(rows[0].pr_id, "repo_alpha#7");
+}
+
+#[test]
+fn test_status_binds_pull_request_wire_value() {
+    // spec(§5.1): the status column is the canonical PullRequest snake_case wire value (not raw / hardcoded).
+    for (status, wire) in [
+        (PullRequest::Open, "open"),
+        (PullRequest::Merged, "merged"),
+        (PullRequest::ChecksFailing, "checks_failing"),
+    ] {
+        let (_d, path) = temp_db();
+        let mut store = open(&path);
+        let gw = gw_with_git();
+        let pid = ProjectId::new();
+        let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_x"));
+        store
+            .append(pr_synced_intent(
+                Some(pid),
+                Some(arid),
+                &pr_payload(1, status, "f", "m"),
+            ))
+            .unwrap();
+        assert_eq!(proj_pull_request_rows(&path)[0].status, wire);
+    }
+}
+
+#[test]
+fn test_title_null_mergeable_checks_not_projected() {
+    // spec: title is NULL (the PullRequestSynced event carries no title); mergeable/checks_summary have NO
+    // column (they already fed the derived status) — only title is assertable.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_x"));
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid),
+            &pr_payload(1, PullRequest::Open, "f", "m"),
+        ))
+        .unwrap();
+    assert_eq!(
+        proj_pull_request_rows(&path)[0].title,
+        None,
+        "the event has no title → NULL (mergeable/checks have no column — fed status)"
+    );
+}
+
+#[test]
+fn test_missing_identity_healthy_skip() {
+    // spec(edges-022 case 1): no project_id / no action_request_id / no Repository ref → no row, no error.
+    // (a) no project_id:
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let arid = seed_pr_action(&mut store, &gw, Some(ProjectId::new()), Some("repo_x"));
+    store
+        .append(pr_synced_intent(
+            None,
+            Some(arid),
+            &pr_payload(1, PullRequest::Open, "f", "m"),
+        ))
+        .expect("append (skip, no error)");
+    assert_eq!(
+        proj_pull_request_rows(&path).len(),
+        0,
+        "no project_id → skip"
+    );
+
+    // (b) no action_request_id (no sibling to resolve repo_id):
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    store2
+        .append(pr_synced_intent(
+            Some(ProjectId::new()),
+            None,
+            &pr_payload(1, PullRequest::Open, "f", "m"),
+        ))
+        .expect("append (skip, no error)");
+    assert_eq!(
+        proj_pull_request_rows(&path2).len(),
+        0,
+        "no action_request_id → skip"
+    );
+
+    // (c) a sibling row with NO Repository ref (a non-Repo resource_ref). Reuse the SAME project_id for
+    // the seed + the synced-intent, so the ONLY reason for the skip is the absent Repo ref (the projector
+    // doesn't compare project_ids — a distinct pid would be a false diagnostic; the worktree precedent).
+    let (_d3, path3) = temp_db();
+    let mut store3 = open(&path3);
+    let gw3 = gw_with_git();
+    let pid3 = ProjectId::new();
+    let arid3 = seed_pr_action(&mut store3, &gw3, Some(pid3.clone()), None);
+    store3
+        .append(pr_synced_intent(
+            Some(pid3),
+            Some(arid3),
+            &pr_payload(1, PullRequest::Open, "f", "m"),
+        ))
+        .expect("append (skip, no error)");
+    assert_eq!(
+        proj_pull_request_rows(&path3).len(),
+        0,
+        "no Repository ref → skip"
+    );
+}
+
+#[test]
+fn test_missing_sibling_row_fail_closed() {
+    // spec(edges-022 case 2 / LESSON 17): link set but the action_requests sibling row is GONE (a dangling
+    // action_request_id never submitted) → fail-closed Db (the ? propagates QueryReturnedNoRows; the
+    // append/replay txn aborts). NOT a silent default.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let dangling = ActionRequestId::new(); // never submitted → no sibling row
+    let result = store.append(pr_synced_intent(
+        Some(ProjectId::new()),
+        Some(dangling),
+        &pr_payload(1, PullRequest::Open, "f", "m"),
+    ));
+    assert!(
+        result.is_err(),
+        "a missing sibling action_requests row is an integrity break → fail-closed (append aborts)"
+    );
+    assert_eq!(
+        proj_pull_request_rows(&path).len(),
+        0,
+        "the aborted append wrote no proj row"
+    );
+}
+
+#[test]
+fn test_unbindable_payload_degrades() {
+    // spec(edges-022 case 3): a valid sibling row + an UNBINDABLE PullRequestSynced payload → Decode-degrade
+    // (skip, no row); the append succeeds (a degrade is contained, not propagated) and the reason echoes NO
+    // payload bytes (§15). Distinct from the missing-sibling Db break. NOTE: the payload must be VALID JSON
+    // (the events table's `CHECK json_valid(payload_json)` rejects non-JSON at INSERT, before the projector)
+    // but the WRONG SHAPE — `deny_unknown_fields` + missing required fields → it won't bind PullRequestSynced.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_x"));
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid),
+            r#"{"not_a_pull_request_field":true}"#,
+        ))
+        .expect("append succeeds — a decode-degrade is contained, not propagated");
+    assert_eq!(
+        proj_pull_request_rows(&path).len(),
+        0,
+        "an unbindable payload → degrade, no row"
+    );
+}
+
+#[test]
+fn test_on_conflict_updates_row() {
+    // spec: a re-fold of the same pr_id UPDATEs the row (status + seq advance), still one row (re-sync idempotent).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_x"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid.clone()),
+            &pr_payload(5, PullRequest::Open, "f", "m"),
+        ))
+        .unwrap();
+    let seq1 = proj_pull_request_rows(&path)[0].updated_at_seq;
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid),
+            &pr_payload(5, PullRequest::Merged, "f", "m"),
+        ))
+        .unwrap();
+    let rows = proj_pull_request_rows(&path);
+    assert_eq!(rows.len(), 1, "re-sync of the same pr_id → one row");
+    assert_eq!(rows[0].status, "merged", "status updated on re-sync");
+    assert!(
+        rows[0].updated_at_seq > seq1,
+        "updated_at_seq advanced on re-sync"
+    );
+}
+
+#[test]
+fn test_proj_pull_request_rebuild_equivalent() {
+    // spec(REBUILD_TABLES determinism): rebuild() reproduces byte-identical proj_pull_request rows — the
+    // composite {repo_id}#{pr_number} key + the deterministic columns + the immutable sibling-read guarantee it.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_r"));
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid),
+            &pr_payload(9, PullRequest::Open, "feature", "main"),
+        ))
+        .unwrap();
+    let before = proj_pull_request_rows(&path);
+    assert_eq!(before.len(), 1);
+    store.rebuild_projections().unwrap();
+    let after = proj_pull_request_rows(&path);
+    assert_eq!(
+        before, after,
+        "rebuild reproduces the incremental proj_pull_request state"
+    );
+}
+
+#[test]
+fn test_pull_request_projector_ignores_other_events() {
+    // spec: the projector folds ONLY PullRequestSynced — a non-PullRequestSynced event writes no proj row.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    store
+        .append(session_intent(
+            &SessionId::new(),
+            &ProjectId::new(),
+            "{\"status\":\"active\"}",
+        ))
+        .unwrap();
+    assert_eq!(proj_pull_request_rows(&path).len(), 0);
 }

@@ -34,6 +34,29 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "syn
 # convention keeps real secrets out of `inputs`, so the persisted hash reveals nothing recoverable).
 # RustCrypto, audited; `cargo audit` runs at /phase-exit. Dep beyond the brief's list — flag at Step-9.
 sha2 = "0.10"
+# git2 (libgit2 via git2-rs) — READ-ONLY repo introspection: project detection (P5.1, this slice) +
+# the dual-git read backend (P5.2). Forbidden #6 — git2 is NEVER used for mutations; worktree/branch/
+# commit/merge go through the git CLI as Gateway actions. Pinned 0.21 + `vendored-libgit2` (a known
+# bundled libgit2, matching the OQ-INT-SPIKE-6 spike that proved git2 0.21 reads relative-worktree
+# repos); default-features off (no ssh/https — local read-only introspection only). A normal dep, so
+# it is also visible to the integration tests that build hermetic fixture repos (tests/detect.rs).
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
+# octocrab (P7.1) — GitHub typed REST client (§9). READ-ONLY here: the GitHub PR read client fetches
+# a PR + its reviews + check-runs over an INJECTED Octocrab handle (auth bootstrap deferred — this
+# client never builds the handle/reads the keychain), plumbing octocrab's string fields into edges-008's
+# decoders. octocrab's models derive Deserialize so recorded public-JSON fixtures drive the extraction
+# test-first; the live HTTP round-trip is the fake-covered non-deterministic edge. `cargo audit` runs
+# at the P7.1 /phase-exit. async-trait makes the GithubReadClient trait dyn-compatible (the codebase's
+# trait-object idiom: Arc<dyn ActionExecutor>/dyn Policy) so the gated github executor can inject it.
+octocrab = "0.53"
+async-trait = "0.1"
+# reqwest (P7.1 edges-015) — the Linear GraphQL network adapter's HTTP shell (§9; Linear has no
+# octocrab-equivalent Rust client). READ-ONLY here: POST the issue query over an INJECTED reqwest
+# Client + endpoint + api_key (auth bootstrap deferred — never builds the key/reads the keychain).
+# `default-features = false` + `rustls-tls` REUSES the in-tree rustls stack (hyper-rustls via octocrab)
+# — NO native-tls/OpenSSL, no system-cert/credential auto-discovery. `json` for the request body.
+# `cargo audit` runs at the P7.1 /phase-exit. The live POST is the fake-covered non-deterministic edge.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # base64 for the §6.4 Terminal Channel `data` payload (3.4): raw PTY bytes are base64-encoded so they
 # ride the unchanged 4-byte-len+JSON codec (LESSON §7 — no new framing). Dep beyond the brief's list
 # (which named only portable-pty) — flag at Step-9; widely-audited, `cargo audit` runs at /phase-exit.
@@ -42,12 +65,10 @@ base64 = "0.22"
 # resize, waitpid exit). PTY is DISPLAY-ONLY (#9) — never scraped for status. The blocking reader runs
 # on a spawn_blocking thread in the production drive loop (the write-actor-thread precedent, LESSON §9).
 portable-pty = "0.9"
-# git2 (libgit2) for the §6.1 get_diff READ-ONLY live diff (P4.0b-ui1; the §7.2 worktree-live-read
-# precedent + the §9 git2≥1.9.4/0.21 read-path vetted at OQ-INT-SPIKE-6). READ-ONLY here — git
-# MUTATIONS go through the git CLI as Gateway actions (forbidden #6), never git2. The daemon's FIRST
-# git2 use; dep beyond the brief's named list (orch-approved) — flag at Step-9; `cargo audit` runs at
-# /phase-exit 4. (Declared §tech-stack dep, pulled in now.)
-git2 = "0.21"
+# NOTE (R8 merge): main's P4.0b-ui1 get_diff added a second `git2 = "0.21"` here; deduped at the
+# main→edges merge — the edges `git2` entry above (default-features=false + vendored-libgit2, the
+# forbidden-#6 read-only/OQ-INT-SPIKE-6 posture) is the single source. main's get_diff read_diff uses
+# only core libgit2 diff APIs, satisfied by the vendored build with no default features.
 # (the `nexusopsd` bin is auto-discovered from src/main.rs — no explicit [[bin]] needed.)
 
 [features]
@@ -83,6 +104,9 @@ rusqlite = { version = "0.34", features = ["bundled"] }
 # (#[tokio::test]) + a real ephemeral UnixListener client. `test-util` (P4.0b-2) = `start_paused` /
 # `tokio::time::pause` for the deterministic 5-min decision-wait timeout test (no real-time sleep).
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util", "test-util"] }
+# reqwest in dev-deps too (like tokio above) so the §15 no-key-leak test can CONSTRUCT a Client +
+# drive fetch_issue against a closed local port (transport-error path). Same version/features → one compile.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # git2 in the get_diff integration test (daemon/tests/get_diff.rs) — builds the fixture repo
 # (Repository::init + commit + modify) the read-only read_diff is tested against (P4.0b-ui1).
 git2 = "0.21"
@@ -102,4 +126,13 @@ harness = false
 # Phase-3 CI perf job). Drives the AS-BUILT 3.4 TerminalSession/PortablePtyHost host end-to-end.
 [[bench]]
 name = "terminal_attach"
+harness = false
+
+# P5.4 (edges-027) — the §18 project.rescan detection-latency benchmark. `harness = false`: a plain
+# `fn main()` (NOT the libtest harness), so it is INVISIBLE to `cargo test --workspace` (the per-slice
+# RED/GREEN loop) and its median guard never flakes there. Runs ONLY at its own cadence: `cargo bench
+# --bench project_rescan` (the /phase-exit perf-budgets runner + the nightly CI perf job). Drives the
+# AS-BUILT detection scan core (detect_git + detect_workflow) — the §18 `< 3 s` SLO part of the rescan.
+[[bench]]
+name = "project_rescan"
 harness = false

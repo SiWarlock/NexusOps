@@ -1,9 +1,19 @@
-//! P4.0b-ui1 (brief 052) — the daemon's git2 READ-ONLY introspection (§6.1/§7.2). The FIRST git2
-//! use in the daemon: the `get_diff` RPC's live diff read for the ui's 6.3e per-hunk review.
+//! `git/` — git2 READ-ONLY repo introspection. Edges (P5.1/P5.2): project detection (`detect`) + the
+//! dual-git worktree-status read backend (`reads` + the §5.1-R7 `precedence` fn) + the git-CLI
+//! worktree/branch mutation executors exposed as typed Gateway actions (`cli` + `executor`). Main
+//! (P4.0b-ui1, brief 052): the `get_diff` RPC's live HEAD→workdir diff read (`read_diff` below) for
+//! the ui 6.3e per-hunk review.
 //!
-//! **READ-ONLY (forbidden #6).** git2 is used here ONLY to READ (the HEAD→workdir diff). All git
-//! MUTATIONS (stage/unstage/discard/worktree/commit/merge) go through the **git CLI as Gateway
-//! actions** — never a git2 mutating API. This module opens a repo + computes a diff; it never writes.
+//! **Forbidden #6:** git2 is READ-ONLY everywhere in this module. Every git *mutation* (stage/unstage/
+//! discard/worktree/branch/commit/merge) goes through the **git CLI as an audited Gateway action** —
+//! never a git2 mutating API. (`git::read_diff` here is distinct from `git::reads::read_diff` — the
+//! former returns the ui `ipc::DiffResult` for get_diff; the latter the edges `reads::FileChange` set.)
+
+pub mod cli;
+pub mod detect;
+pub mod executor;
+pub mod precedence;
+pub mod reads;
 
 use std::path::Path;
 

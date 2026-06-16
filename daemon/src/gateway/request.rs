@@ -418,6 +418,20 @@ pub(crate) fn emitted_event_intent(
             intent.session_id = Some(session_id.clone());
             Ok(intent)
         }
+        // The generic edges family (Q1=B) — the executor already serialized its frozen event struct
+        // (it owns the payload + handled the serde fault → `Failed`). Append it riding the action's
+        // envelope identity (`project_id`/`correlation_id`/`action_request_id` from `ar`), through the
+        // §15 gate, with no envelope-column override.
+        EmittedEvent::Namespaced {
+            event_type,
+            payload_json,
+        } => Ok(gateway_event_intent(
+            ar,
+            event_type,
+            payload_json.clone(),
+            occurred_at,
+            None,
+        )),
     }
 }
 

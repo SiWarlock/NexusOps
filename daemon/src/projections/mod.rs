@@ -15,10 +15,14 @@ mod activity;
 mod approval_queue;
 mod audit;
 mod graph;
+mod integration_connections;
 mod object_refs;
+mod project_registry;
+mod pull_request;
 mod schema;
 mod session;
 mod usage;
+mod worktree;
 
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde::Serialize;
@@ -26,6 +30,12 @@ use serde::Serialize;
 use nexusops_shared::event_envelope::EventEnvelope;
 
 use crate::eventstore::DegradableEvent;
+
+// edges-026 (P5.2 follow-on) — the §7.2 worktree live-read cache: the public computed-values type
+// (the runtime layer produces it; tests construct it via `compute_worktree_cache`) + the crate-internal
+// refresh UPDATE (`EventStore::refresh_worktree_status` drives it through the single writer).
+pub(crate) use worktree::refresh_git_cache;
+pub use worktree::WorktreeGitCache;
 
 /// Typed projection failure. A `Decode` (a payload/enum that won't bind to its
 /// frozen §5.1 shape) degrades the offending projector (§7.2); a `Db` is an
@@ -78,6 +88,21 @@ fn projectors() -> Vec<Box<dyn Projector>> {
         // P3.1 — folds the §9.1 TelemetrySampled observation event into per-day usage rollups
         // (§18). Wired NOW; its branch fires once the 3.2/3.3 adapters emit the feeding events.
         Box::new(usage::UsageLedgerProjector),
+        // P5.2 (edges-022) — folds the edges git.create_worktree WorktreeCreated event into the
+        // proj_worktree read model (sibling-reads action_requests for repo_id, LESSON 17).
+        Box::new(worktree::WorktreeProjector),
+        // P7.1 (edges-025) — folds the edges github.create_pr PullRequestSynced event into the
+        // proj_pull_request read cache (§7.2; sibling-reads action_requests for repo_id, LESSON 17;
+        // pr_id = the {repo_id}#{pr_number} rebuild-safe composite). Closes the github read vertical.
+        Box::new(pull_request::PullRequestProjector),
+        // P5.1 (edges-028) — folds the edges project.rescan ProjectRescanned event into the
+        // proj_project + proj_repository registry read model (event-fed; self-contained payload +
+        // envelope identity, NO LESSON-17 sibling-read). Closes the P5.1 read vertical.
+        Box::new(project_registry::ProjectRegistryProjector),
+        // P7.1 Wave-C (edges-030) — folds the edges integration.connect IntegrationConnectionRegistered
+        // event into the proj_integration_connection read model (event-fed; keyed by the PAYLOAD
+        // connection_id, NO sibling-read). Closes the Wave-C connection vertical.
+        Box::new(integration_connections::IntegrationConnectionProjector),
     ]
 }
 

@@ -3,7 +3,7 @@
 - **Date:** 2026-06-13
 - **Phase:** Phase 4 (4.0c · 4.1a · 4.0b-ui2/②-mini)
 - **Predecessor:** [022-2026-06-13-daemon-circuit-breaker-ui1-f2.md](022-2026-06-13-daemon-circuit-breaker-ui1-f2.md) · 4.1a detail in [023-2026-06-13-survival-schema-freeze-and-decision-logic.md](023-2026-06-13-survival-schema-freeze-and-decision-logic.md)
-- **Successor:** _(next implementer — 4.1b survival broker)_
+- **Successor:** [025-2026-06-14-survival-broker-and-child-death-surface.md](025-2026-06-14-survival-broker-and-child-death-surface.md)
 
 ## Why this session existed
 

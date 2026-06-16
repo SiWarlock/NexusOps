@@ -17,27 +17,51 @@ use tokio::sync::watch;
 use nexusopsd::bootstrap::{cold_start, BootstrapConfig, DB_FILENAME};
 use nexusopsd::clock::SystemClock;
 use nexusopsd::decisions::DecisionRegistry;
-use nexusopsd::eventstore::{open_read_only, JsonlMirror, PrefixRedactor};
+use nexusopsd::eventstore::{open_read_only, JsonlMirror, PrefixRedactor, WalCheckpointMode};
 use nexusopsd::gateway::circuit_breaker::AuditBackboneBreaker;
 use nexusopsd::gateway::executor::CatalogExecutor;
 use nexusopsd::gateway::policy::AgentMutationPolicy;
 use nexusopsd::gateway::session_executor::SessionExecutor;
 use nexusopsd::gateway::Gateway;
+use nexusopsd::git::cli::SystemGitCli;
+use nexusopsd::git::executor::GitExecutor;
 use nexusopsd::idgen::UlidGen;
+use nexusopsd::integrations::connect::IntegrationExecutor;
+use nexusopsd::integrations::executor::{GithubExecutor, LinearExecutor};
+use nexusopsd::integrations::github_write::OctocrabGithubWriteClient;
+use nexusopsd::integrations::linear_write::LinearGraphqlWriteClient;
 use nexusopsd::integrity::{FileIntegrityAlarm, IntegrityAlarm};
 use nexusopsd::ipc::current_euid;
+use nexusopsd::project::executor::ProjectExecutor;
 use nexusopsd::runtime::recovery::run_restart_recovery;
+use nexusopsd::runtime::session_death::WriteActorSessionDeathSink;
 use nexusopsd::runtime::{
-    bind, spawn_accept_loop, spawn_drainer, spawn_reaper, WriteActor,
-    WriteActorTelemetrySinkFactory, MAX_CONNECTIONS,
+    bind, spawn_accept_loop, spawn_drainer, spawn_git_watcher, spawn_reaper,
+    spawn_staleness_poller, spawn_wal_checkpointer, WriteActor, WriteActorTelemetrySinkFactory,
+    MAX_CONNECTIONS,
 };
-use nexusopsd::session::{spawn_supervisor_task, PtyLauncher};
+use nexusopsd::session::spawn_supervisor_task;
+use nexusopsd::session::tmux::{
+    select_survival_backend, tmux_probe, SurvivalBackend, SystemCommandRunner,
+};
 use nexusopsd::terminal::PortablePtySpawner;
 
 /// outbox drain cadence (§12) — deliver due rows a few times a minute.
 const DRAINER_INTERVAL: Duration = Duration::from_secs(5);
 /// lease reap cadence (§17) — free expired leases periodically.
 const REAPER_INTERVAL: Duration = Duration::from_secs(30);
+/// git-watcher cadence (§7.2) — refresh each worktree's live-read git-axis cache periodically. Git
+/// reads are local + cheap but not free; keep the cadence generous (the reaper cadence).
+const GIT_WATCHER_INTERVAL: Duration = Duration::from_secs(30);
+/// WAL-checkpoint cadence (§10) — bound the SQLite WAL via the single write-actor (PASSIVE,
+/// non-blocking). Coarser than the writes: a steady flush, never per-commit churn.
+const WAL_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(60);
+/// session-staleness recompute cadence (§17) — recompute the stale-by-age signal over the read-only
+/// WAL. (Correct-but-dormant until a `last_heartbeat_at` producer lands — see the 4.3 Carry-forward.)
+const STALENESS_POLL_INTERVAL: Duration = Duration::from_secs(30);
+/// the heartbeat-age threshold (§5.1 `Session::Stale`): a non-terminal session silent longer than
+/// this is stale. A tunable default (no §11.4 number is pinned); the threshold the poller derives by.
+const STALENESS_THRESHOLD_SECS: i64 = 120;
 /// the local JSONL audit/debug mirror sink (§10.4) within the app-support dir.
 const EVENTS_MIRROR_FILE: &str = "events.jsonl";
 /// the GatewayPort UDS within the app-support dir (§6.4).
@@ -98,13 +122,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // writable store (the sole mutation path). The drainer/reaper loops + the UDS accept-loop run off
     // the write-actor handle.
     let (_pidlock, store, _version) = ctx.into_parts();
-
     // ---- P4.0b-2 C2 (CAT-1) — the live drive loop: the atomic binding-flip ----
     // The binding condition flips from BY-CONSTRUCTION to ENFORCED-BY-THE-INTERCEPTION here: a live
     // agent becomes reachable (the registered SessionExecutor + the live PtyLauncher) ONLY TOGETHER
     // with the interception (AgentMutationPolicy + the per-session decision_sink registry + the §17
     // alarm) — never an un-intercepted-live window (the call-5 atomicity PIN; the inverted guard
     // `tests/session_executor.rs::test_live_session_create_has_interception` pins this co-residency).
+    //
+    // R8 MERGE (main→edges): the P5/P7 edges executors (Project/Git/Github/Linear) register into the
+    // SAME live `catalog_exec` below — they now run under the LIVE `AgentMutationPolicy` + the cat-1
+    // drive loop (the `Adjudication` INV-SEC-1 guard runs BEFORE dispatch for EVERY namespace; the
+    // catalog-authoritative risk classification is unchanged from `CatalogPolicy`).
 
     // the shutdown watch + the per-session decision_sink registry FIRST — the supervisor (cancel a
     // dead session's pending interceptions → Deny) and the accept-loop (the `intercept` wait + the
@@ -112,10 +140,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let registry = Arc::new(DecisionRegistry::new());
 
+    // P4.2 — the §17 supervised-child-death sink (deferred: the supervisor holding it is spawned BELOW,
+    // BEFORE the write-actor exists, so the handle binds via `death_slot` once the actor is up). A
+    // `Failed` reap → `SessionFailed` via the write-actor (System-actor observation, NOT the Gateway);
+    // `session/` holds only `Box<dyn SessionDeathSink>` (the cat-1 boundary, LESSON 28).
+    let (death_sink, death_slot) = WriteActorSessionDeathSink::deferred(Arc::new(SystemClock));
+
     // the §10 opt-3 session supervisor (spawned before the write-actor — it needs only the runtime +
-    // the shutdown watch + the registry). Its `SupervisorHandle` DRIVES the SessionExecutor.
+    // the shutdown watch + the registry + the death sink). Its `SupervisorHandle` DRIVES the SessionExecutor.
     let (supervisor, supervisor_handle) =
-        spawn_supervisor_task(shutdown_rx.clone(), registry.clone());
+        spawn_supervisor_task(shutdown_rx.clone(), registry.clone(), Box::new(death_sink));
 
     // the LIVE launcher — the real `ClaudeAdapter` via the `PortablePtySpawner` (the O-13 #10
     // enforcement surface + the env-hygiene/correlation, P4.0b-2 Option A). cwd = the daemon's project
@@ -132,8 +166,35 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // OBSERVATION events via the write-actor; the pump's live `UsageSource` ingress is the P4 follow-on.
     let (telemetry_factory, telemetry_slot) =
         WriteActorTelemetrySinkFactory::deferred(Arc::new(SystemClock));
-    let launcher = PtyLauncher::new(Box::new(PortablePtySpawner), project_cwd, hook_receiver)
-        .with_telemetry_sink_factory(Box::new(telemetry_factory));
+    // P4.1b-2 — probe tmux ONCE at startup (Q2: the backend is fixed for the daemon's life) → select a
+    // CONSISTENT survival backend (launcher ⇔ broker always agree, pin #3/#7). tmux present →
+    // survivable sessions (`TmuxLauncher`, the `env`-wrapped O-13 spec) + survivor detection
+    // (`TmuxBroker`, so `ReattachedLive` is reachable); absent → graceful-degrade to the non-surviving
+    // `PtyLauncher` + `NoSurvivorBroker` (B2-achievable: resume/replay, NEVER reattach-live). The
+    // telemetry factory threads into whichever launcher is selected.
+    let tmux_available = tmux_probe(&SystemCommandRunner);
+    let backend = select_survival_backend(
+        tmux_available,
+        Box::new(PortablePtySpawner),
+        project_cwd,
+        hook_receiver,
+        Some(Box::new(telemetry_factory)),
+    );
+    eprintln!(
+        "nexusopsd: survival backend = {:?} (tmux {})",
+        backend.kind,
+        if tmux_available {
+            "present"
+        } else {
+            "absent — degraded"
+        }
+    );
+    // the launcher → the SessionExecutor (write-actor); the broker → restart recovery (held below).
+    let SurvivalBackend {
+        kind: _,
+        launcher,
+        broker: survival_broker,
+    } = backend;
 
     // the session.create/kill executor (the live launcher + the supervisor), REGISTERED under
     // `ExecutorKind::Session` in the production CatalogExecutor — this is the reachable session.create
@@ -141,7 +202,54 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut catalog_exec = CatalogExecutor::new();
     catalog_exec.register(
         ExecutorKind::Session,
-        Arc::new(SessionExecutor::new(Box::new(launcher), supervisor_handle)),
+        Arc::new(SessionExecutor::new(launcher, supervisor_handle)),
+    );
+    // P5.1 (edges-019) — project.rescan (ExecutorKind::Project): read-only detection emitting
+    // ProjectRescanned in-txn through the §15 gate (SystemClock stamps scanned_at).
+    catalog_exec.register(
+        ExecutorKind::Project,
+        Arc::new(ProjectExecutor::new(Box::new(SystemClock))),
+    );
+    // P5.2 (edges-020/021) — git.create_worktree/create_branch via the git CLI (forbidden #6 — never
+    // git2 for mutations); git.status/git.diff delegate to the inner read stub. risk-2 (approval-gated).
+    catalog_exec.register(
+        ExecutorKind::Git,
+        Arc::new(GitExecutor::new(Box::new(SystemGitCli))),
+    );
+    // P7.1 (edges-023) — github.create_pr/_draft via octocrab. 3a: the SYNC executor drives the async
+    // write-client via the CAPTURED tokio Handle (`Handle::current()` is valid HERE — `run()` is async;
+    // `execute()` later `block_on`s it on the write-actor's dedicated std::thread, where it would
+    // panic). Auth bootstrap (gh-token/Device Flow) deferred → a default unauthenticated handle (a real
+    // create → 401→AuthFailed→Failed, fail-closed-correct).
+    catalog_exec.register(
+        ExecutorKind::Github,
+        Arc::new(GithubExecutor::new(
+            Box::new(OctocrabGithubWriteClient::new(octocrab::Octocrab::default())),
+            tokio::runtime::Handle::current(),
+            Box::new(SystemClock),
+        )),
+    );
+    // P7.1 (edges-024) — linear.link_issue/create_issue via the Linear GraphQL write client. Same 3a
+    // captured-Handle/block_on/timeout mechanism. Auth bootstrap (OAuth/PKCE) deferred → an empty key
+    // (a real mutation → 401→AuthFailed→Failed). Linear success emits NO domain event (Q1).
+    catalog_exec.register(
+        ExecutorKind::Linear,
+        Arc::new(LinearExecutor::new(
+            Box::new(LinearGraphqlWriteClient::new(
+                reqwest::Client::new(),
+                "https://api.linear.app/graphql".to_string(),
+                String::new(),
+            )),
+            tokio::runtime::Handle::current(),
+            Box::new(SystemClock),
+        )),
+    );
+    // P7.1 Wave-C (edges-029) — integration.connect (ExecutorKind::Integration): registration-only
+    // (§15 #4 — inputs carry the keychain_ref POINTER, never a token; the token→keychain write is a
+    // deferred non-Gateway mechanism). risk-2 (approval-gated); emits IntegrationConnectionRegistered.
+    catalog_exec.register(
+        ExecutorKind::Integration,
+        Arc::new(IntegrationExecutor::new(Box::new(UlidGen))),
     );
 
     // the production policy is now `AgentMutationPolicy` (the catalog-authoritative risk engine + the
@@ -173,6 +281,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // up; this is before the accept-loop below serves any session.create → make_sink). The per-session
     // sinks the launcher mints now reach the live write-actor.
     telemetry_slot.bind(handle.clone());
+    // P4.2 — bind the handle into the death-sink slot NOW (the actor is up; before any session can reach
+    // a `Failed` reap). A supervised-child death → `SessionFailed` via the write-actor.
+    death_slot.bind(handle.clone());
     // the post-commit broadcast sender for the accept-loop's per-connection live subscribers (1.6d).
     let deltas = handle.delta_sender();
 
@@ -186,9 +297,38 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     let reaper = spawn_reaper(handle.clone(), REAPER_INTERVAL, shutdown_rx.clone());
 
+    // 4.3 — the deterministic background maintenance jobs (§10/§17): the WAL checkpointer rides the
+    // single write-actor (PASSIVE, non-blocking — forbidden #3, never a rogue writer); the staleness
+    // poller recomputes the §5.1 stale-by-age signal over the read-only WAL (live-read, never folded).
+    let checkpointer = spawn_wal_checkpointer(
+        handle.clone(),
+        WalCheckpointMode::Passive,
+        WAL_CHECKPOINT_INTERVAL,
+        shutdown_rx.clone(),
+    );
+
     // bind the GatewayPort UDS (reclaiming a stale socket) + spawn the peer-auth'd accept-loop — the
     // registry is threaded in for the live `intercept` transport + the approve/deny decision_sink.
     let db_path = base_dir.join(DB_FILENAME);
+    // §7.2 git-watcher (edges-026): refresh each proj_worktree's live-read git-axis cache on an
+    // interval (the drainer/reaper precedent). It enumerates proj_worktree over a read-only WAL conn +
+    // issues a NON-event `refresh_worktree_status` per worktree through the write-actor.
+    let git_watcher = spawn_git_watcher(
+        handle.clone(),
+        db_path.clone(),
+        GIT_WATCHER_INTERVAL,
+        shutdown_rx.clone(),
+    );
+
+    // the staleness poller reads the read-only WAL at `db_path` each tick (own snapshot — never the
+    // write-actor). `db_path` is cloned: the accept-loop below takes ownership of the original.
+    let staleness = spawn_staleness_poller(
+        db_path.clone(),
+        Arc::new(SystemClock),
+        STALENESS_THRESHOLD_SECS,
+        STALENESS_POLL_INTERVAL,
+        shutdown_rx.clone(),
+    );
 
     // P4.1b-1 — the §16/§8.1 restart recovery: enumerate the sessions that were live at shutdown (from
     // the rebuilt `proj_session`) → `decide_resume` per session → emit the System-actor `SessionRecovered`
@@ -199,7 +339,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // re-materialization is 4.1b-2 (LIVE survival = HITL); here the recovery DECISION is made + audited.
     match open_read_only(&db_path) {
         Ok(conn) => {
-            let recovered = run_restart_recovery(&conn, &handle, Arc::new(SystemClock));
+            // pass the SELECTED survival broker (4.1b-2: `TmuxBroker` when tmux is present so a survivor
+            // reaches `ReattachedLive`, else `NoSurvivorBroker` — graceful degrade).
+            let recovered = run_restart_recovery(
+                &conn,
+                survival_broker.as_ref(),
+                &handle,
+                Arc::new(SystemClock),
+            );
             if recovered > 0 {
                 eprintln!("nexusopsd: restart recovery — {recovered} session(s) recovered");
             }
@@ -226,6 +373,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let _ = shutdown_tx.send(true);
     let _ = drainer.await;
     let _ = reaper.await;
+    let _ = git_watcher.await;
+    let _ = checkpointer.await;
+    let _ = staleness.await;
     let _ = accept.await;
     let _ = supervisor.await; // drains its session actors (Kill + await each handle — no orphan task).
     actor.shutdown().await;

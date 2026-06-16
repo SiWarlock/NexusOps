@@ -44,7 +44,7 @@ catalog_enum! {
     /// the `ActionRequest` TERMINATES at the policy/approval verdict and **no daemon executor runs the
     /// tool** (the agent executes the allowed tool itself; the daemon only adjudicates + audits, the
     /// INV-SEC-1 chokepoint). It is NOT a real-executor namespace and never reaches the executor seam.
-    ExecutorKind { Brain, Project, Workflow, Plan, Session, Git, Github, Linear, Code, Review, Adjudication }
+    ExecutorKind { Brain, Project, Workflow, Plan, Session, Git, Github, Linear, Code, Review, Adjudication, Integration }
 }
 
 catalog_enum! {
@@ -109,6 +109,7 @@ pub const MVP_ACTION_TYPES: &[&str] = &[
     "github.create_pr",
     "linear.link_issue",
     "linear.create_issue",
+    "integration.connect",
     "code.open_file",
     "review.request_agent_fix",
 ];
@@ -266,6 +267,20 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
             true,
         ),
         "linear.create_issue" => entry(R::Level2, P::Api, I::FromInputs, X::Linear, false, true),
+        // P7.1 Wave-C (edges-029) — register an integration connection. risk-2 (approval-gated);
+        // REGISTRATION-ONLY (§15 + LESSON 20): inputs carry {provider, keychain_ref POINTER, account?},
+        // NEVER a token (a risk-≥1 action executes off the §15-redacted durable row → a secret in inputs
+        // is masked by execute-time, so §15 #4 holds by construction). requires_resource_refs=false (the
+        // connection identity is the inputs, not a §6.2 resource_ref). FromInputs → re-connecting the
+        // same provider+account dedups. **NON-standing-grantable** (`entry_no_standing_grant`, §6.2
+        // floor, security-reviewer-ruled): a credential/AUTHORIZATION-ESTABLISHING action must never be
+        // folded into a plan-level approve-all — it ALWAYS gets a per-action human approval (the
+        // eligibility axis is blast-radius, NOT risk class — LESSON 32; the discard_hunk precedent). The
+        // IntegrationExecutor (X::Integration) registers on the live CatalogExecutor; the token→keychain
+        // WRITE is a separate deferred non-Gateway mechanism.
+        "integration.connect" => {
+            entry_no_standing_grant(R::Level2, P::Api, I::FromInputs, X::Integration, false, true)
+        }
         "git.create_worktree" => {
             entry(R::Level2, P::Git, I::NaturalResourceRef, X::Git, true, true)
         }

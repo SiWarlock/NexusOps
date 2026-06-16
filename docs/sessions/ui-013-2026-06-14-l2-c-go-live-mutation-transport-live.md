@@ -3,7 +3,7 @@
 - **Date:** 2026-06-14
 - **Phase:** Phase 6 (ui-resume) — **P6.8 L2-C** (the third + final L2 sub-slice; the USER-signed-off go-live; cat-1)
 - **Predecessor:** [ui-012](ui-012-2026-06-14-pre-l2-gates-and-l2-transport-disabled.md)
-- **Successor:** _(none yet)_
+- **Successor:** [ui-014](ui-014-2026-06-15-boundary-merge-0.33-regen.md)
 - **Track:** `track/ui` · implementer `ui-implementer` · orchestrator `ui-orchestrator` · lead `ui-team-lead`
 
 ## Why this session existed

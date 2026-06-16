@@ -4,7 +4,7 @@
 **Track:** edges (P5 git/worktrees/Execution Profiles ∥ P7.1 GitHub/Linear, daemon-side; modules `daemon/src/{git,integrations,workflow,profiles}/`)
 **Worktree:** `../NexusOps-edges` (branch `track/edges`) — **leave in place** (team is pausing, not done; restart resumes here; do NOT remove)
 **Predecessor handoff:** `docs/team-handoffs/edges-001-2026-06-12-wholesale-closeout-r3-sealed.md` (running ledger: `docs/team-handoffs/edges-lead-decision-log.md`, D1–D7 + R1 + H1)
-**Successor handoff:** _(filled when the next /team-end runs)_
+**Successor handoff:** `docs/team-handoffs/edges-003-2026-06-15-phase-exit-complete-merged-to-main.md` (edges COMPLETE + merged to main `95df2e0`)
 **Round-seal commit at handoff:** `a993d2b` (R4 seal) · branch tip, tree clean · pushed to **`origin/track/edges`** (synced) · **NOT merged to main** (R1-gated phase-exit only; main now at `822486a`, daemon in P4.0a)
 
 ## Why this handoff exists

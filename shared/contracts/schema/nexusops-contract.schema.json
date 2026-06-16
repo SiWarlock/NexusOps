@@ -1825,9 +1825,15 @@
     },
     "PullRequestRow": {
       "additionalProperties": false,
-      "description": "One row of the `proj_pull_request` read model (§7.2 / §11.2) — the GitHub-authoritative PR cache the\nui PR Review Workspace renders. The 2nd frozen projection-row (after [`ApprovalQueueRow`], P7.2). The\nBASIC columns the edges-P7.1 `PullRequestProjector` folds: `status` is the frozen §5.1 [`PullRequest`]\nenum (reject-unknown — no loose status string). `mergeable`/`checks_summary` are NOT on the row (no\nprojection column — they fed the derived `status` in the edges executor; a later enrichment SPREAD\nadds the 2 columns + folds them from `PullRequestSynced.mergeable?`/`checks_summary?` + adds the 2\nfields together). The internal `updated_at_seq` is NOT a wire field. **Nullability matches the DDL**\n(a display read model tolerates a NULL over failing the whole typed serve closed — contrast the\nsafety-critical `ApprovalQueueRow`): `pr_id` (PK) + `status` (NOT NULL) are non-Option; the rest are\n`Option`. `pr_number` is the GitHub-native PR number (a non-negative external natural → `u64`, a\nbounded integer in schemars — LESSON §15 trap 2). Optionals serialize as explicit `null` (no\n`skip_serializing_if`) so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
+      "description": "One row of the `proj_pull_request` read model (§7.2 / §11.2) — the GitHub-authoritative PR cache the\nui PR Review Workspace renders. The 2nd frozen projection-row (after [`ApprovalQueueRow`], P7.2). The\nBASIC columns the edges-P7.1 `PullRequestProjector` folds: `status` is the frozen §5.1 [`PullRequest`]\nenum (reject-unknown — no loose status string). `mergeable`/`checks_summary` are the **D5a enrichment**\n(the basic-now + SPREAD consumed) — folded from `PullRequestSynced.mergeable?`/`checks_summary?` into\nthe 2 columns the row now carries (`mergeable` is the FIRST bool projection column → stored as a SQLite\nINTEGER 0/1; the daemon read layer coerces it to this JSON bool, so the contract stays a pure\n`Option<bool>`). The internal `updated_at_seq` is NOT a wire field. **Nullability matches the DDL**\n(a display read model tolerates a NULL over failing the whole typed serve closed — contrast the\nsafety-critical `ApprovalQueueRow`): `pr_id` (PK) + `status` (NOT NULL) are non-Option; the rest are\n`Option`. `pr_number` is the GitHub-native PR number (a non-negative external natural → `u64`, a\nbounded integer in schemars — LESSON §15 trap 2). Optionals serialize as explicit `null` (no\n`skip_serializing_if`) so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
       "properties": {
         "base_branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "checks_summary": {
           "type": [
             "string",
             "null"
@@ -1836,6 +1842,12 @@
         "head_branch": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "mergeable": {
+          "type": [
+            "boolean",
             "null"
           ]
         },
@@ -3303,5 +3315,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.35.0"
+  "x-contract-version": "0.36.0"
 }

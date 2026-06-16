@@ -43,10 +43,11 @@ pub struct ApprovalQueueRow {
 /// One row of the `proj_pull_request` read model (§7.2 / §11.2) — the GitHub-authoritative PR cache the
 /// ui PR Review Workspace renders. The 2nd frozen projection-row (after [`ApprovalQueueRow`], P7.2). The
 /// BASIC columns the edges-P7.1 `PullRequestProjector` folds: `status` is the frozen §5.1 [`PullRequest`]
-/// enum (reject-unknown — no loose status string). `mergeable`/`checks_summary` are NOT on the row (no
-/// projection column — they fed the derived `status` in the edges executor; a later enrichment SPREAD
-/// adds the 2 columns + folds them from `PullRequestSynced.mergeable?`/`checks_summary?` + adds the 2
-/// fields together). The internal `updated_at_seq` is NOT a wire field. **Nullability matches the DDL**
+/// enum (reject-unknown — no loose status string). `mergeable`/`checks_summary` are the **D5a enrichment**
+/// (the basic-now + SPREAD consumed) — folded from `PullRequestSynced.mergeable?`/`checks_summary?` into
+/// the 2 columns the row now carries (`mergeable` is the FIRST bool projection column → stored as a SQLite
+/// INTEGER 0/1; the daemon read layer coerces it to this JSON bool, so the contract stays a pure
+/// `Option<bool>`). The internal `updated_at_seq` is NOT a wire field. **Nullability matches the DDL**
 /// (a display read model tolerates a NULL over failing the whole typed serve closed — contrast the
 /// safety-critical `ApprovalQueueRow`): `pr_id` (PK) + `status` (NOT NULL) are non-Option; the rest are
 /// `Option`. `pr_number` is the GitHub-native PR number (a non-negative external natural → `u64`, a
@@ -64,6 +65,8 @@ pub struct PullRequestRow {
     pub head_branch: Option<String>,
     pub base_branch: Option<String>,
     pub pr_checked_at: Option<String>,
+    pub mergeable: Option<bool>,
+    pub checks_summary: Option<String>,
 }
 
 /// One row of the `proj_session` read model (§7.2 / §11.4) — the derived current state of a session, the

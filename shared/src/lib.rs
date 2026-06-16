@@ -148,4 +148,10 @@ pub mod time;
 /// `replayed_event_count`/`recovered_at` folded from the now-CONSUMED `SessionRecovered`). Served TYPED
 /// (`read_session_typed`, fail-closed). The not-yet-consumed `proj_session` columns are a later SPREAD.
 /// Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.35.0";
+/// 0.36.0 (D5a/P4.6) enriches the `PullRequestRow` projection-row (`shared/src/projections.rs`) with
+/// `mergeable: Option<bool>` + `checks_summary: Option<String>` — the P7.2 "basic-now + SPREAD" consumed:
+/// folded from `PullRequestSynced.mergeable?`/`checks_summary?` into the 2 new `proj_pull_request` columns
+/// (MIGRATION_13, ALTER-only) + served TYPED (`mergeable` is the first bool projection column — INTEGER
+/// 0/1 in SQLite, coerced to a JSON bool in the daemon read layer; the contract stays a pure `Option<bool>`).
+/// Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.36.0";

@@ -567,9 +567,18 @@ pub fn read_pull_request_typed(db_path: &Path) -> Result<Vec<PullRequestRow>, Ip
         };
         // drop the internal bookkeeping column — not on the frozen wire row (deny_unknown_fields). NB:
         // any OTHER proj_pull_request column not on the frozen row trips deny_unknown_fields → fail-closed;
-        // the future mergeable/checks_summary SPREAD adds them as REAL struct fields (not strips), so the
-        // wire shape stays the single source of truth (`PullRequestRow` in shared/src/projections.rs).
+        // the D5a mergeable/checks_summary columns ARE real struct fields (below), so the wire shape stays
+        // the single source of truth (`PullRequestRow` in shared/src/projections.rs).
         obj.remove("updated_at_seq");
+        // D5a: `mergeable` is a SQLite INTEGER (0/1) → `sqlite_to_json` yields a JSON number, but the frozen
+        // `PullRequestRow.mergeable: Option<bool>` is a JSON bool. Coerce number→bool HERE (the first bool
+        // projection column) so the `shared/` contract stays a pure bool; NULL stays null (→ None). The
+        // `false` case (INTEGER 0) coerces to `false`, NOT absent (pinned in projections.rs).
+        if let Some(m) = obj.get_mut("mergeable") {
+            if let Some(n) = m.as_i64() {
+                *m = serde_json::Value::Bool(n != 0);
+            }
+        }
         // STRICT deserialize (reject-unknown; `status` binds the §5.1 PullRequest enum). A row that no
         // longer binds is corrupt/contract-broken → fail-closed, never a silent skip (LESSON §37).
         let typed: PullRequestRow =

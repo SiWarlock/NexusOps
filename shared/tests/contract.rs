@@ -2709,6 +2709,8 @@ fn sample_pull_request_row() -> nexusops_shared::projections::PullRequestRow {
         head_branch: Some("feature/x".to_string()),
         base_branch: Some("main".to_string()),
         pr_checked_at: Some("2026-06-14T00:00:00Z".to_string()),
+        mergeable: Some(true),
+        checks_summary: Some("3 passing".to_string()),
     }
 }
 
@@ -2716,8 +2718,9 @@ fn sample_pull_request_row() -> nexusops_shared::projections::PullRequestRow {
 fn test_pull_request_row_frozen_shape() {
     // spec(§7.2 / §2.5-seam) — the 2nd frozen projection-row (after ApprovalQueueRow). The field-name
     // set is frozen (LESSON §15) + round-trips; `status: PullRequest` (the frozen §5.1 enum — no loose
-    // status string). The BASIC columns the edges-P7.1 projector folds; `mergeable`/`checks_summary`
-    // are NOT frozen (no projection column — the SPREAD); `updated_at_seq` is NOT a wire field.
+    // status string). The BASIC columns the edges-P7.1 projector folds + the D5a `mergeable`/`checks_summary`
+    // enrichment (folded from PullRequestSynced.mergeable?/checks_summary?); `updated_at_seq` is NOT a wire
+    // field.
     expect_fields(
         &sample_pull_request_row(),
         &[
@@ -2730,6 +2733,8 @@ fn test_pull_request_row_frozen_shape() {
             "head_branch",
             "base_branch",
             "pr_checked_at",
+            "mergeable",
+            "checks_summary",
         ],
     );
     let json = serde_json::to_string(&sample_pull_request_row()).unwrap();
@@ -2764,16 +2769,17 @@ fn test_pull_request_row_status_binds_enum() {
 
 #[test]
 fn test_pull_request_row_rejects_unknown_field() {
-    // spec(§5.0/§15) — deny_unknown_fields on the frozen row: a valid row + an UNFROZEN column (here
-    // `mergeable`, a SPREAD not yet a field) fails to deserialize. This is what makes
-    // `read_pull_request_typed` fail closed on a row carrying a column not on the frozen wire shape.
+    // spec(§5.0/§15) — deny_unknown_fields on the frozen row: a valid row + an UNFROZEN column (a column
+    // not on the frozen wire shape — `mergeable`/`checks_summary` are now real D5a fields, so use a
+    // genuinely-unknown name) fails to deserialize. This is what makes `read_pull_request_typed` fail
+    // closed on a row carrying a column not on the frozen wire shape.
     let mut v = serde_json::to_value(sample_pull_request_row()).unwrap();
     v.as_object_mut()
         .unwrap()
-        .insert("mergeable".to_string(), serde_json::json!(true));
+        .insert("not_a_real_column".to_string(), serde_json::json!(true));
     assert!(
         serde_json::from_value::<nexusops_shared::projections::PullRequestRow>(v).is_err(),
-        "deny_unknown_fields rejects an unfrozen column (mergeable is a SPREAD, not yet a field)"
+        "deny_unknown_fields rejects an unfrozen column (not on the frozen wire shape)"
     );
 }
 
@@ -2859,14 +2865,15 @@ fn test_session_row_rejects_unknown_field() {
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_35_0() {
+fn test_contract_version_bumped_0_36_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.32.0 =
-    // the P4.2 `SessionFailed` event; 0.33.0 = the P7.1 Wave-C `integration.connect` catalog add
-    // (edges-029, ratified at the edges→main merge); 0.34.0 = the P7.2 `PullRequestRow` frozen
-    // projection-row (the 2nd); **0.35.0** = the D2 `SessionRow` frozen projection-row (the 3rd) +
-    // the now-consumed `SessionRecovered` fold. Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.35.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.33.0 =
+    // the P7.1 Wave-C `integration.connect` catalog add (edges-029, ratified at the edges→main merge);
+    // 0.34.0 = the P7.2 `PullRequestRow` frozen projection-row (the 2nd); 0.35.0 = the D2 `SessionRow`
+    // frozen projection-row (the 3rd) + the now-consumed `SessionRecovered` fold; **0.36.0** = the D5a
+    // `PullRequestRow` mergeable/checks_summary enrichment (the SPREAD consumed). Additive, no frozen
+    // type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.36.0");
 }
 
 // =================================================================================================

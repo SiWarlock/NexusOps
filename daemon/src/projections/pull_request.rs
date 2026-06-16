@@ -14,8 +14,8 @@
 //! rebuild-equivalence. The `#` delimiter can appear in neither a ULID repo_id nor a numeric pr_number,
 //! so the composite is unambiguous + unique per repo+PR. `status` binds the frozen §5.1 `PullRequest`
 //! machine via `wire_value` (the layer-correct serde producer — no fork). `title` is NULL (the event
-//! carries none); `mergeable`/`checks_summary` are NOT projected (no column — they already fed the
-//! derived `status` in the edges-023 executor).
+//! carries none); `mergeable`/`checks_summary` are folded into the 2 D5a columns (the §7.2 rich-PR
+//! enrichment — `mergeable` as a SQLite INTEGER 0/1, the read layer coerces it to the contract bool).
 //!
 //! Failure taxonomy (three distinct cases — the edges-022 precedent):
 //!  * **Healthy SKIP (no-op, not a degrade):** no `env.project_id`, no `env.action_request_id`, or no
@@ -91,19 +91,22 @@ impl Projector for PullRequestProjector {
         // numeric pr_number → unambiguous + unique per repo+PR.
         let pr_id = format!("{repo_id}#{}", payload.pr_number);
 
-        // `title` ← NULL (the event carries none) + `mergeable`/`checks_summary` are NOT projected (no
-        // column — they already fed the derived `status`), so both are ABSENT from the INSERT (→ NULL for
-        // title) AND from the DO UPDATE set. `pr_number` → i64 for the INTEGER column (a GitHub PR number
-        // is a small positive natural; u64→i64 is lossless for any real value).
+        // `title` ← NULL (the event carries none) → ABSENT from the INSERT. `mergeable`/`checks_summary`
+        // are the D5a enrichment — folded from the payload into the 2 new columns (in the INSERT AND the
+        // DO UPDATE set, so a re-sync refreshes them); `None` → NULL. `mergeable: Option<bool>` binds to
+        // the SQLite INTEGER column (Some(true)→1, Some(false)→0, None→NULL). `pr_number` → i64 for the
+        // INTEGER column (a GitHub PR number is a small positive natural; u64→i64 is lossless for any real
+        // value).
         tx.execute(
             "INSERT INTO proj_pull_request \
              (pr_id, project_id, repo_id, pr_number, status, head_branch, base_branch, pr_checked_at, \
-              updated_at_seq) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+              mergeable, checks_summary, updated_at_seq) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
              ON CONFLICT(pr_id) DO UPDATE SET \
                project_id=excluded.project_id, repo_id=excluded.repo_id, pr_number=excluded.pr_number, \
                status=excluded.status, head_branch=excluded.head_branch, base_branch=excluded.base_branch, \
-               pr_checked_at=excluded.pr_checked_at, updated_at_seq=excluded.updated_at_seq",
+               pr_checked_at=excluded.pr_checked_at, mergeable=excluded.mergeable, \
+               checks_summary=excluded.checks_summary, updated_at_seq=excluded.updated_at_seq",
             params![
                 pr_id,
                 project_id.as_str(),
@@ -113,6 +116,8 @@ impl Projector for PullRequestProjector {
                 payload.branch,
                 payload.base,
                 payload.pr_checked_at.as_str(),
+                payload.mergeable,
+                payload.checks_summary,
                 env.seq,
             ],
         )?;

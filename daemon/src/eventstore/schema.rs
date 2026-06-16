@@ -521,3 +521,17 @@ ALTER TABLE proj_session ADD COLUMN resume_mode TEXT;
 ALTER TABLE proj_session ADD COLUMN replayed_event_count INTEGER;
 ALTER TABLE proj_session ADD COLUMN recovered_at TEXT;
 ";
+
+/// Migration 13 (D5a/P4.6) — the §7.2/§11.2 rich-PR DISPLAY enrichment: surface `mergeable` +
+/// `checks_summary` on `proj_pull_request` so the ui PR Review Workspace renders the mergeability +
+/// checks badges. The columns are folded from `PullRequestSynced.mergeable?`/`checks_summary?` (the data
+/// the P7.1 event has always carried; P7.2 froze the row WITHOUT them). `mergeable` is a SQLite INTEGER
+/// (0/1 — there is no native bool; the read layer coerces it to the contract's JSON bool). `ALTER ADD
+/// COLUMN`: additive nullable → historical / unmergeable-unknown rows carry NULL, and `proj_pull_request`
+/// is in `REBUILD_TABLES` so a rebuild re-folds — no DROP+CREATE / offset-reset (the MIGRATION_12
+/// precedent). The historical `proj_pull_request` CREATE (MIGRATION_3) is deliberately UNCHANGED: editing
+/// it would duplicate-column-fail a fresh DB (CREATE without the columns at M3, then this ALTER at M13).
+pub const MIGRATION_13_PULL_REQUEST_MERGEABLE_CHECKS: &str = "\
+ALTER TABLE proj_pull_request ADD COLUMN mergeable INTEGER;
+ALTER TABLE proj_pull_request ADD COLUMN checks_summary TEXT;
+";

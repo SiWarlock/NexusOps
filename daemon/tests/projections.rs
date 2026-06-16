@@ -1584,6 +1584,28 @@ fn pr_payload(pr_number: u64, status: PullRequest, branch: &str, base: &str) -> 
     .unwrap()
 }
 
+/// like `pr_payload` but sets the D5a enrichment fields (mergeable/checks_summary) — the data the event
+/// has always carried (P7.1), now surfaced on the row.
+fn pr_payload_rich(
+    pr_number: u64,
+    status: PullRequest,
+    branch: &str,
+    base: &str,
+    mergeable: Option<bool>,
+    checks_summary: Option<&str>,
+) -> String {
+    serde_json::to_string(&PullRequestSynced {
+        pr_number,
+        status,
+        branch: branch.to_string(),
+        base: base.to_string(),
+        mergeable,
+        checks_summary: checks_summary.map(|s| s.to_string()),
+        pr_checked_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    })
+    .unwrap()
+}
+
 /// the proj_pull_request rows (the asserted columns), ordered by pr_id, for byte-identical compare.
 #[derive(Debug, PartialEq)]
 struct PrRow {
@@ -1596,6 +1618,10 @@ struct PrRow {
     head_branch: Option<String>,
     base_branch: Option<String>,
     pr_checked_at: Option<String>,
+    // D5a — the mergeable/checks_summary enrichment. `mergeable` is a SQLite INTEGER (0/1); rusqlite
+    // coerces INTEGER → Option<bool> on the typed `get` (distinct from the JSON-read serve path).
+    mergeable: Option<bool>,
+    checks_summary: Option<String>,
     updated_at_seq: i64,
 }
 
@@ -1604,7 +1630,8 @@ fn proj_pull_request_rows(path: &std::path::Path) -> Vec<PrRow> {
     let mut stmt = conn
         .prepare(
             "SELECT pr_id, project_id, repo_id, pr_number, title, status, head_branch, base_branch, \
-             pr_checked_at, updated_at_seq FROM proj_pull_request ORDER BY pr_id",
+             pr_checked_at, mergeable, checks_summary, updated_at_seq FROM proj_pull_request \
+             ORDER BY pr_id",
         )
         .unwrap();
     let rows = stmt
@@ -1619,7 +1646,9 @@ fn proj_pull_request_rows(path: &std::path::Path) -> Vec<PrRow> {
                 head_branch: r.get(6)?,
                 base_branch: r.get(7)?,
                 pr_checked_at: r.get(8)?,
-                updated_at_seq: r.get(9)?,
+                mergeable: r.get(9)?,
+                checks_summary: r.get(10)?,
+                updated_at_seq: r.get(11)?,
             })
         })
         .unwrap();
@@ -1711,9 +1740,9 @@ fn test_status_binds_pull_request_wire_value() {
 }
 
 #[test]
-fn test_title_null_mergeable_checks_not_projected() {
-    // spec: title is NULL (the PullRequestSynced event carries no title); mergeable/checks_summary have NO
-    // column (they already fed the derived status) — only title is assertable.
+fn test_title_null_mergeable_checks_null_when_absent() {
+    // spec: title is NULL (the PullRequestSynced event carries no title); after D5a mergeable/checks_summary
+    // HAVE columns (the SPREAD), but `pr_payload` carries None for both → they fold to NULL.
     let (_d, path) = temp_db();
     let mut store = open(&path);
     let gw = gw_with_git();
@@ -1726,10 +1755,170 @@ fn test_title_null_mergeable_checks_not_projected() {
             &pr_payload(1, PullRequest::Open, "f", "m"),
         ))
         .unwrap();
+    let r = &proj_pull_request_rows(&path)[0];
+    assert_eq!(r.title, None, "the event has no title → NULL");
+    assert_eq!(r.mergeable, None, "absent mergeable → NULL");
+    assert_eq!(r.checks_summary, None, "absent checks_summary → NULL");
+}
+
+#[test]
+fn test_pull_request_synced_projects_mergeable_and_checks() {
+    // spec(§7.2): the projector folds PullRequestSynced.mergeable?/checks_summary? into the 2 D5a columns
+    // (Some → value, None → NULL); rebuild-equivalent (derive-from-event, LESSON §17). The data was always
+    // in the event (P7.1) — D5a surfaces it on the row.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid.clone()),
+            &pr_payload_rich(42, PullRequest::Open, "feature", "main", Some(true), Some("3 passing")),
+        ))
+        .expect("append folds in-band");
+    let r = &proj_pull_request_rows(&path)[0];
+    assert_eq!(r.mergeable, Some(true), "mergeable folded from the event");
     assert_eq!(
-        proj_pull_request_rows(&path)[0].title,
-        None,
-        "the event has no title → NULL (mergeable/checks have no column — fed status)"
+        r.checks_summary.as_deref(),
+        Some("3 passing"),
+        "checks_summary folded from the event"
+    );
+
+    // ON CONFLICT DO UPDATE folds the enriched columns too: re-sync the SAME pr_id (reuse the sibling
+    // action, the test_on_conflict_updates_row pattern) with CHANGED mergeable/checks → the row reflects
+    // the new values (not the stale INSERT values).
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &pr_payload_rich(42, PullRequest::ChecksFailing, "feature", "main", Some(false), Some("1 failing")),
+        ))
+        .unwrap();
+    let rows = proj_pull_request_rows(&path);
+    assert_eq!(rows.len(), 1, "re-sync of the same pr_id → one row");
+    assert_eq!(rows[0].mergeable, Some(false), "DO UPDATE folds mergeable");
+    assert_eq!(
+        rows[0].checks_summary.as_deref(),
+        Some("1 failing"),
+        "DO UPDATE folds checks_summary"
+    );
+
+    // rebuild-equivalent: the enriched columns survive a rebuild (derive-from-event, REBUILD_TABLES).
+    let before = proj_pull_request_rows(&path);
+    store.rebuild_projections().unwrap();
+    assert_eq!(
+        before,
+        proj_pull_request_rows(&path),
+        "the enriched row is reproduced byte-identically on rebuild"
+    );
+
+    // None/None → NULL (a distinct repo, so a distinct pr_id row).
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    let gw2 = gw_with_git();
+    let pid2 = ProjectId::new();
+    let arid2 = seed_pr_action(&mut store2, &gw2, Some(pid2.clone()), Some("repo_beta"));
+    store2
+        .append(pr_synced_intent(
+            Some(pid2),
+            Some(arid2),
+            &pr_payload_rich(7, PullRequest::Open, "f", "m", None, None),
+        ))
+        .unwrap();
+    let n = &proj_pull_request_rows(&path2)[0];
+    assert_eq!(n.mergeable, None, "absent mergeable → NULL");
+    assert_eq!(n.checks_summary, None, "absent checks_summary → NULL");
+}
+
+#[test]
+fn test_read_pull_request_typed_serves_mergeable_checks() {
+    // spec(§7.2/§5.0): the typed serve round-trips the 2 D5a fields — a Some(true)/Some(text) row AND a
+    // None/None row both deserialize STRICTLY into the frozen PullRequestRow, fail-closed preserved. Pins
+    // the INTEGER(0/1)→bool coercion in read_pull_request_typed: `mergeable` is the FIRST bool projection
+    // column → SQLite stores it as INTEGER → the read layer coerces it to the contract's JSON bool (without
+    // the coercion the strict deserialize of `Option<bool>` over a JSON number fails closed).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &pr_payload_rich(42, PullRequest::Open, "feature", "main", Some(true), Some("3 passing")),
+        ))
+        .unwrap();
+    // a 2nd, distinct PR with mergeable=Some(false) — the FALSY edge (INTEGER 0 → JSON false), DISTINCT
+    // from Some(true) (INTEGER 1): a naive truthiness slip or treating 0 as absent only surfaces here.
+    let arid_false = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_gamma"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid_false),
+            &pr_payload_rich(9, PullRequest::ChecksFailing, "f", "m", Some(false), Some("2 failing")),
+        ))
+        .unwrap();
+    // a 3rd, distinct PR with None/None.
+    let arid2 = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_beta"));
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid2),
+            &pr_payload_rich(7, PullRequest::Merged, "f", "m", None, None),
+        ))
+        .unwrap();
+
+    let rows = nexusopsd::ipc::read_pull_request_typed(&path).expect("typed pull-request read");
+    let some = rows
+        .iter()
+        .find(|r| r.pr_id == "repo_alpha#42")
+        .expect("the Some(true) row");
+    assert_eq!(some.mergeable, Some(true), "mergeable=true served as a typed bool");
+    assert_eq!(some.checks_summary.as_deref(), Some("3 passing"));
+    let f = rows
+        .iter()
+        .find(|r| r.pr_id == "repo_gamma#9")
+        .expect("the Some(false) row");
+    assert_eq!(
+        f.mergeable,
+        Some(false),
+        "mergeable=false (INTEGER 0 → JSON false) — the falsy coercion edge, not None/true"
+    );
+    assert_eq!(f.checks_summary.as_deref(), Some("2 failing"));
+    let none = rows
+        .iter()
+        .find(|r| r.pr_id == "repo_beta#7")
+        .expect("the None row");
+    assert_eq!(none.mergeable, None, "absent mergeable → None on the wire");
+    assert_eq!(none.checks_summary, None);
+}
+
+#[test]
+fn test_migration_13_applies() {
+    // spec(MIGRATION_13 floor, LESSON §50): a fresh DB opens at/above user_version 13 and proj_pull_request
+    // gained the mergeable + checks_summary columns (ALTER-only; the historical CREATE untouched). FLOOR
+    // (>= 13), not exact-latest — the single exact-latest pin lives in gateway_plan.rs.
+    let (_d, path) = temp_db();
+    let store = open(&path);
+    assert!(
+        store.user_version().unwrap() >= 13,
+        "open migrates at/above MIGRATION_13"
+    );
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let cols: std::collections::BTreeSet<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('proj_pull_request')")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(cols.contains("mergeable"), "MIGRATION_13 adds mergeable");
+    assert!(
+        cols.contains("checks_summary"),
+        "MIGRATION_13 adds checks_summary"
     );
 }
 

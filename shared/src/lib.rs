@@ -137,4 +137,9 @@ pub mod time;
 /// registration-only) + `ExecutorKind::Integration` (`shared/src/catalog.rs`). EDGES-BRANCH-LOCAL: the
 /// daemon (catalog/CONTRACT owner) RATIFIES the action_type + assigns the final version at the
 /// edges→main merge (like the MIGRATION numbers). Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.33.0";
+/// 0.34.0 (P7.2) freezes the 2nd projection-row — `PullRequestRow` (`shared/src/projections.rs`): the
+/// `proj_pull_request` GitHub-authoritative read cache the ui PR Review Workspace (§11.2/§7.2) consumes,
+/// typed (the BASIC columns the edges-P7.1 projector folds; `status: PullRequest`). Served TYPED (no
+/// loose JSON; `read_pull_request_typed`, fail-closed). `mergeable`/`checks_summary` are a later SPREAD
+/// (no projection column yet). Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.34.0";

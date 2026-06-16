@@ -41,7 +41,7 @@ use crate::ipc::{
     TerminalOutputFrame, VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
-use crate::projections::ApprovalQueueRow;
+use crate::projections::{ApprovalQueueRow, PullRequestRow};
 use crate::status::{
     ActionRequest, AgentTeam, Approval, ExecutionProfile, ProjectBrain, PullRequest, Session, Task,
     WorkflowInstance, WorktreeGit, WorktreeOverlay,
@@ -217,6 +217,11 @@ struct ContractBundle {
     // daemon alive → proj_session status=Failed → the §11.4 restart affordance). Empty-payload
     // (WorktreeMerged precedent); System-actor, write-actor, NOT a Gateway Action. Additive (events.rs).
     session_failed: SessionFailed,
+    // P7.2 (CONTRACT 0.34.0) — the 2nd frozen projection-row: PullRequestRow (the proj_pull_request
+    // GitHub-authoritative read cache the ui PR Review Workspace consumes, typed; the BASIC columns the
+    // edges-P7.1 projector folds — mergeable/checks_summary are a later SPREAD). Additive
+    // (shared/src/projections.rs).
+    pull_request_row: PullRequestRow,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

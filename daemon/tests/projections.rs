@@ -1913,3 +1913,76 @@ fn test_pull_request_projector_ignores_other_events() {
         .unwrap();
     assert_eq!(proj_pull_request_rows(&path).len(), 0);
 }
+
+// ---- P7.2 — the PullRequest projection is served TYPED (the ApprovalQueue typed-serve precedent) ----
+
+#[test]
+fn test_get_projection_serves_typed_pull_request_row() {
+    // spec(§6.1 / §7.2 — P7.2): the PullRequest projection is served TYPED via `read_pull_request_typed`
+    // (the ApprovalQueue typed-serve precedent, pin #2 / LESSON §37) — the REAL projector-folded row
+    // deserializes STRICTLY into the frozen `PullRequestRow` (no loose JSON; the internal `updated_at_seq`
+    // dropped; `status` the typed §5.1 enum). Drives the in-band projector (a PullRequestSynced append
+    // over a seeded sibling row), then reads via the typed serve.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &pr_payload(42, PullRequest::Open, "feature", "main"),
+        ))
+        .expect("append folds in-band");
+
+    let rows = nexusopsd::ipc::read_pull_request_typed(&path).expect("typed pull-request read");
+    assert_eq!(rows.len(), 1, "the folded PR row is served");
+    let r = &rows[0];
+    assert_eq!(r.pr_id, "repo_alpha#42");
+    assert_eq!(r.project_id.as_deref(), Some(pid.as_str()));
+    assert_eq!(r.repo_id.as_deref(), Some("repo_alpha"));
+    assert_eq!(r.pr_number, Some(42));
+    assert_eq!(r.status, PullRequest::Open, "status is the typed enum");
+    assert_eq!(r.head_branch.as_deref(), Some("feature"));
+    assert_eq!(r.base_branch.as_deref(), Some("main"));
+    assert_eq!(r.pr_checked_at.as_deref(), Some("2026-06-08T00:00:00Z"));
+    assert_eq!(r.title, None, "title is NULL (the event carries none)");
+}
+
+#[test]
+fn test_pull_request_typed_serve_fails_closed() {
+    // spec(§7.2 / LESSON §37): the typed serve FAILS CLOSED on a proj_pull_request row that no longer
+    // deserializes into the frozen `PullRequestRow` (a corrupt/contract-broken row) → `InternalError`,
+    // never a silent skip or a loose-JSON fallback. Forces it by corrupting `status` to a value the
+    // frozen §5.1 PullRequest machine rejects (a direct writable conn — test-only fixture corruption,
+    // the gateway.rs precedent; production never writes this).
+    use nexusops_shared::ipc::IpcErrorCode;
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid),
+            &pr_payload(7, PullRequest::Open, "f", "m"),
+        ))
+        .expect("append folds in-band");
+    {
+        let c = rusqlite::Connection::open(&path).expect("fixture conn");
+        c.execute(
+            "UPDATE proj_pull_request SET status = 'not_a_real_status'",
+            [],
+        )
+        .expect("corrupt the status");
+    }
+    let err = nexusopsd::ipc::read_pull_request_typed(&path)
+        .expect_err("a row that doesn't deserialize fails closed");
+    assert_eq!(
+        err,
+        IpcErrorCode::InternalError,
+        "a corrupt/unbindable row → InternalError (fail-closed, never a silent skip)"
+    );
+}

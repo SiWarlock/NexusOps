@@ -20,7 +20,7 @@ use nexusops_shared::ipc::{
     Capabilities, DiffResult, GetDiffParams, GetProjectionParams, IpcErrorCode, ProjectionName,
     RpcRequest, RpcResponse, SubscribeParams, WireError,
 };
-use nexusops_shared::projections::ApprovalQueueRow;
+use nexusops_shared::projections::{ApprovalQueueRow, PullRequestRow};
 use nexusops_shared::status::ActionRequest as ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
 
@@ -477,6 +477,17 @@ fn get_projection(
             Err(code) => Err(code),
         });
     }
+    // P7.2 — the PullRequest projection is served TYPED (the frozen PullRequestRow), not loose JSON, so
+    // the ui PR Review Workspace (§11.2/§7.2) consumes a contract. The ApprovalQueue precedent above.
+    // Serialization of the already-validated Vec<PullRequestRow> is infallible in practice, but map a
+    // serialize failure to InternalError rather than a silent `null` body — fail-closed, never a
+    // corrupt response (LESSON §37; the ApprovalQueue branch's `unwrap_or(Null)` is a Step-9 consistency flag).
+    if params.name == ProjectionName::PullRequest {
+        return Ok(match read_pull_request_typed(db_path) {
+            Ok(typed) => serde_json::to_value(typed).map_err(|_| IpcErrorCode::InternalError),
+            Err(code) => Err(code),
+        });
+    }
     let table = projection_table(params.name);
     // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
     let conn =
@@ -520,6 +531,40 @@ pub fn read_approval_queue_typed(db_path: &Path) -> Result<Vec<ApprovalQueueRow>
         obj.remove("sort_key");
         obj.remove("updated_at_seq");
         let typed: ApprovalQueueRow =
+            serde_json::from_value(row).map_err(|_| IpcErrorCode::InternalError)?;
+        out.push(typed);
+    }
+    Ok(out)
+}
+
+/// (P7.2) Read `proj_pull_request` served TYPED as the frozen [`PullRequestRow`] — no loose JSON on the
+/// ui PR Review Workspace read path (the `read_approval_queue_typed` precedent, LESSON §37). Reads the
+/// row JSON over a read-only WAL conn, drops the internal `updated_at_seq` (not on the frozen wire row),
+/// and deserializes each row STRICTLY (reject-unknown — `status` binds the §5.1 `PullRequest` enum). A
+/// row that no longer deserializes (corrupt / contract-broken) is an integrity error → `InternalError`
+/// (fail-closed, never a silent skip).
+pub fn read_pull_request_typed(db_path: &Path) -> Result<Vec<PullRequestRow>, IpcErrorCode> {
+    // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
+    let conn =
+        crate::eventstore::open_read_only(db_path).map_err(|_| IpcErrorCode::InternalError)?;
+    let json =
+        read_table_as_json(&conn, "proj_pull_request").map_err(|_| IpcErrorCode::InternalError)?;
+    let serde_json::Value::Array(raw_rows) = json else {
+        return Err(IpcErrorCode::InternalError);
+    };
+    let mut out = Vec::with_capacity(raw_rows.len());
+    for mut row in raw_rows {
+        let serde_json::Value::Object(obj) = &mut row else {
+            return Err(IpcErrorCode::InternalError);
+        };
+        // drop the internal bookkeeping column — not on the frozen wire row (deny_unknown_fields). NB:
+        // any OTHER proj_pull_request column not on the frozen row trips deny_unknown_fields → fail-closed;
+        // the future mergeable/checks_summary SPREAD adds them as REAL struct fields (not strips), so the
+        // wire shape stays the single source of truth (`PullRequestRow` in shared/src/projections.rs).
+        obj.remove("updated_at_seq");
+        // STRICT deserialize (reject-unknown; `status` binds the §5.1 PullRequest enum). A row that no
+        // longer binds is corrupt/contract-broken → fail-closed, never a silent skip (LESSON §37).
+        let typed: PullRequestRow =
             serde_json::from_value(row).map_err(|_| IpcErrorCode::InternalError)?;
         out.push(typed);
     }

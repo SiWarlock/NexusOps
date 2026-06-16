@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::actions::{PolicyDecision, RequesterType, RiskLevel};
-use crate::status::Approval;
+use crate::status::{Approval, PullRequest};
 
 /// One open row of the `proj_approval_queue` read model (§7 / §11.5) — an approval awaiting a human
 /// decision. The bookkeeping `sort_key`/`updated_at_seq` columns are NOT on the wire row (internal —
@@ -37,4 +37,30 @@ pub struct ApprovalQueueRow {
     pub requested_at: String,
     pub expires_at: Option<String>,
     pub policy_decision: Option<PolicyDecision>,
+}
+
+/// One row of the `proj_pull_request` read model (§7.2 / §11.2) — the GitHub-authoritative PR cache the
+/// ui PR Review Workspace renders. The 2nd frozen projection-row (after [`ApprovalQueueRow`], P7.2). The
+/// BASIC columns the edges-P7.1 `PullRequestProjector` folds: `status` is the frozen §5.1 [`PullRequest`]
+/// enum (reject-unknown — no loose status string). `mergeable`/`checks_summary` are NOT on the row (no
+/// projection column — they fed the derived `status` in the edges executor; a later enrichment SPREAD
+/// adds the 2 columns + folds them from `PullRequestSynced.mergeable?`/`checks_summary?` + adds the 2
+/// fields together). The internal `updated_at_seq` is NOT a wire field. **Nullability matches the DDL**
+/// (a display read model tolerates a NULL over failing the whole typed serve closed — contrast the
+/// safety-critical `ApprovalQueueRow`): `pr_id` (PK) + `status` (NOT NULL) are non-Option; the rest are
+/// `Option`. `pr_number` is the GitHub-native PR number (a non-negative external natural → `u64`, a
+/// bounded integer in schemars — LESSON §15 trap 2). Optionals serialize as explicit `null` (no
+/// `skip_serializing_if`) so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct PullRequestRow {
+    pub pr_id: String,
+    pub project_id: Option<String>,
+    pub repo_id: Option<String>,
+    pub pr_number: Option<u64>,
+    pub title: Option<String>,
+    pub status: PullRequest,
+    pub head_branch: Option<String>,
+    pub base_branch: Option<String>,
+    pub pr_checked_at: Option<String>,
 }

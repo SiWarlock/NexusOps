@@ -2686,17 +2686,108 @@ fn test_approval_queue_row_rejects_unknown_field() {
     );
 }
 
+// =====================================================================================
+// P7.2 — the 2nd frozen projection-row: PullRequestRow (CONTRACT 0.34.0). The
+// `proj_pull_request` GitHub-authoritative read cache the ui PR Review Workspace (§11.2/§7.2)
+// consumes, typed in shared/ (the ②-mini/ApprovalQueueRow precedent, LESSON §37). The BASIC
+// columns the now-on-main edges-P7.1 projector folds; `status: PullRequest` (the frozen §5.1
+// enum). `mergeable`/`checks_summary` are NOT frozen (no projection column — the SPREAD); the
+// internal `updated_at_seq` is NOT a wire field. deny_unknown_fields.
+// =====================================================================================
+
+fn sample_pull_request_row() -> nexusops_shared::projections::PullRequestRow {
+    use nexusops_shared::projections::PullRequestRow;
+    use nexusops_shared::status::PullRequest;
+    // fully populated (all Options Some) so the field-name snapshot sees every key.
+    PullRequestRow {
+        pr_id: "repo_01ARZ3NDEKTSV4RRFFQ69G5FAV#42".to_string(),
+        project_id: Some("prj_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        repo_id: Some("repo_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        pr_number: Some(42),
+        title: Some("Add the thing".to_string()),
+        status: PullRequest::Open,
+        head_branch: Some("feature/x".to_string()),
+        base_branch: Some("main".to_string()),
+        pr_checked_at: Some("2026-06-14T00:00:00Z".to_string()),
+    }
+}
+
+#[test]
+fn test_pull_request_row_frozen_shape() {
+    // spec(§7.2 / §2.5-seam) — the 2nd frozen projection-row (after ApprovalQueueRow). The field-name
+    // set is frozen (LESSON §15) + round-trips; `status: PullRequest` (the frozen §5.1 enum — no loose
+    // status string). The BASIC columns the edges-P7.1 projector folds; `mergeable`/`checks_summary`
+    // are NOT frozen (no projection column — the SPREAD); `updated_at_seq` is NOT a wire field.
+    expect_fields(
+        &sample_pull_request_row(),
+        &[
+            "pr_id",
+            "project_id",
+            "repo_id",
+            "pr_number",
+            "title",
+            "status",
+            "head_branch",
+            "base_branch",
+            "pr_checked_at",
+        ],
+    );
+    let json = serde_json::to_string(&sample_pull_request_row()).unwrap();
+    let back: nexusops_shared::projections::PullRequestRow =
+        serde_json::from_str(&json).expect("PullRequestRow round-trips");
+    assert_eq!(
+        back.status,
+        nexusops_shared::status::PullRequest::Open,
+        "status is the typed PullRequest enum"
+    );
+}
+
+#[test]
+fn test_pull_request_row_status_binds_enum() {
+    // spec(§5.1) — `status` binds the frozen §5.1 PullRequest(11) machine: the canonical wire value
+    // deserializes to the enum variant; an UNKNOWN status string is REJECTED (no loose status on the
+    // row). This is the reject-unknown half of the typed-serve fail-closed (a corrupt status row →
+    // InternalError).
+    let valid = serde_json::to_value(sample_pull_request_row()).unwrap();
+    let back: nexusops_shared::projections::PullRequestRow =
+        serde_json::from_value(valid.clone()).expect("a valid status wire value binds");
+    assert_eq!(back.status, nexusops_shared::status::PullRequest::Open);
+    let mut bad = valid;
+    bad.as_object_mut()
+        .unwrap()
+        .insert("status".to_string(), serde_json::json!("not_a_real_status"));
+    assert!(
+        serde_json::from_value::<nexusops_shared::projections::PullRequestRow>(bad).is_err(),
+        "an unknown status string is rejected (no loose status on the row)"
+    );
+}
+
+#[test]
+fn test_pull_request_row_rejects_unknown_field() {
+    // spec(§5.0/§15) — deny_unknown_fields on the frozen row: a valid row + an UNFROZEN column (here
+    // `mergeable`, a SPREAD not yet a field) fails to deserialize. This is what makes
+    // `read_pull_request_typed` fail closed on a row carrying a column not on the frozen wire shape.
+    let mut v = serde_json::to_value(sample_pull_request_row()).unwrap();
+    v.as_object_mut()
+        .unwrap()
+        .insert("mergeable".to_string(), serde_json::json!(true));
+    assert!(
+        serde_json::from_value::<nexusops_shared::projections::PullRequestRow>(v).is_err(),
+        "deny_unknown_fields rejects an unfrozen column (mergeable is a SPREAD, not yet a field)"
+    );
+}
+
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_33_0() {
+fn test_contract_version_bumped_0_34_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
     // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.31.0 =
     // the P4.1b-1 `SessionRecovered` event; 0.32.0 = the P4.2 `SessionFailed` observation event;
-    // **0.33.0** = the P7.1 Wave-C `integration.connect` catalog add + `ExecutorKind::Integration`
-    // (edges-029; edges-branch-local — the daemon ratifies the action_type + assigns the final version
-    // at the edges→main merge, like the MIGRATION numbers). Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.33.0");
+    // 0.33.0 = the P7.1 Wave-C `integration.connect` catalog add + `ExecutorKind::Integration`
+    // (edges-029, ratified at the edges→main merge); **0.34.0** = the P7.2 `PullRequestRow` frozen
+    // projection-row (the 2nd, after ApprovalQueueRow). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.34.0");
 }
 
 // =================================================================================================

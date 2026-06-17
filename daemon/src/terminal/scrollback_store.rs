@@ -26,6 +26,9 @@ pub trait ScrollbackStore: Send + Sync {
     fn save(&self, session_id: &SessionId, snapshot: &VtSnapshot);
     /// Load the latest snapshot for a session, or `None` if none was saved (→ the `Relaunched` rung).
     fn load(&self, session_id: &SessionId) -> Option<VtSnapshot>;
+    /// Evict a session's persisted snapshot (075d retention) — called when the session terminally reaps
+    /// (it won't be recovered). Idempotent + best-effort (a missing entry is a no-op, never an error).
+    fn evict(&self, session_id: &SessionId);
 }
 
 /// The production PLACEHOLDER (075c): `save` drops, `load` returns `None`. Production recovery stays on
@@ -39,6 +42,7 @@ impl ScrollbackStore for NoopScrollbackStore {
     fn load(&self, _session_id: &SessionId) -> Option<VtSnapshot> {
         None
     }
+    fn evict(&self, _session_id: &SessionId) {}
 }
 
 /// An in-memory [`ScrollbackStore`] for tests — the producer→recovery seam without persistence.
@@ -80,5 +84,12 @@ impl ScrollbackStore for FakeScrollbackStore {
             .expect("scrollback store lock")
             .get(session_id)
             .cloned()
+    }
+
+    fn evict(&self, session_id: &SessionId) {
+        self.inner
+            .lock()
+            .expect("scrollback store lock")
+            .remove(session_id);
     }
 }

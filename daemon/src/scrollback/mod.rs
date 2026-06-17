@@ -21,9 +21,11 @@
 //! primary backstop (an agent can echo a literal no-shape secret). Same posture as harness transcripts
 //! (also best-effort-redacted + 0600) — precedent-consistent, an honest accepted limitation.
 
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +38,13 @@ use crate::terminal::{HeadlessVt, ScrollbackStore, VtSnapshot, DEFAULT_SCROLLBAC
 /// The on-disk sidecar format version — a migration hook (independent of the in-memory
 /// `VtSnapshot`'s own version). A sidecar with an unknown version loads as `None` (fail-safe).
 const PERSIST_VERSION: u8 = 1;
+
+/// Retention backstop bounds (USER ruling ③). Conservative defaults; tuning is a follow-up. Per
+/// sidecar: ~`DEFAULT_SCROLLBACK_CAPACITY` rows × a generous per-row size. Total dir: a soft cap that
+/// evicts oldest-first. Age TTL: a stale sidecar (no recovery in this long) is reaped.
+const MAX_SIDECAR_BYTES: u64 = 4 * 1024 * 1024; // 4 MiB / session sidecar
+const MAX_DIR_BYTES: u64 = 256 * 1024 * 1024; // 256 MiB total
+const MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60); // 7 days
 
 /// The ONLY serializable on-disk scrollback type — **every String is POST-redaction** (the §15
 /// structural guarantee: an unredacted secret cannot reach the serialized bytes). Daemon-internal (NOT
@@ -132,6 +141,91 @@ impl FileScrollbackStore {
         }
         Ok(())
     }
+
+    /// Startup orphan-sweep (075d retention ③): remove any sidecar whose `session_id` has no matching
+    /// `proj_session` row (the session was never recorded, or its row was pruned), plus any leftover
+    /// `.tmp` from a crashed write. Best-effort (a read error skips the sweep — never fatal). Called on
+    /// the CONCRETE store at startup (before erasing to the trait object), with the live session id set.
+    pub fn sweep_orphans(&self, known: &HashSet<SessionId>) {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match path.extension().and_then(|e| e.to_str()) {
+                Some("tmp") => {
+                    // a leftover temp from a crashed write — never a valid sidecar; sweep it.
+                    let _ = std::fs::remove_file(&path);
+                }
+                Some("json") => {
+                    let keep = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .and_then(|stem| SessionId::parse(stem).ok())
+                        .is_some_and(|sid| known.contains(&sid));
+                    if !keep {
+                        // no matching session (or an unparseable name) → orphan; remove.
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Retention backstop (075d ③) with production bounds.
+    pub fn enforce_backstop(&self) {
+        self.enforce_backstop_with(MAX_SIDECAR_BYTES, MAX_DIR_BYTES, MAX_AGE);
+    }
+
+    /// The parameterized backstop (tests pass tight bounds): remove each sidecar over `max_sidecar_bytes`
+    /// OR older than `max_age`; then, if the dir total still exceeds `max_dir_bytes`, evict oldest-mtime
+    /// sidecars until under. Best-effort; `.json` only (skips `.tmp`). Deletions only → no §15 surface.
+    pub fn enforce_backstop_with(
+        &self,
+        max_sidecar_bytes: u64,
+        max_dir_bytes: u64,
+        max_age: Duration,
+    ) {
+        let now = SystemTime::now();
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        let mut survivors: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            let size = meta.len();
+            let mtime = meta.modified().unwrap_or(now);
+            let too_old = now
+                .duration_since(mtime)
+                .map(|age| age > max_age)
+                .unwrap_or(false);
+            if size > max_sidecar_bytes || too_old {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            survivors.push((path, size, mtime));
+        }
+        // dir cap — evict oldest first until the total is under the cap.
+        let mut total: u64 = survivors.iter().map(|(_, s, _)| *s).sum();
+        if total > max_dir_bytes {
+            survivors.sort_by_key(|(_, _, mtime)| *mtime);
+            for (path, size, _) in &survivors {
+                if total <= max_dir_bytes {
+                    break;
+                }
+                // only count the freed bytes if the delete actually succeeded — a failed remove must
+                // NOT deflate `total` (that would halt eviction with the dir still over the cap).
+                if std::fs::remove_file(path).is_ok() {
+                    total -= size;
+                }
+            }
+        }
+    }
 }
 
 impl ScrollbackStore for FileScrollbackStore {
@@ -209,6 +303,11 @@ impl ScrollbackStore for FileScrollbackStore {
             &persisted.scrollback_rows,
         );
         Some(vt.snapshot())
+    }
+
+    fn evict(&self, session_id: &SessionId) {
+        // best-effort + idempotent (a missing sidecar is fine — `remove_file` errs but we ignore it).
+        let _ = std::fs::remove_file(self.sidecar_path(session_id));
     }
 }
 

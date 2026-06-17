@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nexusops_shared::catalog::ExecutorKind;
+use nexusops_shared::ids::SessionId;
 use tokio::sync::watch;
 
 use nexusopsd::bootstrap::{cold_start, BootstrapConfig, DB_FILENAME};
@@ -170,7 +171,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         base_dir.join("scrollback"),
         Arc::new(PrefixRedactor),
     ) {
-        Ok(store) => Arc::new(store),
+        Ok(store) => {
+            // 075d retention (③): startup orphan-sweep (sidecars with no matching proj_session +
+            // leftover .tmp) + the size/age backstop — on the CONCRETE store, BEFORE erasing to the
+            // trait object. Best-effort (never fatal); proj_session was rebuilt by cold_start. SKIP the
+            // sweep if the proj_session read fails (None) — never nuke every sidecar on a transient
+            // read error; the backstop runs regardless (it's proj_session-independent).
+            if let Some(known) = read_known_session_ids(&base_dir.join(DB_FILENAME)) {
+                store.sweep_orphans(&known);
+            }
+            store.enforce_backstop();
+            Arc::new(store)
+        }
         Err(e) => {
             eprintln!(
                     "nexusopsd: scrollback store init failed — degrading to no-op (no Replayed-after-restart): {e}"
@@ -419,6 +431,30 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     actor.shutdown().await;
     // _pidlock drops here → the single-instance OS lock releases.
     Ok(())
+}
+
+/// Read the session ids the rebuilt `proj_session` knows (any status) — the live set the 075d startup
+/// orphan-sweep KEEPS (every other sidecar is an orphan). `None` on ANY read failure (open / prepare /
+/// query / a row-fetch error) → the caller SKIPS the sweep (never nuke every sidecar on a transient
+/// DB-read error — a partial read would risk sweeping a session whose row was momentarily unreadable).
+/// Read-only WAL (the recovery precedent); runs post-`cold_start` (proj_session is rebuilt).
+fn read_known_session_ids(
+    db_path: &std::path::Path,
+) -> Option<std::collections::HashSet<SessionId>> {
+    let conn = open_read_only(db_path).ok()?;
+    let mut stmt = conn.prepare("SELECT session_id FROM proj_session").ok()?;
+    // collect into a Result so ANY row-fetch error → None (skip the sweep), not a silent partial set.
+    let raw: rusqlite::Result<Vec<String>> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .ok()?
+        .collect();
+    let mut out = std::collections::HashSet::new();
+    for sid in raw.ok()? {
+        if let Ok(id) = SessionId::parse(&sid) {
+            out.insert(id);
+        }
+    }
+    Some(out)
 }
 
 /// Resolve the macOS app-support dir: `$HOME/Library/Application Support/NexusOps` (1.6a Q2 —

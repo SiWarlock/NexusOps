@@ -284,7 +284,13 @@ pub fn spawn_supervisor_task(
                 _ = reaper.tick() => {
                     // a reaped session → cancel its pending interceptions (fail-closed) + (4.2) emit
                     // SessionFailed for a `Failed` reap (§17 child-death; clean Killed/Completed = no emit).
-                    handle_reaped(&supervisor.try_reap(), &registry, death_sink.as_ref());
+                    let reaped = supervisor.try_reap();
+                    handle_reaped(&reaped, &registry, death_sink.as_ref());
+                    // 075d — evict each terminally-reaped session's scrollback sidecar (it won't be
+                    // recovered). A trait method on the held `Arc<dyn ScrollbackStore>` (cat-1: no WriteHandle).
+                    for (id, _) in &reaped {
+                        scrollback_store.evict(id);
+                    }
                 }
             }
         }

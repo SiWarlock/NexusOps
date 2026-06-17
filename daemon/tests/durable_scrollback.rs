@@ -2,9 +2,11 @@
 //! (commit 1): the store contract + the 🔴 §15 redaction-before-persist + fail-closed + perms + the
 //! end-to-end `Replayed` path. (The lifecycle tests — evict/sweep/backstop — are commit 2.)
 
+use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use nexusops_shared::actor::ActorType;
 use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType};
@@ -319,5 +321,142 @@ fn test_recovery_end_to_end_replays() {
         result.mode,
         ResumeMode::Replayed,
         "the real durable store makes Replayed-after-restart reachable (§8/§17)"
+    );
+}
+
+// ============================================================================================
+// 075d/2 — LIFECYCLE (evict / startup orphan-sweep / size+age backstop). NON-safety (deletions only).
+// ============================================================================================
+
+/// Test 6 — `evict` removes the sidecar (terminal reap → not recoverable) + is idempotent.
+#[test]
+fn test_evict_removes_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path());
+    let sid = SessionId::new();
+    store.save(&sid, &snapshot_from((24, 80, 1000), b"evict me"));
+    let sidecar = dir
+        .path()
+        .join("scrollback")
+        .join(format!("{}.json", sid.as_str()));
+    assert!(sidecar.exists());
+
+    store.evict(&sid);
+    assert!(!sidecar.exists(), "evict removes the sidecar");
+    assert!(store.load(&sid).is_none(), "→ load is None");
+    store.evict(&sid); // idempotent — a second evict is a no-op (no panic).
+}
+
+/// Test 7 — the startup orphan-sweep removes sidecars with no matching `proj_session` (+ leftover
+/// `.tmp`), and KEEPS a live session's sidecar.
+#[test]
+fn test_startup_orphan_sweep() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path());
+    let scrollback_dir = dir.path().join("scrollback");
+    let live = SessionId::new();
+    let orphan = SessionId::new();
+    store.save(&live, &snapshot_from((24, 80, 1000), b"live session"));
+    store.save(&orphan, &snapshot_from((24, 80, 1000), b"orphan session"));
+    // a leftover temp from a crashed write.
+    std::fs::write(scrollback_dir.join("crashed.json.tmp"), b"partial").unwrap();
+
+    let mut known = HashSet::new();
+    known.insert(live.clone());
+    store.sweep_orphans(&known);
+
+    assert!(
+        store.load(&live).is_some(),
+        "the live session's sidecar is KEPT"
+    );
+    assert!(store.load(&orphan).is_none(), "the orphan sidecar is swept");
+    assert!(
+        !scrollback_dir.join("crashed.json.tmp").exists(),
+        "the leftover .tmp is swept"
+    );
+}
+
+/// Test 8 — the size/age backstop evicts an over-size sidecar AND an over-age one, keeping a fresh
+/// under-cap one.
+#[test]
+fn test_size_age_backstop() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path());
+    let scrollback_dir = dir.path().join("scrollback");
+
+    // SIZE — a tiny per-sidecar cap evicts the (>1-byte) sidecar.
+    let big = SessionId::new();
+    store.save(
+        &big,
+        &snapshot_from((24, 80, 1000), b"over the tiny size cap"),
+    );
+    store.enforce_backstop_with(1, u64::MAX, Duration::from_secs(86400));
+    assert!(
+        store.load(&big).is_none(),
+        "a sidecar over the per-sidecar size cap is evicted"
+    );
+
+    // AGE — a sidecar older than the TTL is evicted (set its mtime 10 days into the past).
+    let old = SessionId::new();
+    store.save(&old, &snapshot_from((24, 80, 1000), b"stale session"));
+    let old_path = scrollback_dir.join(format!("{}.json", old.as_str()));
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&old_path)
+        .unwrap();
+    f.set_modified(SystemTime::now() - Duration::from_secs(10 * 86400))
+        .unwrap();
+    drop(f);
+    store.enforce_backstop_with(u64::MAX, u64::MAX, Duration::from_secs(7 * 86400));
+    assert!(
+        store.load(&old).is_none(),
+        "a sidecar older than the age TTL is evicted"
+    );
+
+    // a FRESH under-cap sidecar survives the backstop.
+    let fresh = SessionId::new();
+    store.save(&fresh, &snapshot_from((24, 80, 1000), b"fresh session"));
+    store.enforce_backstop_with(u64::MAX, u64::MAX, Duration::from_secs(7 * 86400));
+    assert!(
+        store.load(&fresh).is_some(),
+        "a fresh, under-cap sidecar survives the backstop"
+    );
+}
+
+/// Test 8b — the DIR-CAP backstop evicts OLDEST-first until under the total cap (the most intricate
+/// `enforce_backstop_with` sub-path).
+#[test]
+fn test_dir_cap_evicts_oldest_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path());
+    let scrollback_dir = dir.path().join("scrollback");
+    let older = SessionId::new();
+    let newer = SessionId::new();
+    // identical-length content → identical sidecar byte sizes.
+    store.save(&older, &snapshot_from((24, 80, 1000), b"session A content"));
+    store.save(&newer, &snapshot_from((24, 80, 1000), b"session B content"));
+
+    // make `older` actually older.
+    let older_path = scrollback_dir.join(format!("{}.json", older.as_str()));
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&older_path)
+        .unwrap();
+    f.set_modified(SystemTime::now() - Duration::from_secs(3600))
+        .unwrap();
+    drop(f);
+
+    // a dir cap that fits ONE sidecar but not both → only the OLDEST is evicted.
+    let one = std::fs::metadata(scrollback_dir.join(format!("{}.json", newer.as_str())))
+        .unwrap()
+        .len();
+    store.enforce_backstop_with(u64::MAX, one + 10, Duration::from_secs(86400));
+    assert!(
+        store.load(&older).is_none(),
+        "the OLDEST sidecar is evicted to get under the dir cap"
+    );
+    assert!(
+        store.load(&newer).is_some(),
+        "the newest sidecar is kept (under the cap after one eviction)"
     );
 }

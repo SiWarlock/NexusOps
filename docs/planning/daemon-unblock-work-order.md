@@ -92,6 +92,19 @@ CONTRACT bump. **Skip if the basic PR list (status + branches) is enough for now
 
 ---
 
+## D6 — PR card diff-stats (Option A, user-chosen 2026-06-17) — **NEW daemon ask for the PR Workspace**
+
+The prototype's PR cards show `+additions / -deletions · N files · M commits`. **VERIFIED these are NOT in `PullRequestSynced`** (which carries only pr_number/status/branch/base/mergeable/checks_summary/pr_checked_at) — so they're not capturable by a projection add; the **edges GitHub-sync must FETCH them from the API**.
+**Slice:** extend the edges PR producer to capture `additions / deletions / changed_files / commits` from the GitHub PR API → add to the `PullRequestSynced` payload → project onto `PullRequestRow` → typed serve. Additive CONTRACT bump. (Bigger than D1's freeze — it's a producer-side capture.)
+
+## D7 (verify-first) — the PR-diff data path for the Review tab
+
+The prototype "Review" tab shows **PR #84's code diff** (changed files + hunks). The existing `get_diff` is **worktree-scoped** (`wt_` id, the 6.3e per-hunk *worktree* review) — NOT a remote-PR diff. If reviewing a PR's diff needs the PR's changeset (vs its base), that's a **new daemon data path** (the orch verifies whether a worktree already backs each PR diff, or this is a real gap). Flagged, not yet scoped.
+
+## Future arcs (NOT this read-only Phase-7) — surfaced by the prototype
+- **PR-review mutations** — the prototype's `Merge` (board), `Approve PR` + per-hunk `Accept / Reject / Request fix` (Review tab) are **risk≥3 Gateway mutations** = a **future cat-1 arc** (own checkpoint, like the L2 go-live). Render disabled in the read-only Phase-7.
+- **Brain controls** — `Ask Brain` / `Ask why` are Brain-backed → the deferred sibling `brain/` product. Render disabled.
+
 ## Out of scope (not a daemon-unblock item)
 - **Brain drawer (8.2-UI)** — the sibling `brain/` product, integrated later, not started. Deferred.
 

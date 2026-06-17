@@ -3,7 +3,7 @@
 - **Date:** 2026-06-16
 - **Phase:** Phase 4 / P4.6 (the UI-unblock work order tail — the D5 vertical)
 - **Predecessor:** [027-2026-06-16-ui-unblock-d-series.md](027-2026-06-16-ui-unblock-d-series.md)
-- **Successor:** _(none yet — session restarting after a scaffolding upgrade; NO respawn)_
+- **Successor:** [`029-2026-06-17-codex-arc-3.3cd-interception-and-telemetry.md`](029-2026-06-17-codex-arc-3.3cd-interception-and-telemetry.md)
 - **Round seal:** `3d0cba5` (orchestrator `/orchestrate-end`) · **CONTRACT 0.38.0** · workspace green.
 
 ## Why this session existed

@@ -12,6 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
+    "bench": "vitest bench --run",
+    "bench:guard": "vitest run --config vitest.bench.config.ts",
     "oxlint": "oxlint",
     "lint": "oxlint",
     "tauri": "tauri"

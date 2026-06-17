@@ -32,6 +32,33 @@ jobs:
       - name: event-write benchmark (+ N=100 ceiling sweep)
         run: BENCH_CEILING=1 cargo bench --bench event_write
 
+  # --- §18 ui graph-render benchmark (Performance-vs-§18, ui side) ------------------------------
+  # The first ui bench (P6.6) — the §18 ProjectGraph render budget (< 500 ms). Mirrors the daemon `perf`
+  # job: NON-gating + allowed-to-fail-loudly (a red nightly = the Finding signal to review — shared-runner
+  # variance vs a real regression, NOT a merge block). `pnpm bench` reports the as-built render (typical
+  # 100-node + saturating 500-node); `pnpm bench:guard` HARD-ASSERTS the calibrated guard (typical render
+  # median < 150 ms — tighter than the 500 ms SLO with margin). Also run before `/phase-exit` for the §18
+  # graph row (workflow_dispatch). Driven from `ui/` (pnpm 9 + node 22, the ci.yml ui-job setup).
+  ui-graph-bench:
+    name: §18 ui graph-render benchmark (non-gating)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: install pnpm@9
+        run: npm i -g pnpm@9
+      - name: install deps
+        run: pnpm install --frozen-lockfile
+      - name: graph-render bench (report — typical + saturating)
+        run: pnpm bench
+      - name: graph-render §18 guard (assert typical < 150 ms)
+        run: pnpm bench:guard
+
   # --- Placeholders → Phase 3 (the real adapters don't exist yet) -------------------------------
   # live-agent-smoke:   real Claude/Codex CLI smoke run (the §14 non-merge "Live-agent smoke" tier)
   #                     — joins when the P3 HarnessAdapter lands.

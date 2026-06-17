@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 //
-// Layer C integration (P6.8 L1, slice 052) — "live data stays live": a streamed Session delta
-// re-renders the cockpit. A dedicated fake gateway (extends MockGatewayPort for the reads) whose
-// subscribe yields a status-CHANGING delta then stays open; the Shell's subscribe-effect →
-// supervisor → delta-reducer → setData applies it and the new session renders. (The Mock's own
-// subscribe streams a benign no-op delta; this proves a visible live update.)
+// Layer C integration (P6.8) — "live data stays live": a daemon ProjectionDelta keeps the cockpit
+// current. Both the Session (ui-062) and ApprovalQueue (ui-059) streams consume a `row:None` id-NUDGE
+// via REFETCH-ON-NUDGE (a coalesced re-read of get_projection), NOT a row-apply reducer (which no-ops
+// on the absent row — LESSON §29). A dedicated fake gateway (extends MockGatewayPort for the reads)
+// holds the nudge until the test captures a baseline, then serves an AUGMENTED page on the re-read so
+// the live change is observable only via the refetch (proving it's not a row-apply).
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 
@@ -37,6 +38,8 @@ import type {
   ProjectionDelta,
   ProjectionName,
   ProjectionPageByName,
+  SessionProjectionPage,
+  SessionRow,
 } from "../contracts/index";
 import type {
   ProjectionScope,
@@ -46,43 +49,87 @@ import type {
 import { makeApprovalRow } from "../projections/fixtures/proj_approval_queue";
 import { projectActivityFixture } from "../projections/fixtures/proj_project_activity";
 
-/** A gateway that streams ONE caller-chosen delta then stays open (a live stream). Reuses the
- *  MockGatewayPort reads/connection; only `subscribe` is overridden. */
-class LiveDeltaGateway extends MockGatewayPort {
-  constructor(private readonly testDelta: ProjectionDelta) {
+/** A gateway that holds the Session `row:None` nudge until the test releases it (race-free baseline
+ *  capture), then serves an AUGMENTED Session page (one extra session) on the post-nudge re-read. A
+ *  row-apply reducer would no-op on the absent row → the extra session would never appear; only
+ *  refetch-on-nudge surfaces it (ui-062 — the §29 pattern generalized from ApprovalQueue to Session).
+ *  ApprovalQueue stays healthy via super. */
+class GatedSessionRefetchGateway extends MockGatewayPort {
+  sessionReads = 0;
+  private nudgeReleased = false;
+  private releaseNudgeFn!: () => void;
+  private readonly nudgeGate: Promise<void>;
+  constructor(private readonly extra: SessionRow) {
     super();
-  }
-  async *subscribe(): AsyncIterable<ProjectionDelta> {
-    yield this.testDelta;
-    await new Promise<void>(() => {
-      /* stay open — a live stream */
+    this.nudgeGate = new Promise<void>((resolve) => {
+      this.releaseNudgeFn = resolve;
     });
+  }
+  releaseNudge(): void {
+    this.nudgeReleased = true; // the live change is now visible to subsequent re-reads
+    this.releaseNudgeFn();
+  }
+  async *subscribe(params: SubscribeParams): AsyncIterable<ProjectionDelta> {
+    if (params.projection === "Session") {
+      await this.nudgeGate; // hold the nudge until the test captures the baseline
+      yield { projection: "Session", kind: "upsert", id: "sess_live_nudge" }; // row:None
+      await new Promise<void>(() => {
+        /* stay open — a live stream; the never-resolving promise is abandoned at test teardown. */
+      });
+      return;
+    }
+    yield* super.subscribe(params); // ApprovalQueue: the mock's benign delta + stay open
+  }
+  async get_projection<K extends ProjectionName>(
+    name: K,
+    scope?: ProjectionScope,
+    page?: ProjectionPageParams,
+  ): Promise<ProjectionPageByName[K]> {
+    const result = await super.get_projection(name, scope, page);
+    if (name === "Session") {
+      this.sessionReads++;
+      // The augmented session appears ONLY after the nudge is released (the live change) — so ANY
+      // pre-nudge read (the load + any recovery read) is the base set, regardless of count.
+      if (this.nudgeReleased) {
+        const s = result as SessionProjectionPage;
+        return { ...s, rows: [...s.rows, this.extra] } as ProjectionPageByName[K];
+      }
+    }
+    return result;
   }
 }
 
 afterEach(cleanup);
 
-describe("Shell live subscribe (Layer C — live data stays live)", () => {
-  it("applies a streamed Session upsert delta — a new session renders live", async () => {
-    // a delta inserting a NEW session in the default active project (project_fixture_1).
-    const liveDelta: ProjectionDelta = {
-      projection: "Session",
-      kind: "upsert",
-      row: {
-        session_id: "session_live_new",
-        status: "active",
-        title: "Live new session",
-        project_id: projectActivityFixture.rows[0]!.project_id,
-      },
+describe("Shell live Session subscribe (ui-062 — refetch-on-nudge)", () => {
+  it("session_subscribe_refetches_on_row_none_nudge", async () => {
+    // ui-062: a daemon Session delta is a `row:None` id-NUDGE (SessionStarted/Failed/Recovered) → the
+    // live list must REFETCH get_projection("Session"), NOT apply the absent delta row (the removed
+    // applySessionDelta no-op'd on row:None, §29). The new session can ONLY appear via the re-read.
+    const extra: SessionRow = {
+      session_id: "session_live_refetched",
+      status: "active",
+      display_name: "Live new session",
+      project_id: projectActivityFixture.rows[0]!.project_id, // the default active project → renders in the tree
     };
-    const { container } = render(
-      <Shell gateway={new LiveDeltaGateway(liveDelta)} />,
-    );
+    const gateway = new GatedSessionRefetchGateway(extra);
+    const { container } = render(<Shell gateway={gateway} />);
 
-    // the streamed delta inserts the session into the live read cache → it renders (sidebar tree).
+    // load settles → the nudge is still gated → the new session is NOT present yet (NO refetch).
+    await screen.findByTestId("sidebar-waiting-badge");
+    expect(
+      container.querySelector('[data-item-id="Session:session_live_refetched"]'),
+    ).toBeNull();
+    const readsBeforeNudge = gateway.sessionReads;
+
+    gateway.releaseNudge(); // the row:None nudge fires → coalesced refetch → augmented re-read
+
     await waitFor(() => {
+      // the nudge caused a RE-READ (not a row-apply)…
+      expect(gateway.sessionReads).toBeGreaterThan(readsBeforeNudge);
+      // …and the re-read's extra session is now in the live tree.
       expect(
-        container.querySelector('[data-item-id="Session:session_live_new"]'),
+        container.querySelector('[data-item-id="Session:session_live_refetched"]'),
       ).not.toBeNull();
     });
   });

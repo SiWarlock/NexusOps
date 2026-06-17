@@ -10,8 +10,8 @@ import { makeApprovalRow } from "./fixtures/proj_approval_queue";
 describe("projection item mappers", () => {
   it("to_session_items_maps_rows", () => {
     const rows: SessionRow[] = [
-      { session_id: "s1", status: "active", title: "Refactor auth", project_id: "p1" },
-      // no title → label falls back to the id
+      { session_id: "s1", status: "active", display_name: "Refactor auth", project_id: "p1" },
+      // no display_name → label falls back to the id
       { session_id: "s2", status: "idle", project_id: "p1" },
     ];
     expect(toSessionItems(rows)).toEqual([

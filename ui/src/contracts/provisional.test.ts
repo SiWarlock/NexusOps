@@ -13,6 +13,7 @@ import {
   ResumeMode,
   ReviewRow,
   ServerFrame,
+  SessionRow,
   TerminalOutputFrame,
   WireError,
 } from "./index";
@@ -402,5 +403,63 @@ describe("ui-061 — PR + Review frozen-shadow reconcile (§5.0/§11.2)", () => 
     const noId: Record<string, unknown> = { ...reviewBase };
     delete noId.review_id;
     expect(ReviewRow.safeParse(noId).success).toBe(false);
+  });
+});
+
+describe("ui-062 — SessionRow recovery-shadow reconcile (§5.1/§11.4)", () => {
+  const readSchema = () =>
+    JSON.parse(readFileSync(schemaPath, "utf8")) as {
+      $defs: Record<string, { properties?: Record<string, unknown> }>;
+    };
+
+  // A frozen-shaped SessionRow (all 10 fields; optionals explicit-null per the daemon serve).
+  const sessionBase = {
+    session_id: "sess_1",
+    project_id: "project_1",
+    status: "active",
+    display_name: null,
+    harness: null,
+    model: null,
+    execution_profile_id: null,
+    resume_mode: null,
+    replayed_event_count: null,
+    recovered_at: null,
+  };
+
+  it("session_row_field_set_matches_frozen_schema", () => {
+    // spec(§5.1/§11.4) — the SessionRow shadow reconciled 5→10: the field-set is snapshot-pinned to
+    // the frozen schema `$defs.SessionRow` (the survival/recovery fields now have a consumer — the
+    // resume-mode indicator; the ApprovalQueueRow precedent §37). `title` → `display_name`.
+    const schema = readSchema();
+    expect(Object.keys(SessionRow.shape).toSorted()).toEqual(
+      Object.keys(schema.$defs.SessionRow!.properties!).toSorted(),
+    );
+  });
+
+  it("session_row_recovery_fields_strict_and_uint", () => {
+    // spec(§11.4) — `project_id` is required (non-Option — the daemon NOT-NULL); `display_name` (not
+    // `title`); the survival fields typed: `replayed_event_count` uint, `recovered_at` string,
+    // `resume_mode` delegates to the ResumeMode shadow; `.strict()` per the frozen `deny_unknown_fields`.
+    expect(SessionRow.safeParse(sessionBase).success).toBe(true);
+    // a real recovered session parses (resume_mode + recovery fields set).
+    expect(
+      SessionRow.safeParse({
+        ...sessionBase,
+        display_name: "Refactor auth",
+        resume_mode: "replayed",
+        replayed_event_count: 128,
+        recovered_at: "2026-06-16T08:30:00Z",
+      }).success,
+    ).toBe(true);
+    // project_id is REQUIRED (non-Option) — a missing project_id is rejected.
+    const noProject: Record<string, unknown> = { ...sessionBase };
+    delete noProject.project_id;
+    expect(SessionRow.safeParse(noProject).success).toBe(false);
+    // replayed_event_count is a uint NUMBER — a string is rejected.
+    expect(SessionRow.safeParse({ ...sessionBase, replayed_event_count: "128" }).success).toBe(false);
+    // resume_mode delegates to the ResumeMode shadow — an unknown mode is rejected.
+    expect(SessionRow.safeParse({ ...sessionBase, resume_mode: "bogus" }).success).toBe(false);
+    // `.strict()` — `title` is no longer a field (renamed to display_name) → an extra field rejected.
+    expect(SessionRow.safeParse({ ...sessionBase, title: "x" }).success).toBe(false);
   });
 });

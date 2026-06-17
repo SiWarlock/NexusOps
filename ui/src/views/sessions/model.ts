@@ -60,7 +60,9 @@ export function buildSessionRows(
           ? NO_PROJECT
           : // unmatched project → the raw id stays visible
             (nameByProjectId.get(projectId) ?? projectId),
-      resumeMode: session?.resume_mode,
+      // coerce the frozen SessionRow's explicit `null` (absent resume_mode) to undefined — the VM's
+      // optional resumeMode is "present-or-absent", and the indicator renders only when present (ui-062).
+      resumeMode: session?.resume_mode ?? undefined,
     };
   });
 }

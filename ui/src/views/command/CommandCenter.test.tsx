@@ -15,7 +15,7 @@ const sessionOf = (
 ): SessionRow => ({
   session_id: id,
   status,
-  title: title ?? `session ${id}`,
+  display_name: title ?? `session ${id}`,
   project_id: "p1",
 });
 

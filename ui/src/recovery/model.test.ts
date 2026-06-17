@@ -61,17 +61,20 @@ describe("recovery model", () => {
 
 describe("resumeModesBySessionId (id-keyed side map)", () => {
   const sessions: SessionRow[] = [
-    { session_id: "a", status: "idle", title: "A", resume_mode: "replayed" },
-    { session_id: "b", status: "idle", title: "B" }, // fresh-started — no resume_mode
-    { session_id: "c", status: "idle", title: "C", resume_mode: "resumed" },
+    { session_id: "a", status: "idle", display_name: "A", project_id: "p1", resume_mode: "replayed" },
+    { session_id: "b", status: "idle", display_name: "B", project_id: "p1" }, // fresh — resume_mode absent (undefined)
+    { session_id: "c", status: "idle", display_name: "C", project_id: "p1", resume_mode: "resumed" },
+    // the daemon serves an absent resume_mode as EXPLICIT null (frozen SessionRow) → still no entry.
+    { session_id: "d", status: "idle", display_name: "D", project_id: "p1", resume_mode: null },
   ];
 
   it("resume_map_includes_only_sessions_with_a_mode", () => {
     const map = resumeModesBySessionId(sessions);
-    // only resumed/replayed sessions get an entry; a fresh-started session is absent
+    // only resumed/replayed sessions get an entry; a fresh-started session (undefined OR explicit null) is absent
     expect("a" in map).toBe(true);
     expect("c" in map).toBe(true);
     expect("b" in map).toBe(false);
+    expect("d" in map).toBe(false); // explicit-null resume_mode excluded (the `!= null` guard, ui-062)
   });
 
   it("resume_map_keys_by_session_id", () => {
@@ -84,7 +87,9 @@ describe("resumeModesBySessionId (id-keyed side map)", () => {
     // zero sessions, and sessions with no mode at all → {} (the no-indicator state)
     expect(resumeModesBySessionId([])).toEqual({});
     expect(
-      resumeModesBySessionId([{ session_id: "x", status: "idle", title: "X" }]),
+      resumeModesBySessionId([
+        { session_id: "x", status: "idle", display_name: "X", project_id: "p1" },
+      ]),
     ).toEqual({});
   });
 });

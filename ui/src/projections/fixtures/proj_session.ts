@@ -15,53 +15,56 @@ export const sessionPageFixture: SessionProjectionPage = {
     {
       session_id: "session_fixture_1",
       status: "active",
-      title: "Refactor auth module",
+      display_name: "Refactor auth module",
       project_id: "project_fixture_1",
       resume_mode: "resumed", // O-2: brought back live after restart
+      replayed_event_count: 0,
+      recovered_at: "2026-06-16T09:00:00Z",
     },
     {
       session_id: "session_fixture_2",
       status: "waiting_on_permission",
-      title: "Add rate limiting",
+      display_name: "Add rate limiting",
       project_id: "project_fixture_1",
     },
     {
       session_id: "session_fixture_3",
       status: "changes_ready",
-      title: "Fix flaky integration test",
+      display_name: "Fix flaky integration test",
       project_id: "project_fixture_2",
       resume_mode: "replayed", // O-2: relaunched from the event log after restart
+      replayed_event_count: 128,
+      recovered_at: "2026-06-16T08:30:00Z",
     },
     {
       // terminal session — excluded from activeSessions counts (non-terminal filter).
       session_id: "session_fixture_4",
       status: "completed",
-      title: "Bump dependencies",
+      display_name: "Bump dependencies",
       project_id: "project_fixture_1",
     },
     {
       // waiting_on_human_input — exercises the second WAITING_SESSION state.
       session_id: "session_fixture_5",
       status: "waiting_on_human_input",
-      title: "Confirm migration plan",
+      display_name: "Confirm migration plan",
       project_id: "project_fixture_2",
     },
   ],
   cursor: null,
 };
 
-// A sample upsert delta the MockGatewayPort streams (the parse-don't-trust dogfood). It re-asserts
-// session_fixture_2's EXISTING row (same status) so it is observably a NO-OP when applied to the
-// page — the live subscribe supervisor (052) can stream it through the delta-reducer in any
-// Mock-backed test WITHOUT changing rendered state. A status-CHANGING live re-render is exercised
-// against a dedicated fake gateway in Shell.subscribe.test.tsx.
+// A sample upsert delta the MockGatewayPort streams (the parse-don't-trust dogfood). The live Session
+// subscribe now consumes a delta as a `row:None` NUDGE → coalesced refetch (ui-062, LESSON §29), so this
+// row-bearing delta drives a re-read (the row content is ignored). A status-CHANGING live re-render is
+// exercised against a dedicated fake gateway in Shell.subscribe.test.tsx.
 export const sessionDeltaFixture: ProjectionDelta = {
   projection: "Session",
   kind: "upsert",
   row: {
     session_id: "session_fixture_2",
     status: "waiting_on_permission",
-    title: "Add rate limiting",
+    display_name: "Add rate limiting",
     project_id: "project_fixture_1",
   },
 };

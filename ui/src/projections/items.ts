@@ -31,7 +31,8 @@ export interface ProjectionItem {
 export function toSessionItems(rows: SessionRow[]): ProjectionItem[] {
   return rows.map((s) => ({
     id: s.session_id,
-    label: s.title ?? s.session_id,
+    // `display_name` is the daemon-canonical name (was the ui-provisional `title`, ui-062).
+    label: s.display_name ?? s.session_id,
     machine: "Session",
     status: s.status,
   }));

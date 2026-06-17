@@ -72,7 +72,9 @@ export function resumeModesBySessionId(
 ): Record<string, ResumeMode> {
   const map: Record<string, ResumeMode> = {};
   for (const s of sessions) {
-    if (s.resume_mode !== undefined) map[s.session_id] = s.resume_mode;
+    // `!= null` excludes BOTH undefined and the daemon's explicit `null` (the frozen SessionRow
+    // serializes an absent resume_mode as null) — a fresh-started session gets no entry/indicator.
+    if (s.resume_mode != null) map[s.session_id] = s.resume_mode;
   }
   return map;
 }

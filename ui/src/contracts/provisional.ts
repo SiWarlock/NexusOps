@@ -138,15 +138,28 @@ export const SafetyState = z.object({
 });
 export type SafetyState = z.infer<typeof SafetyState>;
 
-/** A single row of the Session projection (provisional shape). */
-export const SessionRow = z.object({
-  session_id: z.string(),
-  status: Session,
-  title: z.string().optional(),
-  project_id: z.string().optional(),
-  // O-2 survival display (PROVISIONAL): how the session came back after a restart.
-  resume_mode: ResumeMode.optional(),
-});
+/** A row of the Session projection — the 3rd frozen projection-row (@0.35, D2,
+ *  `shared/src/projections.rs`). Reconciled 5→10 (ui-062): a drift-pinned frozen-shadow snapshot-pinned
+ *  to `$defs.SessionRow` (the ApprovalQueueRow precedent §37). `session_id`/`project_id`/`status` are the
+ *  non-Option required core (the daemon's NOT-NULL columns — `project_id` was wrongly optional); the rest
+ *  present-and-nullable. `display_name` is the daemon-canonical name (was the ui-provisional `title`). The
+ *  §8.1/§11.4 survival fields (`resume_mode`/`replayed_event_count`/`recovered_at`) are now consumed (the
+ *  per-session resume-mode indicator). `.strict()` per the frozen `deny_unknown_fields`. */
+export const SessionRow = z
+  .object({
+    session_id: z.string(),
+    project_id: z.string(),
+    status: Session,
+    display_name: z.string().nullable().optional(),
+    harness: z.string().nullable().optional(),
+    model: z.string().nullable().optional(),
+    execution_profile_id: z.string().nullable().optional(),
+    // O-2 survival display: how the session came back after a daemon restart.
+    resume_mode: ResumeMode.nullable().optional(),
+    replayed_event_count: z.number().int().nonnegative().nullable().optional(),
+    recovered_at: z.string().nullable().optional(),
+  })
+  .strict();
 export type SessionRow = z.infer<typeof SessionRow>;
 
 /** A page of the Session projection returned by get_projection (provisional). */

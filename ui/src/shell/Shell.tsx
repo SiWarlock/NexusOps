@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import type { GatewayPort } from "../gateway-client/types";
 import { UdsGatewayPort } from "../gateway-client/uds";
 import { runSubscriptionSupervisor } from "../gateway-client/subscribe-recovery";
-import { applySessionDelta } from "../gateway-client/delta-reducer";
 import { createNudgeCoalescer } from "../gateway-client/refetch-on-nudge";
 import type {
   ApprovalQueueRow,
@@ -236,16 +235,21 @@ export function Shell({
         approvals: prev.approvals,
       }),
     });
+    // The daemon emits a Session ProjectionDelta on every SessionStarted/Failed/Recovered, but as a
+    // `row:None` id-NUDGE (deltas_for_event) — so consume it via REFETCH-ON-NUDGE (a coalesced re-read
+    // of get_projection("Session")), NOT a row-apply reducer (which no-ops on the absent row — the 052
+    // applySessionDelta was Mock-validated only, LESSON §29). Mirrors the ApprovalQueue effect below.
+    const refetchSessions = async (): Promise<void> => {
+      const page = await client.get_projection("Session");
+      if (cancelled) return;
+      setData((prev) => (prev ? recountFrom(prev, page.rows) : prev));
+    };
+    const coalescer = createNudgeCoalescer(refetchSessions);
     runSubscriptionSupervisor({
       subscribe: () => client.subscribe({ projection: "Session" }),
-      onDelta: (delta) =>
-        setData((prev) =>
-          prev ? recountFrom(prev, applySessionDelta(prev.sessions, delta)) : prev,
-        ),
-      refetch: async () => {
-        const page = await client.get_projection("Session");
-        setData((prev) => (prev ? recountFrom(prev, page.rows) : prev));
-      },
+      // a row:None nudge → coalesced refetch (ignore the delta content; the daemon's nudge carries no row).
+      onDelta: () => coalescer.nudge(),
+      refetch: refetchSessions, // the supervisor's recovery snapshot reset (the 052 ground-truth re-read)
       // 054: drive the port — the SINGLE connection-state authority — NOT a 2nd raw React setter.
       // The port applies the guarded transition + suppresses the read-path upgrade while the stream
       // is degraded; `onConnectionChange` (the effect above) stays the Shell's ONE React connection

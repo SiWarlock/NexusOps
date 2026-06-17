@@ -82,7 +82,7 @@ export function SessionTerminal({
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <StatusPill machine="Session" status={session.status} size="md" />
           <h1 style={{ margin: 0, font: "var(--fw-semibold) var(--fs-h3)/1 var(--font-sans)" }}>
-            {session.title ?? session.session_id}
+            {session.display_name ?? session.session_id}
           </h1>
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
             <span title="PR navigation arrives with the integration contract (Phase 7)">

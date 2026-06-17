@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { toSessionItems, toPrItems, toApprovalItems } from "./items";
+import { toSessionItems, toPrItems, toApprovalItems, reviewsByPr } from "./items";
 import type {
   SessionRow,
   PullRequestRow,
   ApprovalQueueRow,
+  ReviewRow,
 } from "../contracts/index";
 import { makeApprovalRow } from "./fixtures/proj_approval_queue";
 
@@ -58,5 +59,31 @@ describe("projection item mappers", () => {
     expect(toSessionItems([])).toEqual([]);
     expect(toPrItems([])).toEqual([]);
     expect(toApprovalItems([])).toEqual([]);
+  });
+});
+
+describe("reviewsByPr (ui-064 — the PR-Review client-side join on pr_number)", () => {
+  // §7.2/§11.2: a Review projection row joins to a PR client-side on pr_number (ReviewRow has no
+  // pr_id PK reference — the GitHub-native number is the join key). A null pr_number is unattributable
+  // to a PR → excluded from the join. Multiple reviews per PR are retained in row order.
+  it("reviews_by_pr_groups_by_pr_number", () => {
+    const rows: ReviewRow[] = [
+      { review_id: 1, pr_number: 101, state: "approved", reviewer: "a" },
+      { review_id: 2, pr_number: 101, state: "changes_requested", reviewer: "b" },
+      { review_id: 3, pr_number: 201, state: "commented", reviewer: "c" },
+      // null pr_number → contributes no key (unattributable to a PR)
+      { review_id: 4, pr_number: null, state: "pending", reviewer: "d" },
+      // absent (undefined) pr_number → ALSO excluded (the schema is nullable().optional() → both forms
+      // reach the join; pins the `== null` guard so a `=== null` refactor can't silently drop this row)
+      { review_id: 5, state: "dismissed", reviewer: "e" },
+    ];
+    const byPr = reviewsByPr(rows);
+    expect(byPr.get(101)?.map((r) => r.review_id)).toEqual([1, 2]); // multiple per PR, in order
+    expect(byPr.get(201)?.map((r) => r.review_id)).toEqual([3]);
+    expect(byPr.size).toBe(2); // exactly the two non-null pr_numbers (null + undefined both excluded)
+  });
+
+  it("reviews_by_pr_maps_empty_to_empty", () => {
+    expect(reviewsByPr([]).size).toBe(0);
   });
 });

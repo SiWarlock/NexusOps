@@ -42,6 +42,8 @@ import type {
   ProjectionPageByName,
   PullRequestProjectionPage,
   PullRequestRow,
+  ReviewProjectionPage,
+  ReviewRow,
   SessionProjectionPage,
   SessionRow,
   UsageProjectionPage,
@@ -410,6 +412,52 @@ class GatedUsageRefetchGateway extends MockGatewayPort {
   }
 }
 
+/** Gates the Review `row:None` nudge (ui-064); serves an AUGMENTED Review page (one extra review) on
+ *  the post-nudge re-read. Reviews are NOT a counts input → plain replace; the refetch is observable as
+ *  an incremented Review read. Other projections stay healthy via super. */
+class GatedReviewRefetchGateway extends MockGatewayPort {
+  reviewReads = 0;
+  private nudgeReleased = false;
+  private releaseNudgeFn!: () => void;
+  private readonly nudgeGate: Promise<void>;
+  constructor(private readonly extra: ReviewRow) {
+    super();
+    this.nudgeGate = new Promise<void>((resolve) => {
+      this.releaseNudgeFn = resolve;
+    });
+  }
+  releaseNudge(): void {
+    this.nudgeReleased = true;
+    this.releaseNudgeFn();
+  }
+  async *subscribe(params: SubscribeParams): AsyncIterable<ProjectionDelta> {
+    if (params.projection === "Review") {
+      await this.nudgeGate;
+      yield { projection: "Review", kind: "upsert", id: "9999" }; // row:None
+      await new Promise<void>(() => {
+        /* stay open — a live stream */
+      });
+      return;
+    }
+    yield* super.subscribe(params);
+  }
+  async get_projection<K extends ProjectionName>(
+    name: K,
+    scope?: ProjectionScope,
+    page?: ProjectionPageParams,
+  ): Promise<ProjectionPageByName[K]> {
+    const result = await super.get_projection(name, scope, page);
+    if (name === "Review") {
+      this.reviewReads++;
+      if (this.nudgeReleased) {
+        const rv = result as ReviewProjectionPage;
+        return { ...rv, rows: [...rv.rows, this.extra] } as ProjectionPageByName[K];
+      }
+    }
+    return result;
+  }
+}
+
 describe("Shell whole-cockpit-live subscribe (ui-063 — refetch-on-nudge spread)", () => {
   it("projectactivity_subscribe_refetches_on_row_none_nudge", async () => {
     // spec(§6.1/§11): a daemon ProjectActivity delta is a `row:None` id-NUDGE → the live cockpit must
@@ -470,6 +518,30 @@ describe("Shell whole-cockpit-live subscribe (ui-063 — refetch-on-nudge spread
       expect(gateway.pullRequestReads).toBeGreaterThan(readsBeforeNudge);
       // …and the re-read's extra open PR is reflected in the live count (+1).
       expect(Number(screen.getByTitle("open PRs").textContent)).toBe(baseline + 1);
+    });
+  });
+
+  it("review_subscribe_refetches_on_row_none_nudge", async () => {
+    // ui-064 Layer 1 [§11.2]: Review joins the live-relevant served set (the one deferred from ui-063).
+    // A `row:None` Review nudge (ReviewSynced) → REFETCH get_projection("Review") (NOT row-apply, §29).
+    // Reviews are NOT a switcher-counts input → plain replace; the refetch is observable as a Review read.
+    const extra: ReviewRow = {
+      review_id: 9999,
+      pr_number: 101,
+      state: "approved",
+      reviewer: "live",
+    };
+    const gateway = new GatedReviewRefetchGateway(extra);
+    render(<Shell gateway={gateway} />);
+
+    await screen.findByTestId("sidebar-waiting-badge");
+    const readsBeforeNudge = gateway.reviewReads;
+
+    gateway.releaseNudge(); // the row:None nudge fires → coalesced refetch → augmented re-read
+
+    await waitFor(() => {
+      // the nudge caused a RE-READ (not a row-apply) of the Review projection.
+      expect(gateway.reviewReads).toBeGreaterThan(readsBeforeNudge);
     });
   });
 

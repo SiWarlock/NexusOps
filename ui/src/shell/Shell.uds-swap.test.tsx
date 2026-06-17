@@ -57,6 +57,7 @@ import { pullRequestFixture } from "../projections/fixtures/proj_pull_request";
 import { approvalQueueFixture } from "../projections/fixtures/proj_approval_queue";
 import { auditTrailFixture } from "../projections/fixtures/proj_audit_trail";
 import { usageFixture } from "../projections/fixtures/proj_usage";
+import { reviewFixture } from "../projections/fixtures/proj_review";
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -67,6 +68,7 @@ const PROJECTION_FIXTURES: Record<string, unknown> = {
   ApprovalQueue: approvalQueueFixture,
   AuditTrail: auditTrailFixture,
   UsageLedger: usageFixture,
+  Review: reviewFixture,
 };
 
 afterEach(cleanup);

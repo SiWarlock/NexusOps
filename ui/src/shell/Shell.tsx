@@ -10,6 +10,7 @@ import type {
   ProjectActivityRow,
   PullRequestRow,
   RecoveryStatus,
+  ReviewRow,
   SafetyState,
   SessionRow,
   UsageRow,
@@ -83,6 +84,9 @@ interface ShellData {
   approvals: ApprovalQueueRow[];
   usage: UsageRow[];
   creditPool: CreditPool | null;
+  // The PR-review verticals (ui-064, §11.2) — the Review projection joined to a PR client-side on
+  // pr_number (reviewsByPr) for the PR Review Workspace.
+  reviews: ReviewRow[];
 }
 
 // Bounded backoff for the live-subscribe reconnect recovery (052) — don't hammer the daemon on a
@@ -180,7 +184,7 @@ export function Shell({
     let cancelled = false;
     void (async () => {
       try {
-        const [projects, sessions, pullRequests, approvals, audit, usage, caps] =
+        const [projects, sessions, pullRequests, approvals, audit, usage, reviews, caps] =
           await Promise.all([
             client.get_projection("ProjectActivity"),
             client.get_projection("Session"),
@@ -188,6 +192,7 @@ export function Shell({
             client.get_projection("ApprovalQueue"),
             client.get_projection("AuditTrail"),
             client.get_projection("UsageLedger"),
+            client.get_projection("Review"),
             client.get_capabilities(),
           ]);
         if (cancelled) return;
@@ -207,6 +212,7 @@ export function Shell({
           approvals: approvals.rows,
           usage: usage.rows,
           creditPool: usage.creditPool ?? null,
+          reviews: reviews.rows,
         });
       } catch (e) {
         if (!cancelled) setError(e);
@@ -475,6 +481,42 @@ export function Shell({
       shouldContinue: () => !cancelled,
     }).catch((e: unknown) => {
       console.error("UsageLedger subscription supervisor exited unexpectedly", e);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // Review stream (ui-064) — the PR-review verticals stay live as the daemon syncs GitHub reviews
+  // (ReviewSynced → a `row:None` Review nudge). reviews is NOT a deriveProjectSwitcherCounts input → a
+  // PLAIN REPLACE, NO recount (mirrors UsageLedger). Completes the live-relevant served set (Review was
+  // the one projection deferred from the ui-063 whole-cockpit-live spread).
+  useEffect(() => {
+    let cancelled = false;
+    const refetchReviews = async (): Promise<void> => {
+      const page = await client.get_projection("Review");
+      if (cancelled) return;
+      setData((prev) => (prev ? { ...prev, reviews: page.rows } : prev));
+    };
+    const coalescer = createNudgeCoalescer(refetchReviews);
+    runSubscriptionSupervisor({
+      subscribe: () => client.subscribe({ projection: "Review" }),
+      onDelta: () => coalescer.nudge(),
+      refetch: refetchReviews,
+      setConnection: (next) => client.notifyConnectionState("Review", next),
+      delay: (attempt) =>
+        new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SUBSCRIBE_BACKOFF_MAX_MS,
+              SUBSCRIBE_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+            ),
+          ),
+        ),
+      shouldContinue: () => !cancelled,
+    }).catch((e: unknown) => {
+      console.error("Review subscription supervisor exited unexpectedly", e);
     });
     return () => {
       cancelled = true;

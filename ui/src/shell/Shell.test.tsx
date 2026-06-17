@@ -147,6 +147,18 @@ describe("Shell", () => {
     expect(await screen.findByTestId("shell-load-error")).toBeTruthy();
   });
 
+  it("shell_loads_review_projection", async () => {
+    // ui-064 Layer 1 [§7.2]: the initial load now includes get_projection("Review") → ShellData.reviews
+    // (parsed at the boundary), feeding the PR Review Workspace. Empty/served Review → no load error.
+    const mock = new MockGatewayPort();
+    const spy = vi.spyOn(mock, "get_projection");
+    render(<Shell gateway={mock} />);
+    await awaitLoaded();
+    expect(spy.mock.calls.some((c) => c[0] === "Review")).toBe(true);
+    // the Review page parsed cleanly → the chrome rendered, not the boundary load-error surface.
+    expect(screen.queryByTestId("shell-load-error")).toBeNull();
+  });
+
   it("shell_event_dock_collapsed_and_expanded", async () => {
     render(<Shell gateway={new MockGatewayPort()} />);
     await awaitLoaded();

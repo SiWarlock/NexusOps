@@ -50,7 +50,10 @@ import {
   pullRequestDeltaFixture,
   pullRequestFixture,
 } from "../projections/fixtures/proj_pull_request";
-import { reviewFixture } from "../projections/fixtures/proj_review";
+import {
+  reviewDeltaFixture,
+  reviewFixture,
+} from "../projections/fixtures/proj_review";
 import {
   sessionDeltaFixture,
   sessionPageFixture,
@@ -151,6 +154,8 @@ export class MockGatewayPort implements GatewayPort {
       yield parseDelta(pullRequestDeltaFixture);
     } else if (params.projection === "UsageLedger") {
       yield parseDelta(usageDeltaFixture);
+    } else if (params.projection === "Review") {
+      yield parseDelta(reviewDeltaFixture);
     } else {
       throw new Error(
         `MockGatewayPort: no fixture for subscribe projection "${params.projection}"`,

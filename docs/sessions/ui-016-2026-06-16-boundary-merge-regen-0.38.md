@@ -3,7 +3,7 @@
 - **Date:** 2026-06-16
 - **Phase:** Phase 6 (ui-resume) — **P6.8 / §5.0 + §5.1** (the generated, drift-caught Zod consumer of the frozen Rust schema — the boundary-merge regen, same home as the 047/053/ui-058 regens)
 - **Predecessor:** [ui-015](ui-015-2026-06-15-approvalqueue-live-subscription.md)
-- **Successor:** _(none yet)_
+- **Successor:** [ui-017](ui-017-2026-06-16-pr-review-consumer-reconcile.md)
 - **Track:** `track/ui` · implementer `ui-implementer` · orchestrator `ui-orchestrator` · lead `team-lead`
 
 ## Why this session existed

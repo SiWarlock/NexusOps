@@ -7,10 +7,7 @@ import {
   DiffResult,
   GetDiffParams,
   Hunk,
-  MetricQuality,
   PullRequestRow,
-  RecoveryState,
-  ResumeMode,
   ReviewRow,
   ServerFrame,
   SessionRow,
@@ -126,22 +123,8 @@ describe("provisional ServerFrame (§6.4 frame-mux)", () => {
   });
 });
 
-describe("provisional MetricQuality (§9.1 — frozen-but-generator-pending shadow)", () => {
-  it("metricquality_provisional_matches_frozen_schema", () => {
-    // spec(§9.1) — MetricQuality IS frozen at 0.23.0, but as a `oneOf`-of-`const`
-    // (its variants carry doc-comments), which gen-contracts.mjs (flat `.enum` only)
-    // does NOT emit — so the ui keeps a provisional SHADOW. Drift-pin its member set
-    // against the frozen def's const set (same member-set-equality as the generated
-    // drift tests) so a daemon change fails loudly until the generator gains
-    // oneOf-const support and the provisional retires (carry-forward follow-up).
-    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
-      $defs: Record<string, { oneOf?: { const?: string }[] }>;
-    };
-    const frozen = (schema.$defs.MetricQuality!.oneOf ?? []).map((v) => v.const!);
-    expect(frozen.length, "frozen MetricQuality must be a oneOf-of-const").toBeGreaterThan(0);
-    expect([...MetricQuality.options].toSorted()).toEqual([...frozen].toSorted());
-  });
-});
+// (ui-065: the metricquality_provisional_matches_frozen_schema drift-pin retired — MetricQuality is now a
+//  generated enum, pinned by the §5.0 generated drift gate `generated_zod_member_sets_equal_frozen_schema`.)
 
 describe("provisional diff shapes (§6.1 — the 6.3e get_diff read surface)", () => {
   it("diff_shapes_field_sets_match_frozen_schema", () => {
@@ -302,23 +285,8 @@ describe("053 L2-prep — ApprovalQueueRow frozen-shadow + survival drift-pins (
     expect(ApprovalQueueRow.safeParse(noRisk).success).toBe(false);
   });
 
-  it("resume_mode_drift_pinned_to_schema_oneof_four_values", () => {
-    // spec(§5.0) — ResumeMode is a `oneOf`-of-`const` (NOT generated — the MetricQuality limitation);
-    // the shadow's member set is drift-pinned to the schema's 4 const values (resumed/replayed/
-    // relaunched/reattached_live). A daemon change fails loudly until the generator gains oneOf-const.
-    const schema = readSchema();
-    const frozen = (schema.$defs.ResumeMode!.oneOf ?? []).map((v) => v.const!);
-    expect(frozen.length).toBe(4);
-    expect([...ResumeMode.options].toSorted()).toEqual([...frozen].toSorted());
-  });
-
-  it("recovery_state_drift_pinned_to_schema_oneof", () => {
-    // spec(§5.0) — RecoveryState is also a oneOf-of-const → drift-pinned shadow (values unchanged).
-    const schema = readSchema();
-    const frozen = (schema.$defs.RecoveryState!.oneOf ?? []).map((v) => v.const!);
-    expect(frozen.length).toBe(3); // exact count (symmetric with the ResumeMode pin)
-    expect([...RecoveryState.options].toSorted()).toEqual([...frozen].toSorted());
-  });
+  // (ui-065: the resume_mode/recovery_state drift-pins retired — ResumeMode/RecoveryState are now
+  //  generated enums, pinned by the §5.0 generated drift gate.)
 });
 
 describe("ui-061 — PR + Review frozen-shadow reconcile (§5.0/§11.2)", () => {

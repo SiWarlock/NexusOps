@@ -12,19 +12,36 @@ const schemaPath = fileURLToPath(
   ),
 );
 const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
-  $defs: Record<string, { enum?: string[] }>;
+  $defs: Record<
+    string,
+    { enum?: string[]; oneOf?: { const?: string }[] }
+  >;
   "x-contract-version": string;
 };
-const enumDefs = Object.entries(schema.$defs).filter(
-  ([, d]) => Array.isArray(d.enum),
-);
+// The generator emits BOTH flat `.enum` $defs AND doc-commented `oneOf`-of-`const` $defs as Zod enums
+// (ui-065). Normalize each to its canonical value-set so the §5.0 drift gate pins them uniformly: a
+// oneOf-of-const def (every member a string `const`) carries its values in the const set, a flat enum in
+// `.enum`. (An object-discriminated oneOf — ActionError/ServerFrame — has no top-level const → skipped.)
+const enumDefs: [string, string[]][] = Object.entries(schema.$defs)
+  .map(([name, d]): [string, string[] | null] => {
+    if (Array.isArray(d.enum)) return [name, d.enum];
+    if (
+      Array.isArray(d.oneOf) &&
+      d.oneOf.length > 0 &&
+      d.oneOf.every((m) => m && typeof m.const === "string")
+    ) {
+      return [name, d.oneOf.map((m) => m.const as string)];
+    }
+    return [name, null];
+  })
+  .filter((e): e is [string, string[]] => e[1] !== null);
 
 describe("generated zod contract layer", () => {
   it("generated_zod_accepts_every_canonical_enum_value", () => {
-    for (const [name, def] of enumDefs) {
+    for (const [name, values] of enumDefs) {
       const v = validators[name];
       expect(v, `missing generated validator for ${name}`).toBeDefined();
-      for (const member of def.enum!) {
+      for (const member of values) {
         expect(
           () => v!.parse(member),
           `${name} should accept canonical value "${member}"`,
@@ -44,10 +61,10 @@ describe("generated zod contract layer", () => {
     expect(Object.keys(validators).toSorted()).toEqual(
       enumDefs.map(([n]) => n).toSorted(),
     );
-    // Each generated enum's members === the frozen $defs enum (set equality).
-    for (const [name, def] of enumDefs) {
+    // Each generated enum's members === the frozen $defs value-set (set equality) — flat OR oneOf-const.
+    for (const [name, values] of enumDefs) {
       const generated = new Set(validators[name]!.options as readonly string[]);
-      const frozen = new Set(def.enum!);
+      const frozen = new Set(values);
       expect(generated, `member drift in ${name}`).toEqual(frozen);
     }
   });

@@ -7,6 +7,7 @@
 // is the only source, and the drift test pins it to the frozen schema.
 // ARCHITECTURE.md §5.0 (generated, drift-caught consumer); §11.3 (status keys
 // == §5.1 enum strings, verbatim snake_case).
+import { z } from "zod";
 import bundle from "./generated";
 
 const shape = bundle.shape;
@@ -47,6 +48,18 @@ export const Visibility = shape.Visibility;
 export const WorkflowInstance = shape.WorkflowInstance;
 export const WorktreeGit = shape.WorktreeGit;
 export const WorktreeOverlay = shape.WorktreeOverlay;
+
+// ui-065: the 3 doc-commented `oneOf`-of-`const` enums are now generator-emitted (the gen-contracts
+// oneOf-const extension) — their prior hand-declared provisional drift-pinned SHADOWS retired. Re-export
+// the schema VALUE from the generated source (the `shape.X` value-export precedent, e.g. ActorType above)
+// PLUS the inferred TYPE — unlike most generated enums these have `import type` consumers (`recovery/`,
+// `views/usage/`, `shell/Sidebar`), so the explicit type re-export keeps their imports unchanged.
+export const MetricQuality = shape.MetricQuality;
+export type MetricQuality = z.infer<typeof MetricQuality>;
+export const RecoveryState = shape.RecoveryState;
+export type RecoveryState = z.infer<typeof RecoveryState>;
+export const ResumeMode = shape.ResumeMode;
+export type ResumeMode = z.infer<typeof ResumeMode>;
 
 type EnumValidator = (typeof shape)[keyof typeof shape];
 

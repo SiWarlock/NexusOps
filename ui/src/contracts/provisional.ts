@@ -22,28 +22,16 @@ const ActorType = bundle.shape.ActorType;
 const ActionRequestStatus = bundle.shape.ActionRequestStatus;
 const RequesterType = bundle.shape.RequesterType;
 
-// ─── Survival/recovery (FROZEN @0.29–0.31 — drift-pinned shadows) ─────────────
-// The daemon FROZE the O-2 survival schema (`ResumeMode`/`RecoveryState`) as
-// `oneOf`-of-`const` defs (doc-commented), which gen-contracts.mjs (flat `.enum` only)
-// does NOT emit — so these stay hand-declared z.enum SHADOWS, drift-pinned to the
-// schema's `oneOf` const set (the MetricQuality precedent), NOT generated. They retire
-// to generated when the generator gains oneOf-const support (carry-forward). `RecoveryStatus`
-// is a ui-local wrapper the daemon did NOT freeze → stays provisional, re-based over RecoveryState.
-
-/** Post-restart recovery state (O-2, §11.4) — drift-pinned to the frozen `RecoveryState` oneOf. */
-export const RecoveryState = z.enum(["recovering", "recovered", "recovery_failed"]);
-export type RecoveryState = z.infer<typeof RecoveryState>;
-
-/** How a session was brought back after a daemon restart (O-2, §8/§11.4) — drift-pinned to the
- *  frozen 4-value `ResumeMode` oneOf (`resumed`=native-resume, `replayed`=rebuilt-from-scrollback,
- *  `relaunched`=fresh launch, `reattached_live`=surviving in-flight turn via the detachable broker). */
-export const ResumeMode = z.enum([
-  "resumed",
-  "replayed",
-  "relaunched",
-  "reattached_live",
-]);
-export type ResumeMode = z.infer<typeof ResumeMode>;
+// ─── Survival/recovery (GENERATED since ui-065) ──────────────────────────────
+// The daemon froze the O-2 survival schema (`ResumeMode`/`RecoveryState`) as `oneOf`-of-`const` defs
+// (doc-commented). Since ui-065 the generator emits oneOf-const, so these are REAL generated enums —
+// exported from `contracts/index` (the §5.0 drift gate pins them); the prior hand-declared drift-pinned
+// SHADOWS are retired. Here we take LOCAL handles from the generated bundle (the Session/PullRequest/
+// ReviewState precedent above) for the internal `RecoveryStatus.state` / `SessionRow.resume_mode` uses.
+// `RecoveryStatus` is a ui-local wrapper the daemon did NOT freeze → stays provisional, re-based over
+// the generated `RecoveryState`.
+const RecoveryState = bundle.shape.RecoveryState;
+const ResumeMode = bundle.shape.ResumeMode;
 
 /** The recovery status input (ui-local wrapper — the daemon froze RecoveryState but not this
  *  wrapper; re-based over the drift-pinned RecoveryState). The SessionRecovered-event→aggregate
@@ -301,16 +289,11 @@ export type AuditTrailPage = z.infer<typeof AuditTrailPage>;
 // metric_quality + Harness are hand-declared provisional shapes (Lesson §2); they
 // (incl. the credit-pool thresholds + enum delegation) reconcile at the daemon
 // usage-schema freeze — tracked in the MVP_TASKS Carry-forward provisional→generated
-// spread. `MetricQuality` IS frozen at 0.23.0, but as a `oneOf`-of-`const` (its
-// variants carry doc-comments), which gen-contracts.mjs (flat `.enum` only) does NOT
-// emit — so it stays a provisional SHADOW, drift-pinned against the frozen def
-// (provisional.test) until the generator gains oneOf-const support (carry-forward).
+// spread. `MetricQuality` IS frozen at 0.23.0 as a `oneOf`-of-`const` (its variants carry
+// doc-comments); since ui-065 the generator emits oneOf-const, so it is a REAL generated enum
+// (exported from `contracts/index`, drift-gate-pinned) — a LOCAL handle here for `UsageRow.metric_quality`.
 // `Harness` has no frozen enum yet, so it stays local.
-
-/** Adapter-reported accuracy of a usage metric (§9.1 metric_quality). PROVISIONAL —
- *  frozen at 0.23.0 (oneOf-of-const) but generator-pending; drift-pinned. */
-export const MetricQuality = z.enum(["exact", "estimated", "unavailable"]);
-export type MetricQuality = z.infer<typeof MetricQuality>;
+const MetricQuality = bundle.shape.MetricQuality;
 
 /** The agent harness a session runs under. PROVISIONAL (no frozen Harness enum). */
 export const Harness = z.enum(["claude", "codex"]);

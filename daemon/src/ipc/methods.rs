@@ -20,7 +20,7 @@ use nexusops_shared::ipc::{
     Capabilities, DiffResult, GetDiffParams, GetProjectionParams, IpcErrorCode, ProjectionName,
     RpcRequest, RpcResponse, SubscribeParams, WireError,
 };
-use nexusops_shared::projections::{ApprovalQueueRow, PullRequestRow, SessionRow};
+use nexusops_shared::projections::{ApprovalQueueRow, PullRequestRow, ReviewRow, SessionRow};
 use nexusops_shared::status::ActionRequest as ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
 
@@ -53,6 +53,7 @@ fn projection_table(name: ProjectionName) -> &'static str {
         ProjectionName::AgentTeam => "proj_agent_team",
         ProjectionName::AuditTrail => "proj_audit_trail",
         ProjectionName::UsageLedger => "proj_usage_ledger",
+        ProjectionName::Review => "proj_review",
     }
 }
 
@@ -496,6 +497,14 @@ fn get_projection(
             Err(code) => Err(code),
         });
     }
+    // D5b-1 — the Review projection served TYPED (the frozen ReviewRow), not loose JSON, so the ui PR
+    // Review Workspace (§11.2) consumes a contract. The PullRequest/Session precedent above.
+    if params.name == ProjectionName::Review {
+        return Ok(match read_review_typed(db_path) {
+            Ok(typed) => serde_json::to_value(typed).map_err(|_| IpcErrorCode::InternalError),
+            Err(code) => Err(code),
+        });
+    }
     let table = projection_table(params.name);
     // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
     let conn =
@@ -582,6 +591,38 @@ pub fn read_pull_request_typed(db_path: &Path) -> Result<Vec<PullRequestRow>, Ip
         // STRICT deserialize (reject-unknown; `status` binds the §5.1 PullRequest enum). A row that no
         // longer binds is corrupt/contract-broken → fail-closed, never a silent skip (LESSON §37).
         let typed: PullRequestRow =
+            serde_json::from_value(row).map_err(|_| IpcErrorCode::InternalError)?;
+        out.push(typed);
+    }
+    Ok(out)
+}
+
+/// (D5b-1) Read `proj_review` served TYPED as the frozen [`ReviewRow`] — no loose JSON on the ui PR
+/// Review Workspace read path (the `read_pull_request_typed` precedent, LESSON §37). Reads the row JSON
+/// over a read-only WAL conn, drops the internal `updated_at_seq` (not on the frozen wire row), and
+/// deserializes each row STRICTLY (reject-unknown — `state` binds the frozen `ReviewState` enum). The
+/// review_id/pr_number INTEGER columns surface as JSON numbers → `u64` binds; `body` is free-form review
+/// text already §15-redacted at the event. A row that no longer deserializes (corrupt / contract-broken)
+/// is an integrity error → `InternalError` (fail-closed, never a silent skip).
+pub fn read_review_typed(db_path: &Path) -> Result<Vec<ReviewRow>, IpcErrorCode> {
+    // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
+    let conn =
+        crate::eventstore::open_read_only(db_path).map_err(|_| IpcErrorCode::InternalError)?;
+    let json = read_table_as_json(&conn, "proj_review").map_err(|_| IpcErrorCode::InternalError)?;
+    let serde_json::Value::Array(raw_rows) = json else {
+        return Err(IpcErrorCode::InternalError);
+    };
+    let mut out = Vec::with_capacity(raw_rows.len());
+    for mut row in raw_rows {
+        let serde_json::Value::Object(obj) = &mut row else {
+            return Err(IpcErrorCode::InternalError);
+        };
+        // drop the internal bookkeeping column — not on the frozen wire row (deny_unknown_fields). Any
+        // OTHER proj_review column not on the frozen row trips deny_unknown_fields → fail-closed.
+        obj.remove("updated_at_seq");
+        // STRICT deserialize (reject-unknown; `state` binds the frozen ReviewState enum). A row that no
+        // longer binds is corrupt/contract-broken → fail-closed, never a silent skip (LESSON §37).
+        let typed: ReviewRow =
             serde_json::from_value(row).map_err(|_| IpcErrorCode::InternalError)?;
         out.push(typed);
     }

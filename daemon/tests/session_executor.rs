@@ -15,11 +15,11 @@ use std::sync::Arc;
 use nexusops_shared::actions::{
     ActionPreview, ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
 };
-use nexusops_shared::events::{PullRequestSynced, SessionStarted, WorktreeCreated};
+use nexusops_shared::events::{PullRequestSynced, ReviewSynced, SessionStarted, WorktreeCreated};
 use nexusops_shared::harness::HarnessCapabilities;
 use nexusops_shared::ids::{ActionRequestId, ProjectId, SessionId, WorktreeId};
 use nexusops_shared::ipc::{ProjectionDelta, ProjectionName};
-use nexusops_shared::status::{ActionRequestStatus, PullRequest};
+use nexusops_shared::status::{ActionRequestStatus, PullRequest, ReviewState};
 use nexusops_shared::time::Timestamp;
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{EventStore, PrefixRedactor};
@@ -472,6 +472,53 @@ async fn test_gateway_pull_request_synced_publishes_pr_delta() {
         deltas.iter().any(|d| d.projection == ProjectionName::PullRequest
             && d.id.as_deref() == Some("repo_alpha#42")),
         "the gateway-emitted PullRequestSynced nudges PullRequest (id = pr_id = {{repo_id}}#{{pr_number}})"
+    );
+    actor.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_gateway_review_synced_publishes_review_delta() {
+    // D5b-1 — a gateway-emitted ReviewSynced → a Review Upsert keyed by review_id (parsed from the emitted
+    // payload — self-contained, NO sibling Repo ref needed for the nudge). Real gateway execute+publish via
+    // the test EmitExecutor (the §51/§52 production-path discipline — the nudge rides emitted_event_deltas,
+    // NOT a direct append).
+    let (_d, path) = temp_db();
+    let review_payload = serde_json::to_string(&ReviewSynced {
+        review_id: 9001,
+        pr_number: 42,
+        reviewer: "octocat".to_string(),
+        state: ReviewState::Approved,
+        submitted_at: None,
+        body: None,
+        review_synced_at: Timestamp::parse("2026-06-16T00:00:00Z").unwrap(),
+    })
+    .unwrap();
+    let gw = Gateway::new(
+        Box::new(CatalogPolicy),
+        Box::new(EmitExecutor {
+            event_type: ReviewSynced::EVENT_TYPE,
+            payload_json: review_payload,
+        }),
+    );
+    let actor = WriteActor::spawn(
+        open(&path),
+        Box::new(FixedClock::new("2026-06-11T00:00:00Z")),
+        gw,
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    let h = handle.clone();
+    tokio::task::spawn_blocking(move || h.submit_action_blocking(session_create_req(None)))
+        .await
+        .unwrap()
+        .expect("write-actor reachable")
+        .expect("auto-executes");
+    let deltas = drain(&mut rx);
+    assert!(
+        deltas
+            .iter()
+            .any(|d| d.projection == ProjectionName::Review && d.id.as_deref() == Some("9001")),
+        "the gateway-emitted ReviewSynced nudges Review (id = review_id from the payload)"
     );
     actor.shutdown().await;
 }

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actions::{PolicyDecision, RequesterType, RiskLevel};
 use crate::harness::ResumeMode;
-use crate::status::{Approval, PullRequest, Session};
+use crate::status::{Approval, PullRequest, ReviewState, Session};
 
 /// One open row of the `proj_approval_queue` read model (§7 / §11.5) — an approval awaiting a human
 /// decision. The bookkeeping `sort_key`/`updated_at_seq` columns are NOT on the wire row (internal —
@@ -93,4 +93,28 @@ pub struct SessionRow {
     pub resume_mode: Option<ResumeMode>,
     pub replayed_event_count: Option<u64>,
     pub recovered_at: Option<String>,
+}
+
+/// One row of the `proj_review` read model (§7.2 / §11.2) — a single structured PR review the ui PR Review
+/// Workspace renders. The 4th frozen projection-row (after ApprovalQueue/PullRequest/Session, D5b-1). Folded
+/// from the `ReviewSynced` event (the live GitHub producer is D5b-2). `review_id` is the globally-unique
+/// GitHub-native review id (the PK → non-Option `u64`, a bounded integer in schemars — LESSON §15 trap 2);
+/// `state` is the frozen [`ReviewState`] value enum (reject-unknown — no loose state string). `repo_id` is
+/// sibling-read from the action's Repo resource_ref (the `PullRequestRow` precedent). `body` is FREE-FORM
+/// user review text, §15-redacted at the event (the row serves the redacted value). The internal
+/// `updated_at_seq` is NOT a wire field. **Nullability matches the DDL** (a display read model tolerates a
+/// NULL over failing the whole typed serve closed): `review_id` (PK) + `state` (NOT NULL) are non-Option;
+/// the rest are `Option`. Optionals serialize as explicit `null` (no `skip_serializing_if`) so the
+/// §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ReviewRow {
+    pub review_id: u64,
+    pub pr_number: Option<u64>,
+    pub project_id: Option<String>,
+    pub repo_id: Option<String>,
+    pub reviewer: Option<String>,
+    pub state: ReviewState,
+    pub submitted_at: Option<String>,
+    pub body: Option<String>,
 }

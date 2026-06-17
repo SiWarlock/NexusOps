@@ -538,6 +538,7 @@ fn test_ipc_contract_wire_values() {
             "AgentTeam",
             "AuditTrail",
             "UsageLedger",
+            "Review",
         ],
     );
 }
@@ -2862,18 +2863,128 @@ fn test_session_row_rejects_unknown_field() {
     );
 }
 
+// =====================================================================================
+// D5b-1 (P4.6) — the structured-review vertical: ReviewSynced event + ReviewState enum +
+// ReviewRow projection-row (the 4th frozen row) + ProjectionName::Review. CONTRACT 0.37.0.
+// =====================================================================================
+
+fn sample_review_synced() -> nexusops_shared::events::ReviewSynced {
+    use nexusops_shared::events::ReviewSynced;
+    use nexusops_shared::status::ReviewState;
+    use nexusops_shared::time::Timestamp;
+    // fully populated (all Options Some) so the field-name snapshot sees every key.
+    ReviewSynced {
+        review_id: 9001,
+        pr_number: 42,
+        reviewer: "octocat".to_string(),
+        state: ReviewState::Approved,
+        submitted_at: Some(Timestamp::parse("2026-06-15T00:00:00Z").unwrap()),
+        body: Some("LGTM".to_string()),
+        review_synced_at: Timestamp::parse("2026-06-16T00:00:00Z").unwrap(),
+    }
+}
+
+#[test]
+fn test_review_synced_frozen_shape() {
+    // spec(§7.1 / §2.5-seam) — the ReviewSynced EventTypeRegistry payload field set is frozen; round-trips;
+    // deny_unknown_fields. `state: ReviewState` (the frozen snake_case value enum).
+    expect_fields(
+        &sample_review_synced(),
+        &[
+            "review_id",
+            "pr_number",
+            "reviewer",
+            "state",
+            "submitted_at",
+            "body",
+            "review_synced_at",
+        ],
+    );
+    assert_rejects_unknown(&sample_review_synced(), "ReviewSynced");
+}
+
+#[test]
+fn test_review_state_enum_values() {
+    // spec(§5.1 precedent) — ReviewState is a frozen snake_case value enum (reject-unknown).
+    use nexusops_shared::status::ReviewState;
+    check_values(
+        ReviewState::ALL,
+        &[
+            "approved",
+            "changes_requested",
+            "commented",
+            "dismissed",
+            "pending",
+        ],
+    );
+    assert!(serde_json::from_value::<ReviewState>(serde_json::json!("x")).is_err());
+}
+
+fn sample_review_row() -> nexusops_shared::projections::ReviewRow {
+    use nexusops_shared::projections::ReviewRow;
+    use nexusops_shared::status::ReviewState;
+    ReviewRow {
+        review_id: 9001,
+        pr_number: Some(42),
+        project_id: Some("prj_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        repo_id: Some("repo_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        reviewer: Some("octocat".to_string()),
+        state: ReviewState::Approved,
+        submitted_at: Some("2026-06-15T00:00:00Z".to_string()),
+        body: Some("LGTM".to_string()),
+    }
+}
+
+#[test]
+fn test_review_row_frozen_shape() {
+    // spec(§7.2 / §2.5-seam) — the 4th frozen projection-row (after ApprovalQueue/PullRequest/Session). The
+    // field-name set is frozen + round-trips; `state: ReviewState` (the frozen enum — no loose state string);
+    // the internal `updated_at_seq` is NOT a wire field. deny_unknown_fields.
+    expect_fields(
+        &sample_review_row(),
+        &[
+            "review_id",
+            "pr_number",
+            "project_id",
+            "repo_id",
+            "reviewer",
+            "state",
+            "submitted_at",
+            "body",
+        ],
+    );
+    let json = serde_json::to_string(&sample_review_row()).unwrap();
+    let back: nexusops_shared::projections::ReviewRow =
+        serde_json::from_str(&json).expect("ReviewRow round-trips");
+    assert_eq!(back.state, nexusops_shared::status::ReviewState::Approved);
+}
+
+#[test]
+fn test_review_row_rejects_unknown_field() {
+    // spec(§5.0/§15) — deny_unknown_fields on the frozen row: a valid row + an unfrozen column fails to
+    // deserialize (what makes read_review_typed fail closed on a column not on the frozen wire shape).
+    let mut v = serde_json::to_value(sample_review_row()).unwrap();
+    v.as_object_mut()
+        .unwrap()
+        .insert("not_a_real_column".to_string(), serde_json::json!(true));
+    assert!(
+        serde_json::from_value::<nexusops_shared::projections::ReviewRow>(v).is_err(),
+        "deny_unknown_fields rejects an unfrozen column"
+    );
+}
+
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_36_0() {
+fn test_contract_version_bumped_0_37_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.33.0 =
-    // the P7.1 Wave-C `integration.connect` catalog add (edges-029, ratified at the edges→main merge);
-    // 0.34.0 = the P7.2 `PullRequestRow` frozen projection-row (the 2nd); 0.35.0 = the D2 `SessionRow`
-    // frozen projection-row (the 3rd) + the now-consumed `SessionRecovered` fold; **0.36.0** = the D5a
-    // `PullRequestRow` mergeable/checks_summary enrichment (the SPREAD consumed). Additive, no frozen
-    // type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.36.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.34.0 =
+    // the P7.2 `PullRequestRow` frozen projection-row (the 2nd); 0.35.0 = the D2 `SessionRow` frozen
+    // projection-row (the 3rd) + the now-consumed `SessionRecovered` fold; 0.36.0 = the D5a `PullRequestRow`
+    // mergeable/checks_summary enrichment; **0.37.0** = the D5b-1 structured-review vertical (`ReviewSynced`
+    // event + `ReviewState` enum + the 4th frozen row `ReviewRow` + `ProjectionName::Review`). Additive, no
+    // frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.37.0");
 }
 
 // =================================================================================================

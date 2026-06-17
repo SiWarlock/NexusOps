@@ -6,7 +6,7 @@ use nexusops_shared::actions::{
     RequiredApprover, ResourceType, RiskLevel,
 };
 use nexusops_shared::catalog;
-use nexusops_shared::events::{PullRequestSynced, WorktreeCreated};
+use nexusops_shared::events::{PullRequestSynced, ReviewSynced, WorktreeCreated};
 use nexusops_shared::gateway_ids::ApprovalId;
 use nexusops_shared::ipc::{
     ActionAck, DeltaKind, PlanAck, PlanStepAck, ProjectionDelta, ProjectionName,
@@ -124,6 +124,12 @@ fn emitted_event_deltas(req: &ActionRequest, ev: &EmittedEvent) -> Vec<Projectio
                         .find(|r| r.resource_type == ResourceType::Repo)
                         .map(|r| r.id.clone());
                     ids.pr_id = repo_id.map(|r| format!("{r}#{}", p.pr_number));
+                }
+            } else if *event_type == ReviewSynced::EVENT_TYPE {
+                // review_id is self-contained in the payload (globally unique → the proj_review PK); no
+                // sibling Repo-ref needed for the NUDGE (only the projector's repo_id column sibling-reads).
+                if let Ok(r) = serde_json::from_str::<ReviewSynced>(payload_json) {
+                    ids.review_id = Some(r.review_id.to_string());
                 }
             }
             deltas_for_event(event_type, &ids)

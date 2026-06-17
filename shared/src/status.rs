@@ -172,3 +172,29 @@ pub type ApprovalStatus = Approval;
 pub type ActionRequestStatus = ActionRequest;
 pub type AgentTeamStatus = AgentTeam;
 pub type ExecutionProfileStatus = ExecutionProfile;
+
+/// GitHub PR review state (D5b-1, §7.2/§11.2) — a frozen VALUE enum, NOT a `status_machine!` lifecycle: a
+/// review IS a fixed verdict (there is no transition/terminal concept), so a phantom `is_terminal()` would
+/// misrepresent the model. snake_case wire, reject-unknown (serde's default for enums → the projector's
+/// Decode-degrade still fires on an unknown value), `ALL` — the §6.2 `RequesterType`/`EvidenceType`
+/// value-enum idiom.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewState {
+    Approved,
+    ChangesRequested,
+    Commented,
+    Dismissed,
+    Pending,
+}
+
+impl ReviewState {
+    /// Every variant, declaration order.
+    pub const ALL: &'static [Self] = &[
+        Self::Approved,
+        Self::ChangesRequested,
+        Self::Commented,
+        Self::Dismissed,
+        Self::Pending,
+    ];
+}

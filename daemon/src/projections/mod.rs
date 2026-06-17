@@ -19,6 +19,7 @@ mod integration_connections;
 mod object_refs;
 mod project_registry;
 mod pull_request;
+mod review;
 mod schema;
 mod session;
 mod usage;
@@ -29,7 +30,8 @@ use serde::Serialize;
 
 use nexusops_shared::event_envelope::EventEnvelope;
 use nexusops_shared::events::{
-    PullRequestSynced, SessionFailed, SessionRecovered, TelemetrySampled, WorktreeCreated,
+    PullRequestSynced, ReviewSynced, SessionFailed, SessionRecovered, TelemetrySampled,
+    WorktreeCreated,
 };
 use nexusops_shared::ipc::{DeltaKind, ProjectionDelta, ProjectionName};
 
@@ -51,6 +53,7 @@ pub(crate) struct EventDeltaIds {
     pub project_id: Option<String>,
     pub worktree_id: Option<String>,
     pub pr_id: Option<String>,
+    pub review_id: Option<String>,
 }
 
 /// The SINGLE event→projection-delta mapping (D3/D4a/D4b; LESSON §51) — the projection-specific
@@ -61,7 +64,8 @@ pub(crate) struct EventDeltaIds {
 /// SYNC with the projectors** — each arm mirrors a projector's folded event (pinned by the §51 guard
 /// tests below + `tests/runtime.rs`): `SessionProjector` folds SessionStarted/Failed/Recovered;
 /// `ActivityProjector` + `GraphProjector` fold SessionStarted; `WorktreeProjector` folds WorktreeCreated;
-/// `PullRequestProjector` folds PullRequestSynced; `UsageProjector` folds TelemetrySampled. **AuditTrail
+/// `PullRequestProjector` folds PullRequestSynced; `UsageProjector` folds TelemetrySampled;
+/// `ReviewProjector` folds ReviewSynced. **AuditTrail
 /// (blanket, every event) is path-specific** (per-append in `deltas_for_append`, per-command in
 /// `publish_after_commit`) — NOT here. Each delta is `row: None` (the subscriber re-reads via
 /// `get_projection`); the projection-specific id is carried when the caller has it.
@@ -102,13 +106,18 @@ pub(crate) fn deltas_for_event(event_type: &str, ids: &EventDeltaIds) -> Vec<Pro
     if event_type == TelemetrySampled::EVENT_TYPE {
         out.push(upsert(ProjectionName::UsageLedger, None));
     }
+    // Review — the ReviewProjector folds ReviewSynced, keyed by review_id (payload-derived; the proj_review
+    // PK). D5b-1 — the review vertical (the live producer is D5b-2; the nudge rides the gateway path).
+    if event_type == ReviewSynced::EVENT_TYPE {
+        out.push(upsert(ProjectionName::Review, ids.review_id.clone()));
+    }
     out
 }
 
 #[cfg(test)]
 mod delta_mapping_tests {
     use super::{deltas_for_event, EventDeltaIds};
-    use nexusops_shared::events::{PullRequestSynced, TelemetrySampled, WorktreeCreated};
+    use nexusops_shared::events::{PullRequestSynced, ReviewSynced, TelemetrySampled, WorktreeCreated};
     use nexusops_shared::ipc::ProjectionName;
 
     fn ids() -> EventDeltaIds {
@@ -117,6 +126,7 @@ mod delta_mapping_tests {
             project_id: Some("prj_x".into()),
             worktree_id: Some("wt_x".into()),
             pr_id: Some("repo_x#7".into()),
+            review_id: Some("9001".into()),
         }
     }
     fn projns(ds: &[nexusops_shared::ipc::ProjectionDelta]) -> Vec<ProjectionName> {
@@ -155,6 +165,25 @@ mod delta_mapping_tests {
         let d = deltas_for_event(TelemetrySampled::EVENT_TYPE, &ids());
         assert_eq!(projns(&d), vec![ProjectionName::UsageLedger]);
         assert!(d[0].id.is_none());
+    }
+    #[test]
+    fn review_synced_maps_review_by_id() {
+        // D5b-1 — ReviewSynced nudges the Review projection, keyed by review_id (the proj_review PK).
+        let d = deltas_for_event(ReviewSynced::EVENT_TYPE, &ids());
+        assert_eq!(projns(&d), vec![ProjectionName::Review]);
+        assert_eq!(d[0].id.as_deref(), Some("9001"));
+        // §51 negative arm — the ReviewProjector folds ONLY ReviewSynced, so a non-review event must NOT
+        // produce a Review delta (keeps the arm selective; the D4b-Finding-class guard).
+        for et in [
+            "SessionStarted",
+            PullRequestSynced::EVENT_TYPE,
+            TelemetrySampled::EVENT_TYPE,
+        ] {
+            assert!(
+                !projns(&deltas_for_event(et, &ids())).contains(&ProjectionName::Review),
+                "{et} must NOT nudge Review"
+            );
+        }
     }
     #[test]
     fn audit_only_and_no_projector_events_map_no_projection_delta() {
@@ -252,6 +281,10 @@ fn projectors() -> Vec<Box<dyn Projector>> {
         // event into the proj_integration_connection read model (event-fed; keyed by the PAYLOAD
         // connection_id, NO sibling-read). Closes the Wave-C connection vertical.
         Box::new(integration_connections::IntegrationConnectionProjector),
+        // D5b-1 (P4.6) — folds the ReviewSynced event into the proj_review structured-review read model
+        // (§7.2; sibling-reads action_requests for repo_id, LESSON 17; keyed by review_id, globally
+        // unique). Fixture-fed; the live GitHub producer is D5b-2.
+        Box::new(review::ReviewProjector),
     ]
 }
 

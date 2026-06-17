@@ -134,6 +134,7 @@ pub enum ProjectionName {
     AgentTeam,
     AuditTrail,
     UsageLedger,
+    Review,
 }
 
 impl ProjectionName {
@@ -149,6 +150,7 @@ impl ProjectionName {
         Self::AgentTeam,
         Self::AuditTrail,
         Self::UsageLedger,
+        Self::Review,
     ];
 }
 

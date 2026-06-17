@@ -535,3 +535,24 @@ pub const MIGRATION_13_PULL_REQUEST_MERGEABLE_CHECKS: &str = "\
 ALTER TABLE proj_pull_request ADD COLUMN mergeable INTEGER;
 ALTER TABLE proj_pull_request ADD COLUMN checks_summary TEXT;
 ";
+
+/// Migration 14 (D5b-1/P4.6) — the §7.2/§11.2 structured-review read model. A NEW projection table fed by
+/// the `ReviewSynced` event (the live GitHub producer is D5b-2; D5b-1 is fixture-fed). `proj_review` is in
+/// `REBUILD_TABLES`, so it re-folds on a rebuild (event-sourced, LESSON §17/§48). `review_id` is the
+/// GitHub-native review id (globally unique → the PK, no composite needed). `state` is the frozen §5.1-style
+/// `ReviewState` wire value (reject-unknown at the typed serve). `body` is free-form user review text,
+/// §15-redacted at the event (the projector folds the persisted/redacted payload). A CREATE (a new
+/// projection), NOT an ALTER (the MIGRATION_3 proj_* CREATE precedent — proj_review didn't exist at M3).
+pub const MIGRATION_14_REVIEW: &str = "\
+CREATE TABLE proj_review (
+  review_id      INTEGER PRIMARY KEY,
+  pr_number      INTEGER,
+  project_id     TEXT,
+  repo_id        TEXT,
+  reviewer       TEXT,
+  state          TEXT NOT NULL,
+  submitted_at   TEXT,
+  body           TEXT,
+  updated_at_seq INTEGER NOT NULL
+);
+";

@@ -154,4 +154,10 @@ pub mod time;
 /// (MIGRATION_13, ALTER-only) + served TYPED (`mergeable` is the first bool projection column — INTEGER
 /// 0/1 in SQLite, coerced to a JSON bool in the daemon read layer; the contract stays a pure `Option<bool>`).
 /// Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.36.0";
+/// 0.37.0 (D5b-1/P4.6) freezes the structured-review vertical (`shared/src/{events,status,projections,ipc}.rs`):
+/// the `ReviewSynced` event + the `ReviewState` value enum (snake_case, reject-unknown — NOT a status_machine;
+/// a review is a fixed verdict, no lifecycle) + the 4th frozen projection-row `ReviewRow` (the `proj_review`
+/// read model the §11.2 PR Review Workspace consumes, served TYPED) + `ProjectionName::Review` (the §6.1
+/// closed-set add — a subscribe-able projection). Fed by synthetic events; the live GitHub producer is D5b-2.
+/// Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.37.0";

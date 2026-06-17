@@ -17,10 +17,10 @@ use nexusops_shared::actions::{
 use nexusops_shared::actor::ActorType;
 use nexusops_shared::catalog::ExecutorKind;
 use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType, Visibility};
-use nexusops_shared::events::{PullRequestSynced, SessionRecovered, WorktreeCreated};
+use nexusops_shared::events::{PullRequestSynced, ReviewSynced, SessionRecovered, WorktreeCreated};
 use nexusops_shared::harness::ResumeMode;
 use nexusops_shared::ids::{ActionRequestId, ProjectId, SessionId, WorkspaceId, WorktreeId};
-use nexusops_shared::status::{ActionRequestStatus, PullRequest, Session};
+use nexusops_shared::status::{ActionRequestStatus, PullRequest, ReviewState, Session};
 use nexusops_shared::time::Timestamp;
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{
@@ -2370,4 +2370,277 @@ fn test_session_typed_serve_fails_closed() {
     let err = nexusopsd::ipc::read_session_typed(&path)
         .expect_err("a row that doesn't deserialize fails closed");
     assert_eq!(err, IpcErrorCode::InternalError);
+}
+
+// =============================================================================
+// D5b-1 (P4.6) — the structured-review vertical: ReviewSynced fold + proj_review + typed ReviewRow serve
+// =============================================================================
+
+/// a ReviewSynced append intent linked to `action_request_id` (the sibling-read key) + `project_id`.
+fn review_synced_intent(
+    project_id: Option<ProjectId>,
+    action_request_id: Option<ActionRequestId>,
+    payload: &str,
+) -> AppendIntent {
+    let mut i = intent(payload);
+    i.event_type = ReviewSynced::EVENT_TYPE.to_string();
+    i.project_id = project_id;
+    i.action_request_id = action_request_id;
+    i
+}
+
+fn review_payload(
+    review_id: u64,
+    pr_number: u64,
+    reviewer: &str,
+    state: ReviewState,
+    submitted_at: Option<&str>,
+    body: Option<&str>,
+) -> String {
+    serde_json::to_string(&ReviewSynced {
+        review_id,
+        pr_number,
+        reviewer: reviewer.to_string(),
+        state,
+        submitted_at: submitted_at.map(|s| Timestamp::parse(s).unwrap()),
+        body: body.map(|s| s.to_string()),
+        review_synced_at: Timestamp::parse("2026-06-16T00:00:00Z").unwrap(),
+    })
+    .unwrap()
+}
+
+/// the proj_review rows (the asserted columns), ordered by review_id, for byte-identical compare.
+#[derive(Debug, PartialEq)]
+struct ReviewRowT {
+    review_id: u64,
+    pr_number: Option<u64>,
+    project_id: Option<String>,
+    repo_id: Option<String>,
+    reviewer: Option<String>,
+    state: String,
+    submitted_at: Option<String>,
+    body: Option<String>,
+    updated_at_seq: i64,
+}
+
+fn proj_review_rows(path: &std::path::Path) -> Vec<ReviewRowT> {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("ro conn");
+    let mut stmt = conn
+        .prepare(
+            "SELECT review_id, pr_number, project_id, repo_id, reviewer, state, submitted_at, body, \
+             updated_at_seq FROM proj_review ORDER BY review_id",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(ReviewRowT {
+                review_id: r.get(0)?,
+                pr_number: r.get(1)?,
+                project_id: r.get(2)?,
+                repo_id: r.get(3)?,
+                reviewer: r.get(4)?,
+                state: r.get(5)?,
+                submitted_at: r.get(6)?,
+                body: r.get(7)?,
+                updated_at_seq: r.get(8)?,
+            })
+        })
+        .unwrap();
+    rows.map(|r| r.unwrap()).collect()
+}
+
+#[test]
+fn test_review_synced_projects_to_proj_review() {
+    // spec(§7.2 / LESSONS §17/§48): a synthetic ReviewSynced folds into one proj_review row — all fields
+    // from the payload (review_id PK, pr_number, reviewer, state, submitted_at, body) + project_id from the
+    // envelope + repo_id sibling-read (the PullRequestProjector precedent). submitted_at=None for a pending
+    // review. Rebuild-equivalent (derive-from-event, REBUILD_TABLES).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(review_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &review_payload(
+                9001,
+                42,
+                "octocat",
+                ReviewState::Approved,
+                Some("2026-06-15T00:00:00Z"),
+                Some("LGTM"),
+            ),
+        ))
+        .expect("append folds in-band");
+    let rows = proj_review_rows(&path);
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert_eq!(r.review_id, 9001);
+    assert_eq!(r.pr_number, Some(42));
+    assert_eq!(r.project_id.as_deref(), Some(pid.as_str()));
+    assert_eq!(r.repo_id.as_deref(), Some("repo_alpha"));
+    assert_eq!(r.reviewer.as_deref(), Some("octocat"));
+    assert_eq!(r.state, "approved");
+    assert_eq!(r.submitted_at.as_deref(), Some("2026-06-15T00:00:00Z"));
+    assert_eq!(r.body.as_deref(), Some("LGTM"));
+    assert!(r.updated_at_seq > 0);
+
+    // rebuild-equivalent.
+    let before = proj_review_rows(&path);
+    store.rebuild_projections().unwrap();
+    assert_eq!(before, proj_review_rows(&path), "rebuild reproduces the proj_review row");
+
+    // a pending review on a 2nd repo → submitted_at/body NULL.
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    let gw2 = gw_with_git();
+    let pid2 = ProjectId::new();
+    let arid2 = seed_pr_action(&mut store2, &gw2, Some(pid2.clone()), Some("repo_beta"));
+    store2
+        .append(review_synced_intent(
+            Some(pid2),
+            Some(arid2),
+            &review_payload(9002, 7, "hubot", ReviewState::Pending, None, None),
+        ))
+        .unwrap();
+    let p = &proj_review_rows(&path2)[0];
+    assert_eq!(p.state, "pending");
+    assert_eq!(p.submitted_at, None, "pending → NULL submitted_at");
+    assert_eq!(p.body, None, "no body → NULL");
+}
+
+#[test]
+fn test_review_synced_on_conflict_updates_row() {
+    // spec(§7.2): a re-sync of the same review_id UPDATEs the row (state + body + seq advance), still one row.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_x"));
+    store
+        .append(review_synced_intent(
+            Some(pid.clone()),
+            Some(arid.clone()),
+            &review_payload(5, 1, "octocat", ReviewState::Commented, None, Some("wip")),
+        ))
+        .unwrap();
+    let seq1 = proj_review_rows(&path)[0].updated_at_seq;
+    store
+        .append(review_synced_intent(
+            Some(pid),
+            Some(arid),
+            &review_payload(5, 1, "octocat", ReviewState::ChangesRequested, None, Some("nit")),
+        ))
+        .unwrap();
+    let rows = proj_review_rows(&path);
+    assert_eq!(rows.len(), 1, "re-sync of the same review_id → one row");
+    assert_eq!(rows[0].state, "changes_requested", "DO UPDATE folds state");
+    assert_eq!(rows[0].body.as_deref(), Some("nit"), "DO UPDATE folds body");
+    assert!(rows[0].updated_at_seq > seq1, "seq advanced on re-sync");
+}
+
+#[test]
+fn test_review_projector_rejects_unknown_state() {
+    // spec(§5.1): a ReviewSynced payload with an unbindable `state` wire value → Decode-degrade (skip, no
+    // row); the append succeeds (a degrade is contained), and the reason echoes NO payload bytes (§15). The
+    // valid JSON / wrong shape case (the proj_pull_request test_unbindable_payload_degrades precedent).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_x"));
+    store
+        .append(review_synced_intent(
+            Some(pid),
+            Some(arid),
+            r#"{"review_id":1,"pr_number":1,"reviewer":"x","state":"not_a_real_state","review_synced_at":"2026-06-16T00:00:00Z"}"#,
+        ))
+        .expect("append succeeds — a decode-degrade is contained, not propagated");
+    assert_eq!(
+        proj_review_rows(&path).len(),
+        0,
+        "an unbindable state → degrade, no row"
+    );
+}
+
+#[test]
+fn test_read_review_typed_serves_review_row() {
+    // spec(§7.2/§5.0 / LESSONS §37): the Review projection is served TYPED via read_review_typed — the REAL
+    // folded row deserializes STRICTLY into the frozen ReviewRow (no loose JSON; updated_at_seq dropped;
+    // state the typed ReviewState enum). A Some-body row AND a None-body row both round-trip, fail-closed.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(review_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &review_payload(9001, 42, "octocat", ReviewState::Approved, Some("2026-06-15T00:00:00Z"), Some("LGTM")),
+        ))
+        .unwrap();
+    let arid2 = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_beta"));
+    store
+        .append(review_synced_intent(
+            Some(pid),
+            Some(arid2),
+            &review_payload(9002, 7, "hubot", ReviewState::Pending, None, None),
+        ))
+        .unwrap();
+
+    let rows = nexusopsd::ipc::read_review_typed(&path).expect("typed review read");
+    let approved = rows.iter().find(|r| r.review_id == 9001).expect("the approved row");
+    assert_eq!(approved.state, ReviewState::Approved, "state is the typed enum");
+    assert_eq!(approved.reviewer.as_deref(), Some("octocat"));
+    assert_eq!(approved.body.as_deref(), Some("LGTM"));
+    let pending = rows.iter().find(|r| r.review_id == 9002).expect("the pending row");
+    assert_eq!(pending.state, ReviewState::Pending);
+    assert_eq!(pending.body, None, "no body → None on the wire");
+    assert_eq!(pending.submitted_at, None);
+}
+
+#[test]
+fn test_review_typed_serve_fails_closed() {
+    // spec(§7.2 / LESSONS §37): the typed serve FAILS CLOSED on a proj_review row that no longer deserializes
+    // (a corrupt state) → InternalError, never a silent skip. (Direct writable conn = test-only fixture.)
+    use nexusops_shared::ipc::IpcErrorCode;
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(review_synced_intent(
+            Some(pid),
+            Some(arid),
+            &review_payload(7, 1, "octocat", ReviewState::Approved, None, None),
+        ))
+        .unwrap();
+    {
+        let c = rusqlite::Connection::open(&path).expect("fixture conn");
+        c.execute("UPDATE proj_review SET state = 'not_a_real_state'", [])
+            .expect("corrupt the state");
+    }
+    let err = nexusopsd::ipc::read_review_typed(&path)
+        .expect_err("a row that doesn't deserialize fails closed");
+    assert_eq!(err, IpcErrorCode::InternalError);
+}
+
+#[test]
+fn test_migration_14_applies() {
+    // spec(MIGRATION_14 floor, LESSONS §50): a fresh DB opens at/above user_version 14 and proj_review exists
+    // (the FLOOR, >= 14 — the single exact-latest pin lives in gateway_plan.rs).
+    let (_d, path) = temp_db();
+    let store = open(&path);
+    assert!(
+        store.user_version().unwrap() >= 14,
+        "open migrates at/above MIGRATION_14"
+    );
+    assert!(
+        table_names(&path).contains("proj_review"),
+        "MIGRATION_14 creates proj_review"
+    );
 }

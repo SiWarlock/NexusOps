@@ -35,6 +35,9 @@ pub use methods::read_pull_request_typed;
 // D2/P4.4 — the typed Session serve (proj_session → frozen SessionRow); pub for the integration test.
 // `get_projection` routes Session to it (the ApprovalQueue/PullRequest precedent).
 pub use methods::read_session_typed;
+// D5b-1 — the typed Review serve (proj_review → frozen ReviewRow); pub for the integration test.
+// `get_projection` routes Review to it (the PullRequest/Session precedent).
+pub use methods::read_review_typed;
 // P4.0b-2-F2 — the pure intercept-wait-class decision (the testable core the live `intercept` handler
 // delegates to); pub for the unit test. `INTERCEPT_SATURATED_REASON` = the fail-closed exhaustion reason.
 pub use methods::{intercept_verdict_with_wait_class, INTERCEPT_SATURATED_REASON};

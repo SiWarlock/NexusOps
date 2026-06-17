@@ -75,6 +75,14 @@ The genuinely-new-vs-Claude safety design, stated explicitly for the lead→user
    + the `--sandbox` containment proof = the 0.1/0.3-HITL follow-on. No reachable un-intercepted live codex
    ships (the binding condition — the live spawn-site lands WITH the HITL validation).
 
+## ✅ Authoring-time grammar verification (2026-06-17, live `/openai/codex` rust-v0.75.0 via Context7)
+The brief's authoring gate ("verify the exact Codex `writable_roots`/read-scope config grammar live") — **DONE.** Confirmed grammar (use these exact keys):
+- **Mode:** CLI `--sandbox workspace-write` ⇔ `config.toml: sandbox_mode = "workspace-write"`. `SandboxMode = read-only | workspace-write | danger-full-access`. App-server alt: `thread/start { sandbox: "workspaceWrite" }` (camelCase; the HITL transport).
+- **Per-profile extra WRITE paths:** `[sandbox_workspace_write] writable_roots = ["/abs/path", …]` — merged with `cwd` into `workspace_roots`, resolved-relative-to-cwd + deduped (`codex-rs/core/src/config/mod.rs:2727-2827`). This IS the per-profile extra-path mechanism.
+- **Network:** `[sandbox_workspace_write] network_access = false` (default off; `true` to enable). Pin `false` explicitly (defense-in-depth, don't rely on default).
+- **No-bypass (re-assert):** forbid `--dangerously-bypass-approvals-and-sandbox` / `--yolo` (and `--full-auto` is deprecated→`workspace-write`).
+- **🔴 READ-SCOPE NUANCE (precision correction — implementer asserts at Step-2.5, lead rules per away-dial):** `workspace-write` **reads ALL files** — reads are NOT sandbox-confined; only **writes** are scoped to `cwd + writable_roots` (per `prompts/templates/permissions/sandbox_mode/workspace_write.md`). So the brief's "{worktree + per-profile approved extra **read/write** paths}" is imprecise on the read side: `writable_roots` is a **WRITE** boundary only. **This does NOT weaken INV-SEC-1** — INV-SEC-1 governs *mutation*, and the write/mutation boundary IS scoped to `cwd + writable_roots` (the containment guarantee holds). Test #8 (`test_sandbox_is_inv_sec_layer`) should assert the **write** boundary precisely + `network_access=false` + the no-bypass flags; do not assert read-confinement (the mode doesn't provide it, and INV-SEC-1 doesn't require it). If read-confinement is ever wanted that's `read-only` mode — out of scope here.
+
 ## Acceptance criteria (what "done" means)
 - [ ] **The `nexusops-codex-gate` adjudicator** (a `nexusopsd hook --harness codex PreToolUse` variant, OR a
   sibling subcommand — Step-2.5 Q): reads Codex's `PreToolUse` stdin `{turn_id,tool_name,tool_use_id,

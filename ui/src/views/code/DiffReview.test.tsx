@@ -318,3 +318,55 @@ describe("DiffReview — PR Workspace selection (ui-064 Layer 2)", () => {
     expect(port.get_diff).toHaveBeenCalled(); // the worktree ReviewTab is back (sources its diff)
   });
 });
+
+// ─── ui-067 item 1 — null-safe PR-number chip (§11.2/§11.7) ──────────────────
+describe("DiffReview — null-safe PR-number chip (ui-067)", () => {
+  // A PR with NO pr_number and NO title — the worst case for the chip + label (ui-061 nullable
+  // reconcile). Identity must still come through via the always-present pr_id PK.
+  const PR_NO_NUMBER: PullRequestRow = {
+    pr_id: "repo_9#orphan",
+    project_id: "p1",
+    repo_id: "repo_9",
+    pr_number: null,
+    title: null,
+    status: "open",
+    head_branch: "agent/x",
+    base_branch: "main",
+    pr_checked_at: null,
+    mergeable: null,
+    checks_summary: null,
+  };
+  const PR_WITH_NUMBER: PullRequestRow = {
+    ...PR_NO_NUMBER,
+    pr_id: "repo_9#101",
+    pr_number: 101,
+    title: "Add device flow",
+  };
+
+  function renderPrs(prs: PullRequestRow[]) {
+    const port = new MockGatewayPort();
+    vi.spyOn(port, "get_diff").mockResolvedValue(DIFF);
+    render(
+      <ReadOnlyProvider value={CONNECTED}>
+        <DiffReview prs={prs} reviews={[]} gateway={port} />
+      </ReadOnlyProvider>,
+    );
+    // open the "Pull requests" Kanban so the PR cards render
+    fireEvent.click(screen.getByRole("button", { name: /Pull requests/i }));
+  }
+
+  it("pr_chip_null_safe_when_pr_number_absent", () => {
+    // spec(§11.2/§11.7) — a null pr_number renders NO bare-`#` chip (the tone="pr" badge is a
+    // "#<number>" affordance; with no number it is omitted, never rendered as a lone "#"). The
+    // card still identifies the PR via the label's pr_id fallback (:485) — honest display.
+    renderPrs([PR_NO_NUMBER]);
+    expect(screen.queryByText("#")).toBeNull(); // no bare-`#` chip
+    expect(screen.getByText("repo_9#orphan")).toBeTruthy(); // identity via the pr_id label fallback
+  });
+
+  it("pr_chip_shows_number_when_present", () => {
+    // spec(§11.2) — regression: a present pr_number still renders the "#<n>" chip (happy path).
+    renderPrs([PR_WITH_NUMBER]);
+    expect(screen.getByText("#101")).toBeTruthy();
+  });
+});

@@ -138,6 +138,42 @@ describe("GatewayModal — cat-1 consumer pins (full modal)", () => {
     renderModal();
     expect(screen.getByTestId("always-allow")).toHaveProperty("disabled", true);
   });
+
+  // ─── ui-067 item 2 — empty-reason deny client guard (defense-in-depth) ──────
+  it("deny_whitespace_reason_never_sent_as_blank", async () => {
+    // spec(§11.5/§6.1) — a whitespace-only deny reason must NEVER become the recorded audit
+    // reason: the explicit default rides instead (defense-in-depth; the daemon Gateway is the
+    // real chokepoint). The existing "not now" verbatim path is pinned by
+    // `modal_actions_route_through_seam_no_executor` above.
+    const port = new MockGatewayPort();
+    const denySpy = vi.spyOn(port, "deny");
+    renderModal({ port });
+    fireEvent.change(screen.getByTestId("deny-reason"), { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: /deny/i }));
+    await waitFor(() =>
+      expect(denySpy).toHaveBeenCalledWith(approval.approval_id, "Denied by the operator"),
+    );
+  });
+
+  // ─── ui-067 item 3 — absent (empty) PolicyDecision render-depth ─────────────
+  it("absent_policy_renders_no_further_approval_gracefully", () => {
+    // spec(§11.5) — an EMPTY PolicyDecision (no approvals/reasons/safer_alt) renders the
+    // "no further approval" branch, omits the reasons + safer-alt blocks, and does NOT crash —
+    // pins the empty branches at :134/:138/:141 (modal render-depth).
+    const empty: PolicyDecision = {
+      status: "allow",
+      reasons: [],
+      required_approvals: [],
+      constraints: [],
+      safer_alt: null,
+    };
+    // the modal renders without throwing (getByTestId below would throw if it didn't) — the
+    // empty-policy branches at :134/:138/:141 are exercised: "no further approval", no blocks.
+    renderModal({ policyDecision: empty });
+    expect(screen.getByTestId("policy-requirement").textContent).toContain("no further approval");
+    expect(screen.queryByTestId("policy-reasons")).toBeNull();
+    expect(screen.queryByTestId("policy-safer-alt")).toBeNull();
+  });
 });
 
 describe("GatewayModal ResultNotice — result-branch pins", () => {

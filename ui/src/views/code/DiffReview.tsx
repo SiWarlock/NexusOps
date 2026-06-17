@@ -472,7 +472,10 @@ function PRsTab({
                         }}
                       >
                         <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                          <MetaChip tone="pr">#{p.pr_number}</MetaChip>
+                          {/* null-safe: a tone="pr" chip is a "#<number>" badge — omit it entirely
+                              when pr_number is null (never a bare "#"); the label below carries the
+                              pr_id identity (the :485 fallback). Mirrors the label's null-safety. */}
+                          {p.pr_number != null ? <MetaChip tone="pr">#{p.pr_number}</MetaChip> : null}
                           <StatusPill machine="PullRequest" status={p.status} size="xs" />
                           {d ? (
                             <span style={{ marginLeft: "auto", font: "var(--fs-micro) var(--font-mono)", color: "var(--text-faint)" }}>

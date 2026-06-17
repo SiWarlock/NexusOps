@@ -90,7 +90,9 @@ export function GatewayModal({
     const r =
       kind === "approve"
         ? await seam.approve(approval)
-        : await seam.deny(approval, denyReason || "Denied by the operator");
+        : // defense-in-depth: trim so a whitespace-only reason can never become the recorded
+          // audit reason — the explicit default rides instead (the daemon Gateway is the chokepoint).
+          await seam.deny(approval, denyReason.trim() || "Denied by the operator");
     setResult(r);
     setSubmitting(false);
   }

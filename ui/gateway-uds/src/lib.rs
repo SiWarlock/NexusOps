@@ -842,11 +842,16 @@ mod tests {
     use nexusops_shared::status::ActionRequest as ActionRequestStatus;
     use nexusops_shared::time::Timestamp;
 
+    // ui-067 item 4 — a fixed, deterministic act_<ULID> for the test fixtures (no random
+    // ::new() id in a fixture; two calls return equal ids so assertions are reproducible).
+    const FIXED_AR_ID: &str = "act_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
     /// A sample ActionRequest carrying an idempotency_key + fencing_token + a resource_ref so the
     /// L2-O4 pass-through pin can assert they ride to the daemon opaquely (the crate forms none).
     fn sample_action_request() -> ActionRequest {
         ActionRequest {
-            action_request_id: ActionRequestId::new(),
+            // deterministic fixture id (ui-067 item 4) — never a random ::new()
+            action_request_id: ActionRequestId::parse(FIXED_AR_ID).unwrap(),
             project_id: None,
             action_type: "git.stage_hunk".to_string(),
             requester_type: RequesterType::User,
@@ -873,7 +878,8 @@ mod tests {
     }
     fn sample_preview() -> ActionPreview {
         ActionPreview {
-            action_request_id: ActionRequestId::new(),
+            // deterministic fixture id (ui-067 item 4) — never a random ::new()
+            action_request_id: ActionRequestId::parse(FIXED_AR_ID).unwrap(),
             generated_at: Timestamp::parse("2026-06-14T00:00:00Z").unwrap(),
             risk_level: RiskLevel::Level2,
             risk_reasons: vec!["touches a tracked file".to_string()],
@@ -881,6 +887,17 @@ mod tests {
             changed_resources: vec![],
             cannot_preview_reason: None,
         }
+    }
+
+    #[test]
+    fn sample_fixtures_use_fixed_action_request_ids() {
+        // spec(§6.1) — sample_action_request() + sample_preview() return the FIXED act_<ULID>,
+        // never a fresh ::new() id → deterministic fixtures (two calls are equal).
+        let a = sample_action_request().action_request_id;
+        let b = sample_action_request().action_request_id;
+        assert_eq!(a, b);
+        assert_eq!(sample_preview().action_request_id, a);
+        assert_eq!(a, ActionRequestId::parse(FIXED_AR_ID).unwrap());
     }
 
     #[test]

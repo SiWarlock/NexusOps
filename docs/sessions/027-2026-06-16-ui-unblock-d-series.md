@@ -3,7 +3,7 @@
 - **Date:** 2026-06-16
 - **Phase:** Phase 7 tail (P7.2) + Phase 4.4/4.5 (the D-series, the §8.1/§11.4 survival-display + live-delta surface)
 - **Predecessor:** [026-2026-06-14-background-jobs-and-codex-arc-3.3ab.md](026-2026-06-14-background-jobs-and-codex-arc-3.3ab.md)
-- **Successor:** _(next session — D5a, or the held cat-1 3.3c)_
+- **Successor:** [028-2026-06-16-rich-pr-workspace-and-structured-reviews.md](028-2026-06-16-rich-pr-workspace-and-structured-reviews.md)
 - **Branch:** `main` (single-track, daemon). All commits LOCAL — push is user-gated, never pushed here.
 
 ## Why this session existed

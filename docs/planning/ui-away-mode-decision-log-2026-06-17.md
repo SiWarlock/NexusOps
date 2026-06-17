@@ -153,3 +153,11 @@ Log all decisions while away. Defer any HITL steps until I'm back to keep the bu
     (null-safe-# chip fix · empty-reason deny client guard · absent-policy render test · L2-A
     `sample_preview` fixture); surface a pause recommendation only when the ungated queue is genuinely
     empty. Gated arcs stay deferred (PR-mutations cat-1 / FULL 6.7 cross-track / Brain / ui→main merge).
+- **2026-06-17 ~15:34 — AWAY-MODE ENDED.** The user returned and chose "Back — route decisions to me."
+  The lead reverts to surfacing Option calls / Findings / HITL to the **user** for the call (no longer
+  self-adjudicating). NOTE: the prior cycle's respawn step had been left hanging → the team sat idle
+  ~7h (08:37→15:34 UTC); resolved by spawning the fresh pair on the user's return. The fresh
+  orchestrator + implementer are resuming the ungated quality/hardening queue. The deferred items
+  (D-1…D-8 + the visual gate + the prettier fix) remain parked and are now available for the user's
+  **direct** decision whenever they choose. This log stands as the record of the away-mode run
+  (4 arcs / 2 pushed rounds: `2d7a2d3` + `3cdafd8`).

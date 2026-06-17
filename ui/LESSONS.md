@@ -506,3 +506,32 @@ The ui-side §18 perf bench mirrors the daemon's bench discipline (`daemon/LESSO
 **Rule:** a ui perf bench drives the real production component via `bench()` (an honest JSDOM proxy — document the no-paint caveat), realistic-gated + saturating-reported, with a guard calibrated tighter than the SLO; it runs OWN-cadence (nightly + `/phase-exit`, excluded from `test:run`, non-gating); `bench()`/`test()` split across files. An as-built near the SLO is a USER-ruled §18 re-baseline, not a guard tweak. The daemon `LESSONS.md` §22 analogue. _(Carry-forward: the `parentLabelOf` O(n²) in ProjectGraph — a known model inefficiency, NOT a current issue at typical sizes; the bench now guards against it worsening.)_
 
 **Enforcement:** `pin: views/graph/graph.bench.ts + graph.bench.guard.ts (the guard median < GUARD_MS) + vitest.bench.config.ts (guard-only include) + .github/workflows/nightly.yml (the ui-graph-bench job); test:run excludes *.bench.ts.`
+
+## <a id="32"></a>32. A nullable display field gets null-safe treatment at EVERY render site, not just the primary label
+
+**Date:** 2026-06-17.
+**Source slice:** ui-067 / P6.10 (`docs/briefs/ui-067-P6-10-ui-quality-hardening-bundle.md`) — the null-safe PR-number chip. NON-cat-1.
+
+When a projection field becomes nullable (here `pr_number`, a `u64` → nullable since the ui-061 reconcile), the null-safe handling must be applied at **every** site that renders it — not just the primary/most-visible one. The ui-061 reconcile null-guarded the PR **label** (`DiffReview.tsx:485` `p.title ?? (p.pr_number != null ? PR #${p.pr_number} : p.pr_id)`) but the secondary **`MetaChip`** at `:475` still rendered `#{p.pr_number}` → a bare `#` for a null number. A "the obvious site is fixed" reconcile silently leaves the lagging sites broken.
+
+- **Fix the lagging site to the same null-discipline** — `{p.pr_number != null ? <MetaChip…>#{p.pr_number}</MetaChip> : null}`. A meaning-free badge (a "#&lt;number&gt;" chip with no number) is **omitted**, not rendered empty; the always-present identity (the `pr_id` PK via the label) carries the card.
+- **Pin BOTH clauses in one render** — the test renders a dual-null fixture (`title:null` AND `pr_number:null`) and asserts (a) no bare-`#` chip AND (b) identity is preserved via the `: p.pr_id` label fallback (which also covers that otherwise-untested deepest-fallback branch). The omit must never strand the card identity-less.
+
+**Rule:** when a field goes nullable, grep EVERY render site (not just the label) and apply the same null-guard; omit a meaning-free decorative element rather than render it empty, and pin that identity is preserved by the always-present fallback. Extends [[8]] (the projection-item mapper single-source discipline).
+
+**Enforcement:** `pin: views/code/DiffReview.test.tsx (pr_chip_null_safe_when_pr_number_absent — dual-null fixture: no bare-# + pr_id identity preserved). accepted: cross-render-site consistency for a newly-nullable field is not fully mechanically greppable — the discipline is the grep-every-site habit at reconcile time.`
+
+## <a id="33"></a>33. Client input that feeds an audited/recorded field is trimmed/normalized so whitespace can't become the recorded value
+
+**Date:** 2026-06-17.
+**Source slice:** ui-067 / P6.10 (`docs/briefs/ui-067-P6-10-ui-quality-hardening-bundle.md`) — the empty-reason deny client guard. NON-cat-1 (defense-in-depth). security-reviewer CLEAR (full §15 invariant PASS).
+
+A UI control whose value rides into an **audited** daemon field (here the `GatewayModal` deny `reason`, recorded on the audit event) must normalize before submit so a blank/whitespace-only entry can't become the recorded value. The old `denyReason || "Denied by the operator"` only caught the empty string — a whitespace-only `"   "` is **truthy** → it slipped through as the audit reason. Fix: `denyReason.trim() || "Denied by the operator"`.
+
+- **Defense-in-depth, NOT the authority** — the daemon Action Gateway is the INV-SEC-1 chokepoint and the real reason-content guard; the UI submits an intent only. The client trim is audit-quality hygiene, not a security boundary (don't over-claim it).
+- **Preserve the product decision** — the deny reason is "(optional)" by product choice; the guard NORMALIZES (whitespace → explicit default), it does not force-require a reason (that would be a product change — surface it, don't silently impose it).
+- **Known residual (deferred):** zero-width chars (U+200B/ZWNJ/ZWJ/U+2060) survive `.trim()` — a non-whitespace-invisible reason could still ride. Pre-existing + cosmetic (the daemon is the real guard); carry-forward, not in this slice.
+
+**Rule:** trim/normalize any client input that feeds an audited/recorded daemon field so whitespace-only never becomes the recorded value; frame it as defense-in-depth (the daemon is the authority), and normalize rather than newly-mandate unless the product decision says otherwise. Extends [[16]]/[[17]] (the intent-seam is submit-only; the daemon Gateway is the chokepoint).
+
+**Enforcement:** `pin: overlays/GatewayModal.test.tsx (deny_whitespace_reason_never_sent_as_blank — "   " → the default rides, not the whitespace); security-reviewer the deny path. accepted: a general "audited-field input is trimmed" grep is too broad to encode as a forbidden-pattern; the pin covers the deny path.`

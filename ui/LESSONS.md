@@ -219,6 +219,8 @@ Two boundary points this slice settled. The UI's **status-machine identifiers** 
 
 **Enforcement:** `pin: ui/src/contracts/generated.test.ts` (member-set + validators-keys-equal-`$defs` drift, now self-maintaining since `validators = shape`) + `ui/src/contracts/provisional.test.ts` (`serverframe_variant_fields` / `serverframe_variant_id_type` snapshot). `accepted: the hand-list→bundle-derivation discipline is not separately grep-enforceable — the drift test is the mechanical guard.`
 
+> **Update (ui-065):** the generator now also emits **`oneOf`-of-const-string** `$def`s as Zod enums (synthesize a flat enum from the pure-const oneOf; discriminated-union oneOf SKIPPED via `every(m.const is string)`) — so the "regenerate, never hand-declare" discipline is now mechanically realized for the doc-commented (oneOf-const) enum class too: the `ResumeMode`/`RecoveryState`/`MetricQuality` hand-declared drift-pinned provisional shadows (the [[2]] class) are RETIRED → generated, and the §5.0 drift gate's `enumDefs` filter normalizes flat + oneOf-const so it auto-pins both. One fewer manual-shadow class; CONTRACT-neutral (a representation swap, value-sets identical).
+
 **Validated in practice (slice 041, 0.19.0→0.23.0):** the first re-application was a pure `gen:contracts` + one provisional `ServerFrame` variant (`terminal_output`) — **zero `index.ts` churn**, `validators` self-maintained, exactly as the rule predicts. The field-**type** pin discipline earned its keep again: the `terminal_output.seq` pin (numeric parses, string rejected) extends to reject **negatives** for the schema's `minimum:0` uint64 bound — "fail loudly" covers the range, not just the JS type.
 
 ## <a id="15"></a>15. A discriminator that gates a fail-closed/critical state is a REQUIRED field — never optional-with-default
@@ -469,3 +471,22 @@ The daemon's `ProjectionDelta` is an **id-only NUDGE** (`row: None` — `runtime
 **Rule:** treat a daemon `ProjectionDelta` as a row:None id-NUDGE → coalesced refetch-on-nudge (re-read `get_projection`), never a row-apply reducer (it no-ops against the real daemon; a row-bearing Mock fixture masks this → pin row:None against a daemon-shaped Mock). Compose a 2nd live stream with the single connection authority via per-stream worst-of aggregation with `streamDegraded` from the committed global (054's guard preserved), never a 2nd writer; the aggregate gates `canSubmitIntent` (fail-safe). Extends [[22]]/[[23]]/[[25]].
 
 **Enforcement:** `pin: ui/src/gateway-client/refetch-on-nudge.test.ts (coalesce + swallow-no-mask) + connection/state.test.ts (worstOfConnection) + uds.test.ts (per-stream aggregation + masking + rejected-hop preserved) + Shell.subscribe.test.tsx (approvalqueue_nudge_refetches_not_row_apply [row:None daemon-shaped] + lag-recovery); security-reviewer the per-stream fail-safe gate.` `follow-on: the Session UI refetch-on-nudge + the daemon-side Session/other-projection delta-emission (daemon-gated).`
+
+> **Update (ui-062/ui-063/ui-064):** the row:None refetch-on-nudge mechanism is now spread across the WHOLE live-relevant served set — Session (ui-062), ProjectActivity/PullRequest/UsageLedger (ui-063), Review (ui-064) — so the "only Session+ApprovalQueue emit" snapshot above is the ui-059-era state; post-D4 the daemon emits for all of them. **AuditTrail stays EXCLUDED** (a blanket-nudge-on-every-event projection → a whole-page refetch storm; a daemon seq-cursor delta is the fix). The **recount-iff-a-counts-input** discipline: a refetch recomputes the switcher `counts` ONLY if the projection is a `deriveProjectSwitcherCounts` input (ProjectActivity/PullRequest/Session/ApprovalQueue recompute; UsageLedger/Review plain-replace).
+
+## <a id="30"></a>30. A value-only generated enum gets a co-located verdict-badge descriptor (Record-completeness), NOT a row in the status→attention-rank table (that table is status MACHINES only)
+
+**Date:** 2026-06-17.
+**Source slice:** ui-064 Layer 1 (`docs/briefs/ui-064-P7-2-pr-review-workspace-shell.md`) — the read-only PR Review Workspace reviews-list (`ReviewRow` consumer). NON-cat-1.
+
+`ReviewState` (approved/changes_requested/commented/dismissed/pending) is a generated enum, but it is a fixed **VERDICT/classification** — no lifecycle, no transitions, no terminal/attention semantics. So it is NOT a status MACHINE, and it must NOT go in the cross-doc-tracked status→attention-rank descriptor table (`status/descriptors.ts` — keyed by `(machine, status)`, drift-pinned to the 9-10 frozen status-machine enums, the single source for sidebar weight / queue membership / sort). Adding a verdict there would mis-model it as a lifecycle state and pollute the attention-rank policy.
+
+- **Render it via a co-located verdict-badge descriptor** — `views/code/review-model.ts` `describeReviewState(state) → {glyph, label, tone}`, the badge **never color alone** (glyph + label are the non-color channels; tone is additive).
+- **`Record<Enum, …>` completeness** — declare the descriptor map as `Record<ReviewState, BadgeDescriptor>` so `tsc` forces every value (and any future-added value) to render a distinct non-blank badge. This is the [[5]]/[[11]] "force a future state to render" net applied to a VALUE enum, WITHOUT pulling it into the attention-rank table.
+- **Type-derivation idiom** — when the generated layer exports a value enum as a value (not a re-usable type), derive the field type from the consumed row: `ReviewRow["state"]` (the row's drift-pinned shadow is the type source).
+
+Mirrors the daemon's value-enum-vs-`status_machine!` distinction (a verdict enum uses the plain-value-enum idiom, not the lifecycle-machine macro).
+
+**Rule:** a generated enum that is a fixed verdict/classification (no lifecycle) gets a co-located badge descriptor with `Record`-enforced completeness (never color alone), kept OUT of the `(machine, status)` attention-rank table (status machines only); derive its field type from the consumed row shadow. Extends [[5]]/[[11]].
+
+**Enforcement:** `pin: views/code/review-model.test.ts (Record-completeness + all-N distinct non-blank labels) + the status/descriptors.ts completeness test staying status-machine-only (a verdict enum never appears there).`

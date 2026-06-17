@@ -507,3 +507,52 @@ CREATE TABLE proj_integration_connection (
   updated_at_seq INTEGER NOT NULL
 );
 ";
+
+/// Migration 12 (D2/P4.4) — the §8.1/§11.4 survival-recovery DISPLAY fold: surface the recovery OUTCOME
+/// on `proj_session` so the ui per-session recovery indicator + `RecoveryState` banner render
+/// resumed-vs-replayed-vs-reattached. The columns are folded from the (previously-DEAD) `SessionRecovered`
+/// event (4.1b-1's `recover_sessions_on_restart`). `ALTER ADD COLUMN`: additive nullable → historical /
+/// never-recovered rows carry NULL, and `proj_session` is in `REBUILD_TABLES` so a rebuild re-folds — no
+/// DROP+CREATE / offset-reset (the MIGRATION_9 precedent). The historical `proj_session` CREATE
+/// (MIGRATION_3) is deliberately UNCHANGED: editing it would duplicate-column-fail a fresh DB (CREATE
+/// with the columns at M3, then this ALTER at M12).
+pub const MIGRATION_12_SESSION_RECOVERY: &str = "\
+ALTER TABLE proj_session ADD COLUMN resume_mode TEXT;
+ALTER TABLE proj_session ADD COLUMN replayed_event_count INTEGER;
+ALTER TABLE proj_session ADD COLUMN recovered_at TEXT;
+";
+
+/// Migration 13 (D5a/P4.6) — the §7.2/§11.2 rich-PR DISPLAY enrichment: surface `mergeable` +
+/// `checks_summary` on `proj_pull_request` so the ui PR Review Workspace renders the mergeability +
+/// checks badges. The columns are folded from `PullRequestSynced.mergeable?`/`checks_summary?` (the data
+/// the P7.1 event has always carried; P7.2 froze the row WITHOUT them). `mergeable` is a SQLite INTEGER
+/// (0/1 — there is no native bool; the read layer coerces it to the contract's JSON bool). `ALTER ADD
+/// COLUMN`: additive nullable → historical / unmergeable-unknown rows carry NULL, and `proj_pull_request`
+/// is in `REBUILD_TABLES` so a rebuild re-folds — no DROP+CREATE / offset-reset (the MIGRATION_12
+/// precedent). The historical `proj_pull_request` CREATE (MIGRATION_3) is deliberately UNCHANGED: editing
+/// it would duplicate-column-fail a fresh DB (CREATE without the columns at M3, then this ALTER at M13).
+pub const MIGRATION_13_PULL_REQUEST_MERGEABLE_CHECKS: &str = "\
+ALTER TABLE proj_pull_request ADD COLUMN mergeable INTEGER;
+ALTER TABLE proj_pull_request ADD COLUMN checks_summary TEXT;
+";
+
+/// Migration 14 (D5b-1/P4.6) — the §7.2/§11.2 structured-review read model. A NEW projection table fed by
+/// the `ReviewSynced` event (the live GitHub producer is D5b-2; D5b-1 is fixture-fed). `proj_review` is in
+/// `REBUILD_TABLES`, so it re-folds on a rebuild (event-sourced, LESSON §17/§48). `review_id` is the
+/// GitHub-native review id (globally unique → the PK, no composite needed). `state` is the frozen §5.1-style
+/// `ReviewState` wire value (reject-unknown at the typed serve). `body` is free-form user review text,
+/// §15-redacted at the event (the projector folds the persisted/redacted payload). A CREATE (a new
+/// projection), NOT an ALTER (the MIGRATION_3 proj_* CREATE precedent — proj_review didn't exist at M3).
+pub const MIGRATION_14_REVIEW: &str = "\
+CREATE TABLE proj_review (
+  review_id      INTEGER PRIMARY KEY,
+  pr_number      INTEGER,
+  project_id     TEXT,
+  repo_id        TEXT,
+  reviewer       TEXT,
+  state          TEXT NOT NULL,
+  submitted_at   TEXT,
+  body           TEXT,
+  updated_at_seq INTEGER NOT NULL
+);
+";

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::harness::{ResumeMode, TelemetrySample};
 use crate::ids::{ExecutionProfileId, WorktreeId};
 use crate::objects::{DeviceId, LocalRunnerId};
-use crate::status::{PullRequest, Session};
+use crate::status::{PullRequest, ReviewState, Session};
 use crate::time::Timestamp;
 
 /// `SessionStarted` payload. The session's **identity** (`session_id`/`project_id`)
@@ -485,6 +485,31 @@ pub struct PullRequestSynced {
 impl PullRequestSynced {
     /// The EventTypeRegistry name — ONE home (edges' github sync executor emit path + `proj_pull_request`).
     pub const EVENT_TYPE: &'static str = "PullRequestSynced";
+}
+
+/// `ReviewSynced` payload (§7.1; D5b-1 — the structured-review vertical). Feeds `proj_review` (§7.2 — the
+/// per-review read model the §11.2 PR Review Workspace renders). `review_id`/`pr_number` are GitHub-native
+/// externals (non-negative naturals → `u64`, not frozen-22 IDs). `state` is the frozen [`ReviewState`]
+/// value enum (no fork). `body` is FREE-FORM user review text — §15-redacted at persist like every payload
+/// (the projector folds the persisted/redacted event; the row serves redacted). `submitted_at` is `None`
+/// for a pending review. The live GitHub producer is D5b-2; D5b-1 is fixture-fed.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ReviewSynced {
+    /// the GitHub-native review id — a globally-unique non-negative external natural (the proj_review PK).
+    pub review_id: u64,
+    /// the PR this review belongs to (GitHub-native PR number; an FK display column on the row).
+    pub pr_number: u64,
+    pub reviewer: String,
+    pub state: ReviewState,
+    pub submitted_at: Option<Timestamp>,
+    pub body: Option<String>,
+    pub review_synced_at: Timestamp,
+}
+
+impl ReviewSynced {
+    /// The EventTypeRegistry name — ONE home (the D5b-2 github review-sync emit path + `proj_review`).
+    pub const EVENT_TYPE: &'static str = "ReviewSynced";
 }
 
 /// `IntegrationConnectionRegistered` payload (§7.1; P7.1 — from connecting GitHub/Linear). Feeds a

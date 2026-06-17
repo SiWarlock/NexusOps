@@ -9,10 +9,12 @@
 
 use nexusops_shared::actor::ActorType;
 use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType};
+use nexusops_shared::events::{SessionFailed, SessionRecovered, TelemetrySampled};
+use nexusops_shared::harness::{MetricQuality, TelemetrySample};
 use nexusops_shared::ids::{SessionId, WorkspaceId};
 use nexusops_shared::ipc::{
-    DeltaKind, GetProjectionParams, HelloAck, HelloFrame, ProjectionName, RpcRequest, RpcResponse,
-    ServerFrame,
+    DeltaKind, GetProjectionParams, HelloAck, HelloFrame, ProjectionDelta, ProjectionName,
+    RpcRequest, RpcResponse, ServerFrame,
 };
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{
@@ -88,6 +90,83 @@ fn session_intent(session_id: &str) -> AppendIntent {
     i.session_id = Some(SessionId::parse(session_id).unwrap());
     i.payload_json = r#"{"status":"active"}"#.to_string();
     i
+}
+
+/// a SessionFailed intent with a session_id (4.2 — empty-payload) → the live delta source maps it to
+/// a Session-projection Upsert nudge (L4, D3).
+fn session_failed_intent(session_id: &str) -> AppendIntent {
+    let mut i = test_intent();
+    i.event_type = SessionFailed::EVENT_TYPE.to_string();
+    i.session_id = Some(SessionId::parse(session_id).unwrap());
+    i.payload_json = "{}".to_string(); // SessionFailed is empty-payload
+    i
+}
+
+/// a SessionRecovered intent with a session_id (D2/4.4) → the live delta source maps it to a
+/// Session-projection Upsert nudge (L4, D3). The payload BINDS cleanly (no Decode-degrade noise); the
+/// in-band fold itself is a healthy no-op in these tests (no prior SessionStarted row for the id), and
+/// the delta fires regardless — it is payload-agnostic (reads only event_type + session_id).
+fn session_recovered_intent(session_id: &str) -> AppendIntent {
+    let mut i = test_intent();
+    i.event_type = SessionRecovered::EVENT_TYPE.to_string();
+    i.session_id = Some(SessionId::parse(session_id).unwrap());
+    i.payload_json =
+        r#"{"mode":"replayed","replayed_event_count":3,"execution_profile_id":null}"#.to_string();
+    i
+}
+
+/// a TelemetrySampled intent (4.0c — observation-appended via the telemetry sink) → the live delta
+/// source maps it to a UsageLedger Upsert nudge (L4, D4a). The payload binds cleanly (no Decode noise);
+/// the delta is payload-agnostic (reads only event_type).
+fn telemetry_intent() -> AppendIntent {
+    let payload = TelemetrySampled {
+        sample: TelemetrySample {
+            tokens_in: 10,
+            tokens_out: 5,
+            context_pct: None,
+            cost_estimate: 0.0,
+            metric_quality: MetricQuality::Exact,
+        },
+        model: None,
+        execution_profile_id: None,
+    };
+    let mut i = test_intent();
+    i.event_type = TelemetrySampled::EVENT_TYPE.to_string();
+    i.session_id = Some(SessionId::parse("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap());
+    i.source_type = SourceType::UsageMeter;
+    i.payload_json = serde_json::to_string(&payload).unwrap();
+    i
+}
+
+/// a generic (non-projection-specific) committed event — proves the AuditTrail blanket arm fires for
+/// EVERY event, even one no projection-specific arm handles.
+fn generic_intent(event_type: &str) -> AppendIntent {
+    let mut i = test_intent();
+    i.event_type = event_type.to_string();
+    i.session_id = None;
+    i.payload_json = "{}".to_string();
+    i
+}
+
+/// drain every delta currently buffered on the receiver. D4a: an append now publishes MULTIPLE deltas
+/// (the projection-specific one(s) + the blanket AuditTrail), and all of an append's deltas are in the
+/// broadcast buffer by the time `append().await` returns (publish-after-commit) — so tests drain-and-find
+/// rather than rely on a single `recv()` / push order.
+fn drain_deltas(
+    rx: &mut tokio::sync::broadcast::Receiver<ProjectionDelta>,
+) -> Vec<ProjectionDelta> {
+    let mut out = Vec::new();
+    while let Ok(d) = rx.try_recv() {
+        out.push(d);
+    }
+    out
+}
+
+/// whether `deltas` contains an `Upsert` for `projection`.
+fn has_upsert(deltas: &[ProjectionDelta], projection: ProjectionName) -> bool {
+    deltas
+        .iter()
+        .any(|d| d.projection == projection && matches!(d.kind, DeltaKind::Upsert))
 }
 
 /// a Redactor that refuses to redact — forces `append` to fail the §15 gate (so the append rolls
@@ -580,13 +659,17 @@ async fn test_append_publishes_delta_after_commit() {
         .append(session_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"))
         .await
         .expect("committed append");
-    let delta = rx
-        .recv()
-        .await
-        .expect("a committed append published a delta");
-    assert_eq!(delta.projection, ProjectionName::Session);
-    assert!(matches!(delta.kind, DeltaKind::Upsert));
-    assert_eq!(delta.id.as_deref(), Some("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"));
+    // drain-and-find: the Session Upsert is AMONG the published deltas (D4a — every event also nudges
+    // AuditTrail, so an append now publishes >1 delta; don't rely on a single recv / push order).
+    let deltas = drain_deltas(&mut rx);
+    assert!(has_upsert(&deltas, ProjectionName::Session));
+    assert!(
+        deltas
+            .iter()
+            .any(|d| d.projection == ProjectionName::Session
+                && d.id.as_deref() == Some("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+        "the Session delta carries the session id"
+    );
     actor.shutdown().await;
 
     // rolled-back (the redaction gate refuses) → NO delta is published.
@@ -610,10 +693,280 @@ async fn test_append_publishes_delta_after_commit() {
         .await;
     assert!(refused.is_err(), "the §15 gate refused the append");
     assert!(
-        rx2.try_recv().is_err(),
-        "a rolled-back append publishes no delta"
+        drain_deltas(&mut rx2).is_empty(),
+        "a rolled-back append publishes no delta (the whole Vec is gated on commit)"
     );
     actor2.shutdown().await;
+}
+
+// ---- D3 (P4.5) — the live Session nudge on every proj_session-mutating event ------------------
+
+#[tokio::test]
+async fn test_session_failed_publishes_delta_after_commit() {
+    // spec(§7/§11.4) — proj_session is mutated by SessionFailed (4.2 fold, LESSON §17) → the §6.1
+    // subscriber must be nudged to re-read or the §11.4 Failed-session restart card goes stale.
+    // Publish-after-commit (LESSON §9).
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    handle
+        .append(session_failed_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"))
+        .await
+        .expect("committed append");
+    let deltas = drain_deltas(&mut rx);
+    assert!(
+        deltas
+            .iter()
+            .any(|d| d.projection == ProjectionName::Session
+                && matches!(d.kind, DeltaKind::Upsert)
+                && d.id.as_deref() == Some("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+        "a committed SessionFailed publishes a Session Upsert keyed by its id"
+    );
+    actor.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_session_recovered_publishes_delta_after_commit() {
+    // spec(§11.4) — without the nudge the resumed/replayed recovery banner never refreshes after restart
+    // recovery; the D2/4.4 fold mutates resume_mode/replayed_event_count/recovered_at (status unchanged,
+    // but the ROW changes — the subscriber must re-read).
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    handle
+        .append(session_recovered_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"))
+        .await
+        .expect("committed append");
+    let deltas = drain_deltas(&mut rx);
+    assert!(
+        deltas
+            .iter()
+            .any(|d| d.projection == ProjectionName::Session
+                && matches!(d.kind, DeltaKind::Upsert)
+                && d.id.as_deref() == Some("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+        "a committed SessionRecovered publishes a Session Upsert keyed by its id"
+    );
+    actor.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_session_event_without_session_id_publishes_no_session_delta() {
+    // spec — the Session nudge carries the id (row: None); no session_id → NO Session delta (parity with
+    // the SessionStarted `if let Some(sid)` guard). (D4a: the blanket AuditTrail nudge may still fire —
+    // every event nudges the audit view — so this asserts the absence of the SESSION nudge specifically.)
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    let mut intent = session_failed_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    intent.session_id = None;
+    handle.append(intent).await.expect("committed append");
+    let deltas = drain_deltas(&mut rx);
+    assert!(
+        !has_upsert(&deltas, ProjectionName::Session),
+        "an id-less session event publishes NO Session delta"
+    );
+    actor.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_proj_session_folded_events_each_publish_a_session_delta() {
+    // spec(LESSON §50, generalized to delta-source↔projector) — EVERY event type the SessionProjector
+    // folds into proj_session MUST publish a Session Upsert nudge (a row-mutating event without a delta is
+    // a silent stale-UI bug). If a future proj_session-folding event is added to `SessionProjector::apply`,
+    // add its arm to `deltas_for_append` too — extend BOTH lists together (the keep-two-lists-honest guard).
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    // the event types keyed on the SAME token-form both lists use (consts where they exist; the
+    // SessionStarted literal — it has no EVENT_TYPE const, and the projector uses the literal too).
+    let cases = [
+        (
+            "SessionStarted",
+            session_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+        ),
+        (
+            SessionFailed::EVENT_TYPE,
+            session_failed_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAW"),
+        ),
+        (
+            SessionRecovered::EVENT_TYPE,
+            session_recovered_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAX"),
+        ),
+    ];
+    for (label, intent) in cases {
+        let sid = intent.session_id.as_ref().unwrap().as_str().to_string();
+        handle
+            .append(intent)
+            .await
+            .unwrap_or_else(|_| panic!("{label} commits"));
+        let deltas = drain_deltas(&mut rx);
+        assert!(
+            deltas
+                .iter()
+                .any(|d| d.projection == ProjectionName::Session
+                    && matches!(d.kind, DeltaKind::Upsert)
+                    && d.id.as_deref() == Some(sid.as_str())),
+            "{label} publishes a Session Upsert delta keyed by its id"
+        );
+    }
+    actor.shutdown().await;
+}
+
+// ---- D4a (P4.5) — the observation-path nudges (UsageLedger on TelemetrySampled; AuditTrail blanket) --
+
+#[tokio::test]
+async fn test_telemetry_sampled_publishes_usage_ledger_delta() {
+    // spec(§7/§11) — proj_usage_ledger is mutated by TelemetrySampled (the only event the UsageProjector
+    // folds) → the §6.1 usage view must re-read. id: None (payload-agnostic — the subscriber re-reads the
+    // small aggregate). Publish-after-commit.
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    handle
+        .append(telemetry_intent())
+        .await
+        .expect("committed append");
+    let deltas = drain_deltas(&mut rx);
+    assert!(has_upsert(&deltas, ProjectionName::UsageLedger));
+    assert!(
+        deltas
+            .iter()
+            .any(|d| d.projection == ProjectionName::UsageLedger && d.id.is_none()),
+        "the UsageLedger nudge is id-less (payload-agnostic)"
+    );
+    actor.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_every_event_publishes_an_audit_trail_delta() {
+    // spec(§7) — the AuditProjector folds EVERY event into an audit row → every committed Command::Append
+    // event nudges the audit view (the blanket arm, id: None). Several distinct event types (incl. a generic
+    // one no projection-specific arm handles) each publish an AuditTrail Upsert.
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    let cases = [
+        session_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+        session_failed_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAW"),
+        telemetry_intent(),
+        generic_intent("AuditIntegrityViolation"),
+    ];
+    for intent in cases {
+        let et = intent.event_type.clone();
+        handle
+            .append(intent)
+            .await
+            .unwrap_or_else(|_| panic!("{et} commits"));
+        let deltas = drain_deltas(&mut rx);
+        assert!(
+            deltas
+                .iter()
+                .any(|d| d.projection == ProjectionName::AuditTrail
+                    && matches!(d.kind, DeltaKind::Upsert)
+                    && d.id.is_none()),
+            "{et} publishes a blanket AuditTrail Upsert (id-less)"
+        );
+    }
+    actor.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_event_publishes_multiple_projection_deltas() {
+    // spec — a single event mutating N projections nudges all N (the Vec<ProjectionDelta> contract):
+    // TelemetrySampled → {UsageLedger, AuditTrail}; SessionFailed → {Session, AuditTrail}.
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+
+    handle
+        .append(telemetry_intent())
+        .await
+        .expect("committed append");
+    let deltas = drain_deltas(&mut rx);
+    assert!(has_upsert(&deltas, ProjectionName::UsageLedger));
+    assert!(has_upsert(&deltas, ProjectionName::AuditTrail));
+
+    handle
+        .append(session_failed_intent("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV"))
+        .await
+        .expect("committed append");
+    let deltas = drain_deltas(&mut rx);
+    assert!(has_upsert(&deltas, ProjectionName::Session));
+    assert!(has_upsert(&deltas, ProjectionName::AuditTrail));
+    actor.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_proj_usage_ledger_folded_events_match_delta_source() {
+    // spec(LESSON §51, generalized to delta-source↔projector) — proj_usage_ledger folds EXACTLY
+    // {TelemetrySampled}; assert a committed TelemetrySampled (keyed on the const) publishes a UsageLedger
+    // delta. A future proj_usage_ledger-folding event added to the UsageProjector without a delta-source arm
+    // is a silent stale-UI bug — extend BOTH lists together.
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        stub_gateway(),
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    assert_eq!(TelemetrySampled::EVENT_TYPE, "TelemetrySampled");
+    handle
+        .append(telemetry_intent())
+        .await
+        .expect("committed append");
+    let deltas = drain_deltas(&mut rx);
+    assert!(
+        has_upsert(&deltas, ProjectionName::UsageLedger),
+        "the UsageLedger nudge fires on TelemetrySampled::EVENT_TYPE"
+    );
+    // the NEGATIVE arm — the UsageLedger nudge is SELECTIVE (not blanket like AuditTrail): a
+    // non-TelemetrySampled event must NOT fire it (catches a UsageLedger arm that drifts too broad).
+    handle
+        .append(generic_intent("SomeOtherEvent"))
+        .await
+        .expect("committed append");
+    let deltas = drain_deltas(&mut rx);
+    assert!(
+        !has_upsert(&deltas, ProjectionName::UsageLedger),
+        "a non-TelemetrySampled event publishes NO UsageLedger delta (the arm is selective)"
+    );
+    actor.shutdown().await;
 }
 
 // ---- P2.1c L1 — a committed gateway approval publishes an ApprovalQueue delta -----------------
@@ -669,19 +1022,26 @@ async fn test_gateway_approval_publishes_queue_delta() {
     .expect("write-actor reachable")
     .expect("submit");
     assert!(ack.action_request_id.starts_with("act_"));
-    let delta = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-        .await
-        .expect("a queue delta was published within 2s")
-        .expect("a committed gateway submit published a queue delta");
-    assert_eq!(delta.projection, ProjectionName::ApprovalQueue);
-    assert!(matches!(delta.kind, DeltaKind::Upsert));
-    let appr_id = delta
+    // drain-and-find: a committed submit publishes an ApprovalQueue Upsert keyed by the appr_ id AMONG
+    // its deltas (D4b: every gateway command ALSO nudges AuditTrail, so don't rely on a single recv /
+    // push order). ApprovalQueue is NOT regressed; AuditTrail is the new per-command blanket.
+    let deltas = drain_deltas(&mut rx);
+    let queue = deltas
+        .iter()
+        .find(|d| d.projection == ProjectionName::ApprovalQueue)
+        .expect("a committed gateway submit published an ApprovalQueue delta");
+    assert!(matches!(queue.kind, DeltaKind::Upsert));
+    let appr_id = queue
         .id
         .clone()
         .expect("the delta is keyed by the approval_id");
     assert!(
         appr_id.starts_with("appr_"),
         "keyed by the appr_ approval_id"
+    );
+    assert!(
+        has_upsert(&deltas, ProjectionName::AuditTrail),
+        "the committed gateway command also nudges AuditTrail (D4b per-command blanket)"
     );
 
     // a committed approve ALSO publishes a queue delta (the row status advances) — exercises the
@@ -693,11 +1053,11 @@ async fn test_gateway_approval_publishes_queue_delta() {
         .unwrap()
         .expect("write-actor reachable")
         .expect("approve");
-    let approve_delta = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-        .await
-        .expect("a queue delta was published within 2s")
-        .expect("a committed gateway approve published a queue delta");
-    assert_eq!(approve_delta.projection, ProjectionName::ApprovalQueue);
+    let deltas = drain_deltas(&mut rx);
+    let approve_delta = deltas
+        .iter()
+        .find(|d| d.projection == ProjectionName::ApprovalQueue)
+        .expect("a committed gateway approve published an ApprovalQueue delta");
     assert_eq!(
         approve_delta.id.as_deref(),
         Some(appr_id.as_str()),

@@ -27,4 +27,5 @@ pub(crate) const REBUILD_TABLES: &[&str] = &[
     "proj_project",
     "proj_repository",
     "proj_integration_connection",
+    "proj_review",
 ];

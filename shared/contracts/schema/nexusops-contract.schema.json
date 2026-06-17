@@ -1781,7 +1781,8 @@
         "ProjectGraph",
         "AgentTeam",
         "AuditTrail",
-        "UsageLedger"
+        "UsageLedger",
+        "Review"
       ],
       "type": "string"
     },
@@ -1822,6 +1823,79 @@
         "closed"
       ],
       "type": "string"
+    },
+    "PullRequestRow": {
+      "additionalProperties": false,
+      "description": "One row of the `proj_pull_request` read model (§7.2 / §11.2) — the GitHub-authoritative PR cache the\nui PR Review Workspace renders. The 2nd frozen projection-row (after [`ApprovalQueueRow`], P7.2). The\nBASIC columns the edges-P7.1 `PullRequestProjector` folds: `status` is the frozen §5.1 [`PullRequest`]\nenum (reject-unknown — no loose status string). `mergeable`/`checks_summary` are the **D5a enrichment**\n(the basic-now + SPREAD consumed) — folded from `PullRequestSynced.mergeable?`/`checks_summary?` into\nthe 2 columns the row now carries (`mergeable` is the FIRST bool projection column → stored as a SQLite\nINTEGER 0/1; the daemon read layer coerces it to this JSON bool, so the contract stays a pure\n`Option<bool>`). The internal `updated_at_seq` is NOT a wire field. **Nullability matches the DDL**\n(a display read model tolerates a NULL over failing the whole typed serve closed — contrast the\nsafety-critical `ApprovalQueueRow`): `pr_id` (PK) + `status` (NOT NULL) are non-Option; the rest are\n`Option`. `pr_number` is the GitHub-native PR number (a non-negative external natural → `u64`, a\nbounded integer in schemars — LESSON §15 trap 2). Optionals serialize as explicit `null` (no\n`skip_serializing_if`) so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
+      "properties": {
+        "base_branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "checks_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head_branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mergeable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "pr_checked_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_id": {
+          "type": "string"
+        },
+        "pr_number": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "project_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/PullRequest"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "pr_id",
+        "status"
+      ],
+      "type": "object"
     },
     "PullRequestSynced": {
       "additionalProperties": false,
@@ -2029,6 +2103,125 @@
       "required": [
         "mode",
         "replayed_event_count"
+      ],
+      "type": "object"
+    },
+    "ReviewRow": {
+      "additionalProperties": false,
+      "description": "One row of the `proj_review` read model (§7.2 / §11.2) — a single structured PR review the ui PR Review\nWorkspace renders. The 4th frozen projection-row (after ApprovalQueue/PullRequest/Session, D5b-1). Folded\nfrom the `ReviewSynced` event (the live GitHub producer is D5b-2). `review_id` is the globally-unique\nGitHub-native review id (the PK → non-Option `u64`, a bounded integer in schemars — LESSON §15 trap 2);\n`state` is the frozen [`ReviewState`] value enum (reject-unknown — no loose state string). `repo_id` is\nsibling-read from the action's Repo resource_ref (the `PullRequestRow` precedent). `body` is FREE-FORM\nuser review text, §15-redacted at the event (the row serves the redacted value). The internal\n`updated_at_seq` is NOT a wire field. **Nullability matches the DDL** (a display read model tolerates a\nNULL over failing the whole typed serve closed): `review_id` (PK) + `state` (NOT NULL) are non-Option;\nthe rest are `Option`. Optionals serialize as explicit `null` (no `skip_serializing_if`) so the\n§2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
+      "properties": {
+        "body": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_number": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "project_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "review_id": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reviewer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/ReviewState"
+        },
+        "submitted_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "review_id",
+        "state"
+      ],
+      "type": "object"
+    },
+    "ReviewState": {
+      "description": "GitHub PR review state (D5b-1, §7.2/§11.2) — a frozen VALUE enum, NOT a `status_machine!` lifecycle: a\nreview IS a fixed verdict (there is no transition/terminal concept), so a phantom `is_terminal()` would\nmisrepresent the model. snake_case wire, reject-unknown (serde's default for enums → the projector's\nDecode-degrade still fires on an unknown value), `ALL` — the §6.2 `RequesterType`/`EvidenceType`\nvalue-enum idiom.",
+      "enum": [
+        "approved",
+        "changes_requested",
+        "commented",
+        "dismissed",
+        "pending"
+      ],
+      "type": "string"
+    },
+    "ReviewSynced": {
+      "additionalProperties": false,
+      "description": "`ReviewSynced` payload (§7.1; D5b-1 — the structured-review vertical). Feeds `proj_review` (§7.2 — the\nper-review read model the §11.2 PR Review Workspace renders). `review_id`/`pr_number` are GitHub-native\nexternals (non-negative naturals → `u64`, not frozen-22 IDs). `state` is the frozen [`ReviewState`]\nvalue enum (no fork). `body` is FREE-FORM user review text — §15-redacted at persist like every payload\n(the projector folds the persisted/redacted event; the row serves redacted). `submitted_at` is `None`\nfor a pending review. The live GitHub producer is D5b-2; D5b-1 is fixture-fed.",
+      "properties": {
+        "body": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_number": {
+          "description": "the PR this review belongs to (GitHub-native PR number; an FK display column on the row).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "review_id": {
+          "description": "the GitHub-native review id — a globally-unique non-negative external natural (the proj_review PK).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "review_synced_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "reviewer": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/ReviewState"
+        },
+        "submitted_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "review_id",
+        "pr_number",
+        "reviewer",
+        "state",
+        "review_synced_at"
       ],
       "type": "object"
     },
@@ -2266,6 +2459,75 @@
       "required": [
         "mode",
         "replayed_event_count"
+      ],
+      "type": "object"
+    },
+    "SessionRow": {
+      "additionalProperties": false,
+      "description": "One row of the `proj_session` read model (§7.2 / §11.4) — the derived current state of a session, the\n3rd frozen projection-row (after [`ApprovalQueueRow`]/[`PullRequestRow`], D2). Carries the\nuser-meaningful columns + `status: Session` (the frozen §5.1 enum, reject-unknown) + the §8.1/§11.4\nsurvival-recovery fields (`resume_mode`/`replayed_event_count`/`recovered_at` — the\nresumed-vs-replayed-vs-reattached banner source, folded from the now-consumed `SessionRecovered`).\nThe not-yet-consumed `proj_session` columns (worktree/linked_*/token_usage/pending_approvals/…) are a\nlater SPREAD; the internal `updated_at_seq` is NOT a wire field. **Nullability matches the DDL:**\n`session_id` (PK) / `project_id` (NOT NULL — the fold guarantees it) / `status` (NOT NULL) are\nnon-Option; the rest are `Option`. `display_name` is the daemon-canonical name (the ui provisional's\n`title` maps to it on regen). Optionals serialize as explicit `null` (no `skip_serializing_if`) so the\n§2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
+      "properties": {
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_profile_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "recovered_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "replayed_event_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "resume_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResumeMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/Session"
+        }
+      },
+      "required": [
+        "session_id",
+        "project_id",
+        "status"
       ],
       "type": "object"
     },
@@ -2914,6 +3176,9 @@
     "pull_request": {
       "$ref": "#/$defs/PullRequest"
     },
+    "pull_request_row": {
+      "$ref": "#/$defs/PullRequestRow"
+    },
     "pull_request_synced": {
       "$ref": "#/$defs/PullRequestSynced"
     },
@@ -2944,6 +3209,15 @@
     "resume_result": {
       "$ref": "#/$defs/ResumeResult"
     },
+    "review_row": {
+      "$ref": "#/$defs/ReviewRow"
+    },
+    "review_state": {
+      "$ref": "#/$defs/ReviewState"
+    },
+    "review_synced": {
+      "$ref": "#/$defs/ReviewSynced"
+    },
     "risk_level": {
       "$ref": "#/$defs/RiskLevel"
     },
@@ -2970,6 +3244,9 @@
     },
     "session_recovered": {
       "$ref": "#/$defs/SessionRecovered"
+    },
+    "session_row": {
+      "$ref": "#/$defs/SessionRow"
     },
     "session_started": {
       "$ref": "#/$defs/SessionStarted"
@@ -3161,9 +3438,14 @@
     "linear_sync_failed",
     "approval_queue_row",
     "session_recovered",
-    "session_failed"
+    "session_failed",
+    "pull_request_row",
+    "session_row",
+    "review_synced",
+    "review_state",
+    "review_row"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.33.0"
+  "x-contract-version": "0.38.0"
 }

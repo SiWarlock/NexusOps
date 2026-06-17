@@ -27,9 +27,9 @@ use nexusops_shared::actions::{
     ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
 };
 use nexusops_shared::catalog::ExecutorKind;
-use nexusops_shared::events::{GithubSyncFailed, Provider, PullRequestSynced};
+use nexusops_shared::events::{GithubSyncFailed, Provider, PullRequestSynced, ReviewSynced};
 use nexusops_shared::ids::ActionRequestId;
-use nexusops_shared::status::{ActionRequestStatus, PullRequest};
+use nexusops_shared::status::{ActionRequestStatus, PullRequest, ReviewState};
 use nexusops_shared::time::Timestamp;
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{open_read_only, EventStore, PrefixRedactor};
@@ -42,7 +42,7 @@ use nexusopsd::idgen::UlidGen;
 use nexusopsd::integrations::classifier::IntegrationOutcomeClass;
 use nexusopsd::integrations::executor::GithubExecutor;
 use nexusopsd::integrations::github_write::{
-    CreatePrArgs, CreatedPr, FakeGithubWriteClient, GithubWriteError,
+    CreatePrArgs, CreatedPr, FakeGithubWriteClient, GithubWriteError, ReviewData,
 };
 use nexusopsd::integrations::pull_request::{derive_pull_request_status, PullRequestSignals};
 
@@ -646,4 +646,168 @@ fn test_github_executor_uses_captured_handle_not_current() {
         !code.contains("spawn_blocking"),
         "the captured-Handle block_on is the mechanism, NOT spawn_blocking"
     );
+}
+
+// ---- D5b-2: github.sync_reviews — the live review producer -------------------
+
+/// a canned `ReviewData` (the normalized per-review seam result the executor maps → ReviewSynced).
+fn canned_review(review_id: u64, reviewer: &str, state: ReviewState, body: Option<&str>) -> ReviewData {
+    ReviewData {
+        review_id,
+        reviewer: reviewer.to_string(),
+        state,
+        submitted_at: Some(Timestamp::parse(FIXED_TS).unwrap()),
+        body: body.map(|s| s.to_string()),
+    }
+}
+
+/// a `github.sync_reviews` ActionRequest: owner/repo/pr_number in inputs + the repo identity resource_ref.
+fn sync_reviews_req(owner: &str, repo: &str, pr_number: u64) -> ActionRequest {
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id: None,
+        action_type: "github.sync_reviews".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs: vec![ResourceRef {
+            resource_type: ResourceType::Repo,
+            id: "repo_x".to_string(),
+            uri: None,
+        }],
+        inputs: serde_json::json!({ "owner": owner, "repo": repo, "pr_number": pr_number }),
+        risk_level: RiskLevel::Level1,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse(FIXED_TS).unwrap(),
+    }
+}
+
+fn reviews_executor(fake: FakeGithubWriteClient) -> (tokio::runtime::Runtime, GithubExecutor) {
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let exec = GithubExecutor::new(
+        Box::new(fake),
+        rt.handle().clone(),
+        Box::new(FixedClock::new(FIXED_TS)),
+    );
+    (rt, exec)
+}
+
+#[test]
+fn test_github_sync_reviews_emits_review_synced_per_review() {
+    // spec(§9/§7.1): list_reviews returning N reviews → N ReviewSynced emitted_events; each maps the
+    // review's fields + pr_number from the inputs + review_synced_at from the injected Clock.
+    let reviews = vec![
+        canned_review(9001, "octocat", ReviewState::Approved, Some("LGTM")),
+        canned_review(9002, "hubot", ReviewState::ChangesRequested, None),
+    ];
+    let fake = FakeGithubWriteClient::with_reviews(reviews);
+    let review_calls = fake.review_calls();
+    let (_rt, exec) = reviews_executor(fake);
+    let outcome = exec.execute(&sync_reviews_req("acme", "widget", 42));
+    // the seam was called once with the inputs' owner/repo/pr_number (the create_pr calls-assert precedent).
+    {
+        let calls = review_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "exactly one list_reviews call");
+        assert_eq!(calls[0].owner, "acme");
+        assert_eq!(calls[0].repo, "widget");
+        assert_eq!(calls[0].pr_number, 42);
+    }
+    let events = match &outcome {
+        ExecutionOutcome::Succeeded { emitted_events, .. } => emitted_events,
+        _ => panic!("expected Succeeded with emitted events"),
+    };
+    assert_eq!(events.len(), 2, "one ReviewSynced per review");
+    let parsed: Vec<ReviewSynced> = events
+        .iter()
+        .map(|e| match e {
+            EmittedEvent::Namespaced { event_type, payload_json } => {
+                assert_eq!(*event_type, ReviewSynced::EVENT_TYPE);
+                serde_json::from_str(payload_json).expect("ReviewSynced parses")
+            }
+            _ => panic!("expected a Namespaced ReviewSynced"),
+        })
+        .collect();
+    assert_eq!(parsed[0].review_id, 9001);
+    assert_eq!(parsed[0].pr_number, 42, "pr_number from the inputs");
+    assert_eq!(parsed[0].reviewer, "octocat");
+    assert_eq!(parsed[0].state, ReviewState::Approved);
+    assert_eq!(parsed[0].body.as_deref(), Some("LGTM"));
+    assert_eq!(parsed[0].review_synced_at, Timestamp::parse(FIXED_TS).unwrap(), "from the Clock");
+    assert_eq!(parsed[1].review_id, 9002);
+    assert_eq!(parsed[1].state, ReviewState::ChangesRequested);
+    assert_eq!(parsed[1].body, None);
+}
+
+#[test]
+fn test_github_sync_reviews_empty_emits_nothing() {
+    // spec: zero reviews → zero ReviewSynced (clean empty Succeeded).
+    let (_rt, exec) = reviews_executor(FakeGithubWriteClient::with_reviews(vec![]));
+    let outcome = exec.execute(&sync_reviews_req("acme", "widget", 42));
+    match &outcome {
+        ExecutionOutcome::Succeeded { emitted_events, .. } => {
+            assert!(emitted_events.is_empty(), "zero reviews → zero events")
+        }
+        _ => panic!("expected a clean Succeeded"),
+    }
+}
+
+#[test]
+fn test_github_sync_reviews_validates_inputs() {
+    // spec(§6.3): each missing/invalid required input → a validation Failed BEFORE the network call (the
+    // create_pr per-field precedent). Covers missing owner / missing repo / missing pr_number / pr_number=0
+    // (a GitHub PR number is >= 1 → 0 is rejected by u64_input's positive-guard).
+    let (_rt, exec) = reviews_executor(FakeGithubWriteClient::with_reviews(vec![]));
+    for (label, inputs) in [
+        ("missing owner", serde_json::json!({ "repo": "widget", "pr_number": 42 })),
+        ("missing repo", serde_json::json!({ "owner": "acme", "pr_number": 42 })),
+        ("missing pr_number", serde_json::json!({ "owner": "acme", "repo": "widget" })),
+        ("zero pr_number", serde_json::json!({ "owner": "acme", "repo": "widget", "pr_number": 0 })),
+    ] {
+        let mut req = sync_reviews_req("acme", "widget", 42);
+        req.inputs = inputs;
+        match exec.execute(&req) {
+            ExecutionOutcome::Failed(_) => {}
+            _ => panic!("expected Failed on {label}"),
+        }
+    }
+}
+
+#[test]
+fn test_github_sync_reviews_accepts_numeric_string_pr_number() {
+    // spec: u64_input accepts a numeric STRING pr_number (the ui/IPC may send it as a string) — exercises
+    // the string-parse branch; the emitted ReviewSynced carries the parsed 42.
+    let (_rt, exec) = reviews_executor(FakeGithubWriteClient::with_reviews(vec![canned_review(
+        9001,
+        "octocat",
+        ReviewState::Approved,
+        None,
+    )]));
+    let mut req = sync_reviews_req("acme", "widget", 42);
+    req.inputs = serde_json::json!({ "owner": "acme", "repo": "widget", "pr_number": "42" });
+    let outcome = exec.execute(&req);
+    let (_et, payload) = single_namespaced(&outcome);
+    let rs: ReviewSynced = serde_json::from_str(&payload).expect("ReviewSynced parses");
+    assert_eq!(rs.pr_number, 42, "a numeric-string pr_number parses to 42");
+}
+
+#[test]
+fn test_github_sync_reviews_failure_is_github_sync_failed() {
+    // spec(§17 / LESSONS §46): list_reviews errs terminal-non-auth → GithubSyncFailed via FailedWithEvents
+    // (the shared classify_sync_failure; reason = a §15 structural class-name).
+    let err = GithubWriteError {
+        class: IntegrationOutcomeClass::ClientError { status: 422 },
+        message: "boom".to_string(),
+    };
+    let (_rt, exec) = reviews_executor(FakeGithubWriteClient::reviews_err(err));
+    let outcome = exec.execute(&sync_reviews_req("acme", "widget", 42));
+    assert!(
+        matches!(outcome, ExecutionOutcome::FailedWithEvents { .. }),
+        "terminal-non-auth → FailedWithEvents"
+    );
+    let (et, payload) = single_namespaced(&outcome);
+    assert_eq!(et, GithubSyncFailed::EVENT_TYPE);
+    let gsf: GithubSyncFailed = serde_json::from_str(&payload).expect("GithubSyncFailed parses");
+    assert_eq!(gsf.provider, Provider::Github);
 }

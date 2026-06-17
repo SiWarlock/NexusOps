@@ -17,9 +17,10 @@ use nexusops_shared::actions::{
 use nexusops_shared::actor::ActorType;
 use nexusops_shared::catalog::ExecutorKind;
 use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType, Visibility};
-use nexusops_shared::events::{PullRequestSynced, WorktreeCreated};
+use nexusops_shared::events::{PullRequestSynced, ReviewSynced, SessionRecovered, WorktreeCreated};
+use nexusops_shared::harness::ResumeMode;
 use nexusops_shared::ids::{ActionRequestId, ProjectId, SessionId, WorkspaceId, WorktreeId};
-use nexusops_shared::status::{ActionRequestStatus, PullRequest};
+use nexusops_shared::status::{ActionRequestStatus, PullRequest, ReviewState, Session};
 use nexusops_shared::time::Timestamp;
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{
@@ -1583,6 +1584,28 @@ fn pr_payload(pr_number: u64, status: PullRequest, branch: &str, base: &str) -> 
     .unwrap()
 }
 
+/// like `pr_payload` but sets the D5a enrichment fields (mergeable/checks_summary) — the data the event
+/// has always carried (P7.1), now surfaced on the row.
+fn pr_payload_rich(
+    pr_number: u64,
+    status: PullRequest,
+    branch: &str,
+    base: &str,
+    mergeable: Option<bool>,
+    checks_summary: Option<&str>,
+) -> String {
+    serde_json::to_string(&PullRequestSynced {
+        pr_number,
+        status,
+        branch: branch.to_string(),
+        base: base.to_string(),
+        mergeable,
+        checks_summary: checks_summary.map(|s| s.to_string()),
+        pr_checked_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    })
+    .unwrap()
+}
+
 /// the proj_pull_request rows (the asserted columns), ordered by pr_id, for byte-identical compare.
 #[derive(Debug, PartialEq)]
 struct PrRow {
@@ -1595,6 +1618,10 @@ struct PrRow {
     head_branch: Option<String>,
     base_branch: Option<String>,
     pr_checked_at: Option<String>,
+    // D5a — the mergeable/checks_summary enrichment. `mergeable` is a SQLite INTEGER (0/1); rusqlite
+    // coerces INTEGER → Option<bool> on the typed `get` (distinct from the JSON-read serve path).
+    mergeable: Option<bool>,
+    checks_summary: Option<String>,
     updated_at_seq: i64,
 }
 
@@ -1603,7 +1630,8 @@ fn proj_pull_request_rows(path: &std::path::Path) -> Vec<PrRow> {
     let mut stmt = conn
         .prepare(
             "SELECT pr_id, project_id, repo_id, pr_number, title, status, head_branch, base_branch, \
-             pr_checked_at, updated_at_seq FROM proj_pull_request ORDER BY pr_id",
+             pr_checked_at, mergeable, checks_summary, updated_at_seq FROM proj_pull_request \
+             ORDER BY pr_id",
         )
         .unwrap();
     let rows = stmt
@@ -1618,7 +1646,9 @@ fn proj_pull_request_rows(path: &std::path::Path) -> Vec<PrRow> {
                 head_branch: r.get(6)?,
                 base_branch: r.get(7)?,
                 pr_checked_at: r.get(8)?,
-                updated_at_seq: r.get(9)?,
+                mergeable: r.get(9)?,
+                checks_summary: r.get(10)?,
+                updated_at_seq: r.get(11)?,
             })
         })
         .unwrap();
@@ -1710,9 +1740,9 @@ fn test_status_binds_pull_request_wire_value() {
 }
 
 #[test]
-fn test_title_null_mergeable_checks_not_projected() {
-    // spec: title is NULL (the PullRequestSynced event carries no title); mergeable/checks_summary have NO
-    // column (they already fed the derived status) — only title is assertable.
+fn test_title_null_mergeable_checks_null_when_absent() {
+    // spec: title is NULL (the PullRequestSynced event carries no title); after D5a mergeable/checks_summary
+    // HAVE columns (the SPREAD), but `pr_payload` carries None for both → they fold to NULL.
     let (_d, path) = temp_db();
     let mut store = open(&path);
     let gw = gw_with_git();
@@ -1725,10 +1755,170 @@ fn test_title_null_mergeable_checks_not_projected() {
             &pr_payload(1, PullRequest::Open, "f", "m"),
         ))
         .unwrap();
+    let r = &proj_pull_request_rows(&path)[0];
+    assert_eq!(r.title, None, "the event has no title → NULL");
+    assert_eq!(r.mergeable, None, "absent mergeable → NULL");
+    assert_eq!(r.checks_summary, None, "absent checks_summary → NULL");
+}
+
+#[test]
+fn test_pull_request_synced_projects_mergeable_and_checks() {
+    // spec(§7.2): the projector folds PullRequestSynced.mergeable?/checks_summary? into the 2 D5a columns
+    // (Some → value, None → NULL); rebuild-equivalent (derive-from-event, LESSON §17). The data was always
+    // in the event (P7.1) — D5a surfaces it on the row.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid.clone()),
+            &pr_payload_rich(42, PullRequest::Open, "feature", "main", Some(true), Some("3 passing")),
+        ))
+        .expect("append folds in-band");
+    let r = &proj_pull_request_rows(&path)[0];
+    assert_eq!(r.mergeable, Some(true), "mergeable folded from the event");
     assert_eq!(
-        proj_pull_request_rows(&path)[0].title,
-        None,
-        "the event has no title → NULL (mergeable/checks have no column — fed status)"
+        r.checks_summary.as_deref(),
+        Some("3 passing"),
+        "checks_summary folded from the event"
+    );
+
+    // ON CONFLICT DO UPDATE folds the enriched columns too: re-sync the SAME pr_id (reuse the sibling
+    // action, the test_on_conflict_updates_row pattern) with CHANGED mergeable/checks → the row reflects
+    // the new values (not the stale INSERT values).
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &pr_payload_rich(42, PullRequest::ChecksFailing, "feature", "main", Some(false), Some("1 failing")),
+        ))
+        .unwrap();
+    let rows = proj_pull_request_rows(&path);
+    assert_eq!(rows.len(), 1, "re-sync of the same pr_id → one row");
+    assert_eq!(rows[0].mergeable, Some(false), "DO UPDATE folds mergeable");
+    assert_eq!(
+        rows[0].checks_summary.as_deref(),
+        Some("1 failing"),
+        "DO UPDATE folds checks_summary"
+    );
+
+    // rebuild-equivalent: the enriched columns survive a rebuild (derive-from-event, REBUILD_TABLES).
+    let before = proj_pull_request_rows(&path);
+    store.rebuild_projections().unwrap();
+    assert_eq!(
+        before,
+        proj_pull_request_rows(&path),
+        "the enriched row is reproduced byte-identically on rebuild"
+    );
+
+    // None/None → NULL (a distinct repo, so a distinct pr_id row).
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    let gw2 = gw_with_git();
+    let pid2 = ProjectId::new();
+    let arid2 = seed_pr_action(&mut store2, &gw2, Some(pid2.clone()), Some("repo_beta"));
+    store2
+        .append(pr_synced_intent(
+            Some(pid2),
+            Some(arid2),
+            &pr_payload_rich(7, PullRequest::Open, "f", "m", None, None),
+        ))
+        .unwrap();
+    let n = &proj_pull_request_rows(&path2)[0];
+    assert_eq!(n.mergeable, None, "absent mergeable → NULL");
+    assert_eq!(n.checks_summary, None, "absent checks_summary → NULL");
+}
+
+#[test]
+fn test_read_pull_request_typed_serves_mergeable_checks() {
+    // spec(§7.2/§5.0): the typed serve round-trips the 2 D5a fields — a Some(true)/Some(text) row AND a
+    // None/None row both deserialize STRICTLY into the frozen PullRequestRow, fail-closed preserved. Pins
+    // the INTEGER(0/1)→bool coercion in read_pull_request_typed: `mergeable` is the FIRST bool projection
+    // column → SQLite stores it as INTEGER → the read layer coerces it to the contract's JSON bool (without
+    // the coercion the strict deserialize of `Option<bool>` over a JSON number fails closed).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &pr_payload_rich(42, PullRequest::Open, "feature", "main", Some(true), Some("3 passing")),
+        ))
+        .unwrap();
+    // a 2nd, distinct PR with mergeable=Some(false) — the FALSY edge (INTEGER 0 → JSON false), DISTINCT
+    // from Some(true) (INTEGER 1): a naive truthiness slip or treating 0 as absent only surfaces here.
+    let arid_false = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_gamma"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid_false),
+            &pr_payload_rich(9, PullRequest::ChecksFailing, "f", "m", Some(false), Some("2 failing")),
+        ))
+        .unwrap();
+    // a 3rd, distinct PR with None/None.
+    let arid2 = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_beta"));
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid2),
+            &pr_payload_rich(7, PullRequest::Merged, "f", "m", None, None),
+        ))
+        .unwrap();
+
+    let rows = nexusopsd::ipc::read_pull_request_typed(&path).expect("typed pull-request read");
+    let some = rows
+        .iter()
+        .find(|r| r.pr_id == "repo_alpha#42")
+        .expect("the Some(true) row");
+    assert_eq!(some.mergeable, Some(true), "mergeable=true served as a typed bool");
+    assert_eq!(some.checks_summary.as_deref(), Some("3 passing"));
+    let f = rows
+        .iter()
+        .find(|r| r.pr_id == "repo_gamma#9")
+        .expect("the Some(false) row");
+    assert_eq!(
+        f.mergeable,
+        Some(false),
+        "mergeable=false (INTEGER 0 → JSON false) — the falsy coercion edge, not None/true"
+    );
+    assert_eq!(f.checks_summary.as_deref(), Some("2 failing"));
+    let none = rows
+        .iter()
+        .find(|r| r.pr_id == "repo_beta#7")
+        .expect("the None row");
+    assert_eq!(none.mergeable, None, "absent mergeable → None on the wire");
+    assert_eq!(none.checks_summary, None);
+}
+
+#[test]
+fn test_migration_13_applies() {
+    // spec(MIGRATION_13 floor, LESSON §50): a fresh DB opens at/above user_version 13 and proj_pull_request
+    // gained the mergeable + checks_summary columns (ALTER-only; the historical CREATE untouched). FLOOR
+    // (>= 13), not exact-latest — the single exact-latest pin lives in gateway_plan.rs.
+    let (_d, path) = temp_db();
+    let store = open(&path);
+    assert!(
+        store.user_version().unwrap() >= 13,
+        "open migrates at/above MIGRATION_13"
+    );
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let cols: std::collections::BTreeSet<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('proj_pull_request')")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(cols.contains("mergeable"), "MIGRATION_13 adds mergeable");
+    assert!(
+        cols.contains("checks_summary"),
+        "MIGRATION_13 adds checks_summary"
     );
 }
 
@@ -1912,4 +2102,545 @@ fn test_pull_request_projector_ignores_other_events() {
         ))
         .unwrap();
     assert_eq!(proj_pull_request_rows(&path).len(), 0);
+}
+
+// ---- P7.2 — the PullRequest projection is served TYPED (the ApprovalQueue typed-serve precedent) ----
+
+#[test]
+fn test_get_projection_serves_typed_pull_request_row() {
+    // spec(§6.1 / §7.2 — P7.2): the PullRequest projection is served TYPED via `read_pull_request_typed`
+    // (the ApprovalQueue typed-serve precedent, pin #2 / LESSON §37) — the REAL projector-folded row
+    // deserializes STRICTLY into the frozen `PullRequestRow` (no loose JSON; the internal `updated_at_seq`
+    // dropped; `status` the typed §5.1 enum). Drives the in-band projector (a PullRequestSynced append
+    // over a seeded sibling row), then reads via the typed serve.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &pr_payload(42, PullRequest::Open, "feature", "main"),
+        ))
+        .expect("append folds in-band");
+
+    let rows = nexusopsd::ipc::read_pull_request_typed(&path).expect("typed pull-request read");
+    assert_eq!(rows.len(), 1, "the folded PR row is served");
+    let r = &rows[0];
+    assert_eq!(r.pr_id, "repo_alpha#42");
+    assert_eq!(r.project_id.as_deref(), Some(pid.as_str()));
+    assert_eq!(r.repo_id.as_deref(), Some("repo_alpha"));
+    assert_eq!(r.pr_number, Some(42));
+    assert_eq!(r.status, PullRequest::Open, "status is the typed enum");
+    assert_eq!(r.head_branch.as_deref(), Some("feature"));
+    assert_eq!(r.base_branch.as_deref(), Some("main"));
+    assert_eq!(r.pr_checked_at.as_deref(), Some("2026-06-08T00:00:00Z"));
+    assert_eq!(r.title, None, "title is NULL (the event carries none)");
+}
+
+#[test]
+fn test_pull_request_typed_serve_fails_closed() {
+    // spec(§7.2 / LESSON §37): the typed serve FAILS CLOSED on a proj_pull_request row that no longer
+    // deserializes into the frozen `PullRequestRow` (a corrupt/contract-broken row) → `InternalError`,
+    // never a silent skip or a loose-JSON fallback. Forces it by corrupting `status` to a value the
+    // frozen §5.1 PullRequest machine rejects (a direct writable conn — test-only fixture corruption,
+    // the gateway.rs precedent; production never writes this).
+    use nexusops_shared::ipc::IpcErrorCode;
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid),
+            &pr_payload(7, PullRequest::Open, "f", "m"),
+        ))
+        .expect("append folds in-band");
+    {
+        let c = rusqlite::Connection::open(&path).expect("fixture conn");
+        c.execute(
+            "UPDATE proj_pull_request SET status = 'not_a_real_status'",
+            [],
+        )
+        .expect("corrupt the status");
+    }
+    let err = nexusopsd::ipc::read_pull_request_typed(&path)
+        .expect_err("a row that doesn't deserialize fails closed");
+    assert_eq!(
+        err,
+        IpcErrorCode::InternalError,
+        "a corrupt/unbindable row → InternalError (fail-closed, never a silent skip)"
+    );
+}
+
+// =============================================================================
+// D2 (P4.4) — the SessionRecovered fold (§8.1/§11.4 survival display) + the typed SessionRow serve
+// =============================================================================
+
+/// a SessionRecovered intent linked to `session_id` (the recovery-fold UPDATE key).
+fn session_recovered_intent(session_id: &SessionId, payload: &str) -> AppendIntent {
+    let mut i = intent(payload);
+    i.event_type = SessionRecovered::EVENT_TYPE.to_string();
+    i.session_id = Some(session_id.clone());
+    i
+}
+
+fn session_recovered_payload(mode: ResumeMode, replayed: u64) -> String {
+    serde_json::to_string(&SessionRecovered {
+        mode,
+        replayed_event_count: replayed,
+        execution_profile_id: None,
+    })
+    .unwrap()
+}
+
+/// (resume_mode, replayed_event_count, recovered_at) for a proj_session row.
+fn proj_session_recovery(
+    path: &std::path::Path,
+    session_id: &str,
+) -> (Option<String>, Option<i64>, Option<String>) {
+    nexusopsd::eventstore::open_read_only(path)
+        .unwrap()
+        .query_row(
+            "SELECT resume_mode, replayed_event_count, recovered_at FROM proj_session \
+             WHERE session_id=?1",
+            [session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+}
+
+#[test]
+fn test_session_recovered_folds_recovery_fields() {
+    // spec(§7/§8.1/§11.4) — a SessionRecovered folds the recovery OUTCOME onto proj_session (the
+    // resumed-vs-replayed-vs-reattached banner source). resume_mode binds the §8.1 ResumeMode wire value;
+    // replayed_event_count + recovered_at (= the event occurred_at) populate.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"active\"}"))
+        .expect("SessionStarted folds the base row");
+    store
+        .append(session_recovered_intent(
+            &sid,
+            &session_recovered_payload(ResumeMode::Replayed, 7),
+        ))
+        .expect("SessionRecovered folds in-band");
+    let (mode, replayed, recovered_at) = proj_session_recovery(&path, sid.as_str());
+    assert_eq!(mode.as_deref(), Some("replayed"));
+    assert_eq!(replayed, Some(7));
+    assert_eq!(recovered_at.as_deref(), Some("2026-06-08T00:00:00Z"));
+}
+
+#[test]
+fn test_session_recovered_unknown_session_noop() {
+    // spec — a SessionRecovered for an absent session = a healthy no-op (UPDATE affects 0 rows, no
+    // degrade; the SessionFailed precedent). No proj_session row materializes.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    store
+        .append(session_recovered_intent(
+            &sid,
+            &session_recovered_payload(ResumeMode::Resumed, 0),
+        ))
+        .expect("a SessionRecovered for an unknown session is a healthy no-op");
+    assert_eq!(count(&path, "SELECT COUNT(*) FROM proj_session"), 0);
+}
+
+#[test]
+fn test_session_recovered_rebuild_equivalence() {
+    // spec(LESSON §17) — the recovery fields derive from the EVENT (type/payload), so a full rebuild
+    // re-derives them identically (mutable-from-event-type, rebuild-safe).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"active\"}"))
+        .unwrap();
+    store
+        .append(session_recovered_intent(
+            &sid,
+            &session_recovered_payload(ResumeMode::ReattachedLive, 0),
+        ))
+        .unwrap();
+    let before = proj_session_recovery(&path, sid.as_str());
+    store.rebuild_projections().unwrap();
+    let after = proj_session_recovery(&path, sid.as_str());
+    assert_eq!(
+        before, after,
+        "rebuild re-derives the recovery fields identically"
+    );
+    assert_eq!(before.0.as_deref(), Some("reattached_live"));
+}
+
+#[test]
+fn test_resume_mode_binds_enum() {
+    // spec(§5.1/§8.1) — resume_mode binds the §8.1 ResumeMode (reject-unknown): a SessionRecovered whose
+    // payload carries an UNKNOWN mode wire value fails to bind → the projector degrades + skips (never
+    // stores raw); the recovery columns stay NULL.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"active\"}"))
+        .unwrap();
+    // a bogus mode → the SessionRecovered payload doesn't bind → Decode-degrade (skip), not raw-store.
+    store
+        .append(session_recovered_intent(
+            &sid,
+            "{\"mode\":\"not_a_mode\",\"replayed_event_count\":0,\"execution_profile_id\":null}",
+        ))
+        .expect("a degrade-skip commits the append (logic error, not Db error)");
+    let (mode, _replayed, _recovered_at) = proj_session_recovery(&path, sid.as_str());
+    assert_eq!(
+        mode, None,
+        "an unknown ResumeMode degrades+skips — never stored raw"
+    );
+}
+
+// ---- C2 — the Session projection is served TYPED (the ApprovalQueue/PullRequest precedent) ----
+
+#[test]
+fn test_get_projection_serves_typed_session_row() {
+    // spec(§6.1/§7.2/§11.4) — get_projection("Session") is served TYPED via read_session_typed (no loose
+    // JSON). A recovered row carries resume_mode/replayed_event_count/recovered_at; a never-recovered row
+    // carries them None. Both deserialize strictly into the frozen SessionRow.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let pid = ProjectId::new();
+    let recovered = SessionId::new();
+    let fresh = SessionId::new();
+    store
+        .append(session_intent(&recovered, &pid, "{\"status\":\"active\"}"))
+        .unwrap();
+    store
+        .append(session_recovered_intent(
+            &recovered,
+            &session_recovered_payload(ResumeMode::Resumed, 0),
+        ))
+        .unwrap();
+    store
+        .append(session_intent(&fresh, &pid, "{\"status\":\"active\"}"))
+        .unwrap();
+
+    let rows = nexusopsd::ipc::read_session_typed(&path).expect("typed session read");
+    assert_eq!(rows.len(), 2, "both sessions served");
+    let rec = rows
+        .iter()
+        .find(|r| r.session_id == recovered.as_str())
+        .unwrap();
+    assert_eq!(rec.status, Session::Active, "status is the typed §5.1 enum");
+    assert_eq!(rec.resume_mode, Some(ResumeMode::Resumed));
+    assert_eq!(rec.recovered_at.as_deref(), Some("2026-06-08T00:00:00Z"));
+    let new = rows
+        .iter()
+        .find(|r| r.session_id == fresh.as_str())
+        .unwrap();
+    assert_eq!(new.resume_mode, None, "a never-recovered row carries None");
+    assert_eq!(new.replayed_event_count, None);
+}
+
+#[test]
+fn test_session_typed_serve_fails_closed() {
+    // spec(LESSON §37) — the typed serve FAILS CLOSED on a proj_session row that no longer deserializes
+    // (a corrupt status) → InternalError, never a silent skip. (Direct writable conn = test-only fixture
+    // corruption; production never writes this.)
+    use nexusops_shared::ipc::IpcErrorCode;
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"active\"}"))
+        .unwrap();
+    {
+        let c = rusqlite::Connection::open(&path).expect("fixture conn");
+        c.execute("UPDATE proj_session SET status = 'not_a_real_status'", [])
+            .expect("corrupt the status");
+    }
+    let err = nexusopsd::ipc::read_session_typed(&path)
+        .expect_err("a row that doesn't deserialize fails closed");
+    assert_eq!(err, IpcErrorCode::InternalError);
+}
+
+// =============================================================================
+// D5b-1 (P4.6) — the structured-review vertical: ReviewSynced fold + proj_review + typed ReviewRow serve
+// =============================================================================
+
+/// a ReviewSynced append intent linked to `action_request_id` (the sibling-read key) + `project_id`.
+fn review_synced_intent(
+    project_id: Option<ProjectId>,
+    action_request_id: Option<ActionRequestId>,
+    payload: &str,
+) -> AppendIntent {
+    let mut i = intent(payload);
+    i.event_type = ReviewSynced::EVENT_TYPE.to_string();
+    i.project_id = project_id;
+    i.action_request_id = action_request_id;
+    i
+}
+
+fn review_payload(
+    review_id: u64,
+    pr_number: u64,
+    reviewer: &str,
+    state: ReviewState,
+    submitted_at: Option<&str>,
+    body: Option<&str>,
+) -> String {
+    serde_json::to_string(&ReviewSynced {
+        review_id,
+        pr_number,
+        reviewer: reviewer.to_string(),
+        state,
+        submitted_at: submitted_at.map(|s| Timestamp::parse(s).unwrap()),
+        body: body.map(|s| s.to_string()),
+        review_synced_at: Timestamp::parse("2026-06-16T00:00:00Z").unwrap(),
+    })
+    .unwrap()
+}
+
+/// the proj_review rows (the asserted columns), ordered by review_id, for byte-identical compare.
+#[derive(Debug, PartialEq)]
+struct ReviewRowT {
+    review_id: u64,
+    pr_number: Option<u64>,
+    project_id: Option<String>,
+    repo_id: Option<String>,
+    reviewer: Option<String>,
+    state: String,
+    submitted_at: Option<String>,
+    body: Option<String>,
+    updated_at_seq: i64,
+}
+
+fn proj_review_rows(path: &std::path::Path) -> Vec<ReviewRowT> {
+    let conn = nexusopsd::eventstore::open_read_only(path).expect("ro conn");
+    let mut stmt = conn
+        .prepare(
+            "SELECT review_id, pr_number, project_id, repo_id, reviewer, state, submitted_at, body, \
+             updated_at_seq FROM proj_review ORDER BY review_id",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(ReviewRowT {
+                review_id: r.get(0)?,
+                pr_number: r.get(1)?,
+                project_id: r.get(2)?,
+                repo_id: r.get(3)?,
+                reviewer: r.get(4)?,
+                state: r.get(5)?,
+                submitted_at: r.get(6)?,
+                body: r.get(7)?,
+                updated_at_seq: r.get(8)?,
+            })
+        })
+        .unwrap();
+    rows.map(|r| r.unwrap()).collect()
+}
+
+#[test]
+fn test_review_synced_projects_to_proj_review() {
+    // spec(§7.2 / LESSONS §17/§48): a synthetic ReviewSynced folds into one proj_review row — all fields
+    // from the payload (review_id PK, pr_number, reviewer, state, submitted_at, body) + project_id from the
+    // envelope + repo_id sibling-read (the PullRequestProjector precedent). submitted_at=None for a pending
+    // review. Rebuild-equivalent (derive-from-event, REBUILD_TABLES).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(review_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &review_payload(
+                9001,
+                42,
+                "octocat",
+                ReviewState::Approved,
+                Some("2026-06-15T00:00:00Z"),
+                Some("LGTM"),
+            ),
+        ))
+        .expect("append folds in-band");
+    let rows = proj_review_rows(&path);
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert_eq!(r.review_id, 9001);
+    assert_eq!(r.pr_number, Some(42));
+    assert_eq!(r.project_id.as_deref(), Some(pid.as_str()));
+    assert_eq!(r.repo_id.as_deref(), Some("repo_alpha"));
+    assert_eq!(r.reviewer.as_deref(), Some("octocat"));
+    assert_eq!(r.state, "approved");
+    assert_eq!(r.submitted_at.as_deref(), Some("2026-06-15T00:00:00Z"));
+    assert_eq!(r.body.as_deref(), Some("LGTM"));
+    assert!(r.updated_at_seq > 0);
+
+    // rebuild-equivalent.
+    let before = proj_review_rows(&path);
+    store.rebuild_projections().unwrap();
+    assert_eq!(before, proj_review_rows(&path), "rebuild reproduces the proj_review row");
+
+    // a pending review on a 2nd repo → submitted_at/body NULL.
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    let gw2 = gw_with_git();
+    let pid2 = ProjectId::new();
+    let arid2 = seed_pr_action(&mut store2, &gw2, Some(pid2.clone()), Some("repo_beta"));
+    store2
+        .append(review_synced_intent(
+            Some(pid2),
+            Some(arid2),
+            &review_payload(9002, 7, "hubot", ReviewState::Pending, None, None),
+        ))
+        .unwrap();
+    let p = &proj_review_rows(&path2)[0];
+    assert_eq!(p.state, "pending");
+    assert_eq!(p.submitted_at, None, "pending → NULL submitted_at");
+    assert_eq!(p.body, None, "no body → NULL");
+}
+
+#[test]
+fn test_review_synced_on_conflict_updates_row() {
+    // spec(§7.2): a re-sync of the same review_id UPDATEs the row (state + body + seq advance), still one row.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_x"));
+    store
+        .append(review_synced_intent(
+            Some(pid.clone()),
+            Some(arid.clone()),
+            &review_payload(5, 1, "octocat", ReviewState::Commented, None, Some("wip")),
+        ))
+        .unwrap();
+    let seq1 = proj_review_rows(&path)[0].updated_at_seq;
+    store
+        .append(review_synced_intent(
+            Some(pid),
+            Some(arid),
+            &review_payload(5, 1, "octocat", ReviewState::ChangesRequested, None, Some("nit")),
+        ))
+        .unwrap();
+    let rows = proj_review_rows(&path);
+    assert_eq!(rows.len(), 1, "re-sync of the same review_id → one row");
+    assert_eq!(rows[0].state, "changes_requested", "DO UPDATE folds state");
+    assert_eq!(rows[0].body.as_deref(), Some("nit"), "DO UPDATE folds body");
+    assert!(rows[0].updated_at_seq > seq1, "seq advanced on re-sync");
+}
+
+#[test]
+fn test_review_projector_rejects_unknown_state() {
+    // spec(§5.1): a ReviewSynced payload with an unbindable `state` wire value → Decode-degrade (skip, no
+    // row); the append succeeds (a degrade is contained), and the reason echoes NO payload bytes (§15). The
+    // valid JSON / wrong shape case (the proj_pull_request test_unbindable_payload_degrades precedent).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_x"));
+    store
+        .append(review_synced_intent(
+            Some(pid),
+            Some(arid),
+            r#"{"review_id":1,"pr_number":1,"reviewer":"x","state":"not_a_real_state","review_synced_at":"2026-06-16T00:00:00Z"}"#,
+        ))
+        .expect("append succeeds — a decode-degrade is contained, not propagated");
+    assert_eq!(
+        proj_review_rows(&path).len(),
+        0,
+        "an unbindable state → degrade, no row"
+    );
+}
+
+#[test]
+fn test_read_review_typed_serves_review_row() {
+    // spec(§7.2/§5.0 / LESSONS §37): the Review projection is served TYPED via read_review_typed — the REAL
+    // folded row deserializes STRICTLY into the frozen ReviewRow (no loose JSON; updated_at_seq dropped;
+    // state the typed ReviewState enum). A Some-body row AND a None-body row both round-trip, fail-closed.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(review_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &review_payload(9001, 42, "octocat", ReviewState::Approved, Some("2026-06-15T00:00:00Z"), Some("LGTM")),
+        ))
+        .unwrap();
+    let arid2 = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_beta"));
+    store
+        .append(review_synced_intent(
+            Some(pid),
+            Some(arid2),
+            &review_payload(9002, 7, "hubot", ReviewState::Pending, None, None),
+        ))
+        .unwrap();
+
+    let rows = nexusopsd::ipc::read_review_typed(&path).expect("typed review read");
+    let approved = rows.iter().find(|r| r.review_id == 9001).expect("the approved row");
+    assert_eq!(approved.state, ReviewState::Approved, "state is the typed enum");
+    assert_eq!(approved.reviewer.as_deref(), Some("octocat"));
+    assert_eq!(approved.body.as_deref(), Some("LGTM"));
+    let pending = rows.iter().find(|r| r.review_id == 9002).expect("the pending row");
+    assert_eq!(pending.state, ReviewState::Pending);
+    assert_eq!(pending.body, None, "no body → None on the wire");
+    assert_eq!(pending.submitted_at, None);
+}
+
+#[test]
+fn test_review_typed_serve_fails_closed() {
+    // spec(§7.2 / LESSONS §37): the typed serve FAILS CLOSED on a proj_review row that no longer deserializes
+    // (a corrupt state) → InternalError, never a silent skip. (Direct writable conn = test-only fixture.)
+    use nexusops_shared::ipc::IpcErrorCode;
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(review_synced_intent(
+            Some(pid),
+            Some(arid),
+            &review_payload(7, 1, "octocat", ReviewState::Approved, None, None),
+        ))
+        .unwrap();
+    {
+        let c = rusqlite::Connection::open(&path).expect("fixture conn");
+        c.execute("UPDATE proj_review SET state = 'not_a_real_state'", [])
+            .expect("corrupt the state");
+    }
+    let err = nexusopsd::ipc::read_review_typed(&path)
+        .expect_err("a row that doesn't deserialize fails closed");
+    assert_eq!(err, IpcErrorCode::InternalError);
+}
+
+#[test]
+fn test_migration_14_applies() {
+    // spec(MIGRATION_14 floor, LESSONS §50): a fresh DB opens at/above user_version 14 and proj_review exists
+    // (the FLOOR, >= 14 — the single exact-latest pin lives in gateway_plan.rs).
+    let (_d, path) = temp_db();
+    let store = open(&path);
+    assert!(
+        store.user_version().unwrap() >= 14,
+        "open migrates at/above MIGRATION_14"
+    );
+    assert!(
+        table_names(&path).contains("proj_review"),
+        "MIGRATION_14 creates proj_review"
+    );
 }

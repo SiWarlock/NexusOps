@@ -137,4 +137,33 @@ pub mod time;
 /// registration-only) + `ExecutorKind::Integration` (`shared/src/catalog.rs`). EDGES-BRANCH-LOCAL: the
 /// daemon (catalog/CONTRACT owner) RATIFIES the action_type + assigns the final version at the
 /// edges→main merge (like the MIGRATION numbers). Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.33.0";
+/// 0.34.0 (P7.2) freezes the 2nd projection-row — `PullRequestRow` (`shared/src/projections.rs`): the
+/// `proj_pull_request` GitHub-authoritative read cache the ui PR Review Workspace (§11.2/§7.2) consumes,
+/// typed (the BASIC columns the edges-P7.1 projector folds; `status: PullRequest`). Served TYPED (no
+/// loose JSON; `read_pull_request_typed`, fail-closed). `mergeable`/`checks_summary` are a later SPREAD
+/// (no projection column yet). Additive, no frozen type reshaped (§5.0).
+/// 0.35.0 (D2/P4.4) freezes the 3rd projection-row — `SessionRow` (`shared/src/projections.rs`): the
+/// `proj_session` read model the ui per-session recovery indicator + `RecoveryState` banner (§11.4)
+/// consume, typed (`status: Session` + the §8.1/§11.4 recovery fields `resume_mode`/
+/// `replayed_event_count`/`recovered_at` folded from the now-CONSUMED `SessionRecovered`). Served TYPED
+/// (`read_session_typed`, fail-closed). The not-yet-consumed `proj_session` columns are a later SPREAD.
+/// Additive, no frozen type reshaped (§5.0).
+/// 0.36.0 (D5a/P4.6) enriches the `PullRequestRow` projection-row (`shared/src/projections.rs`) with
+/// `mergeable: Option<bool>` + `checks_summary: Option<String>` — the P7.2 "basic-now + SPREAD" consumed:
+/// folded from `PullRequestSynced.mergeable?`/`checks_summary?` into the 2 new `proj_pull_request` columns
+/// (MIGRATION_13, ALTER-only) + served TYPED (`mergeable` is the first bool projection column — INTEGER
+/// 0/1 in SQLite, coerced to a JSON bool in the daemon read layer; the contract stays a pure `Option<bool>`).
+/// Additive, no frozen type reshaped (§5.0).
+/// 0.37.0 (D5b-1/P4.6) freezes the structured-review vertical (`shared/src/{events,status,projections,ipc}.rs`):
+/// the `ReviewSynced` event + the `ReviewState` value enum (snake_case, reject-unknown — NOT a status_machine;
+/// a review is a fixed verdict, no lifecycle) + the 4th frozen projection-row `ReviewRow` (the `proj_review`
+/// read model the §11.2 PR Review Workspace consumes, served TYPED) + `ProjectionName::Review` (the §6.1
+/// closed-set add — a subscribe-able projection). Fed by synthetic events; the live GitHub producer is D5b-2.
+/// Additive, no frozen type reshaped (§5.0).
+/// 0.38.0 (D5b-2/P4.6) adds the `github.sync_reviews` §6.3 catalog action_type (`shared/src/catalog.rs`;
+/// `MVP_ACTION_TYPES` 28→29) — the live review producer (its `GithubExecutor` arm fetches a PR's reviews +
+/// emits one `ReviewSynced` each). **risk-1, standing_grant_eligible=true** — the PRECEDENT for github
+/// network READS: not risk-0 auto-execute (an external API read), below the risk-2 github writes (no
+/// mutation/credential). Reuses `ExecutorKind::Github` (no new enum → the 3-way verify count is unchanged).
+/// Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.38.0";

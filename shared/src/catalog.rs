@@ -107,6 +107,7 @@ pub const MVP_ACTION_TYPES: &[&str] = &[
     "git.discard_hunk",
     "github.create_pr_draft",
     "github.create_pr",
+    "github.sync_reviews",
     "linear.link_issue",
     "linear.create_issue",
     "integration.connect",
@@ -232,6 +233,13 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
             true,
             true,
         ),
+        // D5b-2 — github.sync_reviews: a NETWORK READ-that-emits (fetches a PR's reviews → emits one
+        // ReviewSynced each). risk-1 (the PRECEDENT for github reads — approval-gated, standing-grant-
+        // eligible): NOT risk-0 (an untrusted proposer must not auto-trigger unbounded GitHub API reads —
+        // a rate-limit/exposure vector), but below the risk-2 github WRITES (no mutation/credential).
+        // `I::None` — a read is re-runnable (re-fetching fresh reviews is the point; no dedup). Requires a
+        // Repo resource_ref (the proj_review repo_id sibling-read).
+        "github.sync_reviews" => entry(R::Level1, P::Api, I::None, X::Github, true, true),
         // risk-2
         // session.profile_change — the §15 #8 no-silent-account-hop APPROVAL gate (PIN c). The TYPE +
         // the risk-2 gate land here (4.0b-1); the executor BODY (the actual profile swap) is a later
@@ -278,9 +286,14 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
         // eligibility axis is blast-radius, NOT risk class — LESSON 32; the discard_hunk precedent). The
         // IntegrationExecutor (X::Integration) registers on the live CatalogExecutor; the token→keychain
         // WRITE is a separate deferred non-Gateway mechanism.
-        "integration.connect" => {
-            entry_no_standing_grant(R::Level2, P::Api, I::FromInputs, X::Integration, false, true)
-        }
+        "integration.connect" => entry_no_standing_grant(
+            R::Level2,
+            P::Api,
+            I::FromInputs,
+            X::Integration,
+            false,
+            true,
+        ),
         "git.create_worktree" => {
             entry(R::Level2, P::Git, I::NaturalResourceRef, X::Git, true, true)
         }

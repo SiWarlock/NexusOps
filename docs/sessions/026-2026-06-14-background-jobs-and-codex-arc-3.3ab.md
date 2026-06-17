@@ -3,7 +3,7 @@
 - **Date:** 2026-06-14
 - **Phase:** Phase 4 (deterministic core completion) + Phase 3.3 (the Codex adapter arc)
 - **Predecessor:** [025-2026-06-14-survival-broker-and-child-death-surface.md](025-2026-06-14-survival-broker-and-child-death-surface.md)
-- **Successor:** _(3.3c — the CAT-1 Codex interception; fresh implementer on the user's resume)_
+- **Successor:** [027-2026-06-16-ui-unblock-d-series.md](027-2026-06-16-ui-unblock-d-series.md) — the UI-unblock arc (P7.2 + D2→D4b), re-prioritized ahead of the held 3.3c
 - **Role:** daemon-implementer (single-track, `main`). Cycled proactively at a clean boundary during the ui↔edges merge-hold (before the cat-1 3.3c).
 
 ## Why this session existed

@@ -538,6 +538,7 @@ fn test_ipc_contract_wire_values() {
             "AgentTeam",
             "AuditTrail",
             "UsageLedger",
+            "Review",
         ],
     );
 }
@@ -1499,8 +1500,8 @@ fn test_action_type_catalog_covers_mvp_set() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        28,
-        "the §6.3 MVP set is 28 types (27 + integration.connect, P7.1 Wave-C edges-029)"
+        29,
+        "the §6.3 MVP set is 29 types (28 + github.sync_reviews, D5b-2)"
     );
     for at in MVP_ACTION_TYPES {
         let e = lookup(at).unwrap_or_else(|| panic!("catalog missing the MVP type {at}"));
@@ -1508,6 +1509,16 @@ fn test_action_type_catalog_covers_mvp_set() {
             RiskLevel::ALL.contains(&e.locked_risk),
             "{at} has a locked risk in 0..=4"
         );
+    }
+    // D5b-2 — github.sync_reviews: a network READ-that-emits → risk-1 (approval-gated, below the risk-2
+    // github writes; not risk-0 auto-execute — an external network call), ExecutorKind::Github, requires a
+    // Repo resource_ref (so the D5b-1 ReviewProjector's repo_id sibling-read resolves).
+    {
+        use nexusops_shared::catalog::ExecutorKind;
+        let sr = lookup("github.sync_reviews").expect("github.sync_reviews in the catalog");
+        assert_eq!(sr.locked_risk, RiskLevel::Level1, "a network read → risk-1");
+        assert_eq!(sr.executor, ExecutorKind::Github);
+        assert!(sr.requires_resource_refs, "requires a Repo resource_ref");
     }
     // the §6.3/OQ-WP-5 null-input_schema floor type is present + flagged (params_schema_present=false)
     let wci = lookup("workflow.command.invoke").expect("workflow.command.invoke in the catalog");
@@ -1795,8 +1806,8 @@ fn test_agent_mutation_family_snapshot_spec_6_3() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        28,
-        "the human-facing §6.3 MVP set is 28 — the agent family stays a separate machine-internal const"
+        29,
+        "the human-facing §6.3 MVP set is 29 — the agent family stays a separate machine-internal const"
     );
     assert_eq!(
         AGENT_MUTATION_ACTION_TYPES.len(),
@@ -2686,17 +2697,304 @@ fn test_approval_queue_row_rejects_unknown_field() {
     );
 }
 
+// =====================================================================================
+// P7.2 — the 2nd frozen projection-row: PullRequestRow (CONTRACT 0.34.0). The
+// `proj_pull_request` GitHub-authoritative read cache the ui PR Review Workspace (§11.2/§7.2)
+// consumes, typed in shared/ (the ②-mini/ApprovalQueueRow precedent, LESSON §37). The BASIC
+// columns the now-on-main edges-P7.1 projector folds; `status: PullRequest` (the frozen §5.1
+// enum). `mergeable`/`checks_summary` are NOT frozen (no projection column — the SPREAD); the
+// internal `updated_at_seq` is NOT a wire field. deny_unknown_fields.
+// =====================================================================================
+
+fn sample_pull_request_row() -> nexusops_shared::projections::PullRequestRow {
+    use nexusops_shared::projections::PullRequestRow;
+    use nexusops_shared::status::PullRequest;
+    // fully populated (all Options Some) so the field-name snapshot sees every key.
+    PullRequestRow {
+        pr_id: "repo_01ARZ3NDEKTSV4RRFFQ69G5FAV#42".to_string(),
+        project_id: Some("prj_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        repo_id: Some("repo_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        pr_number: Some(42),
+        title: Some("Add the thing".to_string()),
+        status: PullRequest::Open,
+        head_branch: Some("feature/x".to_string()),
+        base_branch: Some("main".to_string()),
+        pr_checked_at: Some("2026-06-14T00:00:00Z".to_string()),
+        mergeable: Some(true),
+        checks_summary: Some("3 passing".to_string()),
+    }
+}
+
+#[test]
+fn test_pull_request_row_frozen_shape() {
+    // spec(§7.2 / §2.5-seam) — the 2nd frozen projection-row (after ApprovalQueueRow). The field-name
+    // set is frozen (LESSON §15) + round-trips; `status: PullRequest` (the frozen §5.1 enum — no loose
+    // status string). The BASIC columns the edges-P7.1 projector folds + the D5a `mergeable`/`checks_summary`
+    // enrichment (folded from PullRequestSynced.mergeable?/checks_summary?); `updated_at_seq` is NOT a wire
+    // field.
+    expect_fields(
+        &sample_pull_request_row(),
+        &[
+            "pr_id",
+            "project_id",
+            "repo_id",
+            "pr_number",
+            "title",
+            "status",
+            "head_branch",
+            "base_branch",
+            "pr_checked_at",
+            "mergeable",
+            "checks_summary",
+        ],
+    );
+    let json = serde_json::to_string(&sample_pull_request_row()).unwrap();
+    let back: nexusops_shared::projections::PullRequestRow =
+        serde_json::from_str(&json).expect("PullRequestRow round-trips");
+    assert_eq!(
+        back.status,
+        nexusops_shared::status::PullRequest::Open,
+        "status is the typed PullRequest enum"
+    );
+}
+
+#[test]
+fn test_pull_request_row_status_binds_enum() {
+    // spec(§5.1) — `status` binds the frozen §5.1 PullRequest(11) machine: the canonical wire value
+    // deserializes to the enum variant; an UNKNOWN status string is REJECTED (no loose status on the
+    // row). This is the reject-unknown half of the typed-serve fail-closed (a corrupt status row →
+    // InternalError).
+    let valid = serde_json::to_value(sample_pull_request_row()).unwrap();
+    let back: nexusops_shared::projections::PullRequestRow =
+        serde_json::from_value(valid.clone()).expect("a valid status wire value binds");
+    assert_eq!(back.status, nexusops_shared::status::PullRequest::Open);
+    let mut bad = valid;
+    bad.as_object_mut()
+        .unwrap()
+        .insert("status".to_string(), serde_json::json!("not_a_real_status"));
+    assert!(
+        serde_json::from_value::<nexusops_shared::projections::PullRequestRow>(bad).is_err(),
+        "an unknown status string is rejected (no loose status on the row)"
+    );
+}
+
+#[test]
+fn test_pull_request_row_rejects_unknown_field() {
+    // spec(§5.0/§15) — deny_unknown_fields on the frozen row: a valid row + an UNFROZEN column (a column
+    // not on the frozen wire shape — `mergeable`/`checks_summary` are now real D5a fields, so use a
+    // genuinely-unknown name) fails to deserialize. This is what makes `read_pull_request_typed` fail
+    // closed on a row carrying a column not on the frozen wire shape.
+    let mut v = serde_json::to_value(sample_pull_request_row()).unwrap();
+    v.as_object_mut()
+        .unwrap()
+        .insert("not_a_real_column".to_string(), serde_json::json!(true));
+    assert!(
+        serde_json::from_value::<nexusops_shared::projections::PullRequestRow>(v).is_err(),
+        "deny_unknown_fields rejects an unfrozen column (not on the frozen wire shape)"
+    );
+}
+
+// =====================================================================================
+// D2 (P4.4) — the 3rd frozen projection-row: SessionRow (CONTRACT 0.35.0). The proj_session
+// read model the ui per-session recovery indicator + RecoveryState banner (§11.4) consume,
+// typed in shared/ (the ②-mini/ApprovalQueueRow→P7.2/PullRequestRow precedent, LESSON §37).
+// The user-meaningful columns + status: Session (§5.1) + the §8.1/§11.4 survival-recovery fields
+// (resume_mode/replayed_event_count/recovered_at, folded from the now-consumed SessionRecovered).
+// The not-yet-consumed proj_session columns are a SPREAD; updated_at_seq is NOT a wire field.
+// deny_unknown_fields. display_name = the daemon-canonical name (the ui provisional's `title`).
+// =====================================================================================
+
+fn sample_session_row() -> nexusops_shared::projections::SessionRow {
+    use nexusops_shared::harness::ResumeMode;
+    use nexusops_shared::projections::SessionRow;
+    use nexusops_shared::status::Session;
+    // fully populated (all Options Some) so the field-name snapshot sees every key.
+    SessionRow {
+        session_id: "sess_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        project_id: "prj_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        status: Session::Active,
+        display_name: Some("claude on feature/x".to_string()),
+        harness: Some("claude".to_string()),
+        model: Some("claude-opus-4-8".to_string()),
+        execution_profile_id: Some("prof_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        resume_mode: Some(ResumeMode::Replayed),
+        replayed_event_count: Some(12),
+        recovered_at: Some("2026-06-14T00:00:00Z".to_string()),
+    }
+}
+
+#[test]
+fn test_session_row_frozen_shape() {
+    // spec(§7.2/§11.4 / §2.5-seam) — the 3rd frozen projection-row. Field set frozen (LESSON §15) +
+    // round-trips; `status: Session` (typed §5.1) + `resume_mode: Option<ResumeMode>` (typed §8.1). The
+    // not-yet-consumed proj_session columns are a SPREAD; `updated_at_seq` is NOT a wire field.
+    expect_fields(
+        &sample_session_row(),
+        &[
+            "session_id",
+            "project_id",
+            "status",
+            "display_name",
+            "harness",
+            "model",
+            "execution_profile_id",
+            "resume_mode",
+            "replayed_event_count",
+            "recovered_at",
+        ],
+    );
+    let json = serde_json::to_string(&sample_session_row()).unwrap();
+    let back: nexusops_shared::projections::SessionRow =
+        serde_json::from_str(&json).expect("SessionRow round-trips");
+    assert_eq!(
+        back.status,
+        nexusops_shared::status::Session::Active,
+        "status is the typed Session enum"
+    );
+    assert_eq!(
+        back.resume_mode,
+        Some(nexusops_shared::harness::ResumeMode::Replayed),
+        "resume_mode is the typed Option<ResumeMode>"
+    );
+}
+
+#[test]
+fn test_session_row_rejects_unknown_field() {
+    // spec(§5.0/§15) — deny_unknown_fields on the frozen row: a valid row + an unfrozen column (here a
+    // not-yet-consumed proj_session column, `worktree_id`) fails to deserialize — the contract↔projection
+    // drift guard the typed serve relies on (read_session_typed retains only the wire fields).
+    let mut v = serde_json::to_value(sample_session_row()).unwrap();
+    v.as_object_mut()
+        .unwrap()
+        .insert("worktree_id".to_string(), serde_json::json!("wt_x"));
+    assert!(
+        serde_json::from_value::<nexusops_shared::projections::SessionRow>(v).is_err(),
+        "deny_unknown_fields rejects an unfrozen column (a SPREAD column, not yet a field)"
+    );
+}
+
+// =====================================================================================
+// D5b-1 (P4.6) — the structured-review vertical: ReviewSynced event + ReviewState enum +
+// ReviewRow projection-row (the 4th frozen row) + ProjectionName::Review. CONTRACT 0.37.0.
+// =====================================================================================
+
+fn sample_review_synced() -> nexusops_shared::events::ReviewSynced {
+    use nexusops_shared::events::ReviewSynced;
+    use nexusops_shared::status::ReviewState;
+    use nexusops_shared::time::Timestamp;
+    // fully populated (all Options Some) so the field-name snapshot sees every key.
+    ReviewSynced {
+        review_id: 9001,
+        pr_number: 42,
+        reviewer: "octocat".to_string(),
+        state: ReviewState::Approved,
+        submitted_at: Some(Timestamp::parse("2026-06-15T00:00:00Z").unwrap()),
+        body: Some("LGTM".to_string()),
+        review_synced_at: Timestamp::parse("2026-06-16T00:00:00Z").unwrap(),
+    }
+}
+
+#[test]
+fn test_review_synced_frozen_shape() {
+    // spec(§7.1 / §2.5-seam) — the ReviewSynced EventTypeRegistry payload field set is frozen; round-trips;
+    // deny_unknown_fields. `state: ReviewState` (the frozen snake_case value enum).
+    expect_fields(
+        &sample_review_synced(),
+        &[
+            "review_id",
+            "pr_number",
+            "reviewer",
+            "state",
+            "submitted_at",
+            "body",
+            "review_synced_at",
+        ],
+    );
+    assert_rejects_unknown(&sample_review_synced(), "ReviewSynced");
+}
+
+#[test]
+fn test_review_state_enum_values() {
+    // spec(§5.1 precedent) — ReviewState is a frozen snake_case value enum (reject-unknown).
+    use nexusops_shared::status::ReviewState;
+    check_values(
+        ReviewState::ALL,
+        &[
+            "approved",
+            "changes_requested",
+            "commented",
+            "dismissed",
+            "pending",
+        ],
+    );
+    assert!(serde_json::from_value::<ReviewState>(serde_json::json!("x")).is_err());
+}
+
+fn sample_review_row() -> nexusops_shared::projections::ReviewRow {
+    use nexusops_shared::projections::ReviewRow;
+    use nexusops_shared::status::ReviewState;
+    ReviewRow {
+        review_id: 9001,
+        pr_number: Some(42),
+        project_id: Some("prj_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        repo_id: Some("repo_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        reviewer: Some("octocat".to_string()),
+        state: ReviewState::Approved,
+        submitted_at: Some("2026-06-15T00:00:00Z".to_string()),
+        body: Some("LGTM".to_string()),
+    }
+}
+
+#[test]
+fn test_review_row_frozen_shape() {
+    // spec(§7.2 / §2.5-seam) — the 4th frozen projection-row (after ApprovalQueue/PullRequest/Session). The
+    // field-name set is frozen + round-trips; `state: ReviewState` (the frozen enum — no loose state string);
+    // the internal `updated_at_seq` is NOT a wire field. deny_unknown_fields.
+    expect_fields(
+        &sample_review_row(),
+        &[
+            "review_id",
+            "pr_number",
+            "project_id",
+            "repo_id",
+            "reviewer",
+            "state",
+            "submitted_at",
+            "body",
+        ],
+    );
+    let json = serde_json::to_string(&sample_review_row()).unwrap();
+    let back: nexusops_shared::projections::ReviewRow =
+        serde_json::from_str(&json).expect("ReviewRow round-trips");
+    assert_eq!(back.state, nexusops_shared::status::ReviewState::Approved);
+}
+
+#[test]
+fn test_review_row_rejects_unknown_field() {
+    // spec(§5.0/§15) — deny_unknown_fields on the frozen row: a valid row + an unfrozen column fails to
+    // deserialize (what makes read_review_typed fail closed on a column not on the frozen wire shape).
+    let mut v = serde_json::to_value(sample_review_row()).unwrap();
+    v.as_object_mut()
+        .unwrap()
+        .insert("not_a_real_column".to_string(), serde_json::json!(true));
+    assert!(
+        serde_json::from_value::<nexusops_shared::projections::ReviewRow>(v).is_err(),
+        "deny_unknown_fields rejects an unfrozen column"
+    );
+}
+
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_33_0() {
+fn test_contract_version_bumped_0_38_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.31.0 =
-    // the P4.1b-1 `SessionRecovered` event; 0.32.0 = the P4.2 `SessionFailed` observation event;
-    // **0.33.0** = the P7.1 Wave-C `integration.connect` catalog add + `ExecutorKind::Integration`
-    // (edges-029; edges-branch-local — the daemon ratifies the action_type + assigns the final version
-    // at the edges→main merge, like the MIGRATION numbers). Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.33.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.35.0 =
+    // the D2 `SessionRow` frozen projection-row (the 3rd) + the now-consumed `SessionRecovered` fold;
+    // 0.36.0 = the D5a `PullRequestRow` mergeable/checks_summary enrichment; 0.37.0 = the D5b-1
+    // structured-review vertical (`ReviewSynced` + `ReviewState` + `ReviewRow` + `ProjectionName::Review`);
+    // **0.38.0** = the D5b-2 `github.sync_reviews` catalog action (the live review producer). Additive, no
+    // frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.38.0");
 }
 
 // =================================================================================================

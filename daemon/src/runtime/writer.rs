@@ -668,9 +668,14 @@ fn run_actor(
 fn publish_after_commit<T>(
     deltas: &broadcast::Sender<ProjectionDelta>,
     result: &Result<T, GatewayError>,
-    pending: Vec<ProjectionDelta>,
+    mut pending: Vec<ProjectionDelta>,
 ) {
     if result.is_ok() {
+        // D4b — the AuditTrail gateway half: every committed gateway command appends ≥1 audit row → ONE
+        // blanket AuditTrail nudge per command (the per-emitted-event projection nudges are already in
+        // `pending`, accumulated by the gateway execute path; the ApprovalQueue deltas too). The single
+        // chokepoint for submit/plan/approve/deny — gated on `result.is_ok()` (publish-after-commit).
+        pending.push(audit_trail_delta());
         for delta in pending {
             let _ = deltas.send(delta);
         }
@@ -711,23 +716,36 @@ pub fn compute_worktree_cache(path: &Path, base: Option<&str>) -> Option<Worktre
     })
 }
 
-/// The live `ProjectionDelta`(s) an appended event produces — derived from its typed identity +
-/// `event_type` (mirrors the `object_refs::derive_refs` pattern: rebuildable, decoupled from the
-/// projector internals). 1.6b feeds only `SessionStarted` → a Session-projection Upsert; later
-/// event types add their mappings additively. The delta carries the id; the subscriber re-reads
-/// the full row via `get_projection` (row enrichment is a future improvement, consistent with the
-/// lag-resync policy).
+/// The live `ProjectionDelta`(s) a `Command::Append` event produces — the **shared** projection-specific
+/// mapping ([`crate::projections::deltas_for_event`]; D3/D4a/D4b) PLUS the AuditTrail blanket. **D4b: the
+/// SAME mapping is used by the gateway emitted-events loop**, so no projection drifts un-nudged across
+/// paths (the §51 one-list discipline — the Finding was a production event silently bypassing a
+/// path-specific delta-source). The `Command::Append` path is **payload-agnostic** — it supplies only the
+/// ENVELOPE ids (session_id/project_id), never the payload (the gateway loop adds the payload ids
+/// worktree_id/pr_id). The AuditTrail blanket is per-APPEND here (per-COMMAND on the gateway path,
+/// `publish_after_commit`).
 fn deltas_for_append(intent: &AppendIntent) -> Vec<ProjectionDelta> {
-    let mut out = Vec::new();
-    if intent.event_type == "SessionStarted" {
-        if let Some(sid) = &intent.session_id {
-            out.push(ProjectionDelta {
-                projection: ProjectionName::Session,
-                kind: DeltaKind::Upsert,
-                row: None,
-                id: Some(sid.as_str().to_string()),
-            });
-        }
-    }
+    let mut out = crate::projections::deltas_for_event(
+        &intent.event_type,
+        &crate::projections::EventDeltaIds {
+            session_id: intent.session_id.as_ref().map(|s| s.as_str().to_string()),
+            project_id: intent.project_id.as_ref().map(|p| p.as_str().to_string()),
+            ..Default::default()
+        },
+    );
+    out.push(audit_trail_delta());
     out
+}
+
+/// The blanket `proj_audit_trail` nudge (the `AuditProjector` folds EVERY event). `id: None` — the audit
+/// row key is the append-assigned seq, and the subscriber re-reads the paged view. Per-APPEND on the
+/// `Command::Append` path ([`deltas_for_append`]); per-COMMAND on the gateway path
+/// ([`publish_after_commit`]).
+fn audit_trail_delta() -> ProjectionDelta {
+    ProjectionDelta {
+        projection: ProjectionName::AuditTrail,
+        kind: DeltaKind::Upsert,
+        row: None,
+        id: None,
+    }
 }

@@ -19,6 +19,7 @@ mod integration_connections;
 mod object_refs;
 mod project_registry;
 mod pull_request;
+mod review;
 mod schema;
 mod session;
 mod usage;
@@ -28,6 +29,11 @@ use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde::Serialize;
 
 use nexusops_shared::event_envelope::EventEnvelope;
+use nexusops_shared::events::{
+    PullRequestSynced, ReviewSynced, SessionFailed, SessionRecovered, TelemetrySampled,
+    WorktreeCreated,
+};
+use nexusops_shared::ipc::{DeltaKind, ProjectionDelta, ProjectionName};
 
 use crate::eventstore::DegradableEvent;
 
@@ -36,6 +42,178 @@ use crate::eventstore::DegradableEvent;
 // refresh UPDATE (`EventStore::refresh_worktree_status` drives it through the single writer).
 pub(crate) use worktree::refresh_git_cache;
 pub use worktree::WorktreeGitCache;
+
+/// The available identity keys for [`deltas_for_event`], filled by each caller from what it has on
+/// hand: the `Command::Append` wrapper supplies the ENVELOPE ids (session/project); the gateway
+/// emitted-events loop additionally supplies the PAYLOAD ids (worktree_id / pr_id parsed from the
+/// `EmittedEvent`). All `Option` — a None id yields a coarse (re-read-all) nudge.
+#[derive(Default)]
+pub(crate) struct EventDeltaIds {
+    pub session_id: Option<String>,
+    pub project_id: Option<String>,
+    pub worktree_id: Option<String>,
+    pub pr_id: Option<String>,
+    pub review_id: Option<String>,
+}
+
+/// The SINGLE event→projection-delta mapping (D3/D4a/D4b; LESSON §51) — the projection-specific
+/// row-less `Upsert` nudges an appended `event_type` produces, keyed by the [`EventDeltaIds`] the caller
+/// has. Called by BOTH the `Command::Append` path (via `deltas_for_append`) AND the gateway
+/// emitted-events loop, so a projection fed by EITHER path nudges from ONE mapping (no per-path drift —
+/// the D4b Finding was a production event silently bypassing a path-specific delta-source). **KEEP IN
+/// SYNC with the projectors** — each arm mirrors a projector's folded event (pinned by the §51 guard
+/// tests below + `tests/runtime.rs`): `SessionProjector` folds SessionStarted/Failed/Recovered;
+/// `ActivityProjector` + `GraphProjector` fold SessionStarted; `WorktreeProjector` folds WorktreeCreated;
+/// `PullRequestProjector` folds PullRequestSynced; `UsageProjector` folds TelemetrySampled;
+/// `ReviewProjector` folds ReviewSynced. **AuditTrail
+/// (blanket, every event) is path-specific** (per-append in `deltas_for_append`, per-command in
+/// `publish_after_commit`) — NOT here. Each delta is `row: None` (the subscriber re-reads via
+/// `get_projection`); the projection-specific id is carried when the caller has it.
+pub(crate) fn deltas_for_event(event_type: &str, ids: &EventDeltaIds) -> Vec<ProjectionDelta> {
+    let mut out = Vec::new();
+    let upsert = |projection, id: Option<String>| ProjectionDelta {
+        projection,
+        kind: DeltaKind::Upsert,
+        row: None,
+        id,
+    };
+    // Session — the SessionProjector folds SessionStarted/Failed/Recovered, keyed by session_id.
+    if event_type == "SessionStarted"
+        || event_type == SessionFailed::EVENT_TYPE
+        || event_type == SessionRecovered::EVENT_TYPE
+    {
+        if let Some(sid) = &ids.session_id {
+            out.push(upsert(ProjectionName::Session, Some(sid.clone())));
+        }
+    }
+    // ProjectActivity + ProjectGraph — both fold SessionStarted, keyed by project_id.
+    if event_type == "SessionStarted" {
+        if let Some(pid) = &ids.project_id {
+            out.push(upsert(ProjectionName::ProjectActivity, Some(pid.clone())));
+            out.push(upsert(ProjectionName::ProjectGraph, Some(pid.clone())));
+        }
+    }
+    // Worktree — the WorktreeProjector folds WorktreeCreated, keyed by worktree_id (payload-derived).
+    if event_type == WorktreeCreated::EVENT_TYPE {
+        out.push(upsert(ProjectionName::Worktree, ids.worktree_id.clone()));
+    }
+    // PullRequest — the PullRequestProjector folds PullRequestSynced, keyed by pr_id (payload-derived;
+    // the `{repo_id}#{pr_number}` row PK).
+    if event_type == PullRequestSynced::EVENT_TYPE {
+        out.push(upsert(ProjectionName::PullRequest, ids.pr_id.clone()));
+    }
+    // UsageLedger — the UsageProjector folds ONLY TelemetrySampled (id None; re-read the aggregate).
+    if event_type == TelemetrySampled::EVENT_TYPE {
+        out.push(upsert(ProjectionName::UsageLedger, None));
+    }
+    // Review — the ReviewProjector folds ReviewSynced, keyed by review_id (payload-derived; the proj_review
+    // PK). D5b-1 — the review vertical (the live producer is D5b-2; the nudge rides the gateway path).
+    if event_type == ReviewSynced::EVENT_TYPE {
+        out.push(upsert(ProjectionName::Review, ids.review_id.clone()));
+    }
+    out
+}
+
+#[cfg(test)]
+mod delta_mapping_tests {
+    use super::{deltas_for_event, EventDeltaIds};
+    use nexusops_shared::events::{PullRequestSynced, ReviewSynced, TelemetrySampled, WorktreeCreated};
+    use nexusops_shared::ipc::ProjectionName;
+
+    fn ids() -> EventDeltaIds {
+        EventDeltaIds {
+            session_id: Some("sess_x".into()),
+            project_id: Some("prj_x".into()),
+            worktree_id: Some("wt_x".into()),
+            pr_id: Some("repo_x#7".into()),
+            review_id: Some("9001".into()),
+        }
+    }
+    fn projns(ds: &[nexusops_shared::ipc::ProjectionDelta]) -> Vec<ProjectionName> {
+        ds.iter().map(|d| d.projection).collect()
+    }
+
+    // spec(LESSON §51 — the gateway-fed completeness sweep): the SHARED mapping pins every nudge-able
+    // gateway-emitted event to its projection(s). A future projection-mutating event added to a projector
+    // without an arm here is a silent stale-UI bug (the D4b Finding class) — these guard against it.
+    #[test]
+    fn session_started_maps_session_activity_graph() {
+        let p = projns(&deltas_for_event("SessionStarted", &ids()));
+        assert!(p.contains(&ProjectionName::Session));
+        assert!(p.contains(&ProjectionName::ProjectActivity));
+        assert!(p.contains(&ProjectionName::ProjectGraph));
+        assert_eq!(
+            p.len(),
+            3,
+            "SessionStarted folds into exactly Session+Activity+Graph"
+        );
+    }
+    #[test]
+    fn worktree_created_maps_worktree_by_id() {
+        let d = deltas_for_event(WorktreeCreated::EVENT_TYPE, &ids());
+        assert_eq!(projns(&d), vec![ProjectionName::Worktree]);
+        assert_eq!(d[0].id.as_deref(), Some("wt_x"));
+    }
+    #[test]
+    fn pull_request_synced_maps_pull_request_by_pr_id() {
+        let d = deltas_for_event(PullRequestSynced::EVENT_TYPE, &ids());
+        assert_eq!(projns(&d), vec![ProjectionName::PullRequest]);
+        assert_eq!(d[0].id.as_deref(), Some("repo_x#7"));
+    }
+    #[test]
+    fn telemetry_maps_usage_ledger_idless() {
+        let d = deltas_for_event(TelemetrySampled::EVENT_TYPE, &ids());
+        assert_eq!(projns(&d), vec![ProjectionName::UsageLedger]);
+        assert!(d[0].id.is_none());
+    }
+    #[test]
+    fn review_synced_maps_review_by_id() {
+        // D5b-1 — ReviewSynced nudges the Review projection, keyed by review_id (the proj_review PK).
+        let d = deltas_for_event(ReviewSynced::EVENT_TYPE, &ids());
+        assert_eq!(projns(&d), vec![ProjectionName::Review]);
+        assert_eq!(d[0].id.as_deref(), Some("9001"));
+        // §51 negative arm — the ReviewProjector folds ONLY ReviewSynced, so a non-review event must NOT
+        // produce a Review delta (keeps the arm selective; the D4b-Finding-class guard).
+        for et in [
+            "SessionStarted",
+            PullRequestSynced::EVENT_TYPE,
+            TelemetrySampled::EVENT_TYPE,
+        ] {
+            assert!(
+                !projns(&deltas_for_event(et, &ids())).contains(&ProjectionName::Review),
+                "{et} must NOT nudge Review"
+            );
+        }
+    }
+    #[test]
+    fn audit_only_and_no_projector_events_map_no_projection_delta() {
+        // ProjectRescanned / IntegrationConnectionRegistered / *SyncFailed → audit-blanket only;
+        // BranchCreated → no projector. The §51 sweep boundary (these get NO projection-specific nudge).
+        for et in [
+            "ProjectRescanned",
+            "IntegrationConnectionRegistered",
+            "GithubSyncFailed",
+            "BranchCreated",
+        ] {
+            assert!(
+                deltas_for_event(et, &ids()).is_empty(),
+                "{et} maps to no projection-specific delta (audit-blanket / no-projector)"
+            );
+        }
+    }
+    #[test]
+    fn session_started_gates_on_present_ids() {
+        // the Command::Append project_id-less case: only Session (Activity/Graph gated off).
+        let d = deltas_for_event(
+            "SessionStarted",
+            &EventDeltaIds {
+                session_id: Some("s".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(projns(&d), vec![ProjectionName::Session]);
+    }
+}
 
 /// Typed projection failure. A `Decode` (a payload/enum that won't bind to its
 /// frozen §5.1 shape) degrades the offending projector (§7.2); a `Db` is an
@@ -103,6 +281,10 @@ fn projectors() -> Vec<Box<dyn Projector>> {
         // event into the proj_integration_connection read model (event-fed; keyed by the PAYLOAD
         // connection_id, NO sibling-read). Closes the Wave-C connection vertical.
         Box::new(integration_connections::IntegrationConnectionProjector),
+        // D5b-1 (P4.6) — folds the ReviewSynced event into the proj_review structured-review read model
+        // (§7.2; sibling-reads action_requests for repo_id, LESSON 17; keyed by review_id, globally
+        // unique). Fixture-fed; the live GitHub producer is D5b-2.
+        Box::new(review::ReviewProjector),
     ]
 }
 

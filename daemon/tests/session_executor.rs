@@ -13,18 +13,22 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use nexusops_shared::actions::{
-    ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
+    ActionPreview, ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
 };
-use nexusops_shared::events::SessionStarted;
+use nexusops_shared::events::{PullRequestSynced, ReviewSynced, SessionStarted, WorktreeCreated};
 use nexusops_shared::harness::HarnessCapabilities;
-use nexusops_shared::ids::{ActionRequestId, SessionId};
-use nexusops_shared::status::ActionRequestStatus;
+use nexusops_shared::ids::{ActionRequestId, ProjectId, SessionId, WorktreeId};
+use nexusops_shared::ipc::{ProjectionDelta, ProjectionName};
+use nexusops_shared::status::{ActionRequestStatus, PullRequest, ReviewState};
 use nexusops_shared::time::Timestamp;
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{EventStore, PrefixRedactor};
+use nexusopsd::gateway::executor::{ActionExecutor, EmittedEvent, ExecError, ExecutionOutcome};
+use nexusopsd::gateway::policy::CatalogPolicy;
 use nexusopsd::gateway::session_executor::SessionExecutor;
 use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
+use nexusopsd::runtime::WriteActor;
 use nexusopsd::session::{
     spawn_supervisor_task, FakeLauncher, LaunchedSession, SessionLauncher, SupervisorHandle,
 };
@@ -270,4 +274,251 @@ fn test_live_session_create_has_interception() {
              injected via the SessionLauncher seam (Option A; #10 lives at PtyLauncher)"
         );
     }
+}
+
+// =============================================================================
+// D4b (P4.5) — the gateway-emitted-event delta COMPLETENESS SWEEP (production-path tests).
+// Each drives the REAL gateway execute+publish (via a WriteActor), NOT a direct store.append — that's
+// what closes the test-gap that let the Finding hide. The §51 mapping itself is unit-tested in
+// `projections::delta_mapping_tests`; these pin the end-to-end gateway threading + the payload-id extract.
+// =============================================================================
+
+fn temp_db() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nexusops.db");
+    (dir, path)
+}
+
+fn drain(rx: &mut tokio::sync::broadcast::Receiver<ProjectionDelta>) -> Vec<ProjectionDelta> {
+    let mut out = Vec::new();
+    while let Ok(d) = rx.try_recv() {
+        out.push(d);
+    }
+    out
+}
+
+/// A test executor emitting ONE configured `Namespaced` event THROUGH the real gateway execute+publish
+/// (the brief-allowed fake executor for the edges-emitted events). Paired with `CatalogPolicy` + a risk-0
+/// auto-executing `session.create` as the trigger, so the emitted event flows execute→emitted_event_deltas
+/// →publish without an approve round-trip.
+struct EmitExecutor {
+    event_type: &'static str,
+    payload_json: String,
+}
+impl ActionExecutor for EmitExecutor {
+    fn validate(&self, _req: &ActionRequest) -> Result<(), ExecError> {
+        Ok(())
+    }
+    fn execute(&self, _req: &ActionRequest) -> ExecutionOutcome {
+        ExecutionOutcome::Succeeded {
+            changed_resources: vec![],
+            detail: "test-emit".to_string(),
+            side_effect_applied: false,
+            emitted_events: vec![EmittedEvent::Namespaced {
+                event_type: self.event_type,
+                payload_json: self.payload_json.clone(),
+            }],
+        }
+    }
+    fn preview(&self, req: &ActionRequest, generated_at: Timestamp) -> ActionPreview {
+        ActionPreview {
+            action_request_id: req.action_request_id.clone(),
+            generated_at,
+            risk_level: req.risk_level,
+            risk_reasons: vec![],
+            summary: "test-emit".to_string(),
+            changed_resources: vec![],
+            cannot_preview_reason: None,
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_gateway_session_create_publishes_session_activity_graph_deltas() {
+    // THE Finding fix — production `SessionStarted` is emitted via the gateway emitted_events path (NOT
+    // Command::Append), so it must nudge Session + ProjectActivity + ProjectGraph (all 3 fold it). Drives
+    // the REAL gateway execute (SessionExecutor + FakeLauncher) through the WriteActor — NOT a direct append.
+    let (_d, path) = temp_db();
+    let (gw, _launches, _sd, _join) = gateway_with_session_executor();
+    let actor = WriteActor::spawn(
+        open(&path),
+        Box::new(FixedClock::new("2026-06-11T00:00:00Z")),
+        gw,
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    let pid = ProjectId::new();
+    let mut req = session_create_req(None);
+    req.project_id = Some(pid.clone());
+    let h = handle.clone();
+    tokio::task::spawn_blocking(move || h.submit_action_blocking(req))
+        .await
+        .unwrap()
+        .expect("write-actor reachable")
+        .expect("session.create auto-executes");
+    let deltas = drain(&mut rx);
+    assert!(
+        deltas
+            .iter()
+            .any(|d| d.projection == ProjectionName::Session
+                && d.id.as_deref().is_some_and(|id| id.starts_with("sess_"))),
+        "the gateway-emitted SessionStarted nudges Session keyed by the minted session_id (the \
+         production Finding fix — a coarse id-less nudge would mean session_id wasn't threaded)"
+    );
+    assert!(
+        deltas
+            .iter()
+            .any(|d| d.projection == ProjectionName::ProjectActivity
+                && d.id.as_deref() == Some(pid.as_str())),
+        "and ProjectActivity (keyed by project_id)"
+    );
+    assert!(
+        deltas
+            .iter()
+            .any(|d| d.projection == ProjectionName::ProjectGraph
+                && d.id.as_deref() == Some(pid.as_str())),
+        "and ProjectGraph (keyed by project_id)"
+    );
+    actor.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_gateway_worktree_created_publishes_worktree_delta() {
+    // a gateway-emitted WorktreeCreated → a Worktree Upsert keyed by worktree_id (parsed from the emitted
+    // payload). Real gateway execute+publish via the test EmitExecutor.
+    let (_d, path) = temp_db();
+    let wt_payload = serde_json::to_string(&WorktreeCreated {
+        worktree_id: WorktreeId::parse("wt_01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
+        path: "/tmp/wt".to_string(),
+        branch_name: "feature/x".to_string(),
+        base_branch: None,
+    })
+    .unwrap();
+    let gw = Gateway::new(
+        Box::new(CatalogPolicy),
+        Box::new(EmitExecutor {
+            event_type: WorktreeCreated::EVENT_TYPE,
+            payload_json: wt_payload,
+        }),
+    );
+    let actor = WriteActor::spawn(
+        open(&path),
+        Box::new(FixedClock::new("2026-06-11T00:00:00Z")),
+        gw,
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    let h = handle.clone();
+    tokio::task::spawn_blocking(move || h.submit_action_blocking(session_create_req(None)))
+        .await
+        .unwrap()
+        .expect("write-actor reachable")
+        .expect("auto-executes");
+    let deltas = drain(&mut rx);
+    assert!(
+        deltas
+            .iter()
+            .any(|d| d.projection == ProjectionName::Worktree
+                && d.id.as_deref() == Some("wt_01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+        "the gateway-emitted WorktreeCreated nudges Worktree (id = worktree_id from the payload)"
+    );
+    actor.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_gateway_pull_request_synced_publishes_pr_delta() {
+    // a gateway-emitted PullRequestSynced → a PullRequest Upsert keyed by pr_id = `{repo_id}#{pr_number}`
+    // (repo_id from the action's Repo resource_ref; pr_number from the emitted payload — the row PK).
+    let (_d, path) = temp_db();
+    let pr_payload = serde_json::to_string(&PullRequestSynced {
+        pr_number: 42,
+        status: PullRequest::Open,
+        branch: "feature".to_string(),
+        base: "main".to_string(),
+        mergeable: None,
+        checks_summary: None,
+        pr_checked_at: Timestamp::parse("2026-06-11T00:00:00Z").unwrap(),
+    })
+    .unwrap();
+    let gw = Gateway::new(
+        Box::new(CatalogPolicy),
+        Box::new(EmitExecutor {
+            event_type: PullRequestSynced::EVENT_TYPE,
+            payload_json: pr_payload,
+        }),
+    );
+    let actor = WriteActor::spawn(
+        open(&path),
+        Box::new(FixedClock::new("2026-06-11T00:00:00Z")),
+        gw,
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    // a session.create trigger carrying a Repo resource_ref so emitted_event_deltas computes pr_id.
+    let mut req = session_create_req(None);
+    req.resource_refs = vec![ResourceRef {
+        resource_type: ResourceType::Repo,
+        id: "repo_alpha".to_string(),
+        uri: None,
+    }];
+    let h = handle.clone();
+    tokio::task::spawn_blocking(move || h.submit_action_blocking(req))
+        .await
+        .unwrap()
+        .expect("write-actor reachable")
+        .expect("auto-executes");
+    let deltas = drain(&mut rx);
+    assert!(
+        deltas.iter().any(|d| d.projection == ProjectionName::PullRequest
+            && d.id.as_deref() == Some("repo_alpha#42")),
+        "the gateway-emitted PullRequestSynced nudges PullRequest (id = pr_id = {{repo_id}}#{{pr_number}})"
+    );
+    actor.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_gateway_review_synced_publishes_review_delta() {
+    // D5b-1 — a gateway-emitted ReviewSynced → a Review Upsert keyed by review_id (parsed from the emitted
+    // payload — self-contained, NO sibling Repo ref needed for the nudge). Real gateway execute+publish via
+    // the test EmitExecutor (the §51/§52 production-path discipline — the nudge rides emitted_event_deltas,
+    // NOT a direct append).
+    let (_d, path) = temp_db();
+    let review_payload = serde_json::to_string(&ReviewSynced {
+        review_id: 9001,
+        pr_number: 42,
+        reviewer: "octocat".to_string(),
+        state: ReviewState::Approved,
+        submitted_at: None,
+        body: None,
+        review_synced_at: Timestamp::parse("2026-06-16T00:00:00Z").unwrap(),
+    })
+    .unwrap();
+    let gw = Gateway::new(
+        Box::new(CatalogPolicy),
+        Box::new(EmitExecutor {
+            event_type: ReviewSynced::EVENT_TYPE,
+            payload_json: review_payload,
+        }),
+    );
+    let actor = WriteActor::spawn(
+        open(&path),
+        Box::new(FixedClock::new("2026-06-11T00:00:00Z")),
+        gw,
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+    let h = handle.clone();
+    tokio::task::spawn_blocking(move || h.submit_action_blocking(session_create_req(None)))
+        .await
+        .unwrap()
+        .expect("write-actor reachable")
+        .expect("auto-executes");
+    let deltas = drain(&mut rx);
+    assert!(
+        deltas
+            .iter()
+            .any(|d| d.projection == ProjectionName::Review && d.id.as_deref() == Some("9001")),
+        "the gateway-emitted ReviewSynced nudges Review (id = review_id from the payload)"
+    );
+    actor.shutdown().await;
 }

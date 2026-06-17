@@ -125,14 +125,14 @@ fn columns(path: &std::path::Path, table: &str) -> std::collections::BTreeMap<St
 fn test_migration_8_action_plans_and_plan_dimension() {
     // spec(§6.2 / DATA_MODEL §2.9) — MIGRATION_8 adds the action_plans table + action_requests.plan_id
     // + generalizes approvals (action_request_id NULLABLE, + plan_id) + the proj_approval_queue
-    // plan dimension. (The store opens at the LATEST version — now 11 after MIGRATION_11, the edges-030
-    // proj_integration_connection registry.)
+    // plan dimension. (The store opens at the LATEST version — now 14 after MIGRATION_14, the D5b-1
+    // proj_review table.)
     let (_d, path) = temp_db();
     let store = open(&path);
     assert_eq!(
         store.user_version().unwrap(),
-        11,
-        "the store opens at the latest SUPPORTED_USER_VERSION (11 after MIGRATION_11, edges-030)"
+        14,
+        "the store opens at the latest SUPPORTED_USER_VERSION (14 after MIGRATION_14, D5b-1)"
     );
 
     // action_plans — the thin grouping table + the plan-submit immutable context (Flag 2)

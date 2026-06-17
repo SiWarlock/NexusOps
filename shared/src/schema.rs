@@ -23,9 +23,9 @@ use crate::events::{
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
     AuditIntegrityViolation, BranchCreated, DeviceRegistered, GithubSyncFailed,
     IntegrationConnectionRegistered, LinearSyncFailed, LocalRunnerRegistered, ProjectRescanned,
-    Provider, PullRequestSynced, SensitiveOutputRedacted, SessionFailed, SessionRecovered,
-    SessionStarted, TelemetrySampled, TerminalProcessExited, WorktreeCreated, WorktreeDeleted,
-    WorktreeLocked, WorktreeMerged, WorktreePrunable,
+    Provider, PullRequestSynced, ReviewSynced, SensitiveOutputRedacted, SessionFailed,
+    SessionRecovered, SessionStarted, TelemetrySampled, TerminalProcessExited, WorktreeCreated,
+    WorktreeDeleted, WorktreeLocked, WorktreeMerged, WorktreePrunable,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::harness::{
@@ -41,10 +41,10 @@ use crate::ipc::{
     TerminalOutputFrame, VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
-use crate::projections::ApprovalQueueRow;
+use crate::projections::{ApprovalQueueRow, PullRequestRow, ReviewRow, SessionRow};
 use crate::status::{
-    ActionRequest, AgentTeam, Approval, ExecutionProfile, ProjectBrain, PullRequest, Session, Task,
-    WorkflowInstance, WorktreeGit, WorktreeOverlay,
+    ActionRequest, AgentTeam, Approval, ExecutionProfile, ProjectBrain, PullRequest, ReviewState,
+    Session, Task, WorkflowInstance, WorktreeGit, WorktreeOverlay,
 };
 use crate::time::Timestamp;
 use crate::CONTRACT_VERSION;
@@ -217,6 +217,23 @@ struct ContractBundle {
     // daemon alive → proj_session status=Failed → the §11.4 restart affordance). Empty-payload
     // (WorktreeMerged precedent); System-actor, write-actor, NOT a Gateway Action. Additive (events.rs).
     session_failed: SessionFailed,
+    // P7.2 (CONTRACT 0.34.0) — the 2nd frozen projection-row: PullRequestRow (the proj_pull_request
+    // GitHub-authoritative read cache the ui PR Review Workspace consumes, typed; the BASIC columns the
+    // edges-P7.1 projector folds — mergeable/checks_summary are a later SPREAD). Additive
+    // (shared/src/projections.rs).
+    pull_request_row: PullRequestRow,
+    // D2/P4.4 (CONTRACT 0.35.0) — the 3rd frozen projection-row: SessionRow (the proj_session read model
+    // the ui per-session recovery indicator + RecoveryState banner consume, typed; status: Session +
+    // the §8.1/§11.4 recovery fields folded from the now-consumed SessionRecovered). Additive
+    // (shared/src/projections.rs).
+    session_row: SessionRow,
+    // D5b-1/P4.6 (CONTRACT 0.37.0) — the structured-review vertical: the ReviewSynced event + the
+    // ReviewState value enum + the 4th frozen projection-row ReviewRow (the proj_review read model the
+    // ui PR Review Workspace consumes, typed; the live GitHub producer is D5b-2). ProjectionName::Review
+    // rides the existing ProjectionName field above. Additive (events/status/projections).
+    review_synced: ReviewSynced,
+    review_state: ReviewState,
+    review_row: ReviewRow,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

@@ -3,7 +3,7 @@
 - **Date:** 2026-06-17
 - **Phase:** Phase 6/7 — **P6.8** (whole-cockpit-live, the live `ProjectionDelta` transport spread) · **P7.2** (the read-only PR Review Workspace, §11.2/§7.2) · **P6.9** (the `gen-contracts.mjs` oneOf-const extension, §5.0)
 - **Predecessor:** [ui-018](ui-018-2026-06-17-session-live-and-survival-shadow.md)
-- **Successor:** _(none yet)_
+- **Successor:** [ui-020](ui-020-2026-06-17-graph-render-benchmark.md)
 - **Track:** `track/ui` · implementer `ui-implementer` · orchestrator `ui-orchestrator` · lead `team-lead`
 
 ## Why this session existed

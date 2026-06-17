@@ -13,6 +13,12 @@
 //! `has_scrollback`/`replayed_event_count` recovery-seam plumbing — land in 075c; this slice is the
 //! mechanism-first core (the 4.0a/3.3a "mechanism built test-first, driven next slice" precedent).
 
+/// The default per-session headless-VT scrollback ring capacity — the single source of truth for the
+/// producer's live ring (`session::actor`, the pump feeds it) AND the 075d durable-store LOAD
+/// reconstruction (`scrollback::FileScrollbackStore`, so the persisted rows fit). Both import THIS
+/// const so they never drift.
+pub const DEFAULT_SCROLLBACK_CAPACITY: usize = 10_000;
+
 /// A headless VT/ANSI screen emulator: folds a raw PTY byte stream into an in-memory screen +
 /// scrollback (wrapping [`vt100::Parser`]). Owns its dimensions — the §6.4 Terminal-Channel frames
 /// carry none. DISPLAY-ONLY: it never derives a session/agent status from screen content (#9).
@@ -235,6 +241,46 @@ impl HeadlessVt {
         self.parser.screen_mut().set_scrollback(0);
         rows
     }
+
+    /// Reconstruct a model from PLAIN text — the 075d durable-store LOAD path (the persisted form is
+    /// redacted plain-text, formatting dropped per USER ruling ①=A; the live re-render is plain). Replays
+    /// `scrollback_rows` so they land in the ring (the `from_snapshot` flush technique: feed N rows
+    /// CRLF-joined + `rows` trailing line-feeds → exactly N scroll off), homes the cursor, then writes
+    /// `screen_text` (its `\n`-joined lines as CRLF) onto the now-blank screen. The result's
+    /// `screen_contents()` == `screen_text` and its scrollback holds `scrollback_rows`.
+    #[must_use]
+    pub fn from_plain(
+        rows: u16,
+        cols: u16,
+        scrollback_capacity: usize,
+        screen_text: &str,
+        scrollback_rows: &[String],
+    ) -> Self {
+        let mut model = Self::new(rows, cols, scrollback_capacity);
+        // 1. replay scrollback (skip when empty — line-feeds onto a blank screen would push blanks in).
+        if !scrollback_rows.is_empty() {
+            for (i, row) in scrollback_rows.iter().enumerate() {
+                if i > 0 {
+                    model.parser.process(b"\r\n");
+                }
+                model.parser.process(row.as_bytes());
+            }
+            for _ in 0..rows {
+                model.parser.process(b"\r\n");
+            }
+        }
+        // 2. home the cursor (after the flush it sits at the bottom of the blank screen), then write the
+        //    visible screen's plain lines (CRLF between, no trailing → no scroll, scrollback untouched).
+        model.parser.process(b"\x1b[H");
+        for (i, line) in screen_text.split('\n').enumerate() {
+            if i > 0 {
+                model.parser.process(b"\r\n");
+            }
+            model.parser.process(line.as_bytes());
+        }
+        model.refresh_scrollback_rows();
+        model
+    }
 }
 
 /// The snapshot format version — a header byte so 075d's persisted format is migratable.
@@ -281,6 +327,13 @@ impl VtSnapshot {
     #[must_use]
     pub fn has_restorable_content(&self) -> bool {
         !self.scrollback.is_empty() || self.screen_nonblank
+    }
+
+    /// The plain-text scrollback rows (oldest→newest). The 075d durable store reads these to run the
+    /// §15 Redactor over them BEFORE persist (they are already plain — no re-render needed).
+    #[must_use]
+    pub fn scrollback_text(&self) -> &[String] {
+        &self.scrollback
     }
 
     /// The number of scrollback rows this snapshot carries. **0 for an alt-screen-active snapshot**:

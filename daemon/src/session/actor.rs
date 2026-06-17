@@ -28,7 +28,9 @@ use nexusops_shared::status::Session;
 
 use super::launcher::{COLS, ROWS};
 use crate::harness::HarnessAdapter;
-use crate::terminal::{HeadlessVt, ScrollbackStore, TerminalEmit, TerminalSession};
+use crate::terminal::{
+    HeadlessVt, ScrollbackStore, TerminalEmit, TerminalSession, DEFAULT_SCROLLBACK_CAPACITY,
+};
 
 /// The §5.1-status poll cadence (4.0a scaffold). The sync trait is poll-based; 4.0b replaces the poll
 /// with push-based hook/transcript-stream ingestion feeding the adapter.
@@ -42,10 +44,6 @@ const TELEMETRY_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// The per-actor command mailbox depth (control messages: small + bursty).
 const COMMAND_MAILBOX_CAPACITY: usize = 16;
-
-/// 075c — the per-session headless-VT scrollback ring capacity (the survival snapshot's scrollback
-/// depth bound). Sized generously for an interactive session; a config/policy surface is a later concern.
-const SCROLLBACK_CAPACITY: usize = 10_000;
 
 /// 075c — the scrollback-snapshot save cadence: a periodic checkpoint so a crash leaves a recent
 /// survival snapshot (the 4.0c telemetry-pump precedent; `MissedTickBehavior::Delay`). A FINAL save
@@ -149,7 +147,11 @@ async fn run(
     // 075c — the per-session headless VT (the survival snapshot source). The pump thread FEEDS it the
     // decoded display bytes; the actor SNAPSHOTS it (periodic tick + on reap) into the `ScrollbackStore`.
     // DISPLAY-ONLY (#9 — status is NEVER derived from these bytes, only the survival screen/scrollback).
-    let vt = Arc::new(Mutex::new(HeadlessVt::new(ROWS, COLS, SCROLLBACK_CAPACITY)));
+    let vt = Arc::new(Mutex::new(HeadlessVt::new(
+        ROWS,
+        COLS,
+        DEFAULT_SCROLLBACK_CAPACITY,
+    )));
 
     // the terminal read-pump on a blocking thread (`read_step` blocks on the PTY read; LESSON §9).
     // 4.0a DROPS the display output frames (no client; the UDS forward is 6.3d) and lets the pump's

@@ -28,7 +28,7 @@
 // DISPLAY-ONLY (#9 — `vt.rs` is scoped by the `tests/terminal.rs` whole-dir grep-pin + its own
 // `tests/vt.rs` pin). The read-pump tap that feeds it lands in 075c (NO wiring here this slice).
 mod vt;
-pub use vt::{HeadlessVt, VtSnapshot};
+pub use vt::{HeadlessVt, VtSnapshot, DEFAULT_SCROLLBACK_CAPACITY};
 
 // 075c — the producer→recovery `ScrollbackStore` seam (a cat-1-neutral trait in `terminal/`, so the
 // `session/` import-grep stays clean; the durable §15-gated impl is 075d). `FakeScrollbackStore` is

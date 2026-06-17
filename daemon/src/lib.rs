@@ -26,6 +26,9 @@ pub mod locks;
 pub mod project;
 pub mod projections;
 pub mod runtime;
+/// the §15-redacted durable scrollback store (075d) — the production `ScrollbackStore` behind the
+/// 075c seam; persists redacted plain-text sidecars (0700/0600) → `Replayed`-after-restart live.
+pub mod scrollback;
 pub mod session;
 /// the `nexusopsd smoke` dev-client subcommand (P4.0b-2-smoke / brief 053) — the 0.1-HITL "see it
 /// work" rig. Feature-gated (`dev-client`): compiled out of a default/release build (prod hygiene).

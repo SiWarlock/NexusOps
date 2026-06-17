@@ -398,3 +398,36 @@ fn test_vt_resize_after_restore() {
         "the restored model keeps folding new bytes"
     );
 }
+
+// ============================================================================================
+// 075d — HeadlessVt::from_plain (the durable-store LOAD reconstruction from redacted plain text)
+// ============================================================================================
+
+/// 075d — `from_plain` reconstructs a model from PLAIN text: the screen lands at the TOP (cursor
+/// homed after the scrollback flush, not the bottom), the scrollback rows reconstruct, and an empty
+/// scrollback is handled without pushing blank rows in.
+#[test]
+fn test_vt_from_plain_reconstructs_screen_and_scrollback() {
+    // non-empty scrollback + a multi-line screen.
+    let scrollback = vec!["old0".to_string(), "old1".to_string(), "old2".to_string()];
+    let mut vt = HeadlessVt::from_plain(2, 20, 100, "visible0\nvisible1", &scrollback);
+    assert_eq!(
+        vt.screen_contents(),
+        "visible0\nvisible1",
+        "the screen text lands at the top (not the bottom after the flush)"
+    );
+    assert_eq!(vt.scrollback_len(), 3, "the scrollback rows reconstruct");
+    assert!(vt.has_scrollback());
+    let oldest = vt.view_at_scrollback(3);
+    assert!(
+        oldest.contains("old0"),
+        "the oldest scrollback row is retrievable: {oldest:?}"
+    );
+
+    // empty scrollback + single-line screen → no scrollback, no blank-row contamination.
+    let empty: Vec<String> = Vec::new();
+    let vt2 = HeadlessVt::from_plain(24, 80, 100, "just a screen", &empty);
+    assert_eq!(vt2.screen_contents(), "just a screen");
+    assert_eq!(vt2.scrollback_len(), 0, "empty scrollback stays empty");
+    assert!(!vt2.has_scrollback());
+}

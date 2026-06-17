@@ -40,6 +40,7 @@ use nexusopsd::runtime::{
     spawn_staleness_poller, spawn_wal_checkpointer, WriteActor, WriteActorTelemetrySinkFactory,
     MAX_CONNECTIONS,
 };
+use nexusopsd::scrollback::FileScrollbackStore;
 use nexusopsd::session::spawn_supervisor_task;
 use nexusopsd::session::tmux::{
     select_survival_backend, tmux_probe, SurvivalBackend, SystemCommandRunner,
@@ -158,12 +159,25 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `session/` holds only `Box<dyn SessionDeathSink>` (the cat-1 boundary, LESSON 28).
     let (death_sink, death_slot) = WriteActorSessionDeathSink::deferred(Arc::new(SystemClock));
 
-    // P3.4-VT 075c — the per-session scrollback `ScrollbackStore` (producer tap → restart recovery).
-    // The PRODUCTION placeholder is the no-op store: `save` drops + `load` returns `None`, so recovery
-    // stays on the `Relaunched` rung exactly as before 075c. 075d swaps the durable §15-gated store in
-    // behind the seam → `Replayed`-after-restart goes live. Shared (`Arc<dyn ScrollbackStore>`, the
-    // `Arc<dyn Clock>` precedent) across every `SessionActor` producer + the recovery consumer.
-    let scrollback_store: Arc<dyn ScrollbackStore> = Arc::new(NoopScrollbackStore);
+    // P3.4-VT 075d — the per-session scrollback `ScrollbackStore` (producer tap → restart recovery).
+    // The PRODUCTION store is the §15-redacted `FileScrollbackStore`: each session's scrollback is
+    // persisted to a 0600 sidecar in a 0700 dir, with the §15 Redactor run over the plain text BEFORE
+    // write (the on-disk type holds post-redaction text → unredacted secrets structurally can't reach
+    // it; fail-closed). Shared (`Arc<dyn ScrollbackStore>`, the `Arc<dyn Clock>` precedent) across
+    // every `SessionActor` producer + the recovery consumer → `Replayed`-after-restart is LIVE. If the
+    // 0700 dir can't be secured, DEGRADE to the no-op store (no `Replayed`, never an insecure sidecar).
+    let scrollback_store: Arc<dyn ScrollbackStore> = match FileScrollbackStore::new(
+        base_dir.join("scrollback"),
+        Arc::new(PrefixRedactor),
+    ) {
+        Ok(store) => Arc::new(store),
+        Err(e) => {
+            eprintln!(
+                    "nexusopsd: scrollback store init failed — degrading to no-op (no Replayed-after-restart): {e}"
+                );
+            Arc::new(NoopScrollbackStore)
+        }
+    };
 
     // the §10 opt-3 session supervisor (spawned before the write-actor — it needs only the runtime +
     // the shutdown watch + the registry + the death sink). Its `SupervisorHandle` DRIVES the SessionExecutor.

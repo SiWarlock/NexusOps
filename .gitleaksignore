@@ -10,3 +10,11 @@
 #
 # Example (delete once real entries exist):
 # 0123456789abcdef0123456789abcdef01234567:tests/fixtures/stripe-cassette.json:generic-api-key:12  # recorded test cassette, fake key
+
+# 075d — the §15 redaction-before-persist test (`test_redaction_before_persist`) DELIBERATELY embeds
+# fake terminal-echoed secrets (sk-/AKIA/KEY=value) to PROVE the Redactor masks them before they reach
+# the sidecar. They are test-only fixtures, never real credentials. (Bare fingerprints only — this
+# gitleaks version reads the whole line, so NO trailing inline comments.)
+daemon/tests/durable_scrollback.rs:generic-api-key:159
+daemon/tests/durable_scrollback.rs:generic-api-key:162
+daemon/tests/durable_scrollback.rs:generic-api-key:200

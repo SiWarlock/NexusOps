@@ -425,11 +425,13 @@ function PRsTab({ prs }: { prs: PullRequestRow[] }) {
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {items.map((p) => {
-                  const d = prDisplayFixture[p.pr_number];
+                  // pr_number is now a nullable u64 (ui-061 reconcile); the display side-map is
+                  // keyed by the string form. Key/locator on the PK pr_id (the toPrItems precedent).
+                  const d = prDisplayFixture[String(p.pr_number ?? "")];
                   return (
                     <div
-                      key={p.pr_number}
-                      data-item-id={`PullRequest:${p.pr_number}`}
+                      key={p.pr_id}
+                      data-item-id={`PullRequest:${p.pr_id}`}
                       style={{
                         border: "1px solid var(--border-default)",
                         borderRadius: "var(--r-3)",
@@ -450,7 +452,8 @@ function PRsTab({ prs }: { prs: PullRequestRow[] }) {
                         ) : null}
                       </div>
                       <div style={{ font: "var(--fw-medium) var(--fs-label)/1.3 var(--font-sans)", color: "var(--text-primary)" }}>
-                        {p.title ?? `PR #${p.pr_number}`}
+                        {/* null-safe label: title → `PR #<n>` → the always-present pr_id PK (toPrItems parity) */}
+                        {p.title ?? (p.pr_number != null ? `PR #${p.pr_number}` : p.pr_id)}
                       </div>
                       {d ? (
                         <div

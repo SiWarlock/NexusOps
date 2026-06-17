@@ -22,13 +22,17 @@ describe("projection item mappers", () => {
 
   it("to_pr_items_maps_rows", () => {
     const rows: PullRequestRow[] = [
-      { pr_number: "101", project_id: "p1", status: "open", title: "Add OAuth" },
-      // no title → label falls back to `PR #${n}`
-      { pr_number: "102", project_id: "p1", status: "merged" },
+      // id is the PK pr_id (not pr_number); label uses the title.
+      { pr_id: "repo_1#101", pr_number: 101, project_id: "p1", status: "open", title: "Add OAuth" },
+      // no title → label falls back to `PR #${pr_number}`
+      { pr_id: "repo_1#102", pr_number: 102, project_id: "p1", status: "merged" },
+      // no title AND null pr_number → label falls back to the always-present pr_id PK
+      { pr_id: "repo_1#103", pr_number: null, project_id: "p1", status: "closed" },
     ];
     expect(toPrItems(rows)).toEqual([
-      { id: "101", label: "Add OAuth", machine: "PullRequest", status: "open" },
-      { id: "102", label: "PR #102", machine: "PullRequest", status: "merged" },
+      { id: "repo_1#101", label: "Add OAuth", machine: "PullRequest", status: "open" },
+      { id: "repo_1#102", label: "PR #102", machine: "PullRequest", status: "merged" },
+      { id: "repo_1#103", label: "repo_1#103", machine: "PullRequest", status: "closed" },
     ]);
   });
 

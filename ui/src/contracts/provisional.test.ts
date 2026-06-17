@@ -8,8 +8,10 @@ import {
   GetDiffParams,
   Hunk,
   MetricQuality,
+  PullRequestRow,
   RecoveryState,
   ResumeMode,
+  ReviewRow,
   ServerFrame,
   TerminalOutputFrame,
   WireError,
@@ -315,5 +317,90 @@ describe("053 L2-prep — ApprovalQueueRow frozen-shadow + survival drift-pins (
     const frozen = (schema.$defs.RecoveryState!.oneOf ?? []).map((v) => v.const!);
     expect(frozen.length).toBe(3); // exact count (symmetric with the ResumeMode pin)
     expect([...RecoveryState.options].toSorted()).toEqual([...frozen].toSorted());
+  });
+});
+
+describe("ui-061 — PR + Review frozen-shadow reconcile (§5.0/§11.2)", () => {
+  const readSchema = () =>
+    JSON.parse(readFileSync(schemaPath, "utf8")) as {
+      $defs: Record<string, { properties?: Record<string, unknown> }>;
+    };
+
+  // A frozen-shaped PullRequestRow (all 11 fields; optionals explicit-null per the daemon serve).
+  const prBase = {
+    pr_id: "repo_1#101",
+    project_id: null,
+    repo_id: null,
+    pr_number: 101,
+    title: null,
+    status: "open",
+    head_branch: null,
+    base_branch: null,
+    pr_checked_at: null,
+    mergeable: null,
+    checks_summary: null,
+  };
+
+  // A frozen-shaped ReviewRow (all 8 fields).
+  const reviewBase = {
+    review_id: 9001,
+    pr_number: 101,
+    project_id: null,
+    repo_id: null,
+    reviewer: null,
+    state: "approved",
+    submitted_at: null,
+    body: null,
+  };
+
+  it("pull_request_row_field_set_matches_frozen_schema", () => {
+    // spec(§11.2) — the 2nd frozen projection-row reconciled 4→11: the shadow's field-set is
+    // snapshot-pinned to the frozen schema `$defs.PullRequestRow` (a daemon field add/remove/rename
+    // fails this loudly, the §2.5-seam shared-contract snapshot — the ApprovalQueueRow precedent §37).
+    const schema = readSchema();
+    expect(Object.keys(PullRequestRow.shape).toSorted()).toEqual(
+      Object.keys(schema.$defs.PullRequestRow!.properties!).toSorted(),
+    );
+  });
+
+  it("pull_request_row_pr_number_is_uint_and_strict", () => {
+    // spec(§11.2) — pr_number is a u64 NUMBER (the work-order str→number drift), NOT a string;
+    // `.strict()` per the frozen `deny_unknown_fields`; pr_id (PK) + status are the required core.
+    expect(PullRequestRow.safeParse(prBase).success).toBe(true);
+    // a STRING pr_number is rejected (the drift fixed — inverted from the old z.string()).
+    expect(PullRequestRow.safeParse({ ...prBase, pr_number: "101" }).success).toBe(false);
+    // a negative pr_number is rejected (u64, minimum 0).
+    expect(PullRequestRow.safeParse({ ...prBase, pr_number: -1 }).success).toBe(false);
+    // an extra field is rejected (.strict()).
+    expect(PullRequestRow.safeParse({ ...prBase, bogus: 1 }).success).toBe(false);
+    // a missing required core (pr_id) is rejected.
+    const noId: Record<string, unknown> = { ...prBase };
+    delete noId.pr_id;
+    expect(PullRequestRow.safeParse(noId).success).toBe(false);
+  });
+
+  it("review_row_field_set_matches_frozen_schema", () => {
+    // spec(§11.2) — the NEW (4th) frozen projection-row: the 8-field shadow is snapshot-pinned to
+    // the frozen schema `$defs.ReviewRow` (the D5b-1 review vertical; the ApprovalQueueRow precedent).
+    const schema = readSchema();
+    expect(Object.keys(ReviewRow.shape).toSorted()).toEqual(
+      Object.keys(schema.$defs.ReviewRow!.properties!).toSorted(),
+    );
+  });
+
+  it("review_row_uint_state_delegate_and_strict", () => {
+    // spec(§5.1/§11.2) — review_id/pr_number are u64 numbers; `state` delegates to the generated
+    // ReviewState VALUE enum (reject-unknown); `.strict()`; review_id (PK) + state are required core.
+    expect(ReviewRow.safeParse(reviewBase).success).toBe(true);
+    // review_id is a uint NUMBER — a string is rejected.
+    expect(ReviewRow.safeParse({ ...reviewBase, review_id: "9001" }).success).toBe(false);
+    // state delegates to the generated ReviewState — an unknown verdict is rejected (not a loose string).
+    expect(ReviewRow.safeParse({ ...reviewBase, state: "bogus" }).success).toBe(false);
+    // an extra field is rejected (.strict()).
+    expect(ReviewRow.safeParse({ ...reviewBase, bogus: 1 }).success).toBe(false);
+    // a missing required core (review_id) is rejected.
+    const noId: Record<string, unknown> = { ...reviewBase };
+    delete noId.review_id;
+    expect(ReviewRow.safeParse(noId).success).toBe(false);
   });
 });

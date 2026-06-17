@@ -33,10 +33,10 @@ export function resolveActiveProject(
 /**
  * Scope rows to the active project; null active = unscoped (all rows — the
  * no-active treatment). Under a non-null active, a row with no `project_id`
- * (unassigned) is EXCLUDED — it belongs to no project, so it isn't in the active
- * project's scope.
+ * (unassigned — `undefined` OR an explicit `null` from a projection-row shadow)
+ * is EXCLUDED — it belongs to no project, so it isn't in the active project's scope.
  */
-export function filterByActiveProject<T extends { project_id?: string }>(
+export function filterByActiveProject<T extends { project_id?: string | null }>(
   rows: T[],
   activeProjectId: string | null,
 ): T[] {

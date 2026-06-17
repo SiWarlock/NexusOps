@@ -40,7 +40,10 @@ describe("buildProjectGraph", () => {
     expect(g.nodes.find((n) => n.id === "session:session_fixture_1")?.status).toBe(
       "active",
     );
-    expect(g.nodes.find((n) => n.id === "pull_request:101")?.status).toBe("open");
+    // PR node ids are now pr_id-based (toPrItems keys on the PK pr_id, ui-061).
+    expect(g.nodes.find((n) => n.id === "pull_request:repo_fixture_1#101")?.status).toBe(
+      "open",
+    );
   });
 
   it("scopes_nodes_to_the_given_project", () => {
@@ -48,10 +51,10 @@ describe("buildProjectGraph", () => {
     const ids = g.nodes.map((n) => n.id);
     // project_fixture_2's session + PR are excluded
     expect(ids).not.toContain("session:session_fixture_3");
-    expect(ids).not.toContain("pull_request:201");
+    expect(ids).not.toContain("pull_request:repo_fixture_2#201");
     // project_fixture_1's are present
     expect(ids).toContain("session:session_fixture_1");
-    expect(ids).toContain("pull_request:101");
+    expect(ids).toContain("pull_request:repo_fixture_1#101");
   });
 
   it("builds_contains_edges_root_to_each_child", () => {

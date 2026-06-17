@@ -31,10 +31,11 @@ describe("active-project model", () => {
       { id: "a", project_id: "project_fixture_1" },
       { id: "b", project_id: "project_fixture_2" },
       { id: "c", project_id: "project_fixture_1" },
-      { id: "d" }, // unassigned (no project_id)
+      { id: "d" }, // unassigned (project_id undefined)
+      { id: "e", project_id: null }, // unassigned (explicit null from a projection-row shadow)
     ];
-    // active id → only that project's rows; an unassigned row is excluded (it
-    // belongs to no project, so not in the active scope)
+    // active id → only that project's rows; an unassigned row (undefined OR explicit null) is
+    // excluded (it belongs to no project, so not in the active scope)
     expect(filterByActiveProject(rows, "project_fixture_1").map((r) => r.id)).toEqual(["a", "c"]);
     // null active (no scope) → all rows unchanged (the no-active treatment = unscoped)
     expect(filterByActiveProject(rows, null)).toEqual(rows);

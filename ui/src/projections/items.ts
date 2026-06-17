@@ -39,8 +39,10 @@ export function toSessionItems(rows: SessionRow[]): ProjectionItem[] {
 
 export function toPrItems(rows: PullRequestRow[]): ProjectionItem[] {
   return rows.map((pr) => ({
-    id: pr.pr_number,
-    label: pr.title ?? `PR #${pr.pr_number}`,
+    // The PK is `pr_id` (the daemon's NOT-NULL composite); `pr_number` is the GitHub-native
+    // display number (nullable u64), used only for the human label.
+    id: pr.pr_id,
+    label: pr.title ?? (pr.pr_number != null ? `PR #${pr.pr_number}` : pr.pr_id),
     machine: "PullRequest",
     status: pr.status,
   }));

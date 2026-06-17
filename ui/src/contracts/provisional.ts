@@ -16,6 +16,7 @@ import { PolicyDecision, RiskLevel } from "./intent-contracts";
 // (`Approval`→`ApprovalStatus`, `ActionRequest`→`ActionRequestStatus`).
 const Session = bundle.shape.Session;
 const PullRequest = bundle.shape.PullRequest;
+const ReviewState = bundle.shape.ReviewState;
 const ApprovalStatus = bundle.shape.ApprovalStatus;
 const ActorType = bundle.shape.ActorType;
 const ActionRequestStatus = bundle.shape.ActionRequestStatus;
@@ -170,13 +171,28 @@ export const ProjectActivityPage = z.object({
 });
 export type ProjectActivityPage = z.infer<typeof ProjectActivityPage>;
 
-/** A row of the PullRequest projection (provisional; status delegates to the frozen enum). */
-export const PullRequestRow = z.object({
-  pr_number: z.string(),
-  project_id: z.string(),
-  status: PullRequest,
-  title: z.string().optional(),
-});
+/** A row of the PullRequest projection — the 2nd frozen projection-row (@0.34/0.36,
+ *  `shared/src/projections.rs`). A drift-pinned frozen-shadow reconciled 4→11 (P7.2/D5a): the field
+ *  set + types are snapshot-pinned to the schema `$defs.PullRequestRow` (provisional.test); `status`
+ *  delegates to the generated `PullRequest` enum. `.strict()` per the frozen `deny_unknown_fields`;
+ *  `pr_id` (PK) + `status` are non-Option (the daemon serves a NOT-NULL PK), the rest present-and-
+ *  nullable (serialized as explicit `null`, tolerated-absent on read). `pr_number` is the GitHub-native
+ *  PR number — a u64 shadow (NOT a string — the work-order str→number drift), `mergeable` a bool. */
+export const PullRequestRow = z
+  .object({
+    pr_id: z.string(),
+    project_id: z.string().nullable().optional(),
+    repo_id: z.string().nullable().optional(),
+    pr_number: z.number().int().nonnegative().nullable().optional(),
+    title: z.string().nullable().optional(),
+    status: PullRequest,
+    head_branch: z.string().nullable().optional(),
+    base_branch: z.string().nullable().optional(),
+    pr_checked_at: z.string().nullable().optional(),
+    mergeable: z.boolean().nullable().optional(),
+    checks_summary: z.string().nullable().optional(),
+  })
+  .strict();
 export type PullRequestRow = z.infer<typeof PullRequestRow>;
 
 export const PullRequestProjectionPage = z.object({
@@ -185,6 +201,34 @@ export const PullRequestProjectionPage = z.object({
   cursor: z.string().nullable().optional(),
 });
 export type PullRequestProjectionPage = z.infer<typeof PullRequestProjectionPage>;
+
+/** A row of the Review projection — the 4th frozen projection-row (@0.37, D5b-1,
+ *  `shared/src/projections.rs`). A single structured GitHub PR review the L2 PR Review Workspace
+ *  (§11.2) renders, a separate `get_projection("Review")` page joined to a PR client-side on
+ *  `pr_number`. Drift-pinned frozen-shadow (8 fields snapshot-pinned to `$defs.ReviewRow`); `state`
+ *  delegates to the generated `ReviewState` VALUE enum (a fixed verdict, reject-unknown). `.strict()`;
+ *  `review_id` (PK) + `state` non-Option, the rest present-and-nullable. `review_id`/`pr_number` are
+ *  u64 shadows; `body` is the §15-redacted review text the row serves (the redacted value). */
+export const ReviewRow = z
+  .object({
+    review_id: z.number().int().nonnegative(),
+    pr_number: z.number().int().nonnegative().nullable().optional(),
+    project_id: z.string().nullable().optional(),
+    repo_id: z.string().nullable().optional(),
+    reviewer: z.string().nullable().optional(),
+    state: ReviewState,
+    submitted_at: z.string().nullable().optional(),
+    body: z.string().nullable().optional(),
+  })
+  .strict();
+export type ReviewRow = z.infer<typeof ReviewRow>;
+
+export const ReviewProjectionPage = z.object({
+  projection: z.literal("Review"),
+  rows: z.array(ReviewRow),
+  cursor: z.string().nullable().optional(),
+});
+export type ReviewProjectionPage = z.infer<typeof ReviewProjectionPage>;
 
 /** A row of the ApprovalQueue projection — the FIRST frozen projection-row (@0.30,
  *  `shared/src/projections.rs`). A drift-pinned frozen-shadow: the 14-field set + types are
@@ -305,6 +349,7 @@ export type ProjectionPageByName = {
   Session: SessionProjectionPage;
   ProjectActivity: ProjectActivityPage;
   PullRequest: PullRequestProjectionPage;
+  Review: ReviewProjectionPage;
   ApprovalQueue: ApprovalQueuePage;
   AuditTrail: AuditTrailPage;
   UsageLedger: UsageProjectionPage;

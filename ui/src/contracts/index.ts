@@ -34,6 +34,9 @@ export const IpcErrorCode = shape.IpcErrorCode;
 export const ProjectionNameEnum = shape.ProjectionName;
 export const ProjectBrain = shape.ProjectBrain;
 export const PullRequest = shape.PullRequest;
+// 0.38.0 (D5b-1 review vertical): ReviewState is consumed by the ReviewRow provisional
+// shape (ui-061) — the exposed-ahead→re-export-on-consume pattern (DiffLineKind@0.28).
+export const ReviewState = shape.ReviewState;
 // 0.8.0 additions (daemon Phase 1 event-store/redaction contract surface).
 export const RedactionStatus = shape.RedactionStatus;
 export const Sensitivity = shape.Sensitivity;

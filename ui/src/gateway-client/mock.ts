@@ -44,6 +44,7 @@ import {
 import { auditTrailFixture } from "../projections/fixtures/proj_audit_trail";
 import { projectActivityFixture } from "../projections/fixtures/proj_project_activity";
 import { pullRequestFixture } from "../projections/fixtures/proj_pull_request";
+import { reviewFixture } from "../projections/fixtures/proj_review";
 import {
   sessionDeltaFixture,
   sessionPageFixture,
@@ -83,6 +84,7 @@ const FIXTURES: Record<ProjectionName, unknown> = {
   Session: sessionPageFixture,
   ProjectActivity: projectActivityFixture,
   PullRequest: pullRequestFixture,
+  Review: reviewFixture,
   ApprovalQueue: approvalQueueFixture,
   AuditTrail: auditTrailFixture,
   UsageLedger: usageFixture,

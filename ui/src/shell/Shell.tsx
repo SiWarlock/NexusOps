@@ -723,7 +723,11 @@ export function Shell({
           ) : contentView === "editor" ? (
             <EditorView />
           ) : contentView === "code" ? (
-            <DiffReview prs={filterByActiveProject(data.pullRequests, activeProjectId)} gateway={client} />
+            <DiffReview
+              prs={filterByActiveProject(data.pullRequests, activeProjectId)}
+              reviews={data.reviews}
+              gateway={client}
+            />
           ) : contentView === "team" ? (
             <AgentTeamView />
           ) : contentView === "packs" ? (

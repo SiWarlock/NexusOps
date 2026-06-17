@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Brain,
   ChevronRight,
@@ -18,7 +18,10 @@ import type {
   Hunk,
   PerHunkGitActionType,
   PullRequestRow,
+  ReviewRow,
 } from "../../contracts/index";
+import { reviewsByPr } from "../../projections/items";
+import { PrWorkspace } from "./PrWorkspace";
 import { WireError } from "../../contracts/index";
 import {
   Badge,
@@ -400,8 +403,17 @@ const LANES: { lane: "open" | "ready" | "merged"; label: string; tone: string }[
 ];
 
 /** Pull-requests tab — lanes over the REAL PullRequest projection; diff stats /
- *  branch / age ride the display side-map (projection enrichment flagged). */
-function PRsTab({ prs }: { prs: PullRequestRow[] }) {
+ *  branch / age ride the display side-map (projection enrichment flagged). A card's
+ *  header is a SELECTING button (keyboard-reachable; carries the `data-item-id`) → it
+ *  opens the PR Review Workspace (ui-064); the disabled Merge button is a SIBLING (no
+ *  nested-interactive — WAI-ARIA). */
+function PRsTab({
+  prs,
+  onSelect,
+}: {
+  prs: PullRequestRow[];
+  onSelect: (prId: string) => void;
+}) {
   return (
     <div style={{ height: "100%", overflowY: "auto", padding: "14px 16px" }}>
       <div style={{ display: "flex", gap: 12, alignItems: "flex-start", minWidth: 0 }}>
@@ -431,7 +443,6 @@ function PRsTab({ prs }: { prs: PullRequestRow[] }) {
                   return (
                     <div
                       key={p.pr_id}
-                      data-item-id={`PullRequest:${p.pr_id}`}
                       style={{
                         border: "1px solid var(--border-default)",
                         borderRadius: "var(--r-3)",
@@ -442,38 +453,57 @@ function PRsTab({ prs }: { prs: PullRequestRow[] }) {
                         gap: 8,
                       }}
                     >
-                      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                        <MetaChip tone="pr">#{p.pr_number}</MetaChip>
-                        <StatusPill machine="PullRequest" status={p.status} size="xs" />
-                        {d ? (
-                          <span style={{ marginLeft: "auto", font: "var(--fs-micro) var(--font-mono)", color: "var(--text-faint)" }}>
-                            {d.age}
-                          </span>
-                        ) : null}
-                      </div>
-                      <div style={{ font: "var(--fw-medium) var(--fs-label)/1.3 var(--font-sans)", color: "var(--text-primary)" }}>
-                        {/* null-safe label: title → `PR #<n>` → the always-present pr_id PK (toPrItems parity) */}
-                        {p.title ?? (p.pr_number != null ? `PR #${p.pr_number}` : p.pr_id)}
-                      </div>
-                      {d ? (
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            font: "var(--fs-micro) var(--font-mono)",
-                            color: "var(--text-faint)",
-                          }}
-                        >
-                          <span style={{ color: "var(--diff-add-ink)" }}>+{d.adds}</span>
-                          <span style={{ color: "var(--diff-del-ink)" }}>−{d.dels}</span>
-                          <span>· {d.files} files</span>
-                          {d.comments > 0 ? <span>· 🗩 {d.comments}</span> : null}
+                      {/* The selecting button — opens the PR Review Workspace (ui-064). Carries the
+                          data-item-id locator; keyboard-reachable; the Merge button is a sibling below. */}
+                      <button
+                        type="button"
+                        data-item-id={`PullRequest:${p.pr_id}`}
+                        onClick={() => onSelect(p.pr_id)}
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 8,
+                          width: "100%",
+                          padding: 0,
+                          border: "none",
+                          background: "transparent",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                          <MetaChip tone="pr">#{p.pr_number}</MetaChip>
+                          <StatusPill machine="PullRequest" status={p.status} size="xs" />
+                          {d ? (
+                            <span style={{ marginLeft: "auto", font: "var(--fs-micro) var(--font-mono)", color: "var(--text-faint)" }}>
+                              {d.age}
+                            </span>
+                          ) : null}
                         </div>
-                      ) : null}
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <div style={{ font: "var(--fw-medium) var(--fs-label)/1.3 var(--font-sans)", color: "var(--text-primary)" }}>
+                          {/* null-safe label: title → `PR #<n>` → the always-present pr_id PK (toPrItems parity) */}
+                          {p.title ?? (p.pr_number != null ? `PR #${p.pr_number}` : p.pr_id)}
+                        </div>
+                        {d ? (
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              font: "var(--fs-micro) var(--font-mono)",
+                              color: "var(--text-faint)",
+                            }}
+                          >
+                            <span style={{ color: "var(--diff-add-ink)" }}>+{d.adds}</span>
+                            <span style={{ color: "var(--diff-del-ink)" }}>−{d.dels}</span>
+                            <span>· {d.files} files</span>
+                            {d.comments > 0 ? <span>· 🗩 {d.comments}</span> : null}
+                          </div>
+                        ) : null}
                         {d ? <MetaChip tone="branch">{d.branch}</MetaChip> : null}
-                        {lane === "ready" ? (
+                      </button>
+                      {lane === "ready" ? (
+                        <div style={{ display: "flex" }}>
                           <span
                             title="Merge is a Gateway mutation (intent seam — daemon-gated)"
                             style={{ marginLeft: "auto" }}
@@ -482,8 +512,8 @@ function PRsTab({ prs }: { prs: PullRequestRow[] }) {
                               Merge
                             </Button>
                           </span>
-                        ) : null}
-                      </div>
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -519,12 +549,23 @@ function PRsTab({ prs }: { prs: PullRequestRow[] }) {
  */
 export function DiffReview({
   prs,
+  reviews,
   gateway,
 }: {
   prs: PullRequestRow[];
+  reviews: ReviewRow[];
   gateway: GatewayPort;
 }) {
   const [tab, setTab] = useState<Tab>("Review");
+  // The PR selected from the Kanban → the Review tab shows its PR Workspace (ui-064, §11.2). Pure UI
+  // selection state (LESSON §13 family — mirrors selectedSessionId); a stale id (the PR left the set)
+  // re-resolves to none (no ghost), falling back to the 6.3e worktree per-hunk diff.
+  const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
+  const selectedPr =
+    selectedPrId != null ? prs.find((p) => p.pr_id === selectedPrId) : undefined;
+  // Build the pr_number→reviews join once per `reviews` change (not per render — mirrors the memoized
+  // item-builder pattern), so a tab keystroke doesn't re-group the whole set.
+  const reviewsByPrNumber = useMemo(() => reviewsByPr(reviews), [reviews]);
   const tabs: Tab[] = ["Review", "Worktrees", "Pull requests"];
   const counts: Partial<Record<Tab, number>> = {
     Worktrees: worktreesFixture.length,
@@ -573,7 +614,33 @@ export function DiffReview({
         ))}
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
-        {tab === "Review" ? <ReviewTab gateway={gateway} /> : tab === "Worktrees" ? <WorktreesTab /> : <PRsTab prs={prs} />}
+        {tab === "Review" ? (
+          // A selected PR → its read-only PR Review Workspace (ui-064); else the 6.3e worktree per-hunk
+          // diff (preserved, not deleted). Reviews join to the PR client-side on pr_number.
+          selectedPr ? (
+            <PrWorkspace
+              pr={selectedPr}
+              reviews={
+                selectedPr.pr_number != null
+                  ? (reviewsByPrNumber.get(selectedPr.pr_number) ?? [])
+                  : []
+              }
+              onBack={() => setSelectedPrId(null)}
+            />
+          ) : (
+            <ReviewTab gateway={gateway} />
+          )
+        ) : tab === "Worktrees" ? (
+          <WorktreesTab />
+        ) : (
+          <PRsTab
+            prs={prs}
+            onSelect={(id) => {
+              setSelectedPrId(id);
+              setTab("Review");
+            }}
+          />
+        )}
       </div>
     </div>
   );

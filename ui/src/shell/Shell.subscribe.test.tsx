@@ -7,7 +7,7 @@
 // holds the nudge until the test captures a baseline, then serves an AUGMENTED page on the re-read so
 // the live change is observable only via the refetch (proving it's not a row-apply).
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, fireEvent } from "@testing-library/react";
 
 // xterm is a canvas lib (not jsdom-friendly) — mirror Shell.test.tsx's mock.
 vi.mock("@xterm/xterm", () => ({
@@ -574,6 +574,47 @@ describe("Shell whole-cockpit-live subscribe (ui-063 — refetch-on-nudge spread
       expect(gateway.usageReads).toBeGreaterThan(readsBeforeNudge);
       // …and the re-read's extra usage row flowed into the live Tokens stat (plain replace, no recount).
       expect(screen.getByText("Tokens").parentElement!.textContent).not.toBe(baselineTokens);
+    });
+  });
+});
+
+// ── ui-064 Layer 2 — the live Review nudge flows into the RENDERED PR Review Workspace ───────────────
+// Closes the L1 reviewer [medium]: at Layer 1 reviews had no rendered consumer (reads-increment was the
+// only signal); now the PR Workspace renders the reviews-list for a selected PR, so a live Review nudge
+// is observable as a rendered change (proving the refetch FLOWS into render, not just bumps a read).
+describe("Shell PR Review Workspace live (ui-064 Layer 2)", () => {
+  it("review_nudge_updates_rendered_pr_workspace_reviews", async () => {
+    // [§11.2] select PR #101 in the Code view → its fixture reviews render → a Review `row:None` nudge
+    // adds a review for #101 → it appears LIVE in the rendered reviews-list (refetch-on-nudge → render).
+    const extra: ReviewRow = {
+      review_id: 9999,
+      pr_number: 101,
+      state: "approved",
+      reviewer: "liveReviewer",
+      body: "ship it",
+    };
+    const gateway = new GatedReviewRefetchGateway(extra);
+    const { container } = render(<Shell gateway={gateway} />);
+
+    await screen.findByTestId("sidebar-waiting-badge");
+    // navigate to the Code / Diff Review view → the Pull requests tab → select PR #101
+    fireEvent.click(screen.getByRole("button", { name: /Code \/ Diff Review/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Pull requests/i }));
+    const prCard = container.querySelector(
+      '[data-item-id="PullRequest:repo_fixture_1#101"]',
+    );
+    expect(prCard).not.toBeNull(); // clear failure if the selecting-button locator ever changes
+    fireEvent.click(prCard!);
+
+    // selection worked → the PR Workspace shows #101's fixture reviews, but NOT the live one yet.
+    await screen.findByText("alice");
+    expect(screen.queryByText("liveReviewer")).toBeNull();
+
+    gateway.releaseNudge(); // the row:None Review nudge → coalesced refetch → augmented re-read
+
+    await waitFor(() => {
+      // the live review for #101 flowed into the rendered reviews-list.
+      expect(screen.queryByText("liveReviewer")).not.toBeNull();
     });
   });
 });

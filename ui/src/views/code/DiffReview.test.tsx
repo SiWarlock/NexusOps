@@ -10,7 +10,12 @@ import { BoundaryValidationError } from "../../gateway-client/boundary";
 import { hunkResourceRef } from "../../intent/hunk-resource-ref";
 import { makeApprovalRow } from "../../projections/fixtures/proj_approval_queue";
 import { diffReviewContext } from "../display-fixtures";
-import type { ApprovalQueuePage, DiffResult, WireError } from "../../contracts/index";
+import type {
+  ApprovalQueuePage,
+  DiffResult,
+  PullRequestRow,
+  WireError,
+} from "../../contracts/index";
 
 const CONNECTED: ConnectionStatus = { connection: "connected", version: "compatible" };
 const DEGRADED: ConnectionStatus = { connection: "connecting", version: "unknown" };
@@ -52,7 +57,7 @@ function renderReview(
   }
   const utils = render(
     <ReadOnlyProvider value={opts.status ?? CONNECTED}>
-      <DiffReview prs={[]} gateway={port} />
+      <DiffReview prs={[]} reviews={[]} gateway={port} />
     </ReadOnlyProvider>,
   );
   return { port, ...utils };
@@ -107,7 +112,7 @@ describe("DiffReview L1 — diff from get_diff (§6.1)", () => {
     vi.spyOn(port, "get_diff").mockRejectedValue(new Error("transport down"));
     render(
       <ReadOnlyProvider value={CONNECTED}>
-        <DiffReview prs={[]} gateway={port} />
+        <DiffReview prs={[]} reviews={[]} gateway={port} />
       </ReadOnlyProvider>,
     );
     expect(await screen.findByTestId("diff-unavailable")).toBeTruthy();
@@ -272,5 +277,44 @@ describe("DiffReview L2 — per-hunk intent submission (cat-1)", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^Discard hunk/ }));
     await screen.findByTestId("gateway-modal");
     expect(screen.getByTestId("always-allow")).toHaveProperty("disabled", true);
+  });
+});
+
+// ─── ui-064 Layer 2 — PR selection ↔ the worktree per-hunk diff coexistence ──────────────────────────
+describe("DiffReview — PR Workspace selection (ui-064 Layer 2)", () => {
+  const PR: PullRequestRow = {
+    pr_id: "repo_1#101",
+    project_id: "p1",
+    repo_id: "repo_1",
+    pr_number: 101,
+    title: "Add OAuth device flow",
+    status: "open",
+    head_branch: "agent/auth",
+    base_branch: "main",
+    pr_checked_at: null,
+    mergeable: true,
+    checks_summary: "3/3 passing",
+  };
+
+  it("pr_card_opens_workspace_and_back_returns_to_worktree_diff", async () => {
+    // spec(§11.2/LESSON §13) — selecting a PR card opens its read-only Workspace in the Review tab;
+    // "← Worktree diff" deselects → the 6.3e worktree per-hunk diff returns (preserved, not deleted).
+    const port = new MockGatewayPort();
+    vi.spyOn(port, "get_diff").mockResolvedValue(DIFF);
+    render(
+      <ReadOnlyProvider value={CONNECTED}>
+        <DiffReview prs={[PR]} reviews={[]} gateway={port} />
+      </ReadOnlyProvider>,
+    );
+    // open the Kanban + select PR #101 → the PR Workspace (its D7 placeholder is unique to it)
+    fireEvent.click(screen.getByRole("button", { name: /Pull requests/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Add OAuth device flow/i }));
+    expect(screen.getByTestId("pr-diff-unavailable")).toBeTruthy();
+    // deselect → the worktree per-hunk diff returns (get_diff-sourced), the workspace is gone
+    fireEvent.click(screen.getByRole("button", { name: /Worktree diff/i }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("pr-diff-unavailable")).toBeNull();
+    });
+    expect(port.get_diff).toHaveBeenCalled(); // the worktree ReviewTab is back (sources its diff)
   });
 });

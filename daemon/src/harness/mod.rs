@@ -20,6 +20,7 @@
 pub mod claude;
 pub mod codex;
 pub mod resume;
+pub mod telemetry;
 
 use nexusops_shared::harness::{
     HarnessCapabilities, NormalizedStatus, TelemetrySample, TranscriptRef,

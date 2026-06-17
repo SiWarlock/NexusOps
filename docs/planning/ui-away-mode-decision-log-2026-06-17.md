@@ -58,6 +58,11 @@ Log all decisions while away. Defer any HITL steps until I'm back to keep the bu
   issue + drafted the fix, but edit AND revert were denied; `preflight.md` is restored to its
   committed original (clean tree). **On return:** the user applies the fix directly, or adds a
   settings permission rule to let an agent do it. Low-impact.
+- **D-8 — FULL 6.7 diff-open benchmark (CROSS-TRACK — needs the daemon track up).** The §18 diff-open
+  budget is "git2 read → rendered hunks"; the dominant cost (the git2 read) is **daemon-track**
+  (`daemon/benches/diff_read.rs`), so a meaningful 6.7 is cross-track. The ui-half-only bench was
+  declined as marginal busywork (decision-log #3). Do the FULL 6.7 as a cross-track pairing when the
+  daemon track is active; ui-066 (graph-render) already establishes the ui bench pattern to mirror.
 
 ## Decisions log (append-only — newest last)
 
@@ -122,3 +127,29 @@ Log all decisions while away. Defer any HITL steps until I'm back to keep the bu
   the user is away) AND momentum (build continues into 6.6); architecturally clean (feature round
   sealed; benchmarks are a separate own-cadence round). NEVER push main; ui→main merge stays deferred
   (D-3).
+- **2026-06-17 ~07:49–07:51 — Round SEALED + PUSHED: track/ui @ `2d7a2d3`** (`179dfeb..2d7a2d3`,
+  push verified not-ahead). Banked: ui-063/064/065 briefs + hot-routing (ui/CLAUDE.md, ui/LESSONS.md
+  §30, IMPLEMENTATION_PLAN reconcile incl. 6.9 + P7.2-partial annotation) + **this decision log** (per
+  the addendum). Session doc ui-019 `5b5dd77`. 389/389, CONTRACT 0.38.0. Tidy outcome: the bare-#
+  chip "confirm-then-DELETE" → **KEPT** — the lead's premise (L2 superseded the PRsTab) was WRONG;
+  the PRsTab persists (`DiffReview.tsx:475`). Correct evidence-over-premise call by the orch; logged
+  as a remaining null-safe-chip fix item.
+- **2026-06-17 ~08:24 — ui-066 graph-render bench LANDED `28c4cf8` (task #4).** §18 graph-render:
+  as-built 34 ms typical / 145 ms saturating → **no §18 Finding** (<500 ms budget); non-gating guard
+  <150 ms wired to a nightly `ui-graph-bench` job + `/phase-exit`. Establishes the §22-analogue ui
+  bench pattern. (Committed, not yet pushed — see the cycle seal below.)
+- **2026-06-17 ~08:28 — Queue-exhausted checkpoint #3. RULING: DEFER 6.7-ui-half · SEAL+PUSH the
+  bench round · CYCLE the team.** `/context-check`: **impl 69% (climbed 56%→69% over the bench round —
+  at the WARN boundary, next slice would likely cross ACTION) / orch 64% / lead 19%.**
+  - **6.7 diff-open DEFERRED as a cross-track item (joins the D-series, see D-8 below).** Rationale:
+    the §18 diff-open budget is dominated by the git2 read = **daemon-track** (`daemon/benches/diff_read.rs`);
+    the ui-half would bench only the marginal secondary hunk-render. The FULL, meaningful 6.7 needs the
+    daemon track up. Doing the marginal ui-half just to "keep building" would be busywork, not
+    production-grade — architecturally-correct call = defer to the cross-track FULL 6.7.
+  - **SEAL + PUSH the bench round** (bank ui-066 — high-value, unpushed).
+  - **CYCLE both teammates** at this clean boundary (clean-boundary cycle beats a mid-slice
+    auto-cycle; cycle both per protocol for symmetric freshness). The **fresh team continues** per
+    "keep the build going": re-assess the ungated queue, pick up the remaining ungated quality/hardening
+    (null-safe-# chip fix · empty-reason deny client guard · absent-policy render test · L2-A
+    `sample_preview` fixture); surface a pause recommendation only when the ungated queue is genuinely
+    empty. Gated arcs stay deferred (PR-mutations cat-1 / FULL 6.7 cross-track / Brain / ui→main merge).

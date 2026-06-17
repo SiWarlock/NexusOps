@@ -1500,8 +1500,8 @@ fn test_action_type_catalog_covers_mvp_set() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        28,
-        "the §6.3 MVP set is 28 types (27 + integration.connect, P7.1 Wave-C edges-029)"
+        29,
+        "the §6.3 MVP set is 29 types (28 + github.sync_reviews, D5b-2)"
     );
     for at in MVP_ACTION_TYPES {
         let e = lookup(at).unwrap_or_else(|| panic!("catalog missing the MVP type {at}"));
@@ -1509,6 +1509,16 @@ fn test_action_type_catalog_covers_mvp_set() {
             RiskLevel::ALL.contains(&e.locked_risk),
             "{at} has a locked risk in 0..=4"
         );
+    }
+    // D5b-2 — github.sync_reviews: a network READ-that-emits → risk-1 (approval-gated, below the risk-2
+    // github writes; not risk-0 auto-execute — an external network call), ExecutorKind::Github, requires a
+    // Repo resource_ref (so the D5b-1 ReviewProjector's repo_id sibling-read resolves).
+    {
+        use nexusops_shared::catalog::ExecutorKind;
+        let sr = lookup("github.sync_reviews").expect("github.sync_reviews in the catalog");
+        assert_eq!(sr.locked_risk, RiskLevel::Level1, "a network read → risk-1");
+        assert_eq!(sr.executor, ExecutorKind::Github);
+        assert!(sr.requires_resource_refs, "requires a Repo resource_ref");
     }
     // the §6.3/OQ-WP-5 null-input_schema floor type is present + flagged (params_schema_present=false)
     let wci = lookup("workflow.command.invoke").expect("workflow.command.invoke in the catalog");
@@ -1796,8 +1806,8 @@ fn test_agent_mutation_family_snapshot_spec_6_3() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        28,
-        "the human-facing §6.3 MVP set is 28 — the agent family stays a separate machine-internal const"
+        29,
+        "the human-facing §6.3 MVP set is 29 — the agent family stays a separate machine-internal const"
     );
     assert_eq!(
         AGENT_MUTATION_ACTION_TYPES.len(),
@@ -2976,15 +2986,15 @@ fn test_review_row_rejects_unknown_field() {
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_37_0() {
+fn test_contract_version_bumped_0_38_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.34.0 =
-    // the P7.2 `PullRequestRow` frozen projection-row (the 2nd); 0.35.0 = the D2 `SessionRow` frozen
-    // projection-row (the 3rd) + the now-consumed `SessionRecovered` fold; 0.36.0 = the D5a `PullRequestRow`
-    // mergeable/checks_summary enrichment; **0.37.0** = the D5b-1 structured-review vertical (`ReviewSynced`
-    // event + `ReviewState` enum + the 4th frozen row `ReviewRow` + `ProjectionName::Review`). Additive, no
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.35.0 =
+    // the D2 `SessionRow` frozen projection-row (the 3rd) + the now-consumed `SessionRecovered` fold;
+    // 0.36.0 = the D5a `PullRequestRow` mergeable/checks_summary enrichment; 0.37.0 = the D5b-1
+    // structured-review vertical (`ReviewSynced` + `ReviewState` + `ReviewRow` + `ProjectionName::Review`);
+    // **0.38.0** = the D5b-2 `github.sync_reviews` catalog action (the live review producer). Additive, no
     // frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.37.0");
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.38.0");
 }
 
 // =================================================================================================

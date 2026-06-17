@@ -30,7 +30,9 @@
 use std::time::Duration;
 
 use nexusops_shared::actions::{ActionPreview, ActionRequest};
-use nexusops_shared::events::{GithubSyncFailed, LinearSyncFailed, Provider, PullRequestSynced};
+use nexusops_shared::events::{
+    GithubSyncFailed, LinearSyncFailed, Provider, PullRequestSynced, ReviewSynced,
+};
 use nexusops_shared::time::Timestamp;
 
 use crate::clock::Clock;
@@ -38,7 +40,9 @@ use crate::gateway::executor::{
     ActionExecutor, CatalogExecutor, EmittedEvent, ExecError, ExecutionOutcome,
 };
 use crate::integrations::classifier::IntegrationOutcomeClass;
-use crate::integrations::github_write::{CreatePrArgs, GithubWriteClient, GithubWriteError};
+use crate::integrations::github_write::{
+    CreatePrArgs, GithubWriteClient, GithubWriteError, SyncReviewsArgs,
+};
 use crate::integrations::linear_write::{
     CreateIssueArgs, LinearWriteClient, LinearWriteError, LinkIssueArgs,
 };
@@ -47,6 +51,7 @@ use crate::integrations::pull_request::derive_pull_request_status;
 /// The action types `GithubExecutor` handles directly (`ExecutorKind::Github`); the rest delegate.
 const GITHUB_CREATE_PR: &str = "github.create_pr";
 const GITHUB_CREATE_PR_DRAFT: &str = "github.create_pr_draft";
+const GITHUB_SYNC_REVIEWS: &str = "github.sync_reviews";
 /// The action types `LinearExecutor` handles directly (`ExecutorKind::Linear`); the rest delegate.
 const LINEAR_LINK_ISSUE: &str = "linear.link_issue";
 const LINEAR_CREATE_ISSUE: &str = "linear.create_issue";
@@ -163,7 +168,7 @@ impl GithubExecutor {
                     "github.create_pr timed out (structural)".to_string(),
                 )
             }
-            Ok(Err(write_err)) => return self.classify_failure(write_err),
+            Ok(Err(write_err)) => return self.classify_failure("github.create_pr", write_err),
             Ok(Ok(created)) => created,
         };
 
@@ -208,13 +213,11 @@ impl GithubExecutor {
     /// (`ClientError`/`NotFound`) → `FailedWithEvents` emitting `GithubSyncFailed` (the action FAILS + a
     /// durable §17 record; `reason` = the §15 STRUCTURAL class-name, NEVER raw API text). `AuthFailed` →
     /// plain `Failed` (the `auth_expired` variant DEFERRED). Transient → plain `Failed` (retry/queue).
-    fn classify_failure(&self, err: GithubWriteError) -> ExecutionOutcome {
+    fn classify_failure(&self, op: &str, err: GithubWriteError) -> ExecutionOutcome {
         match classify_sync_failure(&err.class) {
-            SyncFailure::Auth => {
-                ExecutionOutcome::Failed("github.create_pr failed: auth_failed".to_string())
-            }
+            SyncFailure::Auth => ExecutionOutcome::Failed(format!("{op} failed: auth_failed")),
             SyncFailure::Transient { reason } => {
-                ExecutionOutcome::Failed(format!("github.create_pr failed (transient): {reason}"))
+                ExecutionOutcome::Failed(format!("{op} failed (transient): {reason}"))
             }
             SyncFailure::TerminalNonAuth { reason } => {
                 let failed_at = match Timestamp::parse(&self.clock.now_rfc3339()) {
@@ -236,13 +239,96 @@ impl GithubExecutor {
                     }
                 };
                 ExecutionOutcome::FailedWithEvents {
-                    detail: format!("github.create_pr failed: {reason}"),
+                    detail: format!("{op} failed: {reason}"),
                     emitted_events: vec![EmittedEvent::Namespaced {
                         event_type: GithubSyncFailed::EVENT_TYPE,
                         payload_json,
                     }],
                 }
             }
+        }
+    }
+
+    fn execute_sync_reviews(&self, req: &ActionRequest) -> ExecutionOutcome {
+        // validate the catalog `requires_resource_refs` precondition (the repo IDENTITY) FIRST.
+        if let Err(e) = self.inner.validate(req) {
+            return ExecutionOutcome::Failed(e.to_string());
+        }
+        // fail-closed non-empty/typed validation of EVERY required operand BEFORE the network call (the
+        // execute_create_pr param-injection-guard precedent; octocrab is a TYPED API, no shell vector).
+        let Some(owner) = string_input(req, "owner") else {
+            return ExecutionOutcome::Failed(
+                "github.sync_reviews requires a non-empty inputs[\"owner\"]".to_string(),
+            );
+        };
+        let Some(repo) = string_input(req, "repo") else {
+            return ExecutionOutcome::Failed(
+                "github.sync_reviews requires a non-empty inputs[\"repo\"]".to_string(),
+            );
+        };
+        let Some(pr_number) = u64_input(req, "pr_number") else {
+            return ExecutionOutcome::Failed(
+                "github.sync_reviews requires inputs[\"pr_number\"] (a positive integer)".to_string(),
+            );
+        };
+
+        let args = SyncReviewsArgs {
+            owner,
+            repo,
+            pr_number,
+        };
+        // 3a (LESSON 46): drive the async client via the CAPTURED Handle's `block_on` + a hard timeout so
+        // an octocrab hang can never wedge the single write-actor.
+        let result = self.handle.block_on(async {
+            tokio::time::timeout(self.timeout, self.client.list_reviews(&args)).await
+        });
+        let reviews = match result {
+            Err(_elapsed) => {
+                return ExecutionOutcome::Failed(
+                    "github.sync_reviews timed out (structural)".to_string(),
+                )
+            }
+            Ok(Err(write_err)) => return self.classify_failure("github.sync_reviews", write_err),
+            Ok(Ok(reviews)) => reviews,
+        };
+
+        // stamp `review_synced_at` ONCE via the injected Clock (UTC-Z; fail CLOSED on a malformed stamp).
+        let review_synced_at = match Timestamp::parse(&self.clock.now_rfc3339()) {
+            Ok(ts) => ts,
+            Err(e) => return ExecutionOutcome::Failed(format!("invalid clock timestamp: {e}")),
+        };
+        // one ReviewSynced per review (zero reviews → zero events, a clean empty Succeeded). pr_number from
+        // the inputs (the PR being synced); state is the already-mapped frozen ReviewState.
+        let mut emitted_events = Vec::with_capacity(reviews.len());
+        for r in reviews {
+            let payload = ReviewSynced {
+                review_id: r.review_id,
+                pr_number,
+                reviewer: r.reviewer,
+                state: r.state,
+                submitted_at: r.submitted_at,
+                body: r.body,
+                review_synced_at: review_synced_at.clone(),
+            };
+            let payload_json = match serde_json::to_string(&payload) {
+                Ok(j) => j,
+                Err(e) => return ExecutionOutcome::Failed(format!("serialize ReviewSynced: {e}")),
+            };
+            emitted_events.push(EmittedEvent::Namespaced {
+                event_type: ReviewSynced::EVENT_TYPE,
+                payload_json,
+            });
+        }
+        ExecutionOutcome::Succeeded {
+            changed_resources: req.resource_refs.clone(),
+            detail: format!(
+                "github.sync_reviews — synced {} review(s) via octocrab",
+                emitted_events.len()
+            ),
+            // a READ — no GitHub mutation; a lost terminal write is a CLEAN rollback (NOT the
+            // ActionPartiallySucceeded create_pr emits — nothing was applied on GitHub).
+            side_effect_applied: false,
+            emitted_events,
         }
     }
 }
@@ -256,6 +342,7 @@ impl ActionExecutor for GithubExecutor {
         match req.action_type.as_str() {
             GITHUB_CREATE_PR => self.execute_create_pr(req, false),
             GITHUB_CREATE_PR_DRAFT => self.execute_create_pr(req, true),
+            GITHUB_SYNC_REVIEWS => self.execute_sync_reviews(req),
             // any other Github-kind action delegates to the inner side-effect-free stub (no event).
             _ => self.inner.execute(req),
         }
@@ -518,4 +605,14 @@ fn string_input(req: &ActionRequest, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
+}
+
+/// a POSITIVE-integer input — `None` if absent, non-numeric, or zero (fail-closed; a GitHub PR number is
+/// `>= 1`, so `0` is never valid — the `string_input` non-empty-guard analogue). Accepts a JSON number OR
+/// a numeric string (the ui/IPC may send `pr_number` as either).
+fn u64_input(req: &ActionRequest, key: &str) -> Option<u64> {
+    let v = req.inputs.get(key)?;
+    v.as_u64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+        .filter(|&n| n > 0)
 }

@@ -160,4 +160,10 @@ pub mod time;
 /// read model the §11.2 PR Review Workspace consumes, served TYPED) + `ProjectionName::Review` (the §6.1
 /// closed-set add — a subscribe-able projection). Fed by synthetic events; the live GitHub producer is D5b-2.
 /// Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.37.0";
+/// 0.38.0 (D5b-2/P4.6) adds the `github.sync_reviews` §6.3 catalog action_type (`shared/src/catalog.rs`;
+/// `MVP_ACTION_TYPES` 28→29) — the live review producer (its `GithubExecutor` arm fetches a PR's reviews +
+/// emits one `ReviewSynced` each). **risk-1, standing_grant_eligible=true** — the PRECEDENT for github
+/// network READS: not risk-0 auto-execute (an external API read), below the risk-2 github writes (no
+/// mutation/credential). Reuses `ExecutorKind::Github` (no new enum → the 3-way verify count is unchanged).
+/// Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.38.0";

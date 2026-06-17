@@ -63,8 +63,13 @@ pub struct RolloutObservation {
 /// vendor name, so OSS `codex` (`shell`/`local_shell`) and the desktop build (`exec_command`) both →
 /// `ShellExec`. An MCP marker → `McpTool` (a bare MCP name like `query_docs` is reclassified via its
 /// `mcp_tool_call_end` correlation in [`parse_rollout`]; the typed `item.mcp_tool_call` in the stream).
+///
+/// **Case-insensitive (3.3c):** the rollout/stream vocabulary is lowercase (`shell`/`exec_command`) but
+/// the `PreToolUse` hook layer presents PascalCase (`"Bash"` — research §4.1); both callers
+/// ([`parse_rollout`] + the 3.3c `map_codex_to_action_type`) get ONE consistent contract by normalizing
+/// here, so the two never diverge.
 pub fn classify_tool(name: &str) -> CodexToolKind {
-    match name {
+    match name.to_ascii_lowercase().as_str() {
         "exec_command" | "shell" | "local_shell" | "bash" => CodexToolKind::ShellExec,
         "apply_patch" => CodexToolKind::FilePatch,
         // a name-level MCP heuristic (catches `mcp_tool_call` / `mcp__*`-style names) — the WEAKER

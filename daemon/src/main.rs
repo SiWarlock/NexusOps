@@ -78,7 +78,19 @@ fn main() -> ExitCode {
     // is a synchronous client, not the daemon; it must NOT start the write-actor / accept-loop.
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("hook") {
-        return nexusopsd::hook::run(args.get(2).map(String::as_str).unwrap_or(""));
+        // `nexusopsd hook [--harness <h>] <event>` — an OPTIONAL `--harness codex` selects the Codex
+        // PreToolUse adjudicator (brief 066, B2); absent → the Claude path (unchanged). The harness
+        // tag is the TRUSTED binary's (PIN-1) — set by THIS dispatch, never from agent stdin.
+        let rest = &args[2..];
+        let (harness, event) = match rest {
+            [flag, h, ev, ..] if flag == "--harness" => (Some(h.as_str()), ev.as_str()),
+            [ev, ..] => (None, ev.as_str()),
+            [] => (None, ""),
+        };
+        return match harness {
+            Some("codex") => nexusopsd::hook::run_codex(event),
+            _ => nexusopsd::hook::run(event),
+        };
     }
     // P4.0b-2-smoke (brief 053) — the `nexusopsd smoke <sub>` dev-client (the 0.1-HITL "see it work"
     // rig). Feature-gated `dev-client` (off in a release build). A synchronous UDS client like `hook`;

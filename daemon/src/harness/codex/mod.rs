@@ -23,6 +23,7 @@ use nexusops_shared::status::Session;
 use crate::harness::{HarnessAdapter, MutationIntercept, ResumeMode, ResumeResult};
 
 pub mod auth;
+pub mod intercept;
 pub mod launch;
 pub mod parse;
 pub mod perms;
@@ -132,7 +133,11 @@ impl HarnessAdapter for CodexAdapter {
     }
 
     fn intercept_mutation(&self) -> Option<MutationIntercept> {
-        None // → 3.3c (the CAT-1 PreToolUse→Gateway INV-SEC-1 routing + --sandbox; named, not silent)
+        // 3.3c (Step-2.5-confirmed): the live INV-SEC-1 interception ingress is the **`PreToolUse` hook**
+        // (`nexusopsd hook --harness codex` → `codex::intercept` normalize → the EXISTING `intercept`→
+        // Gateway loop), NOT this pull-based trait method (the Claude precedent — the hook is the
+        // ingress, the adapter's `intercept_mutation` stays None). See `harness/codex/intercept.rs`.
+        None
     }
 
     fn read_transcript(&self) -> Option<TranscriptRef> {

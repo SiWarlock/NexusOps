@@ -29,11 +29,29 @@ use crate::gateway::{Gateway, GatewayError};
 use crate::harness::{coverage_of, Harness, MutationChannel, MutationCoverage, MutationVerdict};
 use crate::integrity::{IntegrityAlarm, IntegrityIncident};
 
+/// The harness the intercepted tool call came from — the B2 discriminator (brief 066, 3.3c). The
+/// daemon classifies the RAW tool_name with the harness's OWN semantics + coverage matrix; the two
+/// vendors diverge ONLY in the parser (LESSON §42). **Daemon-internal — NOT a `shared/` wire contract**
+/// (the hook↔daemon `intercept` params, not a schema). **PIN-1 (by-construction safety):** the tag is
+/// stamped by the TRUSTED hook binary (`hook::run` for Claude, the `--harness codex` branch via
+/// [`crate::harness::codex::intercept::normalize_to_intercept_params`] for Codex), NEVER read from agent
+/// stdin — a spoofed tag can only ever select a MORE-conservative classifier (risk stays catalog-
+/// authoritative + daemon-side), never turn a mutation into a silent allow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HarnessTag {
+    /// the default — a payload WITHOUT a `harness` field is Claude (the Claude hook path is byte-
+    /// unchanged: it sends no tag → deserializes to this).
+    #[default]
+    Claude,
+    Codex,
+}
+
 /// The subset of the Claude `PreToolUse` hook payload the receiver consumes. The daemon-wired hook
 /// pipes the FULL JSON on stdin; the extra fields (`cwd`/`transcript_path`/`hook_event_name`/…) are
 /// ignored — a tolerant read of the semi-trusted hook input, extracting only what the adjudication
-/// needs. The 4 fields are REQUIRED: a payload missing any (or with a wrong type) fails to parse →
-/// Deny (fail-closed — never construct an allow from garbage).
+/// needs. The 4 base fields are REQUIRED: a payload missing any (or with a wrong type) fails to parse →
+/// Deny (fail-closed — never construct an allow from garbage). `harness` is OPTIONAL (defaults Claude).
 #[derive(Debug, Deserialize)]
 pub struct HookPayload {
     /// the tool about to run. The interceptable DIRECT tools (`Bash`/`Write`/`Edit`/`Read`/…) map to
@@ -48,8 +66,14 @@ pub struct HookPayload {
     /// the Claude session id — **opaque at L2** (no adjudication logic depends on its value); the
     /// per-session `decision_sink` binding to the live session is the P4 transport.
     pub session_id: String,
-    /// the session's permission mode — MUST be `default` (O-13 #10); any other mode → Deny.
+    /// the session's permission mode — MUST be `default` (O-13 #10); any other mode → Deny. (Codex has
+    /// no modes; the Codex hook stamps `default` so this gate is a no-op for the Codex arm.)
     pub permission_mode: String,
+    /// the harness discriminator (brief 066, B2). OPTIONAL — absent → [`HarnessTag::Claude`] (the
+    /// Claude hook sends none → byte-unchanged). `codex` selects the Codex classifier in
+    /// [`map_to_action_type`]. Stamped by the trusted hook binary (PIN-1), never agent-set.
+    #[serde(default)]
+    pub harness: HarnessTag,
 }
 
 /// Why the receiver denied a tool call WITHOUT adjudicating it (fail-closed — never a silent allow).
@@ -147,6 +171,13 @@ pub fn parse_payload(json: &str) -> Result<HookPayload, DenyReason> {
 /// via `catalog::lookup`; a drift (a key not in the catalog) is itself fail-closed (lookup → None →
 /// the policy denies it).
 pub fn map_to_action_type(payload: &HookPayload) -> Result<&'static str, DenyReason> {
+    // B2 (brief 066) — the harness discriminator: a `codex`-tagged payload classifies the RAW codex
+    // tool_name with the CODEX semantics + coverage matrix (the divergence is the parser, LESSON §42).
+    // The Gateway adjudication loop below/after this is harness-agnostic + UNCHANGED. The DEFAULT
+    // (Claude, absent tag) falls through to the unchanged Claude classifier — byte-identical behavior.
+    if payload.harness == HarnessTag::Codex {
+        return crate::harness::codex::intercept::map_codex_to_action_type(&payload.tool_name);
+    }
     if payload.permission_mode != "default" {
         return Err(DenyReason::NonDefaultMode);
     }

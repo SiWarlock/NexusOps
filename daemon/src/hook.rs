@@ -13,6 +13,12 @@
 //! **0.1-HITL (flagged):** the exact `PreToolUse` hook output grammar Claude honors is validated by
 //! the authorized CLI smoke harness (the user runs it with their account); the deny default is the
 //! load-bearing safety property regardless.
+//!
+//! **3.3c (brief 066) — the Codex variant (`--harness codex`):** [`run_codex`] reads Codex's
+//! `PreToolUse` stdin, NORMALIZES it into the SAME `intercept` RPC params the Claude path sends
+//! ([`crate::harness::codex::intercept`]), reuses the SAME [`send_intercept`] transport (the daemon
+//! adjudication loop is harness-agnostic — swap only the I/O envelope), and emits Codex's `PreToolUse`
+//! output. FAIL-CLOSED identically — any error → DENY.
 
 use std::io::Read;
 use std::os::unix::net::UnixStream;
@@ -22,6 +28,9 @@ use std::time::Duration;
 
 use nexusops_shared::ipc::{HelloFrame, RpcRequest, ServerFrame, PROTOCOL_VERSION};
 
+use crate::harness::codex::intercept::{
+    codex_verdict_output, normalize_to_intercept_params, parse_codex_payload,
+};
 use crate::ipc::{read_frame, write_frame, IpcError};
 
 /// the GatewayPort UDS file within the app-support dir (mirrors `main.rs`).
@@ -47,6 +56,20 @@ pub fn run(event: &str) -> ExitCode {
     }
 }
 
+/// Run the Codex hook subcommand (`nexusopsd hook --harness codex <event>`, brief 066). Only
+/// `PreToolUse` adjudicates; every other Codex hook event is a no-op allow (the MVP). The verdict is
+/// translated to Codex's `PreToolUse` output ([`codex_verdict_output`] — FAIL-CLOSED: any error /
+/// non-allow → deny, identical to the Claude default).
+pub fn run_codex(event: &str) -> ExitCode {
+    if event != "PreToolUse" {
+        return ExitCode::SUCCESS;
+    }
+    // the Codex output IS the verdict translation — `codex_verdict_output` maps Ok(true)→allow,
+    // Ok(false)/Err→deny. Print it + exit 0 (the deny rides stdout, the Claude `emit_deny` precedent).
+    println!("{}", codex_verdict_output(&adjudicate_codex()));
+    ExitCode::SUCCESS
+}
+
 /// Read the `PreToolUse` payload, route it to the daemon's `intercept`, return whether it was ALLOWED.
 /// Any I/O / protocol error propagates → the caller blocks (fail-closed).
 fn adjudicate() -> std::io::Result<bool> {
@@ -62,6 +85,30 @@ fn adjudicate() -> std::io::Result<bool> {
     })?;
     payload["session_id"] = serde_json::Value::String(session_id);
 
+    send_intercept(payload)
+}
+
+/// Read Codex's `PreToolUse` stdin → NORMALIZE into the SAME `intercept` params the Claude path sends
+/// (brief 066, PIN-1: the `harness=codex` discriminator is stamped by `normalize_to_intercept_params`,
+/// never from the agent's stdin) → route via the SAME [`send_intercept`] transport. Any error
+/// (malformed stdin / `NEXUSOPS_SESSION_ID` unset / transport) propagates → the caller denies.
+fn adjudicate_codex() -> std::io::Result<bool> {
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    let payload = parse_codex_payload(&input)
+        .map_err(|_| std::io::Error::other("malformed Codex PreToolUse payload"))?;
+    let session_id = std::env::var("NEXUSOPS_SESSION_ID").map_err(|_| {
+        std::io::Error::other("NEXUSOPS_SESSION_ID unset (not a daemon-launched session)")
+    })?;
+    send_intercept(normalize_to_intercept_params(&payload, &session_id))
+}
+
+/// The SHARED `intercept` transport (harness-agnostic, brief 066): connect the GatewayPort UDS,
+/// handshake, send the `intercept` RPC with `params`, read the verdict frame → whether ALLOWED. Every
+/// read is bounded by [`HOOK_READ_TIMEOUT`] (a stalled daemon can't hang the agent's hook forever); any
+/// I/O / protocol error propagates → the caller blocks (fail-closed). Both the Claude and Codex
+/// adjudicators feed their normalized `params` through this ONE path.
+fn send_intercept(payload: serde_json::Value) -> std::io::Result<bool> {
     let mut stream = UnixStream::connect(socket_path()?)?;
     // bound every read so a stalled daemon can't hang the agent's hook forever (the hook fails closed
     // on its own timeout — independent of the daemon's internal APPROVAL_WAIT).

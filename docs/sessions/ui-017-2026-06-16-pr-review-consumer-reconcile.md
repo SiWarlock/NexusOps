@@ -3,7 +3,7 @@
 - **Date:** 2026-06-16
 - **Phase:** Phase 7 (Phase-7-UI) — **P7.2 / §11.2** (the PR Review Workspace — its L1 data foundation: making the frozen PR + Review projection-rows typed + consumable + drift-pinned)
 - **Predecessor:** [ui-016](ui-016-2026-06-16-boundary-merge-regen-0.38.md)
-- **Successor:** _(none yet)_
+- **Successor:** [ui-018](ui-018-2026-06-17-session-live-and-survival-shadow.md)
 - **Track:** `track/ui` · implementer `ui-implementer` · orchestrator `ui-orchestrator` · lead `team-lead`
 
 ## Why this session existed

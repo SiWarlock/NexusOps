@@ -111,8 +111,11 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     // → 0.23.0 (Phase-3 boundary merge: §9.1 harness / §6.4 Terminal Channel)
     // → 0.28.0 (Phase-4 boundary merge: §6.3e per-hunk git actions + get_diff)
     // → 0.31.0 (L2-prep boundary merge: survival 0.29 / ApprovalQueueRow 0.30 / SessionRecovered 0.31)
-    // → 0.33.0 (post-edges boundary merge: SessionFailed 0.32 + integration.connect/ExecutorKind +integration 0.33).
-    expect(caps.contract_version).toBe("0.33.0");
+    // → 0.33.0 (post-edges boundary merge: SessionFailed 0.32 + integration.connect/ExecutorKind +integration 0.33)
+    // → 0.38.0 (daemon D-series UI-unblock boundary merge: D1 PullRequestRow 0.34 / D2 SessionRow recovery 0.35 /
+    //           D5a mergeable+checks 0.36 / D5b-1 review vertical [ReviewState + ProjectionName +Review] 0.37 /
+    //           D5b-2 github.sync_reviews 0.38).
+    expect(caps.contract_version).toBe("0.38.0");
     expect(caps.protocol_version).toBe(1);
   });
 });

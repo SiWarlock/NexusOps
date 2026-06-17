@@ -1,6 +1,6 @@
 ---
 description: Team lead — stand up the agent team (orchestrator + implementer-per-area), establish direct comms + escalation rules.
-allowed-tools: Read, Grep, Bash, Agent, SendMessage
+allowed-tools: Read, Grep, Bash, Agent, TeamCreate, SendMessage
 argument-hint: "[track]"
 ---
 
@@ -26,13 +26,21 @@ If `$ARGUMENTS` is set, look it up in `IMPLEMENTATION_PLAN.md` **"Parallelizatio
 1. `docs/team-protocol.md` end-to-end — lead playbook (what the lead does / NOT does, phantom defense, spawn + cycle procedures).
 2. Skim `docs/orchestrator-briefing.md` so you know what the orchestrator owns. Don't load `ARCHITECTURE.md` or code — that's the teammates' context, deliberately kept out of yours.
 
-**Decide the team label.** The Claude Code team itself **auto-forms when you spawn your first teammate** (Step 3) — there is no manual create step, and the official team is auto-named `session-<first-8-of-your-session-id>`. What you choose here is the **context-monitoring group label** our custom layer uses to scope `/context-check` (registry + heartbeats). Use the **track name** when multi-track, else the session-derived name so it matches the official team:
+**Decide the team name.** Pick one stable name — it is the real Claude Code team name **and** our context-monitoring group label (one string, both jobs). Use the **track name** when multi-track, else a session-derived name:
 
 ```bash
 TEAM_LABEL="${TRACK:-session-$(printf %s "${CLAUDE_CODE_SESSION_ID:-$$}" | cut -c1-8)}"
 ```
 
-Carry `$TEAM_LABEL` into the self-register call and every spawn prompt below — it's the same string `/context-check <label>` filters on.
+Carry `$TEAM_LABEL` into the `TeamCreate` call (Step 2.7), the `team_name` of every `Agent` spawn (Step 3), the self-register call, and `/context-check <label>` — all the same string.
+
+**Create the team (Step 2.7, before any spawn) — THIS is what makes spawned agents real teammate _sessions_ instead of background subagents.** Call `TeamCreate` with `team_name: "$TEAM_LABEL"`:
+
+```
+TeamCreate(team_name: "<$TEAM_LABEL>", description: "<project/track one-liner>")
+```
+
+This establishes the team context (and its 1:1 task list at `~/.claude/tasks/<$TEAM_LABEL>/`); the subsequent `Agent` spawns that carry `team_name` then **join** it as full sessions. **Version note:** if `TeamCreate` isn't available in your Claude Code (a newer build where the team auto-forms on the first spawn and `TeamCreate` was removed), skip this call — the Step-3 spawns still carry `team_name`/`name`, which is what forms/joins the team there. Either way, **never spawn teammates without first either calling `TeamCreate` or (on auto-form builds) passing `team_name`** — that omission is exactly what downgrades teammates to background agents.
 
 **Self-register for context monitoring** so `/context-check` includes the lead (and the status line writes your heartbeat):
 
@@ -71,11 +79,11 @@ The team's orchestrator + implementer(s) operate **inside this worktree** — al
 
 ## Step 3 — Spawn the team (with templates)
 
-> **The team auto-forms here.** Spawning the first teammate (via the `Agent` tool) creates the team — no `TeamCreate` call, and the `Agent` `team_name` arg is ignored by current Claude Code. The team is auto-named `session-<first-8>` and auto-torn-down when your session exits. `$TEAM_LABEL` (Step 1) is only our context-monitoring group key, threaded through the spawn prompts below.
+> **Spawn TEAMMATES, not background agents.** The team context exists from Step 2.7's `TeamCreate`. Each teammate is spawned with the **`Agent` tool carrying BOTH `team_name: "$TEAM_LABEL"` AND `name: "<track>-<area>-role>"`** (plus `subagent_type` — `general-purpose` for the orchestrator/implementer, which need full edit/bash/write tools; never a read-only type like `Explore`/`Plan` for implementation roles). The `team_name` is what makes the spawn a **teammate session that joins the team** rather than a one-off background subagent — omitting it (or skipping Step 2.7) is exactly what downgrades teammates to background agents. The prose templates below are the agent's PROMPT (the `prompt` arg); the `team_name`/`name`/`subagent_type` are the structured `Agent` params alongside it.
 
 Spawn:
-1. **Orchestrator teammate** — one per project. Name: `<track>-<area>-orchestrator` (or `<area>-orchestrator` if solo team). It will run `/orchestrate-start` (reads briefing + state itself).
-2. **First implementer teammate** — for the area the next task targets. Name: `<track>-<area>-implementer` (or `<area>-implementer` if solo team). Charter it with `/session-start` in that area's cwd. Spawn additional area implementers later, only when that area's work begins.
+1. **Orchestrator teammate** — one per project. `Agent(subagent_type: "general-purpose", name: "<track>-<area>-orchestrator", team_name: "<$TEAM_LABEL>", prompt: <orchestrator template>)` (or `<area>-orchestrator` if solo team). It will run `/orchestrate-start` (reads briefing + state itself).
+2. **First implementer teammate** — for the area the next task targets. `Agent(subagent_type: "general-purpose", name: "<track>-<area>-implementer", team_name: "<$TEAM_LABEL>", prompt: <implementer template>)` (or `<area>-implementer` if solo team). Charter it with `/session-start` in that area's cwd. Spawn additional area implementers later, only when that area's work begins.
 
 ### Orchestrator spawn prompt template
 
@@ -109,6 +117,7 @@ Confirm in your first reply: (1) the start command you ran, (2) that the registr
 
 ### Spawn invariants — non-negotiable
 
+- **`team_name` + `name` on EVERY spawn — the load-bearing invariant.** A spawn missing `team_name` (and with no `TeamCreate`'d team context) is a **background subagent, not a teammate session**. If `/team-start` produced background agents, this is the cause: check that Step 2.7 ran and each `Agent` call carried `team_name: "$TEAM_LABEL"`.
 - **WHY + WHERE only.** Skip file lists, slice decomposition, design Qs — the orch authors briefs against the codebase, the impl reads the brief.
 - **Track prefix in the agent `name:`** if your track is set. Load-bearing for cross-bleed prevention.
 - **Worktree-rooted cwd is mandatory** for a multi-track build — every teammate's `git` operations stay inside `<worktree-path>` on `track/<track>`. A commit on the root checkout (or another track's area) from a track team is cross-track contamination — the filesystem analogue of channel-bleed.

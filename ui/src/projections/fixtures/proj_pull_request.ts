@@ -2,7 +2,10 @@
 // pr merged is terminal → excluded from openPRs counts. Reconciled to the frozen
 // 11-field PullRequestRow (ui-061): pr_id = the `{repo_id}#{pr_number}` composite PK,
 // pr_number is a NUMBER (the work-order str→number drift), + the rich D5 mergeable/checks.
-import type { PullRequestProjectionPage } from "../../contracts/index";
+import type {
+  ProjectionDelta,
+  PullRequestProjectionPage,
+} from "../../contracts/index";
 
 export const pullRequestFixture: PullRequestProjectionPage = {
   projection: "PullRequest",
@@ -48,4 +51,14 @@ export const pullRequestFixture: PullRequestProjectionPage = {
     },
   ],
   cursor: null,
+};
+
+// A daemon-shaped `row:None` NUDGE for the PullRequest subscribe stream (ui-063). The daemon emits an
+// id-nudge keyed by pr_id (deltas_for_event, on PullRequestSynced), NOT the row — so this carries NO
+// `row`. The live PR list consumes it via refetch-on-nudge (re-read get_projection), never a row-apply
+// reducer (which would no-op on the absent row — LESSON §29).
+export const pullRequestDeltaFixture: ProjectionDelta = {
+  projection: "PullRequest",
+  kind: "upsert",
+  id: "repo_fixture_1#101",
 };

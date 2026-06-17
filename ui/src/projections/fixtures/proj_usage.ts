@@ -3,7 +3,7 @@
 // cases: a Codex row (context_pct null → "unknown"), an estimated row, and an
 // `unavailable` row (value → "unknown", not 0). The credit pool is near-exhaustion
 // (870/1000 → 13% remaining) so the threshold's non-color channel is exercised.
-import type { UsageProjectionPage } from "../../contracts/index";
+import type { ProjectionDelta, UsageProjectionPage } from "../../contracts/index";
 
 export const usageFixture: UsageProjectionPage = {
   projection: "UsageLedger",
@@ -45,4 +45,13 @@ export const usageFixture: UsageProjectionPage = {
   ],
   creditPool: { kind: "sdk", used: 870, limit: 1000 },
   cursor: null,
+};
+
+// A daemon-shaped `row:None` NUDGE for the UsageLedger subscribe stream (ui-063). The daemon emits an
+// id-LESS nudge (deltas_for_event, on TelemetrySampled — keyed `None`), NOT the row — so this carries
+// NEITHER `row` NOR `id`. The live usage dashboard consumes it via refetch-on-nudge (re-read
+// get_projection), never a row-apply reducer (which would no-op on the absent row — LESSON §29).
+export const usageDeltaFixture: ProjectionDelta = {
+  projection: "UsageLedger",
+  kind: "upsert",
 };

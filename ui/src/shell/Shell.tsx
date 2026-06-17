@@ -339,6 +339,148 @@ export function Shell({
     };
   }, [client]);
 
+  // ── ui-063 whole-cockpit-live: spread refetch-on-nudge to the REST of the live-relevant served set ──
+  // The daemon now emits deltas for ProjectActivity / PullRequest / UsageLedger too (D4) — each as a
+  // `row:None` id-NUDGE (deltas_for_event) → consume via REFETCH-ON-NUDGE (a coalesced re-read), NEVER a
+  // row-apply reducer (which no-ops on the absent row — LESSON §29). Each is a 3rd/4th/5th stream
+  // composing with Session+ApprovalQueue through the port's per-stream worst-of connection authority
+  // (notifyConnectionState("<X>", …)). AuditTrail is DELIBERATELY EXCLUDED — the daemon emits a BLANKET
+  // AuditTrail nudge on every event, so a subscribe would trigger a whole-page re-read on every system
+  // event (a refetch storm on a paged/forensic projection); AuditTrail stays refresh-on-open until the
+  // daemon's flagged seq-cursor audit-delta enrichment lands.
+
+  // ProjectActivity stream — `projects` IS a deriveProjectSwitcherCounts input → recompute `counts` on a
+  // live project change (a new/changed project must re-key the switcher counts).
+  useEffect(() => {
+    let cancelled = false;
+    const recountFromProjects = (
+      prev: ShellData,
+      projects: ProjectActivityRow[],
+    ): ShellData => ({
+      ...prev,
+      projects,
+      counts: deriveProjectSwitcherCounts({
+        projects,
+        sessions: prev.sessions,
+        pullRequests: prev.pullRequests,
+        approvals: prev.approvals,
+      }),
+    });
+    const refetchProjects = async (): Promise<void> => {
+      const page = await client.get_projection("ProjectActivity");
+      if (cancelled) return;
+      setData((prev) => (prev ? recountFromProjects(prev, page.rows) : prev));
+    };
+    const coalescer = createNudgeCoalescer(refetchProjects);
+    runSubscriptionSupervisor({
+      subscribe: () => client.subscribe({ projection: "ProjectActivity" }),
+      onDelta: () => coalescer.nudge(),
+      refetch: refetchProjects,
+      setConnection: (next) => client.notifyConnectionState("ProjectActivity", next),
+      delay: (attempt) =>
+        new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SUBSCRIBE_BACKOFF_MAX_MS,
+              SUBSCRIBE_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+            ),
+          ),
+        ),
+      shouldContinue: () => !cancelled,
+    }).catch((e: unknown) => {
+      console.error("ProjectActivity subscription supervisor exited unexpectedly", e);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // PullRequest stream — `pullRequests` IS a deriveProjectSwitcherCounts input → recompute `counts` on a
+  // live PR change (a new/closed PR must re-key the per-project openPRs count).
+  useEffect(() => {
+    let cancelled = false;
+    const recountFromPullRequests = (
+      prev: ShellData,
+      pullRequests: PullRequestRow[],
+    ): ShellData => ({
+      ...prev,
+      pullRequests,
+      counts: deriveProjectSwitcherCounts({
+        projects: prev.projects,
+        sessions: prev.sessions,
+        pullRequests,
+        approvals: prev.approvals,
+      }),
+    });
+    const refetchPullRequests = async (): Promise<void> => {
+      const page = await client.get_projection("PullRequest");
+      if (cancelled) return;
+      setData((prev) => (prev ? recountFromPullRequests(prev, page.rows) : prev));
+    };
+    const coalescer = createNudgeCoalescer(refetchPullRequests);
+    runSubscriptionSupervisor({
+      subscribe: () => client.subscribe({ projection: "PullRequest" }),
+      onDelta: () => coalescer.nudge(),
+      refetch: refetchPullRequests,
+      setConnection: (next) => client.notifyConnectionState("PullRequest", next),
+      delay: (attempt) =>
+        new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SUBSCRIBE_BACKOFF_MAX_MS,
+              SUBSCRIBE_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+            ),
+          ),
+        ),
+      shouldContinue: () => !cancelled,
+    }).catch((e: unknown) => {
+      console.error("PullRequest subscription supervisor exited unexpectedly", e);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // UsageLedger stream — usage is NOT a deriveProjectSwitcherCounts input → a PLAIN REPLACE (usage +
+  // creditPool), NO recount. The live producer (TelemetrySampled ingress) is daemon-P4-dormant, so this
+  // stream connects + stays quiet until telemetry flows; the handler is correct + refetches the moment it
+  // does (built now, future-proof — identical pattern, harmless while dormant).
+  useEffect(() => {
+    let cancelled = false;
+    const refetchUsage = async (): Promise<void> => {
+      const page = await client.get_projection("UsageLedger");
+      if (cancelled) return;
+      setData((prev) =>
+        prev ? { ...prev, usage: page.rows, creditPool: page.creditPool ?? null } : prev,
+      );
+    };
+    const coalescer = createNudgeCoalescer(refetchUsage);
+    runSubscriptionSupervisor({
+      subscribe: () => client.subscribe({ projection: "UsageLedger" }),
+      onDelta: () => coalescer.nudge(),
+      refetch: refetchUsage,
+      setConnection: (next) => client.notifyConnectionState("UsageLedger", next),
+      delay: (attempt) =>
+        new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SUBSCRIBE_BACKOFF_MAX_MS,
+              SUBSCRIBE_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+            ),
+          ),
+        ),
+      shouldContinue: () => !cancelled,
+    }).catch((e: unknown) => {
+      console.error("UsageLedger subscription supervisor exited unexpectedly", e);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
   if (error) {
     return (
       <div className="shell shell--error" data-testid="shell-load-error" role="alert">

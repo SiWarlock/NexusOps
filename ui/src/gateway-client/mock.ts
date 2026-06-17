@@ -42,14 +42,20 @@ import {
   approvalQueueDeltaFixture,
 } from "../projections/fixtures/proj_approval_queue";
 import { auditTrailFixture } from "../projections/fixtures/proj_audit_trail";
-import { projectActivityFixture } from "../projections/fixtures/proj_project_activity";
-import { pullRequestFixture } from "../projections/fixtures/proj_pull_request";
+import {
+  projectActivityDeltaFixture,
+  projectActivityFixture,
+} from "../projections/fixtures/proj_project_activity";
+import {
+  pullRequestDeltaFixture,
+  pullRequestFixture,
+} from "../projections/fixtures/proj_pull_request";
 import { reviewFixture } from "../projections/fixtures/proj_review";
 import {
   sessionDeltaFixture,
   sessionPageFixture,
 } from "../projections/fixtures/proj_session";
-import { usageFixture } from "../projections/fixtures/proj_usage";
+import { usageDeltaFixture, usageFixture } from "../projections/fixtures/proj_usage";
 import { parseDelta, parseProjectionPage } from "./boundary";
 
 const DEFAULT_PROTOCOL_VERSION = 1;
@@ -132,12 +138,19 @@ export class MockGatewayPort implements GatewayPort {
 
   async *subscribe(params: SubscribeParams): AsyncIterable<ProjectionDelta> {
     // Symmetric with get_projection: an unrecognized projection fails fast rather than silently
-    // streaming nothing (which would mask wiring bugs). Session yields a row-bearing delta; ApprovalQueue
-    // (ui-059) yields a daemon-shaped `row:None` NUDGE (consumed via refetch-on-nudge, never row-apply).
+    // streaming nothing (which would mask wiring bugs). Session yields a row-bearing delta; the live
+    // streams (ui-059 ApprovalQueue + ui-063 ProjectActivity/PullRequest/UsageLedger) yield daemon-shaped
+    // `row:None` NUDGES (consumed via refetch-on-nudge, never row-apply — LESSON §29).
     if (params.projection === "Session") {
       yield parseDelta(sessionDeltaFixture);
     } else if (params.projection === "ApprovalQueue") {
       yield parseDelta(approvalQueueDeltaFixture);
+    } else if (params.projection === "ProjectActivity") {
+      yield parseDelta(projectActivityDeltaFixture);
+    } else if (params.projection === "PullRequest") {
+      yield parseDelta(pullRequestDeltaFixture);
+    } else if (params.projection === "UsageLedger") {
+      yield parseDelta(usageDeltaFixture);
     } else {
       throw new Error(
         `MockGatewayPort: no fixture for subscribe projection "${params.projection}"`,

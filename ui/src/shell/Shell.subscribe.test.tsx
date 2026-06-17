@@ -35,11 +35,17 @@ import { MockGatewayPort } from "../gateway-client/mock";
 import type {
   ApprovalQueuePage,
   ApprovalQueueRow,
+  ProjectActivityPage,
+  ProjectActivityRow,
   ProjectionDelta,
   ProjectionName,
   ProjectionPageByName,
+  PullRequestProjectionPage,
+  PullRequestRow,
   SessionProjectionPage,
   SessionRow,
+  UsageProjectionPage,
+  UsageRow,
 } from "../contracts/index";
 import type {
   ProjectionScope,
@@ -253,5 +259,249 @@ describe("Shell live ApprovalQueue subscribe (ui-059)", () => {
       },
       { timeout: 3000 },
     );
+  });
+});
+
+// ── ui-063 — whole-cockpit-live: the refetch-on-nudge spread to the REST ─────────────────────────────
+// The remaining live-relevant served projections (ProjectActivity / PullRequest / UsageLedger) each get
+// their own subscribe effect mirroring Session/ApprovalQueue. A daemon ProjectionDelta is a `row:None`
+// id-NUDGE (deltas_for_event keys by project_id/pr_id/None) → the live cockpit must RE-READ
+// get_projection, NOT apply the absent delta row (LESSON §29). Each gated gateway holds its projection's
+// nudge until the test captures a baseline, then serves an AUGMENTED page on the post-nudge re-read, so
+// the live change is observable only via the refetch. The OTHER projections stay healthy via super.
+
+/** Gates the ProjectActivity `row:None` nudge; serves an AUGMENTED ProjectActivity page (one extra
+ *  project) on the post-nudge re-read. A new project must re-key the switcher counts (ProjectActivity IS
+ *  a deriveProjectSwitcherCounts input). Other projections stay healthy via super. */
+class GatedProjectActivityRefetchGateway extends MockGatewayPort {
+  projectReads = 0;
+  private nudgeReleased = false;
+  private releaseNudgeFn!: () => void;
+  private readonly nudgeGate: Promise<void>;
+  constructor(private readonly extra: ProjectActivityRow) {
+    super();
+    this.nudgeGate = new Promise<void>((resolve) => {
+      this.releaseNudgeFn = resolve;
+    });
+  }
+  releaseNudge(): void {
+    this.nudgeReleased = true;
+    this.releaseNudgeFn();
+  }
+  async *subscribe(params: SubscribeParams): AsyncIterable<ProjectionDelta> {
+    if (params.projection === "ProjectActivity") {
+      await this.nudgeGate; // hold the nudge until the test captures the baseline
+      yield { projection: "ProjectActivity", kind: "upsert", id: "project_live_nudge" }; // row:None
+      await new Promise<void>(() => {
+        /* stay open — a live stream */
+      });
+      return;
+    }
+    yield* super.subscribe(params);
+  }
+  async get_projection<K extends ProjectionName>(
+    name: K,
+    scope?: ProjectionScope,
+    page?: ProjectionPageParams,
+  ): Promise<ProjectionPageByName[K]> {
+    const result = await super.get_projection(name, scope, page);
+    if (name === "ProjectActivity") {
+      this.projectReads++;
+      if (this.nudgeReleased) {
+        const p = result as ProjectActivityPage;
+        return { ...p, rows: [...p.rows, this.extra] } as ProjectionPageByName[K];
+      }
+    }
+    return result;
+  }
+}
+
+/** Gates the PullRequest `row:None` nudge; serves an AUGMENTED PullRequest page (one extra OPEN PR on the
+ *  active project) on the post-nudge re-read → the TopBar openPRs count for the active project increments
+ *  (PullRequest IS a deriveProjectSwitcherCounts input). Other projections stay healthy via super. */
+class GatedPullRequestRefetchGateway extends MockGatewayPort {
+  pullRequestReads = 0;
+  private nudgeReleased = false;
+  private releaseNudgeFn!: () => void;
+  private readonly nudgeGate: Promise<void>;
+  constructor(private readonly extra: PullRequestRow) {
+    super();
+    this.nudgeGate = new Promise<void>((resolve) => {
+      this.releaseNudgeFn = resolve;
+    });
+  }
+  releaseNudge(): void {
+    this.nudgeReleased = true;
+    this.releaseNudgeFn();
+  }
+  async *subscribe(params: SubscribeParams): AsyncIterable<ProjectionDelta> {
+    if (params.projection === "PullRequest") {
+      await this.nudgeGate;
+      yield { projection: "PullRequest", kind: "upsert", id: "pr_live_nudge" }; // row:None
+      await new Promise<void>(() => {
+        /* stay open — a live stream */
+      });
+      return;
+    }
+    yield* super.subscribe(params);
+  }
+  async get_projection<K extends ProjectionName>(
+    name: K,
+    scope?: ProjectionScope,
+    page?: ProjectionPageParams,
+  ): Promise<ProjectionPageByName[K]> {
+    const result = await super.get_projection(name, scope, page);
+    if (name === "PullRequest") {
+      this.pullRequestReads++;
+      if (this.nudgeReleased) {
+        const pr = result as PullRequestProjectionPage;
+        return { ...pr, rows: [...pr.rows, this.extra] } as ProjectionPageByName[K];
+      }
+    }
+    return result;
+  }
+}
+
+/** Gates the UsageLedger `row:None` nudge; serves an AUGMENTED UsageLedger page (one extra usage row) on
+ *  the post-nudge re-read. UsageLedger is NOT a deriveProjectSwitcherCounts input → a plain replace, NO
+ *  recount; the refetch is observable as an incremented usage read. Other projections stay healthy via
+ *  super. */
+class GatedUsageRefetchGateway extends MockGatewayPort {
+  usageReads = 0;
+  private nudgeReleased = false;
+  private releaseNudgeFn!: () => void;
+  private readonly nudgeGate: Promise<void>;
+  constructor(private readonly extra: UsageRow) {
+    super();
+    this.nudgeGate = new Promise<void>((resolve) => {
+      this.releaseNudgeFn = resolve;
+    });
+  }
+  releaseNudge(): void {
+    this.nudgeReleased = true;
+    this.releaseNudgeFn();
+  }
+  async *subscribe(params: SubscribeParams): AsyncIterable<ProjectionDelta> {
+    if (params.projection === "UsageLedger") {
+      await this.nudgeGate;
+      // daemon-faithful: TelemetrySampled nudges are id-LESS (keyed None) — row AND id omitted.
+      yield { projection: "UsageLedger", kind: "upsert" };
+      await new Promise<void>(() => {
+        /* stay open — a live stream */
+      });
+      return;
+    }
+    yield* super.subscribe(params);
+  }
+  async get_projection<K extends ProjectionName>(
+    name: K,
+    scope?: ProjectionScope,
+    page?: ProjectionPageParams,
+  ): Promise<ProjectionPageByName[K]> {
+    const result = await super.get_projection(name, scope, page);
+    if (name === "UsageLedger") {
+      this.usageReads++;
+      if (this.nudgeReleased) {
+        const u = result as UsageProjectionPage;
+        return { ...u, rows: [...u.rows, this.extra] } as ProjectionPageByName[K];
+      }
+    }
+    return result;
+  }
+}
+
+describe("Shell whole-cockpit-live subscribe (ui-063 — refetch-on-nudge spread)", () => {
+  it("projectactivity_subscribe_refetches_on_row_none_nudge", async () => {
+    // spec(§6.1/§11): a daemon ProjectActivity delta is a `row:None` id-NUDGE → the live cockpit must
+    // REFETCH get_projection("ProjectActivity"), NOT apply the absent row (LESSON §29). The new project
+    // can ONLY appear via the re-read; ProjectActivity IS a switcher-counts input → counts re-key too.
+    const extra: ProjectActivityRow = {
+      project_id: "project_live_refetched",
+      name: "Live new project",
+    };
+    const gateway = new GatedProjectActivityRefetchGateway(extra);
+    render(<Shell gateway={gateway} />);
+
+    // load settles → the nudge is still gated → the new project is NOT present yet (NO refetch).
+    await screen.findByTestId("sidebar-waiting-badge");
+    expect(screen.queryByText("Live new project")).toBeNull();
+    const readsBeforeNudge = gateway.projectReads;
+
+    gateway.releaseNudge(); // the row:None nudge fires → coalesced refetch → augmented re-read
+
+    await waitFor(() => {
+      // the nudge caused a RE-READ (not a row-apply)…
+      expect(gateway.projectReads).toBeGreaterThan(readsBeforeNudge);
+      // …and the re-read's extra project is now in the live tree.
+      expect(screen.queryByText("Live new project")).not.toBeNull();
+    });
+  });
+
+  it("pullrequest_subscribe_refetches_on_row_none_nudge", async () => {
+    // spec(§6.1/§11): a `row:None` PullRequest nudge → REFETCH get_projection("PullRequest") (NOT
+    // row-apply, LESSON §29); PullRequest IS a switcher-counts input → the active project's openPRs
+    // count (TopBar) recomputes. The extra OPEN PR can ONLY count via the re-read.
+    const activeProjectId = projectActivityFixture.rows[0]!.project_id; // the default active project
+    const extra: PullRequestRow = {
+      pr_id: "repo_live#999",
+      project_id: activeProjectId,
+      repo_id: "repo_live",
+      pr_number: 999,
+      title: "Live new PR",
+      status: "open", // open → +1 openPRs for the active project
+      head_branch: "feature/live",
+      base_branch: "main",
+      pr_checked_at: "2026-06-17T00:00:00Z",
+      mergeable: true,
+      checks_summary: "pending",
+    };
+    const gateway = new GatedPullRequestRefetchGateway(extra);
+    render(<Shell gateway={gateway} />);
+
+    await screen.findByTestId("sidebar-waiting-badge");
+    // The TopBar renders the active project's openPRs count (title="open PRs").
+    const baseline = Number(screen.getByTitle("open PRs").textContent);
+    const readsBeforeNudge = gateway.pullRequestReads;
+
+    gateway.releaseNudge(); // the row:None nudge fires → coalesced refetch → augmented re-read
+
+    await waitFor(() => {
+      // the nudge caused a RE-READ (not a row-apply)…
+      expect(gateway.pullRequestReads).toBeGreaterThan(readsBeforeNudge);
+      // …and the re-read's extra open PR is reflected in the live count (+1).
+      expect(Number(screen.getByTitle("open PRs").textContent)).toBe(baseline + 1);
+    });
+  });
+
+  it("usageledger_subscribe_refetches_on_row_none_nudge", async () => {
+    // spec(§6.1/§11): a `row:None` UsageLedger nudge → REFETCH get_projection("UsageLedger") (NOT
+    // row-apply, LESSON §29). UsageLedger is NOT a switcher-counts input → a plain replace, NO recount;
+    // the refetch is observable as an incremented usage read (the live telemetry surface stays current).
+    const extra: UsageRow = {
+      subject_id: "session_live_usage",
+      harness: "claude",
+      tokens: 5000,
+      cost: 0.1,
+      metric_quality: "exact",
+      context_pct: 10,
+    };
+    const gateway = new GatedUsageRefetchGateway(extra);
+    render(<Shell gateway={gateway} />);
+
+    await screen.findByTestId("sidebar-waiting-badge");
+    // The default Command Center renders a total-Tokens stat (sum of usage.tokens) — a cheap surface to
+    // prove the refetched usage actually FLOWED into state (a refetch that forgot setData would still
+    // bump reads). Captured as text so the assertion is robust to the exact fixture sum.
+    const baselineTokens = screen.getByText("Tokens").parentElement!.textContent;
+    const readsBeforeNudge = gateway.usageReads;
+
+    gateway.releaseNudge(); // the row:None nudge fires → coalesced refetch → augmented re-read
+
+    await waitFor(() => {
+      // the nudge caused a RE-READ (not a row-apply) of the usage projection…
+      expect(gateway.usageReads).toBeGreaterThan(readsBeforeNudge);
+      // …and the re-read's extra usage row flowed into the live Tokens stat (plain replace, no recount).
+      expect(screen.getByText("Tokens").parentElement!.textContent).not.toBe(baselineTokens);
+    });
   });
 });

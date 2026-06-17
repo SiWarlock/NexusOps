@@ -29,10 +29,15 @@ pub mod parse;
 pub mod perms;
 pub mod status;
 pub mod stream;
+pub mod telemetry;
 
 pub use status::{derive_status, CodexSignal, CodexToolKind};
 
 use crate::harness::resume::ResumeInputs;
+// the harness-neutral telemetry primitives (044 hoist, brief 074) + the Codex cost-honesty downgrade.
+use crate::harness::telemetry::{telemetry_sample, TelemetryEventSink, UsageReading, UsageSource};
+use nexusops_shared::events::TelemetrySampled;
+use telemetry::apply_cost_honesty;
 
 // ---- the 10 Codex HarnessCapabilities (research §5/§6; 3.3a) ------------------------------------
 
@@ -67,6 +72,15 @@ pub struct CodexAdapter {
     session_id: String,
     /// the current derived status (advanced by `push_signal` via `derive_status`).
     status: Session,
+    /// telemetry (3.3d, the 044 mirror): the last emitted CUMULATIVE reading (the delta baseline) +
+    /// the last per-heartbeat DELTA sample (what `telemetry_heartbeat` returns), the §15 #8 execution
+    /// profile rollup dim (None until the live loop), the injected emission sink, + the pump's usage
+    /// source. All None/empty until the live drive loop feeds + binds them (the 044/P4 deferral).
+    last_cumulative: Option<UsageReading>,
+    last_sample: Option<TelemetrySample>,
+    execution_profile_id: Option<String>,
+    telemetry_sink: Option<Box<dyn TelemetryEventSink>>,
+    usage_source: Option<Box<dyn UsageSource>>,
 }
 
 impl CodexAdapter {
@@ -77,6 +91,64 @@ impl CodexAdapter {
             // adapter-derived — `launch()` transitions it to `Starting`).
             status: Session::Creating,
             session_id,
+            last_cumulative: None,
+            last_sample: None,
+            execution_profile_id: None,
+            telemetry_sink: None,
+            usage_source: None,
+        }
+    }
+
+    /// Inject the telemetry emission [`TelemetryEventSink`] (3.3d, the 044 builder precedent — a
+    /// builder so the 2-arg [`new`](Self::new) call sites don't churn). The production write-actor
+    /// binding + the periodic pump land at the live-Codex drive loop; tests inject a collecting double.
+    pub fn with_telemetry_sink(mut self, sink: Box<dyn TelemetryEventSink>) -> Self {
+        self.telemetry_sink = Some(sink);
+        self
+    }
+
+    /// Inject the per-tick [`UsageSource`] the telemetry pump drains (3.3d). The production source (the
+    /// live app-server `token_count` feed) is the live-Codex ingress seam; tests inject a scripted
+    /// source. Without one, [`poll_telemetry`](HarnessAdapter::poll_telemetry) is a no-op.
+    pub fn with_usage_source(mut self, source: Box<dyn UsageSource>) -> Self {
+        self.usage_source = Some(source);
+        self
+    }
+
+    /// Ingest one CUMULATIVE [`UsageReading`] (3.3d, the 044 `push_usage` mirror). Computes the
+    /// per-heartbeat DELTA against the last reading (high-water-mark-clamped so a non-monotonic
+    /// cumulative glitch can't inflate the next delta), applies the **Codex cost-honesty downgrade**
+    /// ([`apply_cost_honesty`] — a locally-derived cost caps `metric_quality` at `Estimated`), STORES
+    /// the delta (so [`telemetry_heartbeat`](HarnessAdapter::telemetry_heartbeat) is correct even
+    /// sink-less), and emits exactly one `TelemetrySampled` observation event through the bound sink.
+    /// Delta-tracking is updated BEFORE + regardless of emission (never coupled to the sink; the
+    /// fire-and-forget emit soft-degrades, LESSON §30 — never back-pressures the writer).
+    pub fn push_usage(&mut self, reading: UsageReading) {
+        let clamped = match &self.last_cumulative {
+            Some(prev) => UsageReading {
+                tokens_in: reading.tokens_in.max(prev.tokens_in),
+                tokens_out: reading.tokens_out.max(prev.tokens_out),
+                cost: reading.cost.max(prev.cost),
+                context_pct: reading.context_pct,
+                model: reading.model,
+            },
+            None => reading,
+        };
+        // the shared cumulative→delta fn (sets quality from context), THEN the Codex honesty downgrade:
+        // a locally-derived cost (priced model) is never authoritative → cap Exact→Estimated (§11.4).
+        let sample = apply_cost_honesty(
+            telemetry_sample(self.last_cumulative.as_ref(), &clamped),
+            clamped.model.as_deref(),
+        );
+        let event = TelemetrySampled {
+            sample: sample.clone(),
+            model: clamped.model.clone(),
+            execution_profile_id: self.execution_profile_id.clone(),
+        };
+        self.last_cumulative = Some(clamped);
+        self.last_sample = Some(sample);
+        if let Some(sink) = &self.telemetry_sink {
+            sink.emit_telemetry(event);
         }
     }
 
@@ -156,7 +228,11 @@ impl HarnessAdapter for CodexAdapter {
     }
 
     fn telemetry_heartbeat(&self) -> Option<TelemetrySample> {
-        None // → 3.3d (the telemetry emission path; the parsed `token_count` samples feed it)
+        // 3.3d — the latest per-heartbeat DELTA sample (the 044 mirror); `None` before any reading.
+        // Per-heartbeat DELTAS, never cumulative (the proj_usage_ledger SUMs them). The live
+        // app-server `token_count` feed that drives `push_usage` + the pump cadence land at the
+        // live-Codex drive loop.
+        self.last_sample.clone()
     }
 
     fn resume(&self) -> ResumeResult {
@@ -166,6 +242,18 @@ impl HarnessAdapter for CodexAdapter {
         ResumeResult {
             mode: ResumeMode::Replayed,
             replayed_event_count: 0,
+        }
+    }
+
+    fn poll_telemetry(&mut self) {
+        // 3.3d — the pump tick (the 044 mirror): drain the latest cumulative reading from the live
+        // source (the live-Codex app-server `token_count` feed) + route it through `push_usage` (delta
+        // + cumulative clamp + cost-honesty + emit via the bound sink). No source (until the live drive
+        // loop wires the ingress) or an unchanged source → a no-op tick. Take the reading out (drop the
+        // source borrow) BEFORE the `&mut self` push_usage call.
+        let reading = self.usage_source.as_mut().and_then(|s| s.poll_usage());
+        if let Some(reading) = reading {
+            self.push_usage(reading);
         }
     }
 }

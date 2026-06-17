@@ -10,6 +10,7 @@ use serde::Deserialize;
 use nexusops_shared::harness::{MetricQuality, TelemetrySample};
 
 use super::status::{CodexSignal, CodexToolKind};
+use super::telemetry::{apply_cost_honesty, codex_cost_estimate};
 
 /// `session_meta` (rollout line 1) — session identity + provenance (research §2.2). `id` is REQUIRED
 /// (strict — a meta without it is malformed → skipped); the rest default-empty (tolerant). serde
@@ -86,9 +87,21 @@ pub fn classify_tool(name: &str) -> CodexToolKind {
 /// (`cached_input` ⊆ input, `reasoning_output` ⊆ output — the `total = in+out` convention; the superset
 /// breakdowns are NOT double-counted). `context_pct` = `total_token_usage.total` / `model_context_window`
 /// when both present (`metric_quality`=Exact); else None + Unavailable (never a faked number, §11.4).
-/// `cost_estimate`=0.0 (Codex `token_count` carries no cost — cost derivation is the 3.3d/pricing
-/// follow-on). Strict on `input_tokens`/`output_tokens` (missing → None, the record is skipped).
-pub fn parse_token_usage(payload: &serde_json::Value) -> Option<TelemetrySample> {
+/// `cost_estimate` (3.3d): Codex `token_count` carries NO cost field, so it is LOCALLY derived from
+/// `model` via [`codex_cost_estimate`] (unknown/absent model → 0.0, never fabricated); a derived cost
+/// caps `metric_quality` at `Estimated` ([`apply_cost_honesty`], §11.4 — a local estimate is not
+/// authoritative). Strict on `input_tokens`/`output_tokens` (missing → None, the record is skipped).
+///
+/// **🔴 OBSERVE-path snapshot, NOT a cumulative emission reading (live-wiring trap):** this reads
+/// `last_token_usage` — the PER-TURN tokens — so the returned sample is a per-event SNAPSHOT for
+/// `RolloutObservation::samples` (observe-only). It is NOT the CUMULATIVE reading the emission
+/// delta-path (`CodexAdapter::push_usage` → `telemetry_sample`) requires. The live-Codex emission source
+/// MUST build a `UsageReading` from `total_token_usage` (the cumulative); feeding these per-turn
+/// snapshots into `push_usage` would produce WRONG deltas. The two paths are deliberately separate.
+pub fn parse_token_usage(
+    payload: &serde_json::Value,
+    model: Option<&str>,
+) -> Option<TelemetrySample> {
     let info = payload.get("info")?;
     let last = info.get("last_token_usage")?;
     let tokens_in = last.get("input_tokens")?.as_u64()?;
@@ -109,13 +122,16 @@ pub fn parse_token_usage(payload: &serde_json::Value) -> Option<TelemetrySample>
     } else {
         MetricQuality::Unavailable
     };
-    Some(TelemetrySample {
+    // 3.3d: derive the cost locally (per-turn tokens × per-model rate) + apply the §11.4 honesty
+    // downgrade (a priced model → Estimated even when context made it Exact).
+    let sample = TelemetrySample {
         tokens_in,
         tokens_out,
         context_pct,
-        cost_estimate: 0.0, // → 3.3d/pricing (Codex token_count carries no cost)
+        cost_estimate: codex_cost_estimate(tokens_in, tokens_out, model),
         metric_quality,
-    })
+    };
+    Some(apply_cost_honesty(sample, model))
 }
 
 /// Extract the session UUIDv7 from a rollout filename `rollout-<ISO8601>-<uuid>.jsonl` (research
@@ -197,7 +213,14 @@ pub fn parse_rollout(jsonl: &str) -> RolloutObservation {
                 Some("task_complete") => obs.signals.push(CodexSignal::TurnCompleted),
                 Some("turn_aborted") => obs.signals.push(CodexSignal::TurnAborted),
                 Some("token_count") => {
-                    if let Some(sample) = parse_token_usage(payload) {
+                    // 3.3d: thread the last-seen turn's model for local cost derivation (None → the
+                    // cost is 0.0, the conservative unknown-model fallback). An empty model is unknown.
+                    let model = obs
+                        .turn_context
+                        .as_ref()
+                        .map(|tc| tc.model.as_str())
+                        .filter(|m| !m.is_empty());
+                    if let Some(sample) = parse_token_usage(payload, model) {
                         obs.samples.push(sample);
                     }
                 }

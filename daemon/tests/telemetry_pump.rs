@@ -17,7 +17,7 @@ use nexusops_shared::ids::{ProjectId, SessionId};
 
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{open_read_only, EventStore, PrefixRedactor};
-use nexusopsd::harness::claude::telemetry::{
+use nexusopsd::harness::telemetry::{
     telemetry_sample, TelemetryEventSink, TelemetrySinkFactory, UsageReading,
 };
 use nexusopsd::idgen::UlidGen;
@@ -369,5 +369,77 @@ async fn test_deferred_factory_drops_before_bind_appends_after() {
         count(after.as_str()),
         1,
         "a sink minted after bind appends via the write-actor"
+    );
+}
+
+// ---- 3.3d RED #7 — the Codex emission path SUMs deltas in proj_usage_ledger, UTC-bucketed ---------
+
+#[tokio::test]
+async fn test_codex_usage_ledger_sums_deltas_utc() {
+    // spec(§18, brief-074 AC6) + LESSON §27 — drive the CodexAdapter emission path (push_usage →
+    // the PRODUCTION WriteActorTelemetrySink) with two CUMULATIVE Codex readings; the REAL projector
+    // SUMs the per-heartbeat DELTAS to the cumulative, MAXes the context gauge, buckets by the UTC-Z
+    // date. The Codex cost is LOCALLY derived (codex_cost_estimate) — no upstream cost field.
+    use nexusopsd::harness::codex::telemetry::codex_cost_estimate;
+    use nexusopsd::harness::codex::CodexAdapter;
+
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-17T09:00:00Z")),
+        stub_gateway(),
+    );
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    let model = "gpt-5.1-codex-max";
+    let sink = WriteActorTelemetrySink::new(
+        actor.handle(),
+        sid.clone(),
+        Some(pid.clone()),
+        Arc::new(FixedClock::new("2026-06-17T09:00:00Z")),
+    );
+    let cumulative = |tokens_in: u64, tokens_out: u64, ctx: Option<f32>| UsageReading {
+        tokens_in,
+        tokens_out,
+        context_pct: ctx,
+        cost: codex_cost_estimate(tokens_in, tokens_out, Some(model)),
+        model: Some(model.to_string()),
+    };
+    let mut adapter = CodexAdapter::new(
+        std::path::PathBuf::from("/tmp/r.jsonl"),
+        sid.as_str().to_string(),
+    )
+    .with_telemetry_sink(Box::new(sink));
+    adapter.push_usage(cumulative(100, 20, Some(30.0)));
+    adapter.push_usage(cumulative(250, 60, Some(55.0)));
+    actor.shutdown().await;
+
+    let conn = open_read_only(&path).unwrap();
+    let (ti, to, ctx, cost, day): (i64, i64, Option<f64>, f64, String) = conn
+        .query_row(
+            "SELECT tokens_in, tokens_out, context_pct_max, cost_estimate, bucket_day \
+             FROM proj_usage_ledger WHERE session_id=?1",
+            [sid.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (ti, to),
+        (250, 60),
+        "SUM-of-deltas == the cumulative (a cumulative-emit would double-count)"
+    );
+    let expected_cost = codex_cost_estimate(250, 60, Some(model));
+    assert!(
+        (cost - expected_cost).abs() < 1e-9,
+        "cost SUM-of-deltas == the cumulative derived cost"
+    );
+    assert_eq!(
+        ctx,
+        Some(55.0),
+        "context_pct_max = the MAX gauge 55 (a deltaed gauge would MAX 30)"
+    );
+    assert_eq!(
+        day, "2026-06-17",
+        "bucket_day == the UTC-Z date of occurred_at"
     );
 }

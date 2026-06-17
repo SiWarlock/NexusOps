@@ -4,8 +4,9 @@
 //! derived from the event stream NEVER the PTY — safety #9). Foundation: docs/planning/0.3-codex-schema-research.md.
 //!
 //! NON-cat-1: this slice is the deterministic rollout-JSONL parser + the `exec --json` `ThreadEvent`
-//! normalizer + the OBSERVE methods, tested against synthesized golden fixtures. Launch/interception/
-//! telemetry-emission/live-drive are 3.3b/3.3c/3.3d/HITL.
+//! normalizer + the OBSERVE methods, tested against synthesized golden fixtures. Launch/interception
+//! are 3.3b/3.3c; **telemetry-emission is 3.3d (LANDED — `telemetry_heartbeat` is no longer a None
+//! stub; see `codex_telemetry.rs`)**; the live drive loop is HITL.
 
 use std::path::PathBuf;
 
@@ -187,7 +188,9 @@ fn test_parse_token_count_usage() {
             "model_context_window": 272000
         }
     });
-    let s = parse_token_usage(&payload).expect("token_count → sample");
+    // 3.3d: a KNOWN model derives a local cost → metric_quality is downgraded Exact→Estimated (§11.4
+    // honesty — a local estimate is not authoritative, unlike Claude's upstream cost).
+    let s = parse_token_usage(&payload, Some("gpt-5.1-codex-max")).expect("token_count → sample");
     assert_eq!(
         s.tokens_in, 1000,
         "tokens_in = input_tokens (cached_input ⊆ input)"
@@ -203,25 +206,38 @@ fn test_parse_token_count_usage() {
         (pct - (1300.0 / 272000.0 * 100.0)).abs() < 0.001,
         "context_pct = total/window"
     );
+    assert!(
+        s.cost_estimate > 0.0,
+        "a known model derives a local cost (3.3d)"
+    );
     assert_eq!(
         s.metric_quality,
-        MetricQuality::Exact,
-        "window present → Exact"
+        MetricQuality::Estimated,
+        "window present would be Exact, but a locally-derived cost caps it at Estimated (§11.4)"
     );
 
-    // no model_context_window → context unknown for this sample (tokens still parsed).
+    // no model_context_window + UNKNOWN model → context unknown (Unavailable stands) + cost 0.0
+    // (conservative — never fabricated; tokens still parsed).
     let no_window = serde_json::json!({
         "type": "token_count",
         "info": { "last_token_usage": { "input_tokens": 5, "output_tokens": 7, "total_tokens": 12 } }
     });
-    let s2 = parse_token_usage(&no_window).expect("token_count → sample (no window)");
+    let s2 = parse_token_usage(&no_window, None).expect("token_count → sample (no window)");
     assert_eq!(s2.tokens_in, 5);
     assert_eq!(s2.tokens_out, 7);
     assert_eq!(
         s2.context_pct, None,
         "no window → context_pct None, never faked"
     );
-    assert_eq!(s2.metric_quality, MetricQuality::Unavailable);
+    assert_eq!(
+        s2.cost_estimate, 0.0,
+        "unknown model → 0.0 cost, never fabricated"
+    );
+    assert_eq!(
+        s2.metric_quality,
+        MetricQuality::Unavailable,
+        "no context + no derived cost → Unavailable (the context-driven quality stands)"
+    );
 }
 
 // ---- #6 — tool-call classification BY SEMANTICS, not hardcoded names (research §2.2 / mirror) ----

@@ -1775,7 +1775,14 @@ fn test_pull_request_synced_projects_mergeable_and_checks() {
         .append(pr_synced_intent(
             Some(pid.clone()),
             Some(arid.clone()),
-            &pr_payload_rich(42, PullRequest::Open, "feature", "main", Some(true), Some("3 passing")),
+            &pr_payload_rich(
+                42,
+                PullRequest::Open,
+                "feature",
+                "main",
+                Some(true),
+                Some("3 passing"),
+            ),
         ))
         .expect("append folds in-band");
     let r = &proj_pull_request_rows(&path)[0];
@@ -1793,7 +1800,14 @@ fn test_pull_request_synced_projects_mergeable_and_checks() {
         .append(pr_synced_intent(
             Some(pid.clone()),
             Some(arid),
-            &pr_payload_rich(42, PullRequest::ChecksFailing, "feature", "main", Some(false), Some("1 failing")),
+            &pr_payload_rich(
+                42,
+                PullRequest::ChecksFailing,
+                "feature",
+                "main",
+                Some(false),
+                Some("1 failing"),
+            ),
         ))
         .unwrap();
     let rows = proj_pull_request_rows(&path);
@@ -1848,7 +1862,14 @@ fn test_read_pull_request_typed_serves_mergeable_checks() {
         .append(pr_synced_intent(
             Some(pid.clone()),
             Some(arid),
-            &pr_payload_rich(42, PullRequest::Open, "feature", "main", Some(true), Some("3 passing")),
+            &pr_payload_rich(
+                42,
+                PullRequest::Open,
+                "feature",
+                "main",
+                Some(true),
+                Some("3 passing"),
+            ),
         ))
         .unwrap();
     // a 2nd, distinct PR with mergeable=Some(false) — the FALSY edge (INTEGER 0 → JSON false), DISTINCT
@@ -1858,7 +1879,14 @@ fn test_read_pull_request_typed_serves_mergeable_checks() {
         .append(pr_synced_intent(
             Some(pid.clone()),
             Some(arid_false),
-            &pr_payload_rich(9, PullRequest::ChecksFailing, "f", "m", Some(false), Some("2 failing")),
+            &pr_payload_rich(
+                9,
+                PullRequest::ChecksFailing,
+                "f",
+                "m",
+                Some(false),
+                Some("2 failing"),
+            ),
         ))
         .unwrap();
     // a 3rd, distinct PR with None/None.
@@ -1876,7 +1904,11 @@ fn test_read_pull_request_typed_serves_mergeable_checks() {
         .iter()
         .find(|r| r.pr_id == "repo_alpha#42")
         .expect("the Some(true) row");
-    assert_eq!(some.mergeable, Some(true), "mergeable=true served as a typed bool");
+    assert_eq!(
+        some.mergeable,
+        Some(true),
+        "mergeable=true served as a typed bool"
+    );
     assert_eq!(some.checks_summary.as_deref(), Some("3 passing"));
     let f = rows
         .iter()
@@ -2490,7 +2522,11 @@ fn test_review_synced_projects_to_proj_review() {
     // rebuild-equivalent.
     let before = proj_review_rows(&path);
     store.rebuild_projections().unwrap();
-    assert_eq!(before, proj_review_rows(&path), "rebuild reproduces the proj_review row");
+    assert_eq!(
+        before,
+        proj_review_rows(&path),
+        "rebuild reproduces the proj_review row"
+    );
 
     // a pending review on a 2nd repo → submitted_at/body NULL.
     let (_d2, path2) = temp_db();
@@ -2531,7 +2567,14 @@ fn test_review_synced_on_conflict_updates_row() {
         .append(review_synced_intent(
             Some(pid),
             Some(arid),
-            &review_payload(5, 1, "octocat", ReviewState::ChangesRequested, None, Some("nit")),
+            &review_payload(
+                5,
+                1,
+                "octocat",
+                ReviewState::ChangesRequested,
+                None,
+                Some("nit"),
+            ),
         ))
         .unwrap();
     let rows = proj_review_rows(&path);
@@ -2579,7 +2622,14 @@ fn test_read_review_typed_serves_review_row() {
         .append(review_synced_intent(
             Some(pid.clone()),
             Some(arid),
-            &review_payload(9001, 42, "octocat", ReviewState::Approved, Some("2026-06-15T00:00:00Z"), Some("LGTM")),
+            &review_payload(
+                9001,
+                42,
+                "octocat",
+                ReviewState::Approved,
+                Some("2026-06-15T00:00:00Z"),
+                Some("LGTM"),
+            ),
         ))
         .unwrap();
     let arid2 = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_beta"));
@@ -2592,11 +2642,21 @@ fn test_read_review_typed_serves_review_row() {
         .unwrap();
 
     let rows = nexusopsd::ipc::read_review_typed(&path).expect("typed review read");
-    let approved = rows.iter().find(|r| r.review_id == 9001).expect("the approved row");
-    assert_eq!(approved.state, ReviewState::Approved, "state is the typed enum");
+    let approved = rows
+        .iter()
+        .find(|r| r.review_id == 9001)
+        .expect("the approved row");
+    assert_eq!(
+        approved.state,
+        ReviewState::Approved,
+        "state is the typed enum"
+    );
     assert_eq!(approved.reviewer.as_deref(), Some("octocat"));
     assert_eq!(approved.body.as_deref(), Some("LGTM"));
-    let pending = rows.iter().find(|r| r.review_id == 9002).expect("the pending row");
+    let pending = rows
+        .iter()
+        .find(|r| r.review_id == 9002)
+        .expect("the pending row");
     assert_eq!(pending.state, ReviewState::Pending);
     assert_eq!(pending.body, None, "no body → None on the wire");
     assert_eq!(pending.submitted_at, None);

@@ -651,7 +651,12 @@ fn test_github_executor_uses_captured_handle_not_current() {
 // ---- D5b-2: github.sync_reviews — the live review producer -------------------
 
 /// a canned `ReviewData` (the normalized per-review seam result the executor maps → ReviewSynced).
-fn canned_review(review_id: u64, reviewer: &str, state: ReviewState, body: Option<&str>) -> ReviewData {
+fn canned_review(
+    review_id: u64,
+    reviewer: &str,
+    state: ReviewState,
+    body: Option<&str>,
+) -> ReviewData {
     ReviewData {
         review_id,
         reviewer: reviewer.to_string(),
@@ -722,7 +727,10 @@ fn test_github_sync_reviews_emits_review_synced_per_review() {
     let parsed: Vec<ReviewSynced> = events
         .iter()
         .map(|e| match e {
-            EmittedEvent::Namespaced { event_type, payload_json } => {
+            EmittedEvent::Namespaced {
+                event_type,
+                payload_json,
+            } => {
                 assert_eq!(*event_type, ReviewSynced::EVENT_TYPE);
                 serde_json::from_str(payload_json).expect("ReviewSynced parses")
             }
@@ -734,7 +742,11 @@ fn test_github_sync_reviews_emits_review_synced_per_review() {
     assert_eq!(parsed[0].reviewer, "octocat");
     assert_eq!(parsed[0].state, ReviewState::Approved);
     assert_eq!(parsed[0].body.as_deref(), Some("LGTM"));
-    assert_eq!(parsed[0].review_synced_at, Timestamp::parse(FIXED_TS).unwrap(), "from the Clock");
+    assert_eq!(
+        parsed[0].review_synced_at,
+        Timestamp::parse(FIXED_TS).unwrap(),
+        "from the Clock"
+    );
     assert_eq!(parsed[1].review_id, 9002);
     assert_eq!(parsed[1].state, ReviewState::ChangesRequested);
     assert_eq!(parsed[1].body, None);
@@ -760,10 +772,22 @@ fn test_github_sync_reviews_validates_inputs() {
     // (a GitHub PR number is >= 1 → 0 is rejected by u64_input's positive-guard).
     let (_rt, exec) = reviews_executor(FakeGithubWriteClient::with_reviews(vec![]));
     for (label, inputs) in [
-        ("missing owner", serde_json::json!({ "repo": "widget", "pr_number": 42 })),
-        ("missing repo", serde_json::json!({ "owner": "acme", "pr_number": 42 })),
-        ("missing pr_number", serde_json::json!({ "owner": "acme", "repo": "widget" })),
-        ("zero pr_number", serde_json::json!({ "owner": "acme", "repo": "widget", "pr_number": 0 })),
+        (
+            "missing owner",
+            serde_json::json!({ "repo": "widget", "pr_number": 42 }),
+        ),
+        (
+            "missing repo",
+            serde_json::json!({ "owner": "acme", "pr_number": 42 }),
+        ),
+        (
+            "missing pr_number",
+            serde_json::json!({ "owner": "acme", "repo": "widget" }),
+        ),
+        (
+            "zero pr_number",
+            serde_json::json!({ "owner": "acme", "repo": "widget", "pr_number": 0 }),
+        ),
     ] {
         let mut req = sync_reviews_req("acme", "widget", 42);
         req.inputs = inputs;

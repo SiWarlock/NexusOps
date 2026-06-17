@@ -117,7 +117,9 @@ pub(crate) fn deltas_for_event(event_type: &str, ids: &EventDeltaIds) -> Vec<Pro
 #[cfg(test)]
 mod delta_mapping_tests {
     use super::{deltas_for_event, EventDeltaIds};
-    use nexusops_shared::events::{PullRequestSynced, ReviewSynced, TelemetrySampled, WorktreeCreated};
+    use nexusops_shared::events::{
+        PullRequestSynced, ReviewSynced, TelemetrySampled, WorktreeCreated,
+    };
     use nexusops_shared::ipc::ProjectionName;
 
     fn ids() -> EventDeltaIds {

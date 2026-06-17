@@ -268,7 +268,8 @@ impl GithubExecutor {
         };
         let Some(pr_number) = u64_input(req, "pr_number") else {
             return ExecutionOutcome::Failed(
-                "github.sync_reviews requires inputs[\"pr_number\"] (a positive integer)".to_string(),
+                "github.sync_reviews requires inputs[\"pr_number\"] (a positive integer)"
+                    .to_string(),
             );
         };
 

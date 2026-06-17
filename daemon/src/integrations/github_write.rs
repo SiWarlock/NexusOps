@@ -354,8 +354,14 @@ mod review_state_mapping_tests {
             map_review_state(&Some(O::ChangesRequested)),
             ReviewState::ChangesRequested
         );
-        assert_eq!(map_review_state(&Some(O::Commented)), ReviewState::Commented);
-        assert_eq!(map_review_state(&Some(O::Dismissed)), ReviewState::Dismissed);
+        assert_eq!(
+            map_review_state(&Some(O::Commented)),
+            ReviewState::Commented
+        );
+        assert_eq!(
+            map_review_state(&Some(O::Dismissed)),
+            ReviewState::Dismissed
+        );
         assert_eq!(map_review_state(&Some(O::Pending)), ReviewState::Pending);
         // the conservative floor — octocrab's extra `Open` + None (+ a future non_exhaustive variant) →
         // Commented (a no-decision review), NEVER a panic / a fabricated verdict (the review_state_str

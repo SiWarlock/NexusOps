@@ -3,7 +3,7 @@
 - **Date:** 2026-06-17
 - **Phase:** Phase 6 — **P6.6** (the §18 graph-render benchmark, `ARCHITECTURE.md §18` perf budget < 500 ms)
 - **Predecessor:** [ui-019](ui-019-2026-06-17-whole-cockpit-live-pr-workspace-oneof-const.md)
-- **Successor:** _(none yet)_
+- **Successor:** [ui-021](ui-021-2026-06-17-quality-hardening-bundle.md)
 - **Track:** `track/ui` · implementer `ui-implementer` · orchestrator `ui-orchestrator` · lead `team-lead`
 
 ## Why this session existed

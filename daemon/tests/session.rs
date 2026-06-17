@@ -26,10 +26,17 @@ use nexusopsd::session::{
     SessionSupervisor,
 };
 use nexusopsd::terminal::{
-    ExitStatus, FakePty, PtyRead, TerminalEventSink, TerminalId, TerminalSession,
+    ExitStatus, FakePty, FakeScrollbackStore, HeadlessVt, NoopScrollbackStore, PtyRead,
+    ScrollbackStore, TerminalEventSink, TerminalId, TerminalSession,
 };
 
 // ---- test doubles -------------------------------------------------------------------------------
+
+/// 075c — a no-op scrollback store for the lifecycle tests (they exercise the actor/supervisor, not
+/// the scrollback axis; the producer→store→`Replayed` path is in `tests/scrollback_recovery.rs`).
+fn noop_store() -> Arc<dyn ScrollbackStore> {
+    Arc::new(NoopScrollbackStore)
+}
 
 /// A fully-capable `HarnessCapabilities` (every capability true) — the satisfiable baseline.
 fn full_caps() -> HarnessCapabilities {
@@ -158,7 +165,7 @@ async fn test_session_actor_drives_status_lifecycle() {
     );
     let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    let handle = spawn_session_actor(SessionId::new(), adapter, terminal, status_tx);
+    let handle = spawn_session_actor(SessionId::new(), adapter, terminal, status_tx, noop_store());
     let (_id, terminal_status) = handle.join.await.expect("actor task joins");
 
     assert_eq!(
@@ -203,7 +210,7 @@ async fn test_adapter_drive_object_safe() {
     let (terminal, _exits) = fake_terminal("term_t4", vec![]);
     let (status_tx, _status_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    let handle = spawn_session_actor(SessionId::new(), adapter, terminal, status_tx);
+    let handle = spawn_session_actor(SessionId::new(), adapter, terminal, status_tx, noop_store());
     handle
         .commands
         .send(SessionCommand::Kill)
@@ -229,6 +236,7 @@ async fn drive_to_kill(launched: nexusopsd::session::LaunchedSession) -> Session
         launched.adapter,
         launched.terminal,
         status_tx,
+        noop_store(),
     );
     handle
         .commands
@@ -284,7 +292,7 @@ async fn test_supervisor_spawns_tracks_routes() {
     let mut ids = Vec::new();
     for _ in 0..3 {
         let launched = launcher.launch_session().expect("fake launch");
-        ids.push(sup.spawn_session(launched, status_tx.clone()));
+        ids.push(sup.spawn_session(launched, status_tx.clone(), noop_store()));
     }
     assert_eq!(sup.live_count(), 3, "3 actors tracked by session id");
 
@@ -316,7 +324,7 @@ async fn test_supervisor_reaps_terminal_no_restart() {
     let mut sup = SessionSupervisor::new();
     let (status_tx, _status_rx) = tokio::sync::mpsc::unbounded_channel();
     let launched = scripted_launched_session(vec![Session::Active, Session::Completed]);
-    let id = sup.spawn_session(launched, status_tx);
+    let id = sup.spawn_session(launched, status_tx, noop_store());
     assert_eq!(sup.live_count(), 1);
 
     let (reaped_id, status) = sup.reap_next().await.expect("the terminal actor reaps");
@@ -377,7 +385,7 @@ async fn test_supervisor_clean_shutdown() {
     let (status_tx, _status_rx) = tokio::sync::mpsc::unbounded_channel();
     for _ in 0..3 {
         let launched = launcher.launch_session().expect("fake launch");
-        sup.spawn_session(launched, status_tx.clone());
+        sup.spawn_session(launched, status_tx.clone(), noop_store());
     }
     assert_eq!(sup.live_count(), 3);
 
@@ -408,7 +416,7 @@ async fn test_kill_path_unblocks_pump() {
         }),
     );
     let (status_tx, _status_rx) = tokio::sync::mpsc::unbounded_channel();
-    let handle = spawn_session_actor(SessionId::new(), adapter, terminal, status_tx);
+    let handle = spawn_session_actor(SessionId::new(), adapter, terminal, status_tx, noop_store());
 
     // Kill — the actor breaks its drive loop and must kill the PTY to unblock the looping pump.
     handle
@@ -424,4 +432,93 @@ async fn test_kill_path_unblocks_pump() {
         .expect("the kill-path unblocks the pump — the actor must NOT hang on pump.await")
         .expect("actor task joins");
     assert_eq!(status, Session::Killed, "Kill → terminal Killed");
+}
+
+// ---- 075c — the producer tap (SessionActor read-pump → per-session HeadlessVt → ScrollbackStore) -
+
+/// 075c Test 5 — the producer tap: PTY output driven through the actor's read-pump is folded into the
+/// per-session headless VT, and the saved survival snapshot reconstructs to a screen reflecting it. A
+/// `ScriptedHarness` (terminal `Completed`) self-terminates the actor AFTER the fast synchronous pump
+/// has drained (the deterministic `test_status_from_adapter_stream_not_pty` pattern); the FINAL save —
+/// after `pump.await` — then snapshots the fully-folded VT.
+#[tokio::test]
+async fn test_producer_tap_feeds_vt() {
+    let adapter: Box<dyn HarnessAdapter> = Box::new(ScriptedHarness::new(vec![
+        Session::Active,
+        Session::Completed,
+    ]));
+    let (terminal, _exits) = fake_terminal(
+        "term_vt",
+        vec![PtyRead::Chunk(b"hello scrollback\n".to_vec())],
+    );
+    let sid = SessionId::new();
+    let fake = FakeScrollbackStore::new();
+    let store: Arc<dyn ScrollbackStore> = Arc::new(fake.clone());
+    let (status_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let handle = spawn_session_actor(sid.clone(), adapter, terminal, status_tx, store);
+    handle
+        .join
+        .await
+        .expect("actor joins at the terminal status");
+
+    let snap = fake
+        .load(&sid)
+        .expect("the producer saved a survival snapshot");
+    let restored = HeadlessVt::from_snapshot(&snap);
+    assert!(
+        restored.screen_contents().contains("hello scrollback"),
+        "the saved snapshot's screen reflects the PTY output fed through the tap: {:?}",
+        restored.screen_contents()
+    );
+}
+
+/// 075c Test 6 — the save wiring persists a snapshot for the session: even an EMPTY session (no PTY
+/// output) ends with a survival snapshot in the store. (Both triggers — the periodic `save_tick` and
+/// the reap save — upsert by session id, so the store holds ONE snapshot for the session; this pins
+/// that the save wiring fires, not which trigger. Test 5 pins the reap save's CONTENT capture
+/// specifically — it's the final, post-`pump.await` save that reflects the fully-drained VT.)
+#[tokio::test]
+async fn test_producer_persists_snapshot_for_session() {
+    let adapter: Box<dyn HarnessAdapter> = Box::new(ScriptedHarness::new(vec![Session::Completed]));
+    let (terminal, _exits) = fake_terminal("term_vt2", vec![]);
+    let sid = SessionId::new();
+    let fake = FakeScrollbackStore::new();
+    let store: Arc<dyn ScrollbackStore> = Arc::new(fake.clone());
+    let (status_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+    assert_eq!(
+        fake.saved_count(),
+        0,
+        "nothing saved before the session runs"
+    );
+    let handle = spawn_session_actor(sid.clone(), adapter, terminal, status_tx, store);
+    handle.join.await.expect("actor joins");
+    assert_eq!(
+        fake.saved_count(),
+        1,
+        "the save wiring persisted one snapshot for the session (upserted by session id)"
+    );
+    assert!(fake.load(&sid).is_some(), "saved under the session id");
+}
+
+/// 075c Test 7 — cat-1: the producer holds the `ScrollbackStore` TRAIT (from `terminal/`, the §35
+/// opaque-sink pattern), NEVER a `WriteHandle`. `src/session/actor.rs` references `ScrollbackStore`
+/// but imports none of `crate::runtime`/`crate::eventstore`/`crate::gateway` — and `WriteHandle` lives
+/// in `crate::runtime`, so the absence of that PATH structurally proves the producer holds no
+/// `WriteHandle`. Complements the whole-`src/session/`-dir grep in `test_cat1_boundary_no_emission_no_agent`.
+#[test]
+fn test_producer_holds_scrollback_store_not_writehandle() {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/session/actor.rs"))
+        .expect("src/session/actor.rs present");
+    assert!(
+        src.contains("ScrollbackStore"),
+        "the producer holds the ScrollbackStore trait (the survival save seam)"
+    );
+    for tok in ["crate::runtime", "crate::eventstore", "crate::gateway"] {
+        assert!(
+            !src.contains(tok),
+            "actor.rs must not import `{tok}` — the producer holds the store TRAIT, never a WriteHandle (cat-1)"
+        );
+    }
 }

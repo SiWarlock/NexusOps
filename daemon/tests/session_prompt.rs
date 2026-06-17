@@ -184,6 +184,7 @@ fn gateway_with(
         shutdown_rx,
         Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         Box::new(nexusopsd::session::NullSessionDeathSink),
+        Arc::new(nexusopsd::terminal::NoopScrollbackStore),
     );
     let executor = SessionExecutor::new(Box::new(launcher), handle);
     let gateway = Gateway::new(

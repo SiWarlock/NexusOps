@@ -44,7 +44,7 @@ use nexusopsd::session::spawn_supervisor_task;
 use nexusopsd::session::tmux::{
     select_survival_backend, tmux_probe, SurvivalBackend, SystemCommandRunner,
 };
-use nexusopsd::terminal::PortablePtySpawner;
+use nexusopsd::terminal::{NoopScrollbackStore, PortablePtySpawner, ScrollbackStore};
 
 /// outbox drain cadence (§12) — deliver due rows a few times a minute.
 const DRAINER_INTERVAL: Duration = Duration::from_secs(5);
@@ -158,10 +158,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `session/` holds only `Box<dyn SessionDeathSink>` (the cat-1 boundary, LESSON 28).
     let (death_sink, death_slot) = WriteActorSessionDeathSink::deferred(Arc::new(SystemClock));
 
+    // P3.4-VT 075c — the per-session scrollback `ScrollbackStore` (producer tap → restart recovery).
+    // The PRODUCTION placeholder is the no-op store: `save` drops + `load` returns `None`, so recovery
+    // stays on the `Relaunched` rung exactly as before 075c. 075d swaps the durable §15-gated store in
+    // behind the seam → `Replayed`-after-restart goes live. Shared (`Arc<dyn ScrollbackStore>`, the
+    // `Arc<dyn Clock>` precedent) across every `SessionActor` producer + the recovery consumer.
+    let scrollback_store: Arc<dyn ScrollbackStore> = Arc::new(NoopScrollbackStore);
+
     // the §10 opt-3 session supervisor (spawned before the write-actor — it needs only the runtime +
     // the shutdown watch + the registry + the death sink). Its `SupervisorHandle` DRIVES the SessionExecutor.
-    let (supervisor, supervisor_handle) =
-        spawn_supervisor_task(shutdown_rx.clone(), registry.clone(), Box::new(death_sink));
+    let (supervisor, supervisor_handle) = spawn_supervisor_task(
+        shutdown_rx.clone(),
+        registry.clone(),
+        Box::new(death_sink),
+        scrollback_store.clone(),
+    );
 
     // the LIVE launcher — the real `ClaudeAdapter` via the `PortablePtySpawner` (the O-13 #10
     // enforcement surface + the env-hygiene/correlation, P4.0b-2 Option A). cwd = the daemon's project
@@ -358,6 +369,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 survival_broker.as_ref(),
                 &handle,
                 Arc::new(SystemClock),
+                scrollback_store.as_ref(),
             );
             if recovered > 0 {
                 eprintln!("nexusopsd: restart recovery — {recovered} session(s) recovered");

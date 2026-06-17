@@ -149,12 +149,18 @@ impl HeadlessVt {
     /// the brief's named two-buffer edge (075d/future).
     pub fn snapshot(&mut self) -> VtSnapshot {
         let (rows, cols) = self.size();
+        // Captured at offset 0 (the live view) BEFORE `capture_scrollback` scrolls: whether the
+        // active visible screen has any content (vt100 `contents()` trims trailing blanks → "" iff
+        // blank). The 075c `has_restorable_content()` signal — a mid-alt-screen session has a
+        // non-blank (alt) screen worth re-rendering even with zero scrollback rows.
+        let screen_nonblank = !self.screen_contents().is_empty();
         VtSnapshot {
             version: SNAPSHOT_VERSION,
             rows,
             cols,
             scrollback_capacity: self.scrollback_capacity,
             alternate_screen: self.alternate_screen(),
+            screen_nonblank,
             screen: self.parser.screen().state_formatted(),
             scrollback: self.capture_scrollback(),
         }
@@ -250,6 +256,10 @@ pub struct VtSnapshot {
     scrollback_capacity: usize,
     /// Whether the alternate screen was active at capture.
     alternate_screen: bool,
+    /// Whether the active visible screen had any content at capture (075c — the
+    /// [`has_restorable_content`](Self::has_restorable_content) signal; a non-blank screen is worth
+    /// re-rendering even with zero scrollback rows, e.g. a mid-`vim` alt-screen session).
+    screen_nonblank: bool,
     /// The visible screen as vt100 `state_formatted()` bytes (content + cursor + attrs + modes).
     screen: Vec<u8>,
     /// The active grid's scrollback as plain rows, oldest→newest.
@@ -261,6 +271,16 @@ impl VtSnapshot {
     #[must_use]
     pub fn alternate_screen(&self) -> bool {
         self.alternate_screen
+    }
+
+    /// Whether this snapshot has anything worth replaying on restart — scrollback rows OR a non-blank
+    /// visible screen. The 075c survival signal feeding `ResumeInputs.has_scrollback` → the §8.1
+    /// `Replayed` rung (LESSONS §36): a mid-alt-screen session (zero scrollback but a re-renderable
+    /// screen) STILL replays, while a truly-blank session falls through to `Relaunched`. Broader than
+    /// raw [`scrollback_rows`](Self::scrollback_rows) — that is why the recovery consumer keys on this.
+    #[must_use]
+    pub fn has_restorable_content(&self) -> bool {
+        !self.scrollback.is_empty() || self.screen_nonblank
     }
 
     /// The number of scrollback rows this snapshot carries. **0 for an alt-screen-active snapshot**:

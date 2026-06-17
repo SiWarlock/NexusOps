@@ -15,16 +15,20 @@
 //! emission + mutation are compile-time impossible. The live launch + interception + the Gateway
 //! `session.create` executor are 4.0b.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use nexusops_shared::ids::SessionId;
 use nexusops_shared::status::Session;
 
+use super::launcher::{COLS, ROWS};
 use crate::harness::HarnessAdapter;
-use crate::terminal::TerminalSession;
+use crate::terminal::{HeadlessVt, ScrollbackStore, TerminalEmit, TerminalSession};
 
 /// The §5.1-status poll cadence (4.0a scaffold). The sync trait is poll-based; 4.0b replaces the poll
 /// with push-based hook/transcript-stream ingestion feeding the adapter.
@@ -38,6 +42,16 @@ const TELEMETRY_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// The per-actor command mailbox depth (control messages: small + bursty).
 const COMMAND_MAILBOX_CAPACITY: usize = 16;
+
+/// 075c — the per-session headless-VT scrollback ring capacity (the survival snapshot's scrollback
+/// depth bound). Sized generously for an interactive session; a config/policy surface is a later concern.
+const SCROLLBACK_CAPACITY: usize = 10_000;
+
+/// 075c — the scrollback-snapshot save cadence: a periodic checkpoint so a crash leaves a recent
+/// survival snapshot (the 4.0c telemetry-pump precedent; `MissedTickBehavior::Delay`). A FINAL save
+/// also runs on reap. With the production no-op `ScrollbackStore` both are no-ops until 075d's durable
+/// store lands; the `FakeScrollbackStore` tests prove the producer→store→`Replayed` path now.
+const SCROLLBACK_SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// A control message to a [`SessionActor`] via its mailbox. 4.0a carries only `Kill` (the route/reap
 /// observable); pause/resume (the inbound client `{pause}`/`{resume}`) join at 6.3d.
@@ -62,13 +76,37 @@ pub fn spawn_session_actor(
     adapter: Box<dyn HarnessAdapter>,
     terminal: TerminalSession,
     status_tx: mpsc::UnboundedSender<Session>,
+    scrollback_store: Arc<dyn ScrollbackStore>,
 ) -> SessionActorHandle {
     let (commands_tx, commands_rx) = mpsc::channel(COMMAND_MAILBOX_CAPACITY);
-    let join = tokio::spawn(run(session_id, adapter, terminal, status_tx, commands_rx));
+    let join = tokio::spawn(run(
+        session_id,
+        adapter,
+        terminal,
+        status_tx,
+        commands_rx,
+        scrollback_store,
+    ));
     SessionActorHandle {
         join,
         commands: commands_tx,
     }
+}
+
+/// Snapshot the per-session headless VT and persist it via the injected [`ScrollbackStore`] (075c).
+/// Observationally pure on the VT (the snapshot probe restores the live view). The store is a
+/// `terminal/` trait object, NEVER a `WriteHandle` — the cat-1 boundary holds (LESSONS §28/§35). With
+/// the production no-op store this is a no-op until 075d's durable store lands.
+fn save_scrollback(
+    store: &Arc<dyn ScrollbackStore>,
+    session_id: &SessionId,
+    vt: &Arc<Mutex<HeadlessVt>>,
+) {
+    let snapshot = vt
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .snapshot();
+    store.save(session_id, &snapshot);
 }
 
 /// The actor's drive loop. Launches the adapter (blocking → `spawn_blocking`), starts the terminal
@@ -80,6 +118,7 @@ async fn run(
     terminal: TerminalSession,
     status_tx: mpsc::UnboundedSender<Session>,
     mut commands: mpsc::Receiver<SessionCommand>,
+    scrollback_store: Arc<dyn ScrollbackStore>,
 ) -> (SessionId, Session) {
     let mut current = Session::Creating;
     let _ = status_tx.send(current);
@@ -107,13 +146,34 @@ async fn run(
     // actor's `pump.await`) would hang forever, blocking daemon shutdown.
     let killer = terminal.killer();
 
+    // 075c — the per-session headless VT (the survival snapshot source). The pump thread FEEDS it the
+    // decoded display bytes; the actor SNAPSHOTS it (periodic tick + on reap) into the `ScrollbackStore`.
+    // DISPLAY-ONLY (#9 — status is NEVER derived from these bytes, only the survival screen/scrollback).
+    let vt = Arc::new(Mutex::new(HeadlessVt::new(ROWS, COLS, SCROLLBACK_CAPACITY)));
+
     // the terminal read-pump on a blocking thread (`read_step` blocks on the PTY read; LESSON §9).
     // 4.0a DROPS the display output frames (no client; the UDS forward is 6.3d) and lets the pump's
-    // own injected sink record the OS exit. Held to abort/await on actor exit → no orphan task.
+    // own injected sink record the OS exit; 075c additionally TAPS the output into the headless VT.
+    // Held to abort/await on actor exit → no orphan task.
+    let vt_for_pump = Arc::clone(&vt);
     let pump = tokio::task::spawn_blocking(move || {
         let mut terminal = terminal;
         while !terminal.is_exited() {
-            let _emits = terminal.pump();
+            // 075c producer tap — fold the decoded display bytes into the headless VT (the survival
+            // model). The §6.4 frames carry base64; decode back to raw VT bytes (keeps `TerminalSession`
+            // a pure byte-pipe — a raw-tap-before-encode optimization is a deferred follow-up). A decode
+            // error skips that frame (defensive — our own encoder always emits valid base64). Status is
+            // NEVER derived from these bytes (#9): this is display/survival state only.
+            for emit in terminal.pump() {
+                if let TerminalEmit::Output(frame) = emit {
+                    if let Ok(raw) = STANDARD.decode(frame.data.as_bytes()) {
+                        vt_for_pump
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .process(&raw);
+                    }
+                }
+            }
         }
     });
 
@@ -130,6 +190,11 @@ async fn run(
     // so it NEVER blocks the command mailbox (poll_telemetry is a cheap drain + a fire-and-forget emit).
     let mut telemetry_tick = tokio::time::interval(TELEMETRY_REFRESH_INTERVAL);
     telemetry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // 075c — the periodic scrollback-snapshot checkpoint (crash-survival; a final save also runs on
+    // reap). `MissedTickBehavior::Delay` (LESSON §9); rides the same `select!` so it never blocks the
+    // mailbox (snapshot + save are cheap + non-blocking; no-op with the production placeholder store).
+    let mut save_tick = tokio::time::interval(SCROLLBACK_SAVE_INTERVAL);
+    save_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut mailbox_open = true;
     loop {
         tokio::select! {
@@ -161,6 +226,12 @@ async fn run(
                 // no-op until the live `UsageSource` is wired (P4). Cheap + non-blocking (inline).
                 adapter.poll_telemetry();
             }
+            _ = save_tick.tick() => {
+                // 075c — periodic survival checkpoint: snapshot the headless VT → ScrollbackStore (a
+                // crash leaves a recent snapshot). No-op with the production placeholder store until
+                // 075d. Cheap + non-blocking (inline; the snapshot probe is observationally pure).
+                save_scrollback(&scrollback_store, &session_id, &vt);
+            }
         }
     }
 
@@ -171,5 +242,9 @@ async fn run(
     // run). THEN await the pump's natural termination (LESSON §9 await-on-shutdown: no orphan task).
     killer.kill();
     let _ = pump.await;
+    // 075c — a FINAL scrollback save AFTER the pump has fully drained (`pump.await` joined): all PTY
+    // output is folded into the VT before this snapshot, so the survival snapshot reflects the
+    // session's last screen + scrollback. (No-op with the production placeholder store until 075d.)
+    save_scrollback(&scrollback_store, &session_id, &vt);
     (session_id, current)
 }

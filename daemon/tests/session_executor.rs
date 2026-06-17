@@ -86,6 +86,7 @@ fn gateway_with_session_executor() -> (
         shutdown_rx,
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         Box::new(nexusopsd::session::NullSessionDeathSink),
+        std::sync::Arc::new(nexusopsd::terminal::NoopScrollbackStore),
     );
     let launches = Arc::new(AtomicUsize::new(0));
     let launcher = RecordingLauncher {

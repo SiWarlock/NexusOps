@@ -33,6 +33,7 @@ use nexusops_shared::ids::SessionId;
 use nexusops_shared::status::Session;
 
 use crate::decisions::DecisionRegistry;
+use crate::terminal::ScrollbackStore;
 
 /// The §5.1-status observer an actor publishes each transition to — an **in-memory** feed (the future
 /// projection source; NOT the write-actor, cat-1 boundary).
@@ -78,14 +79,20 @@ impl SessionSupervisor {
         &mut self,
         launched: LaunchedSession,
         status_tx: StatusObserver,
+        scrollback_store: Arc<dyn ScrollbackStore>,
     ) -> SessionId {
         let LaunchedSession {
             session_id,
             adapter,
             terminal,
         } = launched;
-        let SessionActorHandle { join, commands } =
-            spawn_session_actor(session_id.clone(), adapter, terminal, status_tx);
+        let SessionActorHandle { join, commands } = spawn_session_actor(
+            session_id.clone(),
+            adapter,
+            terminal,
+            status_tx,
+            scrollback_store,
+        );
         self.actors.insert(session_id.clone(), commands);
         // the JoinSet owns the actor's terminal outcome; a reap harvests its (id, terminal status). A
         // panicked / cancelled actor task → a `Failed` terminal outcome CARRYING THE ID, so the reap
@@ -252,6 +259,7 @@ pub fn spawn_supervisor_task(
     mut shutdown: watch::Receiver<bool>,
     registry: Arc<DecisionRegistry>,
     death_sink: Box<dyn SessionDeathSink>,
+    scrollback_store: Arc<dyn ScrollbackStore>,
 ) -> (JoinHandle<()>, SupervisorHandle) {
     let (control_tx, mut control_rx) = mpsc::unbounded_channel();
     let join = tokio::spawn(async move {
@@ -263,7 +271,9 @@ pub fn spawn_supervisor_task(
                 _ = shutdown.changed() => break,
                 ctrl = control_rx.recv() => match ctrl {
                     Some(SupervisorControl::Spawn { launched, status_tx }) => {
-                        supervisor.spawn_session(launched, status_tx);
+                        // 075c — every supervised actor shares the ONE injected ScrollbackStore (the
+                        // `Arc<dyn Clock>` precedent); its producer tap saves per-session snapshots there.
+                        supervisor.spawn_session(launched, status_tx, scrollback_store.clone());
                     }
                     Some(SupervisorControl::Route { session_id, command }) => {
                         let _ = supervisor.route(&session_id, command).await;

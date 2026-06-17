@@ -30,6 +30,14 @@
 mod vt;
 pub use vt::{HeadlessVt, VtSnapshot};
 
+// 075c — the producer→recovery `ScrollbackStore` seam (a cat-1-neutral trait in `terminal/`, so the
+// `session/` import-grep stays clean; the durable §15-gated impl is 075d). `FakeScrollbackStore` is
+// test-support-gated.
+mod scrollback_store;
+#[cfg(any(test, feature = "test-support"))]
+pub use scrollback_store::FakeScrollbackStore;
+pub use scrollback_store::{NoopScrollbackStore, ScrollbackStore};
+
 use std::io::{self, Read, Write};
 // Arc + Mutex are used only by the `test-support`-gated `FakePty` (its recorded-input handle).
 #[cfg(any(test, feature = "test-support"))]

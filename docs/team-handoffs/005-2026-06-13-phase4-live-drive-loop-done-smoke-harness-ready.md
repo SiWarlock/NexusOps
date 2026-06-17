@@ -4,7 +4,7 @@
 **Track:** daemon (single-track; critical path P2 → P3 → P4)
 **Worktree:** root checkout (single-track, `main`)
 **Predecessor handoff:** `docs/team-handoffs/004-2026-06-12-phase2-complete-phase3-kickoff-lead-cycle.md`
-**Successor handoff:** _(filled in when the next /team-end runs)_
+**Successor handoff:** `docs/team-handoffs/006-2026-06-17-d5-uiunblock-workorder-complete-3.3c-next-scaffolding-pause.md`
 **Round-seal commit at handoff:** `79114a0`
 
 ## Why this handoff exists

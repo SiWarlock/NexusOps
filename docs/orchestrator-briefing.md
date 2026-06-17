@@ -85,7 +85,7 @@ After reading: **report back with a summary** of (a) where the project is, (b) w
 
 The full two-channel budget — **task list for status; `SendMessage` only for interactive checkpoints; lead ping only on a tier crossing** — is in root `CLAUDE.md` "Messaging budget" (you've loaded it). Your side:
 
-- **Dispatch** a slice by creating + assigning its task (`TaskCreate` + `TaskUpdate owner`) + a one-line message naming the brief file. Don't paste the brief — the impl reads the file.
+- **Dispatch** a slice by creating + assigning its task (`TaskCreate` + `TaskUpdate owner`) + a one-line message naming the brief file. Don't paste the brief — the impl reads the file. **Wire dependencies:** if the slice's tracker task carries a `Depends on:` edge whose upstream slice is also a live task on the list, set `TaskUpdate addBlockedBy: [<that task's list ID>]` — the harness then keeps it unclaimable until the blocker completes and **auto-unblocks it** (a free teammate can self-claim the next unblocked task in ID order). Create tasks in dependency order so the IDs exist to reference.
 - **Step-2.5** and **Step-9** are your two interactive replies (review; then route + commit-message-first). Keep both terse.
 - **done** arrives as a `TaskUpdate` (`completed` + hash in metadata) + a one-line wake — not a prose report. Read the hash from the task.
 - **Lead ping** only on a tier crossing — see "Per-slice context check" below.

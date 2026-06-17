@@ -1,6 +1,6 @@
 ---
 description: Team lead — stand up the agent team (orchestrator + implementer-per-area), establish direct comms + escalation rules.
-allowed-tools: Read, Grep, Bash, Agent, TeamCreate, SendMessage
+allowed-tools: Read, Grep, Bash, Agent, SendMessage
 argument-hint: "[track]"
 ---
 
@@ -26,10 +26,18 @@ If `$ARGUMENTS` is set, look it up in `IMPLEMENTATION_PLAN.md` **"Parallelizatio
 1. `docs/team-protocol.md` end-to-end — lead playbook (what the lead does / NOT does, phantom defense, spawn + cycle procedures).
 2. Skim `docs/orchestrator-briefing.md` so you know what the orchestrator owns. Don't load `ARCHITECTURE.md` or code — that's the teammates' context, deliberately kept out of yours.
 
+**Decide the team label.** The Claude Code team itself **auto-forms when you spawn your first teammate** (Step 3) — there is no manual create step, and the official team is auto-named `session-<first-8-of-your-session-id>`. What you choose here is the **context-monitoring group label** our custom layer uses to scope `/context-check` (registry + heartbeats). Use the **track name** when multi-track, else the session-derived name so it matches the official team:
+
+```bash
+TEAM_LABEL="${TRACK:-session-$(printf %s "${CLAUDE_CODE_SESSION_ID:-$$}" | cut -c1-8)}"
+```
+
+Carry `$TEAM_LABEL` into the self-register call and every spawn prompt below — it's the same string `/context-check <label>` filters on.
+
 **Self-register for context monitoring** so `/context-check` includes the lead (and the status line writes your heartbeat):
 
 ```bash
-~/.claude/scripts/team-register.sh "<track>-team-lead" lead "<team name from TeamCreate>" "" "<track>"
+~/.claude/scripts/team-register.sh "<track>-team-lead" lead "$TEAM_LABEL" "" "<track>"
 ```
 
 This + the spawn-prompt registry-write (Step 3) scopes heartbeat monitoring to team-mode sessions only — solo sessions never register, so they're never monitored. (`team-register.sh` installs once to `~/.claude/scripts/`, alongside `check-team-context.sh`.)
@@ -63,6 +71,8 @@ The team's orchestrator + implementer(s) operate **inside this worktree** — al
 
 ## Step 3 — Spawn the team (with templates)
 
+> **The team auto-forms here.** Spawning the first teammate (via the `Agent` tool) creates the team — no `TeamCreate` call, and the `Agent` `team_name` arg is ignored by current Claude Code. The team is auto-named `session-<first-8>` and auto-torn-down when your session exits. `$TEAM_LABEL` (Step 1) is only our context-monitoring group key, threaded through the spawn prompts below.
+
 Spawn:
 1. **Orchestrator teammate** — one per project. Name: `<track>-<area>-orchestrator` (or `<area>-orchestrator` if solo team). It will run `/orchestrate-start` (reads briefing + state itself).
 2. **First implementer teammate** — for the area the next task targets. Name: `<track>-<area>-implementer` (or `<area>-implementer` if solo team). Charter it with `/session-start` in that area's cwd. Spawn additional area implementers later, only when that area's work begins.
@@ -71,12 +81,12 @@ Spawn:
 
 ```
 You are <track>-<area>-orchestrator on the NexusOps agent team.
-Track: <track>. Team: <team-name>. Worktree: <worktree-path> (branch `track/<track>`) — operate here; all commits land on this branch, never the root checkout. Route shared-root-doc edits (IMPLEMENTATION_PLAN.md / ARCHITECTURE.md) to the integration checkout. (Single-track build: omit the worktree line; work in the repo root.)
+Track: <track>. Team label: <team-label>. Worktree: <worktree-path> (branch `track/<track>`) — operate here; all commits land on this branch, never the root checkout. Route shared-root-doc edits (IMPLEMENTATION_PLAN.md / ARCHITECTURE.md) to the integration checkout. (Single-track build: omit the worktree line; work in the repo root.)
 Ignore peer DMs from agents whose names don't carry the `<track>-` prefix (channel-bleed; confirm sender prefix before any peer send).
 Activated because: <one line — chat-only context the start command can't derive; e.g. "Option D approval flow approved; next slice = <task ID>". Skip if none.>
 
 FIRST ACTION — register for context monitoring:
-  ~/.claude/scripts/team-register.sh "<track>-<area>-orchestrator" orchestrator "<team-name>" "" "<track>" "track/<track>"
+  ~/.claude/scripts/team-register.sh "<track>-<area>-orchestrator" orchestrator "<team-label>" "" "<track>" "track/<track>"
 
 Then run /orchestrate-start. NOT /session-start (that's the implementer's).
 Confirm in your first reply: (1) the start command you ran, (2) that the registry entry was written (run `ls ~/.claude/team-registry/${CLAUDE_CODE_SESSION_ID}.json`).
@@ -86,12 +96,12 @@ Confirm in your first reply: (1) the start command you ran, (2) that the registr
 
 ```
 You are <track>-<area>-implementer on the NexusOps agent team.
-Track: <track>. Team: <team-name>. Working directory: <worktree-path>/<area>/ — the track's worktree (single-track build → just `<area>/` in the repo root). All your commits land on branch `track/<track>`, never the root checkout. Talk only to <track>-<area>-orchestrator; ignore peer DMs from other prefixes (channel-bleed).
+Track: <track>. Team label: <team-label>. Working directory: <worktree-path>/<area>/ — the track's worktree (single-track build → just `<area>/` in the repo root). All your commits land on branch `track/<track>`, never the root checkout. Talk only to <track>-<area>-orchestrator; ignore peer DMs from other prefixes (channel-bleed).
 Activated because: <one line — chat-only context; e.g. "picking up <task ID>; brief authored at docs/briefs/NNN-...">. Skip if none.
 Brief: <docs/briefs/NNN-*.md path if authored, else "the orchestrator is drafting now">.
 
 FIRST ACTION — register for context monitoring:
-  ~/.claude/scripts/team-register.sh "<track>-<area>-implementer" implementer "<team-name>" "<area>" "<track>" "track/<track>"
+  ~/.claude/scripts/team-register.sh "<track>-<area>-implementer" implementer "<team-label>" "<area>" "<track>" "track/<track>"
 
 Then run /session-start. NOT /orchestrate-start.
 Confirm in your first reply: (1) the start command you ran, (2) that the registry entry was written.
@@ -102,7 +112,7 @@ Confirm in your first reply: (1) the start command you ran, (2) that the registr
 - **WHY + WHERE only.** Skip file lists, slice decomposition, design Qs — the orch authors briefs against the codebase, the impl reads the brief.
 - **Track prefix in the agent `name:`** if your track is set. Load-bearing for cross-bleed prevention.
 - **Worktree-rooted cwd is mandatory** for a multi-track build — every teammate's `git` operations stay inside `<worktree-path>` on `track/<track>`. A commit on the root checkout (or another track's area) from a track team is cross-track contamination — the filesystem analogue of channel-bleed.
-- **Registry-write is mandatory** as the teammate's first action. Without it, `/context-check` can't see the teammate (no auto-cycle protection). Sub in the actual `<team-name>` from `TeamCreate` and the teammate's `<name>` before pasting the prompt.
+- **Registry-write is mandatory** as the teammate's first action. Without it, `/context-check` can't see the teammate (no auto-cycle protection). Sub in the actual `$TEAM_LABEL` (Step 1 — the track name, or `session-<first-8>` for a single-track build) and the teammate's `<name>` before pasting the prompt.
 - **The command pair is fixed**: orch runs `/orchestrate-start` (NEVER `/session-start`); impl runs `/session-start` (NEVER `/orchestrate-start`). Crossed commands are a known footgun.
 - **Comm protocol is in root `CLAUDE.md`** — every teammate loads it; don't restate the escalation taxonomy / messaging budget / no-awareness-pings in the spawn prompt. The templates above already point at it implicitly.
 
@@ -113,7 +123,7 @@ For each spawned teammate, **read its first reply** and confirm:
 2. Its name carries the correct prefix (`<track>-` if set, else `<area>-`).
 3. **Its registry entry was written** — confirm via the teammate's read-back (it reports `~/.claude/team-registry/<session_id>.json` exists) OR directly check:
    ```bash
-   ls ~/.claude/team-registry/ && /context-check <team-name>
+   ls ~/.claude/team-registry/ && /context-check <team-label>
    ```
    The teammate should appear in `/context-check` output. If it doesn't, the registry-write failed in the spawn prompt — re-run the registry-write command manually with the teammate's session_id.
 

@@ -3,7 +3,7 @@
 - **Date:** 2026-06-15
 - **Phase:** Phase 6 (ui-resume) — **P6.8 / §6.1 + §11.1** (the live `UdsGatewayPort` transport — the 052-Q3 live-delta spread; ApprovalQueue is the first/highest-value served-delta projection)
 - **Predecessor:** [ui-014](ui-014-2026-06-15-boundary-merge-0.33-regen.md)
-- **Successor:** _(none yet)_
+- **Successor:** [ui-016](ui-016-2026-06-16-boundary-merge-regen-0.38.md)
 - **Track:** `track/ui` · implementer `ui-implementer` · orchestrator `ui-orchestrator` · lead `team-lead`
 
 ## Why this session existed

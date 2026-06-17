@@ -28,7 +28,7 @@
 // DISPLAY-ONLY (#9 — `vt.rs` is scoped by the `tests/terminal.rs` whole-dir grep-pin + its own
 // `tests/vt.rs` pin). The read-pump tap that feeds it lands in 075c (NO wiring here this slice).
 mod vt;
-pub use vt::HeadlessVt;
+pub use vt::{HeadlessVt, VtSnapshot};
 
 use std::io::{self, Read, Write};
 // Arc + Mutex are used only by the `test-support`-gated `FakePty` (its recorded-input handle).

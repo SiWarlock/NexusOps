@@ -18,6 +18,10 @@
 /// carry none. DISPLAY-ONLY: it never derives a session/agent status from screen content (#9).
 pub struct HeadlessVt {
     parser: vt100::Parser,
+    /// The scrollback ring CAPACITY this model was built with (vt100's `Screen` does not expose it,
+    /// so we retain it — `snapshot`/`from_snapshot` (075b) round-trip it so a restored model has the
+    /// same ring bound).
+    scrollback_capacity: usize,
     /// The number of rows currently held in scrollback (rows that have scrolled off the top of the
     /// live screen) — cached after each mutating op. vt100's [`vt100::Screen::scrollback`] reports
     /// the scroll *position*, NOT the filled length, so the filled count is derived by an
@@ -35,6 +39,7 @@ impl HeadlessVt {
     pub fn new(rows: u16, cols: u16, scrollback_capacity: usize) -> Self {
         Self {
             parser: vt100::Parser::new(rows, cols, scrollback_capacity),
+            scrollback_capacity,
             scrollback_rows: 0,
         }
     }
@@ -123,5 +128,147 @@ impl HeadlessVt {
         screen.set_scrollback(usize::MAX);
         self.scrollback_rows = screen.scrollback();
         screen.set_scrollback(0);
+    }
+
+    // ---- 075b — serialize (snapshot) + restore (from_snapshot) -----------------------------------
+
+    /// Serialize the model into a [`VtSnapshot`] — the `Replayed`-rung "accurate alt-screen VT
+    /// re-render" mechanism (O-2, §0.1). Captures the dims + ring capacity + the alt-screen flag +
+    /// the visible screen (vt100 `state_formatted()` — escape codes that reproduce the screen
+    /// content, cursor, attrs and modes, so formatting survives) + the scrollback (plain rows,
+    /// oldest→newest; scrollback formatting is not part of the `Replayed` fidelity surface —
+    /// [`view_at_scrollback`](Self::view_at_scrollback) reads plain `contents()`).
+    ///
+    /// Takes `&mut self` because reading the scrollback rows scrolls the vt100 viewport — but the
+    /// probe restores the live view (offset 0) before returning, so it is observationally pure.
+    ///
+    /// **Alt-screen note:** while the alt screen is active, vt100 exposes only the alt grid (the
+    /// normal buffer + its scrollback are hidden behind it), so an alt-active snapshot captures the
+    /// alt screen with an empty scrollback. That is self-consistent (restore reproduces exactly what
+    /// was captured → the idempotent round-trip holds) but the hidden normal buffer is not retained;
+    /// the brief's named two-buffer edge (075d/future).
+    pub fn snapshot(&mut self) -> VtSnapshot {
+        let (rows, cols) = self.size();
+        VtSnapshot {
+            version: SNAPSHOT_VERSION,
+            rows,
+            cols,
+            scrollback_capacity: self.scrollback_capacity,
+            alternate_screen: self.alternate_screen(),
+            screen: self.parser.screen().state_formatted(),
+            scrollback: self.capture_scrollback(),
+        }
+    }
+
+    /// Rebuild an equivalent model from a [`VtSnapshot`] (mirrors [`new`](Self::new)). Replays the
+    /// captured scrollback rows so they land in the ring, (re-)enters the alt screen if the snapshot
+    /// was taken there, then renders the visible screen from the captured `state_formatted` bytes
+    /// (which begin with a clear-screen + clear-attrs, so they overwrite the live screen cleanly
+    /// without disturbing scrollback). The result re-snapshots byte-identically (the loss-proof).
+    #[must_use]
+    pub fn from_snapshot(snap: &VtSnapshot) -> Self {
+        // 075b only ever restores same-version snapshots built in-memory; a persisted cross-version
+        // snapshot is 075d's concern (a `Result`-returning deserialize + migration off this header).
+        debug_assert_eq!(
+            snap.version, SNAPSHOT_VERSION,
+            "VtSnapshot version mismatch — cross-version restore is a 075d migration concern"
+        );
+        let mut model = Self::new(snap.rows, snap.cols, snap.scrollback_capacity);
+
+        // 1. Replay scrollback (oldest→newest) so the rows scroll off the top into the ring. Feeding
+        //    the N rows joined by CRLF leaves the last (≤ rows) of them on the visible screen; the
+        //    `rows` trailing line-feeds then scroll EXACTLY those off (cursor walks to the bottom,
+        //    then each LF scrolls one content row) → exactly N rows in scrollback, screen blank. Skip
+        //    entirely when empty (feeding line-feeds onto an empty screen would push BLANK rows in).
+        if !snap.scrollback.is_empty() {
+            for (i, row) in snap.scrollback.iter().enumerate() {
+                if i > 0 {
+                    model.parser.process(b"\r\n");
+                }
+                model.parser.process(row.as_bytes());
+            }
+            for _ in 0..snap.rows {
+                model.parser.process(b"\r\n");
+            }
+        }
+
+        // 2. If the snapshot was taken on the alternate screen, enter it before rendering its content.
+        if snap.alternate_screen {
+            model.parser.process(b"\x1b[?1049h");
+        }
+
+        // 3. Render the visible screen (state_formatted clears + redraws — scrollback untouched).
+        model.parser.process(&snap.screen);
+
+        model.refresh_scrollback_rows();
+        model
+    }
+
+    /// Capture the ACTIVE grid's scrollback as plain rows, oldest→newest. Probes the real filled
+    /// count off the active grid (`set_scrollback(MAX)` clamps to it — for the alt grid that is 0),
+    /// then reads each row by scrolling it to the viewport top (`offset = n - i` puts scrollback row
+    /// `i` at visible row 0). Restores the live view (offset 0). Uses the active-grid count, NOT the
+    /// cached `scrollback_rows`, so it stays consistent with what is actually readable.
+    fn capture_scrollback(&mut self) -> Vec<String> {
+        let cols = self.size().1;
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let n = self.parser.screen().scrollback();
+        let mut rows = Vec::with_capacity(n);
+        for i in 0..n {
+            self.parser.screen_mut().set_scrollback(n - i);
+            // `set_scrollback(n - i)` with `i < n` always places scrollback row `i` at visible row 0,
+            // so `next()` is always `Some`; the empty-string fallback is a defensive non-panic floor.
+            let row0 = self.parser.screen().rows(0, cols).next();
+            debug_assert!(
+                row0.is_some(),
+                "scrollback row {i} must exist at offset {}",
+                n - i
+            );
+            rows.push(row0.unwrap_or_default());
+        }
+        self.parser.screen_mut().set_scrollback(0);
+        rows
+    }
+}
+
+/// The snapshot format version — a header byte so 075d's persisted format is migratable.
+const SNAPSHOT_VERSION: u8 = 1;
+
+/// A serialized [`HeadlessVt`] — the `Replayed`-rung re-render payload (075b). **Daemon-internal**,
+/// NOT a `shared/` contract: if it ever crosses the §6.4 Terminal-Channel wire it rides
+/// `ServerFrame::TerminalOutput` as bytes (no new frame); 075d persists/redacts it to the survival
+/// sidecar. The `version` header makes that persisted format migratable. Equality is byte-exact so
+/// the idempotent round-trip (`snapshot(from_snapshot(s)) == s`) is a precise loss-proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VtSnapshot {
+    /// Format version (currently [`SNAPSHOT_VERSION`]); a 075d migration hook.
+    version: u8,
+    /// Screen dimensions at capture.
+    rows: u16,
+    cols: u16,
+    /// The scrollback ring capacity (round-tripped so a restored model has the same bound).
+    scrollback_capacity: usize,
+    /// Whether the alternate screen was active at capture.
+    alternate_screen: bool,
+    /// The visible screen as vt100 `state_formatted()` bytes (content + cursor + attrs + modes).
+    screen: Vec<u8>,
+    /// The active grid's scrollback as plain rows, oldest→newest.
+    scrollback: Vec<String>,
+}
+
+impl VtSnapshot {
+    /// Whether the alternate screen was active at capture.
+    #[must_use]
+    pub fn alternate_screen(&self) -> bool {
+        self.alternate_screen
+    }
+
+    /// The number of scrollback rows this snapshot carries. **0 for an alt-screen-active snapshot**:
+    /// while the alt screen is active vt100 exposes only the alt grid, so the hidden normal buffer's
+    /// scrollback is NOT retained (the named two-buffer edge — a deliberate `Replayed`-rung scope
+    /// limit, pinned by `tests/vt.rs::test_vt_snapshot_alt_active_drops_hidden_scrollback`).
+    #[must_use]
+    pub fn scrollback_rows(&self) -> usize {
+        self.scrollback.len()
     }
 }

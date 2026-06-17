@@ -65,6 +65,13 @@ base64 = "0.22"
 # resize, waitpid exit). PTY is DISPLAY-ONLY (#9) — never scraped for status. The blocking reader runs
 # on a spawn_blocking thread in the production drive loop (the write-actor-thread precedent, LESSON §9).
 portable-pty = "0.9"
+# vt100 (075a — the headless-VT/scrollback follow-on, Decision 20): a pure-Rust VT/ANSI screen
+# emulator (doy-maintained). The daemon-internal `HeadlessVt` (terminal/vt.rs) wraps `vt100::Parser`
+# to fold a raw PTY byte stream into an in-memory screen + scrollback — the deterministic
+# `bytes → screen-state` core the survival `Replayed` rung serializes/replays (075b) and the
+# read-pump feeds (075c). DISPLAY-ONLY (#9 — never a status source, structurally grep-pinned). Dep
+# beyond the brief's named list — flag at Step-9; pure-Rust, no C deps, `cargo audit` runs at /phase-exit.
+vt100 = "0.16"
 # NOTE (R8 merge): main's P4.0b-ui1 get_diff added a second `git2 = "0.21"` here; deduped at the
 # main→edges merge — the edges `git2` entry above (default-features=false + vendored-libgit2, the
 # forbidden-#6 read-only/OQ-INT-SPIKE-6 posture) is the single source. main's get_diff read_diff uses

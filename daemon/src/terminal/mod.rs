@@ -24,6 +24,12 @@
 //! tick). The flow control is entirely between the PTY child and the socket — it NEVER back-pressures
 //! the write-actor (forbidden #3 / LESSON §9).
 
+// 075a — the headless VT screen model (a `vt100`-backed `bytes → screen+scrollback` fold).
+// DISPLAY-ONLY (#9 — `vt.rs` is scoped by the `tests/terminal.rs` whole-dir grep-pin + its own
+// `tests/vt.rs` pin). The read-pump tap that feeds it lands in 075c (NO wiring here this slice).
+mod vt;
+pub use vt::HeadlessVt;
+
 use std::io::{self, Read, Write};
 // Arc + Mutex are used only by the `test-support`-gated `FakePty` (its recorded-input handle).
 #[cfg(any(test, feature = "test-support"))]

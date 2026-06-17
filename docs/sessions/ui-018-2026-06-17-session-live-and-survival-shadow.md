@@ -3,7 +3,7 @@
 - **Date:** 2026-06-17
 - **Phase:** Phase 6/7 (whole-cockpit-live + survival) — **P6.8 / §6.1 + §11.4** (the live `ProjectionDelta` transport spread to Session + the survival/recovery display data foundation)
 - **Predecessor:** [ui-017](ui-017-2026-06-16-pr-review-consumer-reconcile.md)
-- **Successor:** _(none yet)_
+- **Successor:** [ui-019](ui-019-2026-06-17-whole-cockpit-live-pr-workspace-oneof-const.md)
 - **Track:** `track/ui` · implementer `ui-implementer` · orchestrator `ui-orchestrator` · lead `team-lead`
 
 ## Why this session existed

@@ -187,7 +187,7 @@ In either case, the swap procedure is the same:
 2. **Lead re-reads the current state pointers:** `IMPLEMENTATION_PLAN.md` "Currently in progress" + the most recent `docs/sessions/<NNN>-*.md` + the last commit hash (`git log -1 --oneline`).
 3. **Spawn the successor** with the appropriate template (in `/team-start.md`), carrying:
    - Track prefix matching the lead's own
-   - Team label (the `$TEAM_LABEL` from `/team-start` Step 1 — the track name, or `session-<first-8>`; the team itself auto-forms on first spawn, no create step)
+   - Team name (the `$TEAM_LABEL` from `/team-start` Step 1 — the track name, or `session-<first-8>`; reuse the SAME team for the successor — pass it as the `Agent` `team_name` so the successor spawns as a teammate session, not a background agent)
    - One-line WHY (what arc, what state, what user-direction was chosen)
    - The correct start command (`/orchestrate-start` for orch successor, `/session-start` for impl successor)
    - **Registry-write as first action** (in the spawn prompt template) — load-bearing for monitoring continuity.

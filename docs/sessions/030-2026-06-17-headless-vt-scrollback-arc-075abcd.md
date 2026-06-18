@@ -3,7 +3,7 @@
 - **Date:** 2026-06-17
 - **Phase:** 3.4 (Embedded terminal) → bridging into Phase 4 §8/§8.1/§17 (survival ladder). Task **P3.4-VT**.
 - **Predecessor:** [029 — Codex arc 3.3c interception + 3.3d telemetry](029-2026-06-17-codex-arc-3.3cd-interception-and-telemetry.md)
-- **Successor:** _(next implementer session)_
+- **Successor:** [031 — VT-arc tie-off + build-hygiene (075e)](031-2026-06-18-vt-arc-tieoff-and-build-hygiene.md)
 
 ## Why this session existed
 

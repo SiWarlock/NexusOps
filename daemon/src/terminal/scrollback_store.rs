@@ -53,6 +53,10 @@ impl ScrollbackStore for NoopScrollbackStore {
 #[derive(Clone, Default)]
 pub struct FakeScrollbackStore {
     inner: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<SessionId, VtSnapshot>>>,
+    /// total `save` CALLS (not distinct sessions) — shared across clones via the `Arc` so a producer
+    /// holding one handle and a test holding another see the same count. Lets a cadence test count
+    /// periodic checkpoints for ONE session (where [`saved_count`](Self::saved_count) stays 1). (075e)
+    save_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -67,11 +71,20 @@ impl FakeScrollbackStore {
     pub fn saved_count(&self) -> usize {
         self.inner.lock().expect("scrollback store lock").len()
     }
+
+    /// The total number of `save` CALLS so far (not distinct sessions) — the cadence-measure surface:
+    /// N periodic checkpoints for one session register as N calls while `saved_count` stays 1. (075e)
+    #[must_use]
+    pub fn save_calls(&self) -> usize {
+        self.save_calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
 impl ScrollbackStore for FakeScrollbackStore {
     fn save(&self, session_id: &SessionId, snapshot: &VtSnapshot) {
+        self.save_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner
             .lock()
             .expect("scrollback store lock")

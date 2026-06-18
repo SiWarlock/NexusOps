@@ -2,7 +2,7 @@
 //! §17 survival ladder; the `Replayed` rung).
 //!
 //! Commit 1 (this file's first tests): the `ScrollbackStore` seam + `FakeScrollbackStore` + the
-//! recovery consumer (`enumerate_recoverable_sessions` reads the store → `has_scrollback`/
+//! recovery consumer (`enumerate_recoverable_sessions` reads the store → `has_replayable_snapshot`/
 //! `replayed_event_count` → `decide_resume`→`Replayed` reachable). Commit 2 appends the producer-tap
 //! tests (the `SessionActor` read-pump → per-session `HeadlessVt` → save).
 
@@ -90,7 +90,7 @@ fn inputs_for(r: &nexusopsd::session::recovery::RecoverableSession) -> ResumeInp
         broker_has_live_session: false,
         supports_resume: r.supports_resume,
         has_resume_handle: r.has_resume_handle,
-        has_scrollback: r.has_scrollback,
+        has_replayable_snapshot: r.has_replayable_snapshot,
         replayed_event_count: r.replayed_event_count,
     }
 }
@@ -131,7 +131,10 @@ fn test_recovery_populated_store_replays() {
     let recoverable = enumerate_recoverable_sessions(&conn, &sb).unwrap();
     assert_eq!(recoverable.len(), 1);
     let r = &recoverable[0];
-    assert!(r.has_scrollback, "a populated store → has_scrollback");
+    assert!(
+        r.has_replayable_snapshot,
+        "a populated store → has_replayable_snapshot"
+    );
     assert_eq!(
         r.replayed_event_count, expected,
         "replayed_event_count == the snapshot's scrollback row count"
@@ -159,14 +162,17 @@ fn test_recovery_empty_store_relaunches() {
     let sb = FakeScrollbackStore::new(); // empty — no snapshot saved
     let recoverable = enumerate_recoverable_sessions(&conn, &sb).unwrap();
     let r = &recoverable[0];
-    assert!(!r.has_scrollback, "empty store → no scrollback");
+    assert!(
+        !r.has_replayable_snapshot,
+        "empty store → no replayable snapshot"
+    );
     assert_eq!(r.replayed_event_count, 0);
 
     let result = decide_resume(&inputs_for(r));
     assert_eq!(
         result.mode,
         ResumeMode::Relaunched,
-        "no scrollback → today's Relaunched rung (no regression, LESSON §38)"
+        "no replayable snapshot → today's Relaunched rung (no regression, LESSON §38)"
     );
 }
 
@@ -197,8 +203,8 @@ fn test_recovery_alt_active_snapshot_replays() {
     let recoverable = enumerate_recoverable_sessions(&conn, &sb).unwrap();
     let r = &recoverable[0];
     assert!(
-        r.has_scrollback,
-        "restorable content → has_scrollback=true even with 0 scrollback rows (keyed on has_restorable_content)"
+        r.has_replayable_snapshot,
+        "restorable content → has_replayable_snapshot=true even with 0 scrollback rows (keyed on has_restorable_content)"
     );
     assert_eq!(r.replayed_event_count, 0, "honest 0 for alt-active");
 

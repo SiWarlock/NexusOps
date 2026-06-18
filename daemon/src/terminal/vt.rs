@@ -320,7 +320,7 @@ impl VtSnapshot {
     }
 
     /// Whether this snapshot has anything worth replaying on restart — scrollback rows OR a non-blank
-    /// visible screen. The 075c survival signal feeding `ResumeInputs.has_scrollback` → the §8.1
+    /// visible screen. The 075c survival signal feeding `ResumeInputs.has_replayable_snapshot` → the §8.1
     /// `Replayed` rung (LESSONS §36): a mid-alt-screen session (zero scrollback but a re-renderable
     /// screen) STILL replays, while a truly-blank session falls through to `Relaunched`. Broader than
     /// raw [`scrollback_rows`](Self::scrollback_rows) — that is why the recovery consumer keys on this.

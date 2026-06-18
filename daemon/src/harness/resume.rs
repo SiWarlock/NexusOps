@@ -22,15 +22,16 @@ pub struct ResumeInputs {
     pub supports_resume: bool,
     /// a resume handle exists for this session (the transcript / thread id to resume from)
     pub has_resume_handle: bool,
-    /// serialized scrollback exists to replay
-    pub has_scrollback: bool,
+    /// a replayable snapshot exists (scrollback rows OR a non-blank restorable screen —
+    /// `has_restorable_content()`, 075c); broadened past raw "scrollback present" → the honest name
+    pub has_replayable_snapshot: bool,
     /// the scrollback event count (carried on the `Replayed` result; ignored on the other rungs)
     pub replayed_event_count: u64,
 }
 
 /// The §8 survival ladder, in STRICT precedence (a TOTAL function — every input maps to exactly one
 /// mode): broker-live → `ReattachedLive` · `supports_resume && has_resume_handle` → `Resumed` ·
-/// `has_scrollback` → `Replayed` (carries the count) · else → `Relaunched`. `replayed_event_count`
+/// `has_replayable_snapshot` → `Replayed` (carries the count) · else → `Relaunched`. `replayed_event_count`
 /// is non-zero ONLY on the `Replayed` rung (the §11.4 "resumed-(live) vs replayed-(relaunched)"
 /// semantics). A failed resume ATTEMPT is the caller's concern (it re-calls with
 /// `has_resume_handle=false` → the ladder falls through), not modelled here.
@@ -45,7 +46,7 @@ pub fn decide_resume(inputs: &ResumeInputs) -> ResumeResult {
             mode: ResumeMode::Resumed,
             replayed_event_count: 0,
         }
-    } else if inputs.has_scrollback {
+    } else if inputs.has_replayable_snapshot {
         ResumeResult {
             mode: ResumeMode::Replayed,
             replayed_event_count: inputs.replayed_event_count,

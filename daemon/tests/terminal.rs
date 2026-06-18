@@ -20,10 +20,52 @@ fn outputs_of(emits: Vec<TerminalEmit>) -> Vec<TerminalOutputFrame> {
     emits
         .into_iter()
         .filter_map(|e| match e {
-            TerminalEmit::Output(f) => Some(f),
+            TerminalEmit::Output { frame, .. } => Some(frame),
             TerminalEmit::Control(_) => None,
         })
         .collect()
+}
+
+/// 075e — the raw-tap: an `Output` emit carries the RAW decoded bytes ALONGSIDE the §6.4 base64 wire
+/// frame, so the `SessionActor` producer tap can feed the headless VT WITHOUT a per-frame
+/// `base64::decode` round-trip. Pins the invariant `raw == base64::decode(frame.data)` — the raw tap is
+/// byte-identical to the wire frame, and the wire shape stays base64 (no observable behavior change;
+/// `TerminalSession` stays a pure byte-pipe with no VT coupling). spec(§6.4 / §9 byte-pipe).
+#[test]
+fn test_output_emit_carries_raw_matching_the_wire_frame() {
+    let mut session = TerminalSession::new(
+        TerminalId::from_raw("term_raw"),
+        Box::new(FakePty::new(
+            vec![PtyRead::Chunk(b"raw tap bytes\x1b[0m\n".to_vec())],
+            ExitStatus {
+                exit_code: Some(0),
+                signal: None,
+            },
+        )),
+        Box::new(CollectingSink::default()),
+    );
+
+    let outputs: Vec<(TerminalOutputFrame, Vec<u8>)> = session
+        .pump()
+        .into_iter()
+        .filter_map(|e| match e {
+            TerminalEmit::Output { frame, raw } => Some((frame, raw)),
+            TerminalEmit::Control(_) => None,
+        })
+        .collect();
+
+    assert_eq!(outputs.len(), 1, "one coalesced output frame for the chunk");
+    let (frame, raw) = &outputs[0];
+    assert_eq!(
+        raw.as_slice(),
+        b"raw tap bytes\x1b[0m\n",
+        "the raw tap == the streamed PTY bytes (no encode/decode round-trip)"
+    );
+    assert_eq!(
+        STANDARD.decode(frame.data.as_bytes()).unwrap(),
+        *raw,
+        "raw == base64::decode(frame.data) — the tap is byte-identical to the unchanged base64 wire frame"
+    );
 }
 
 /// true if the emit list contains a control frame of the given kind.

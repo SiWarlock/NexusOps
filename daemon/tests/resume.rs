@@ -21,7 +21,7 @@ fn test_broker_live_session_reattaches() {
         // everything else also available — reattach-live still wins (strict precedence).
         supports_resume: true,
         has_resume_handle: true,
-        has_scrollback: true,
+        has_replayable_snapshot: true,
         replayed_event_count: 99,
     });
     assert_eq!(r.mode, ResumeMode::ReattachedLive);
@@ -50,7 +50,7 @@ fn test_replay_when_no_resume_but_scrollback() {
     // spec(§8) — not resume-able but serialized scrollback exists → Replayed, count == the scrollback
     // event count (the ONLY ladder path that carries a non-zero count).
     let r = decide_resume(&ResumeInputs {
-        has_scrollback: true,
+        has_replayable_snapshot: true,
         replayed_event_count: 17,
         ..Default::default()
     });
@@ -78,7 +78,7 @@ fn test_precedence_resume_over_scrollback() {
     let r = decide_resume(&ResumeInputs {
         supports_resume: true,
         has_resume_handle: true,
-        has_scrollback: true,
+        has_replayable_snapshot: true,
         replayed_event_count: 50,
         ..Default::default()
     });
@@ -100,7 +100,7 @@ fn test_resume_requires_handle_not_just_capability() {
     let r = decide_resume(&ResumeInputs {
         supports_resume: true,
         has_resume_handle: false,
-        has_scrollback: true,
+        has_replayable_snapshot: true,
         replayed_event_count: 9,
         ..Default::default()
     });
@@ -130,7 +130,7 @@ fn test_harness_agnostic_both_shapes() {
     let claude = decide_resume(&ResumeInputs {
         supports_resume: true,
         has_resume_handle: true,
-        has_scrollback: true,
+        has_replayable_snapshot: true,
         ..Default::default()
     });
     assert_eq!(codex.mode, ResumeMode::Resumed);
@@ -143,7 +143,7 @@ fn test_harness_agnostic_both_shapes() {
     let no_capability = decide_resume(&ResumeInputs {
         supports_resume: false,
         has_resume_handle: true,
-        has_scrollback: true,
+        has_replayable_snapshot: true,
         replayed_event_count: 3,
         ..Default::default()
     });

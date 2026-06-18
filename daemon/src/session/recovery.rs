@@ -42,8 +42,9 @@ pub struct RecoverableSession {
     pub supports_resume: bool,
     /// a resume handle exists (transcript / thread id) — from the persisted session state.
     pub has_resume_handle: bool,
-    /// serialized scrollback exists to replay.
-    pub has_scrollback: bool,
+    /// a replayable snapshot exists (scrollback rows OR a non-blank restorable screen —
+    /// `has_restorable_content()`, 075c); fed from the `ScrollbackStore` snapshot at enumeration.
+    pub has_replayable_snapshot: bool,
     /// the scrollback event count (carried on the `Replayed` rung only).
     pub replayed_event_count: u64,
 }
@@ -143,7 +144,7 @@ pub fn recover_sessions_on_restart(
             broker_has_live_session: broker.reattach_outcome(&s.session_id).has_live_session,
             supports_resume: s.supports_resume,
             has_resume_handle: s.has_resume_handle,
-            has_scrollback: s.has_scrollback,
+            has_replayable_snapshot: s.has_replayable_snapshot,
             replayed_event_count: s.replayed_event_count,
         };
         let result = decide_resume(&inputs);

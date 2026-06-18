@@ -1,0 +1,7 @@
+# Pin the EXACT toolchain so `cargo fmt --check` (and clippy) are deterministic across machines + CI.
+# A floating `stable` channel still drifts rustfmt as stable advances — the `ca5d789` fmt-drift root
+# cause — so the version is pinned exactly, not to `stable`. The team already builds on 1.93.0, so
+# adding this pin is a no-op for the working tree (075e).
+[toolchain]
+channel = "1.93.0"
+components = ["rustfmt", "clippy"]

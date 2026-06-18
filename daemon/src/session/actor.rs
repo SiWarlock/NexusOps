@@ -18,8 +18,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine as _;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -49,7 +47,8 @@ const COMMAND_MAILBOX_CAPACITY: usize = 16;
 /// survival snapshot (the 4.0c telemetry-pump precedent; `MissedTickBehavior::Delay`). A FINAL save
 /// also runs on reap. With the production no-op `ScrollbackStore` both are no-ops until 075d's durable
 /// store lands; the `FakeScrollbackStore` tests prove the producer→store→`Replayed` path now.
-const SCROLLBACK_SAVE_INTERVAL: Duration = Duration::from_secs(5);
+/// `pub` so the 075e cadence test advances by the canonical interval, not a magic number.
+pub const SCROLLBACK_SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// A control message to a [`SessionActor`] via its mailbox. 4.0a carries only `Kill` (the route/reap
 /// observable); pause/resume (the inbound client `{pause}`/`{resume}`) join at 6.3d.
@@ -161,19 +160,17 @@ async fn run(
     let pump = tokio::task::spawn_blocking(move || {
         let mut terminal = terminal;
         while !terminal.is_exited() {
-            // 075c producer tap — fold the decoded display bytes into the headless VT (the survival
-            // model). The §6.4 frames carry base64; decode back to raw VT bytes (keeps `TerminalSession`
-            // a pure byte-pipe — a raw-tap-before-encode optimization is a deferred follow-up). A decode
-            // error skips that frame (defensive — our own encoder always emits valid base64). Status is
-            // NEVER derived from these bytes (#9): this is display/survival state only.
+            // 075c producer tap, 075e raw-tap — fold the RAW display bytes into the headless VT (the
+            // survival model). The `Output` emit carries `raw` alongside the §6.4 base64 wire `frame`, so
+            // we feed the VT directly — no per-frame `base64::decode` round-trip, no silent decode-error
+            // drop branch. `TerminalSession` stays a pure byte-pipe (it references no VT type; `raw` rides
+            // the emit). Status is NEVER derived from these bytes (#9): this is display/survival state only.
             for emit in terminal.pump() {
-                if let TerminalEmit::Output(frame) = emit {
-                    if let Ok(raw) = STANDARD.decode(frame.data.as_bytes()) {
-                        vt_for_pump
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .process(&raw);
-                    }
+                if let TerminalEmit::Output { raw, .. } = emit {
+                    vt_for_pump
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .process(&raw);
                 }
             }
         }

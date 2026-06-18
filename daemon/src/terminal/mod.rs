@@ -179,9 +179,18 @@ pub fn next_terminal_action(
 }
 
 /// What a pump step produces — a batched output data frame or a flow-control (pause/resume) frame.
+///
+/// `Output` carries the RAW coalesced bytes (`raw`) ALONGSIDE the §6.4 base64 wire `frame` (075e): the
+/// `SessionActor` producer tap feeds the headless VT from `raw` directly, dropping a per-frame
+/// `base64::decode` round-trip, while the wire forward still uses `frame` (base64 unchanged). `raw` is
+/// exactly `base64::decode(frame.data)` by construction. Keeping `raw` on the emit (vs inside
+/// `TerminalSession`) preserves the byte-pipe — `TerminalSession` references no VT type.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TerminalEmit {
-    Output(TerminalOutputFrame),
+    Output {
+        frame: TerminalOutputFrame,
+        raw: Vec<u8>,
+    },
     Control(TerminalControlFrame),
 }
 
@@ -374,7 +383,10 @@ impl TerminalSession {
             return Vec::new();
         }
         let bytes = std::mem::take(&mut self.pending);
-        vec![TerminalEmit::Output(self.frame(&bytes))]
+        // build the base64 wire frame, then hand the RAW bytes out alongside it (075e raw-tap) — the
+        // VT consumer feeds from `raw`, the wire forward from `frame`; `raw == base64::decode(frame.data)`.
+        let frame = self.frame(&bytes);
+        vec![TerminalEmit::Output { frame, raw: bytes }]
     }
 
     /// Base64-encode a coalesced output buffer into a seq-numbered [`TerminalOutputFrame`] (one `seq`

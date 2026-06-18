@@ -21,6 +21,7 @@ use nexusops_shared::status::Session;
 use nexusopsd::harness::{
     FakeHarness, HarnessAdapter, MutationIntercept, ResumeMode, ResumeResult,
 };
+use nexusopsd::session::actor::SCROLLBACK_SAVE_INTERVAL;
 use nexusopsd::session::{
     spawn_session_actor, FakeLauncher, LaunchedSession, SessionCommand, SessionLauncher,
     SessionSupervisor,
@@ -521,4 +522,77 @@ fn test_producer_holds_scrollback_store_not_writehandle() {
             "actor.rs must not import `{tok}` — the producer holds the store TRAIT, never a WriteHandle (cat-1)"
         );
     }
+}
+
+// ---- 075e — the periodic scrollback save_tick cadence (075c LOW-2; §17 crash-survival checkpoint) -
+
+/// The drain ceiling — a wiring-regression backstop, never reached on a healthy run (the ready save
+/// tick is selected within a handful of loop turns). Large enough that the per-advance status-ticker
+/// burst can never exhaust it before the save tick is picked.
+const MAX_DRAIN_YIELDS: usize = 1_000_000;
+
+/// Yield to the runtime until `pred` holds, BOUNDED (never an unbounded hang). The deterministic drain
+/// for the paused-time cadence test: the actor's `select!` loop shares a high-frequency status ticker
+/// with the save tick, so a save tick that is READY may take several loop turns to be selected — we
+/// yield until it lands rather than guessing a fixed yield count. The cap only ever trips on a genuine
+/// wiring regression (the predicate never becoming true), never on timing.
+async fn drive_until(fake: &FakeScrollbackStore, pred: impl Fn(&FakeScrollbackStore) -> bool) {
+    for _ in 0..MAX_DRAIN_YIELDS {
+        if pred(fake) {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("drive_until: the predicate was never satisfied within the yield budget");
+}
+
+/// 075e Test 8 — the periodic `save_tick` cadence (075c LOW-2). Under PAUSED time, advancing the clock
+/// by N × `SCROLLBACK_SAVE_INTERVAL` drives EXACTLY N periodic survival checkpoints into the store —
+/// the §17 crash-survival cadence, pinned deterministically with NO wall-clock sleep. A never-terminating
+/// `FakeHarness` keeps the actor's `select!` loop live (Active forever); the empty PTY's pump EOFs
+/// promptly (the cadence is what's pinned, not a live byte feed). The N PERIODIC saves are isolated from
+/// the interval's immediate t=0 tick (captured in `baseline`) and the final reap save (after `join`, not
+/// counted) by measuring the delta across the advances. spec(§17 crash-survival checkpoint / LESSON §41).
+#[tokio::test(start_paused = true)]
+async fn test_save_tick_periodic_checkpoint() {
+    let adapter: Box<dyn HarnessAdapter> = Box::new(FakeHarness::new(full_caps()));
+    let (terminal, _exits) = fake_terminal("term_savetick", vec![]);
+    let sid = SessionId::new();
+    let fake = FakeScrollbackStore::new();
+    let store: Arc<dyn ScrollbackStore> = Arc::new(fake.clone());
+    let (status_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let handle = spawn_session_actor(sid.clone(), adapter, terminal, status_tx, store);
+
+    // let the actor launch + process the interval's IMMEDIATE (t=0) tick — that first save is the
+    // baseline, NOT a periodic checkpoint. Before any `advance`, paused time can't reach the next
+    // 5s deadline, so EXACTLY one save lands — pin it, so the periodic delta below can't pass for the
+    // wrong reason (a stray extra t=0 save would otherwise be silently absorbed into `baseline`).
+    drive_until(&fake, |f| f.save_calls() >= 1).await;
+    let baseline = fake.save_calls();
+    assert_eq!(
+        baseline, 1,
+        "exactly one immediate t=0 save before any interval advance"
+    );
+
+    const N: usize = 3;
+    for _ in 0..N {
+        let before = fake.save_calls();
+        tokio::time::advance(SCROLLBACK_SAVE_INTERVAL).await;
+        // drain until THIS interval's periodic save lands (bounded; the status ticker only adds work).
+        drive_until(&fake, |f| f.save_calls() > before).await;
+    }
+    assert_eq!(
+        fake.save_calls() - baseline,
+        N,
+        "N advanced save-intervals → exactly N periodic survival checkpoints (075c LOW-2 cadence)"
+    );
+
+    // stop the actor; the FINAL reap save (post-join) is intentionally NOT part of the periodic count.
+    handle
+        .commands
+        .send(SessionCommand::Kill)
+        .await
+        .expect("route a Kill");
+    handle.join.await.expect("actor task joins");
 }

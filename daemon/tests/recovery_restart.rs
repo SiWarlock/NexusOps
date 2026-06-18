@@ -68,7 +68,7 @@ fn live_session(profile: Option<ExecutionProfileId>) -> RecoverableSession {
         execution_profile_id: profile,
         supports_resume: false,
         has_resume_handle: false,
-        has_scrollback: false,
+        has_replayable_snapshot: false,
         replayed_event_count: 0,
     }
 }
@@ -126,7 +126,7 @@ fn test_replay_when_scrollback_only() {
     // spec(§8) — no broker, no native resume, serialized scrollback present → Replayed + RelaunchReplay;
     // the count is carried onto BOTH the result and the recovery signal (the only rung with a count).
     let mut s = live_session(None);
-    s.has_scrollback = true;
+    s.has_replayable_snapshot = true;
     s.replayed_event_count = 23;
     let broker = FakeBroker::new();
     let dispatch = RecordingDispatch::default();
@@ -253,7 +253,7 @@ fn test_recovery_signal_is_observation_not_gateway() {
     // signature carries no Gateway path).
     let a = live_session(None);
     let mut b = live_session(None);
-    b.has_scrollback = true;
+    b.has_replayable_snapshot = true;
     b.replayed_event_count = 5;
     let broker = FakeBroker::new();
     let dispatch = RecordingDispatch::default();

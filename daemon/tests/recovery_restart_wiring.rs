@@ -107,7 +107,7 @@ fn test_reader_sources_authority_from_committed_session_started() {
 
     let conn = open_read_only(&path).unwrap();
     // 075c — enumeration now reads the scrollback store; with the no-op store every load is None →
-    // has_scrollback stays false (this test exercises identity/profile sourcing, not the scrollback axis).
+    // has_replayable_snapshot stays false (this test exercises identity/profile sourcing, not the scrollback axis).
     let recoverable =
         enumerate_recoverable_sessions(&conn, &nexusopsd::terminal::NoopScrollbackStore).unwrap();
 

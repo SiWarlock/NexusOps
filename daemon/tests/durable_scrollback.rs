@@ -306,15 +306,15 @@ fn test_recovery_end_to_end_replays() {
         .find(|r| r.session_id == sid)
         .expect("the session");
     assert!(
-        r.has_scrollback,
-        "the durable store fed has_scrollback=true to the recovery consumer"
+        r.has_replayable_snapshot,
+        "the durable store fed has_replayable_snapshot=true to the recovery consumer"
     );
 
     let result = decide_resume(&ResumeInputs {
         broker_has_live_session: false,
         supports_resume: false,
         has_resume_handle: false,
-        has_scrollback: r.has_scrollback,
+        has_replayable_snapshot: r.has_replayable_snapshot,
         replayed_event_count: r.replayed_event_count,
     });
     assert_eq!(

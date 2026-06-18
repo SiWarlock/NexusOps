@@ -235,7 +235,10 @@ fn measure_one_attach() -> Duration {
         // drain below, i.e. OUTSIDE this timed window.
         let mut emits = session.read_step();
         emits.extend(session.flush());
-        if emits.iter().any(|e| matches!(e, TerminalEmit::Output(_))) {
+        if emits
+            .iter()
+            .any(|e| matches!(e, TerminalEmit::Output { .. }))
+        {
             elapsed = Some(t0.elapsed());
             break;
         }
@@ -455,7 +458,7 @@ fn corpus_session(id: &str, n_chunks: usize, chunk_sz: usize) -> TerminalSession
 fn count_outputs(emits: &[TerminalEmit]) -> usize {
     emits
         .iter()
-        .filter(|e| matches!(e, TerminalEmit::Output(_)))
+        .filter(|e| matches!(e, TerminalEmit::Output { .. }))
         .count()
 }
 

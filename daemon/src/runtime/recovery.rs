@@ -37,18 +37,19 @@ use crate::terminal::ScrollbackStore;
 /// never-started session. A row that fails to parse fail-closed (unknown id/status — should never occur
 /// post-rebuild, reject-unknown) is SKIPPED, never fabricated. The `supports_resume`/`has_resume_handle`
 /// affordances are the live-adapter inputs 4.1b-2 populates — `false` here (the resume-handle/live-broker
-/// axis is 4.1b-2/HITL); `has_scrollback` is fed from the `store` as of 075c (see below).
+/// axis is 4.1b-2/HITL); `has_replayable_snapshot` is fed from the `store` as of 075c (see below).
 ///
 /// NOTE (Step-9 flag): `proj_session` has an `execution_profile_id` column the 1.2 projector never folds
 /// — so the profile is sourced from the event here, not the (always-NULL) column. Folding it in the
 /// projector (for the §11.4 session-card profile badge) is a separate follow-on.
 ///
 /// **075c — the scrollback axis is now LIVE-fed from the `store`.** For each session we `load` its VT
-/// snapshot and set `has_scrollback`/`replayed_event_count` from it (replacing the hardcoded `false`/`0`):
-/// `has_scrollback = snapshot.has_restorable_content()` (scrollback rows OR a non-blank replayable screen
-/// — so a mid-alt-screen session still `Replayed`s, the 075b design-input), `replayed_event_count =
-/// scrollback_rows()` (honest 0 for alt-active). With the production no-op store every `load` is `None` →
-/// `false`/`0` → `Relaunched` exactly as before (075d's durable store flips this on). The
+/// snapshot and set `has_replayable_snapshot`/`replayed_event_count` from it (replacing the hardcoded
+/// `false`/`0`): `has_replayable_snapshot = snapshot.has_restorable_content()` (scrollback rows OR a
+/// non-blank replayable screen — so a mid-alt-screen session still `Replayed`s, the 075b design-input),
+/// `replayed_event_count = scrollback_rows()` (honest 0 for alt-active). With the production no-op store
+/// every `load` is `None` → `false`/`0` → `Relaunched` exactly as before (075d's durable store flips this
+/// on). The
 /// `supports_resume`/`has_resume_handle` axis stays `false` (the resume-handle/live-broker axis is
 /// 4.1b-2/HITL — 075c owns ONLY the scrollback axis).
 pub fn enumerate_recoverable_sessions(
@@ -74,7 +75,7 @@ pub fn enumerate_recoverable_sessions(
         // by `recover_sessions_on_restart`, so a store read for them is wasted I/O (matters once 075d's
         // durable store lands; harmless with the no-op store). `usize → u64` is lossless on every
         // supported target (both unsigned, u64 ≥ usize) → a plain `as` cast, not a fallible conversion.
-        let (has_scrollback, replayed_event_count) = if is_recoverable_status(status) {
+        let (has_replayable_snapshot, replayed_event_count) = if is_recoverable_status(status) {
             match store.load(&session_id) {
                 Some(snap) => (snap.has_restorable_content(), snap.scrollback_rows() as u64),
                 None => (false, 0),
@@ -88,7 +89,7 @@ pub fn enumerate_recoverable_sessions(
             execution_profile_id,
             supports_resume: false,
             has_resume_handle: false,
-            has_scrollback,
+            has_replayable_snapshot,
             replayed_event_count,
         });
     }

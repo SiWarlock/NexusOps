@@ -446,7 +446,7 @@ fn test_degrade_no_tmux_never_reattaches() {
         broker_has_live_session: backend.broker.reattach_outcome(&any).has_live_session,
         supports_resume: true,
         has_resume_handle: true,
-        has_scrollback: true,
+        has_replayable_snapshot: true,
         replayed_event_count: 5,
     };
     assert!(

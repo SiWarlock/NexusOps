@@ -242,7 +242,7 @@ function ProjectGroup({
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {s.title ?? s.session_id}
+                  {s.display_name ?? s.session_id}
                 </span>
                 {display?.team ? (
                   <span

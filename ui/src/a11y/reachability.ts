@@ -70,3 +70,90 @@ export function auditFocusable(container: HTMLElement): void {
     }
   }
 }
+
+// The text content of `el`, EXCLUDING aria-hidden subtrees — an aria-hidden glyph
+// is out of the accessibility tree so it never contributes a name, but a `.sr-only`
+// child IS in the tree (visually hidden, not aria-hidden → it counts). Not trimmed
+// here; the caller trims.
+function accessibleText(el: Element): string {
+  let text = "";
+  for (const node of el.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += node.textContent ?? "";
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      const child = node as Element;
+      if (child.getAttribute("aria-hidden") === "true") continue;
+      text += accessibleText(child);
+    }
+  }
+  return text;
+}
+
+/**
+ * The accessible name of an interactive control, by a pragmatic subset of the
+ * WAI-ARIA accname algorithm (NOT the full recursive spec — YAGNI; mirrors this
+ * audit's flat-container assumption): `aria-label` → `aria-labelledby` target
+ * text → visible text from non-`aria-hidden` descendants (INCL `.sr-only`, the
+ * Lesson §6 pattern) → `title` → (form controls) an associated `<label>`. Returns
+ * `""` when none of these yields a name.
+ */
+function getAccessibleName(el: HTMLElement): string {
+  const ariaLabel = el.getAttribute("aria-label");
+  if (ariaLabel?.trim()) return ariaLabel.trim();
+
+  const labelledby = el.getAttribute("aria-labelledby");
+  if (labelledby) {
+    // Resolve each referenced element through accessibleText (NOT raw textContent)
+    // so a target's own aria-hidden subtrees are excluded — consistent with the
+    // direct-descendant rule below.
+    const text = labelledby
+      .split(/\s+/)
+      .map((id) => {
+        const ref = el.ownerDocument.getElementById(id);
+        return ref ? accessibleText(ref) : "";
+      })
+      .join(" ")
+      .trim();
+    if (text) return text;
+  }
+
+  const visible = accessibleText(el).trim();
+  if (visible) return visible;
+
+  const title = el.getAttribute("title");
+  if (title?.trim()) return title.trim();
+
+  // Form controls (input/select/…) expose their associated <label>s via `.labels`
+  // (explicit `for=` or an implicit wrap); other elements (e.g. <a>) lack it.
+  const labels = (el as Partial<HTMLInputElement>).labels;
+  if (labels && labels.length > 0) {
+    const text = [...labels].map((l) => l.textContent ?? "").join(" ").trim();
+    if (text) return text;
+  }
+
+  return "";
+}
+
+/**
+ * Audit one rendered view for accessible-NAME coverage (§11.6): every interactive
+ * control (the same `INTERACTIVE_SELECTOR`) must compute a non-empty accessible
+ * name — a control can be keyboard-reachable yet a screen-reader dead end. Only
+ * roving members at tabIndex=-1 are skipped (`auditFocusable`'s `isRovingMember`
+ * exception); the one-tabstop member itself (tabIndex=0) is STILL name-checked, so
+ * the group is guaranteed to carry a name somewhere. Throws on the first nameless
+ * control. The fix for a caught control is a visually-hidden `.sr-only` child
+ * (Lesson §6), never a wrapper `aria-label`.
+ *
+ * No non-vacuous (zero-controls) guard here on purpose: this audit is always paired
+ * with `auditFocusable` in the whole-Shell sweep (`auditView`), which fires its
+ * empty-view check first — duplicating it would be redundant.
+ */
+export function auditAccessibleNames(container: HTMLElement): void {
+  for (const el of container.querySelectorAll<HTMLElement>(INTERACTIVE_SELECTOR)) {
+    if (el.tabIndex < 0 && isRovingMember(el)) continue;
+    if (getAccessibleName(el)) continue;
+    throw new Error(
+      `accessible-name: control ${describeEl(el)} has no accessible name`,
+    );
+  }
+}

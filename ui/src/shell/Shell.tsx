@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { GatewayPort } from "../gateway-client/types";
-import { MockGatewayPort } from "../gateway-client/mock";
+import { UdsGatewayPort } from "../gateway-client/uds";
+import { runSubscriptionSupervisor } from "../gateway-client/subscribe-recovery";
+import { createNudgeCoalescer } from "../gateway-client/refetch-on-nudge";
 import type {
   ApprovalQueueRow,
   AuditEventRow,
@@ -8,6 +10,7 @@ import type {
   ProjectActivityRow,
   PullRequestRow,
   RecoveryStatus,
+  ReviewRow,
   SafetyState,
   SessionRow,
   UsageRow,
@@ -49,7 +52,7 @@ import {
   filterByActiveProject,
   ActiveProjectProvider,
 } from "./active-project";
-import { sessionDisplayFixture } from "./display-meta";
+import { enrichApproval, sessionDisplayFixture } from "./display-meta";
 import { useViewHistory } from "./view-history";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
@@ -81,7 +84,15 @@ interface ShellData {
   approvals: ApprovalQueueRow[];
   usage: UsageRow[];
   creditPool: CreditPool | null;
+  // The PR-review verticals (ui-064, §11.2) — the Review projection joined to a PR client-side on
+  // pr_number (reviewsByPr) for the PR Review Workspace.
+  reviews: ReviewRow[];
 }
+
+// Bounded backoff for the live-subscribe reconnect recovery (052) — don't hammer the daemon on a
+// flapping connection; cap the wait so recovery stays responsive.
+const SUBSCRIBE_BACKOFF_BASE_MS = 500;
+const SUBSCRIBE_BACKOFF_MAX_MS = 30_000;
 
 /**
  * The top-level app shell — a projection-driven reattaching client (§11). Reads
@@ -111,7 +122,15 @@ export function Shell({
   safety?: SafetyState;
 }) {
   // Stable client across renders (a fresh default per render would loop the effect).
-  const [client] = useState<GatewayPort>(() => gateway ?? new MockGatewayPort());
+  // PRODUCTION DEFAULT = the real UdsGatewayPort (L1 read-swap, 051). **L2-C GO-LIVE (057,
+  // USER-signed-off):** constructed `mutationsEnabled: true` — the single switch that lights up the
+  // mutation transport (the port methods `invoke`) AND the UI submit controls (`canSubmitIntent &&
+  // mutationsEnabled`) together. A real human can now approve/deny/submit a real, daemon-risk-classified
+  // mutation; the daemon's Action Gateway executes + audits it (INV-SEC-1 chokepoint; this UI gate is
+  // defense-in-depth). The MockGatewayPort stays the injectable test/dev seam (passed via `gateway`).
+  const [client] = useState<GatewayPort>(
+    () => gateway ?? new UdsGatewayPort({ mutationsEnabled: true }),
+  );
   const [data, setData] = useState<ShellData | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [connection, setConnection] = useState<ConnectionState>(() =>
@@ -165,7 +184,7 @@ export function Shell({
     let cancelled = false;
     void (async () => {
       try {
-        const [projects, sessions, pullRequests, approvals, audit, usage, caps] =
+        const [projects, sessions, pullRequests, approvals, audit, usage, reviews, caps] =
           await Promise.all([
             client.get_projection("ProjectActivity"),
             client.get_projection("Session"),
@@ -173,6 +192,7 @@ export function Shell({
             client.get_projection("ApprovalQueue"),
             client.get_projection("AuditTrail"),
             client.get_projection("UsageLedger"),
+            client.get_projection("Review"),
             client.get_capabilities(),
           ]);
         if (cancelled) return;
@@ -192,11 +212,312 @@ export function Shell({
           approvals: approvals.rows,
           usage: usage.rows,
           creditPool: usage.creditPool ?? null,
+          reviews: reviews.rows,
         });
       } catch (e) {
         if (!cancelled) setError(e);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // Live subscribe stream (052) — the Session projection's deltas keep the cockpit live as the
+  // daemon mutates (the local store stays a read cache, forbidden #2); on a lag-close the recovery
+  // machine reconnects → re-subscribes → re-`get_projection`s a fresh snapshot (no stale-as-live,
+  // §11.7). Session-only here (the L1 mechanism on the most-dynamic projection); the other
+  // projections reuse the identical mechanism — a spread. Recomputes the switcher counts so a live
+  // session change is consistent across the list AND the derived counts.
+  useEffect(() => {
+    let cancelled = false;
+    const recountFrom = (prev: ShellData, sessions: SessionRow[]): ShellData => ({
+      ...prev,
+      sessions,
+      counts: deriveProjectSwitcherCounts({
+        projects: prev.projects,
+        sessions,
+        pullRequests: prev.pullRequests,
+        approvals: prev.approvals,
+      }),
+    });
+    // The daemon emits a Session ProjectionDelta on every SessionStarted/Failed/Recovered, but as a
+    // `row:None` id-NUDGE (deltas_for_event) — so consume it via REFETCH-ON-NUDGE (a coalesced re-read
+    // of get_projection("Session")), NOT a row-apply reducer (which no-ops on the absent row — the 052
+    // applySessionDelta was Mock-validated only, LESSON §29). Mirrors the ApprovalQueue effect below.
+    const refetchSessions = async (): Promise<void> => {
+      const page = await client.get_projection("Session");
+      if (cancelled) return;
+      setData((prev) => (prev ? recountFrom(prev, page.rows) : prev));
+    };
+    const coalescer = createNudgeCoalescer(refetchSessions);
+    runSubscriptionSupervisor({
+      subscribe: () => client.subscribe({ projection: "Session" }),
+      // a row:None nudge → coalesced refetch (ignore the delta content; the daemon's nudge carries no row).
+      onDelta: () => coalescer.nudge(),
+      refetch: refetchSessions, // the supervisor's recovery snapshot reset (the 052 ground-truth re-read)
+      // 054: drive the port — the SINGLE connection-state authority — NOT a 2nd raw React setter.
+      // The port applies the guarded transition + suppresses the read-path upgrade while the stream
+      // is degraded; `onConnectionChange` (the effect above) stays the Shell's ONE React connection
+      // writer, so an ad-hoc read can never mask this stream-degrade (the 052 Finding; forbidden #6).
+      // ui-059: per-stream — this is the "Session" stream (the ApprovalQueue stream is added as a 2nd
+      // subscribe effect in L2; the port aggregates the two via worst-of).
+      setConnection: (next) => client.notifyConnectionState("Session", next),
+      delay: (attempt) =>
+        new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SUBSCRIBE_BACKOFF_MAX_MS,
+              SUBSCRIBE_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+            ),
+          ),
+        ),
+      shouldContinue: () => !cancelled,
+    }).catch((e: unknown) => {
+      // The supervisor degrades internally on stream faults; a throw escaping it is unexpected
+      // (e.g. a synchronous fault setting up a re-subscribe). Log it — don't crash the cockpit
+      // (a live-read recovery fault must never take down the whole shell, §11.7).
+      console.error("subscription supervisor exited unexpectedly", e);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // Live ApprovalQueue subscribe stream (ui-059) — the cockpit's ACTION surface stays live as the daemon
+  // mutates. The daemon emits an ApprovalQueue ProjectionDelta on every submit/approve/deny, but as a
+  // `row:None` id-NUDGE (gateway/pipeline.rs:79) — so this consumes it via REFETCH-ON-NUDGE (a coalesced
+  // re-read get_projection("ApprovalQueue")), NOT a row-apply reducer (which would no-op on the absent
+  // row). A 2nd stream composing with Session via the port's per-stream connection aggregation
+  // (notifyConnectionState("ApprovalQueue", …) → worst-of; a healthy stream can't mask the other's
+  // degrade). Recomputes the switcher counts so a live approval change is consistent across the queue
+  // AND the derived waiting-on-you counts.
+  useEffect(() => {
+    let cancelled = false;
+    const recountFromApprovals = (
+      prev: ShellData,
+      approvals: ApprovalQueueRow[],
+    ): ShellData => ({
+      ...prev,
+      approvals,
+      counts: deriveProjectSwitcherCounts({
+        projects: prev.projects,
+        sessions: prev.sessions,
+        pullRequests: prev.pullRequests,
+        approvals,
+      }),
+    });
+    // The re-read-the-snapshot work — shared by the coalesced nudge path AND the recovery refetch.
+    // Guard the setData with `cancelled` so an in-flight re-read that resolves after unmount (the
+    // coalescer can hold work past cleanup) doesn't write to a torn-down effect's state.
+    const refetchApprovals = async (): Promise<void> => {
+      const page = await client.get_projection("ApprovalQueue");
+      if (cancelled) return;
+      setData((prev) => (prev ? recountFromApprovals(prev, page.rows) : prev));
+    };
+    // Coalesce a burst of nudges into a bounded number of re-reads (at-most-one-in-flight + one-trailing).
+    const coalescer = createNudgeCoalescer(refetchApprovals);
+    runSubscriptionSupervisor({
+      subscribe: () => client.subscribe({ projection: "ApprovalQueue" }),
+      // a row:None nudge → coalesced refetch (ignore the delta content; the daemon's nudge carries no row).
+      onDelta: () => coalescer.nudge(),
+      refetch: refetchApprovals, // the supervisor's recovery snapshot reset (the 052 ground-truth re-read)
+      // ui-059: drive the port as the "ApprovalQueue" stream — the per-stream aggregate keeps this from
+      // masking (or being masked by) the Session stream; the port stays the SINGLE connection authority.
+      setConnection: (next) => client.notifyConnectionState("ApprovalQueue", next),
+      delay: (attempt) =>
+        new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SUBSCRIBE_BACKOFF_MAX_MS,
+              SUBSCRIBE_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+            ),
+          ),
+        ),
+      shouldContinue: () => !cancelled,
+    }).catch((e: unknown) => {
+      console.error("ApprovalQueue subscription supervisor exited unexpectedly", e);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // ── ui-063 whole-cockpit-live: spread refetch-on-nudge to the REST of the live-relevant served set ──
+  // The daemon now emits deltas for ProjectActivity / PullRequest / UsageLedger too (D4) — each as a
+  // `row:None` id-NUDGE (deltas_for_event) → consume via REFETCH-ON-NUDGE (a coalesced re-read), NEVER a
+  // row-apply reducer (which no-ops on the absent row — LESSON §29). Each is a 3rd/4th/5th stream
+  // composing with Session+ApprovalQueue through the port's per-stream worst-of connection authority
+  // (notifyConnectionState("<X>", …)). AuditTrail is DELIBERATELY EXCLUDED — the daemon emits a BLANKET
+  // AuditTrail nudge on every event, so a subscribe would trigger a whole-page re-read on every system
+  // event (a refetch storm on a paged/forensic projection); AuditTrail stays refresh-on-open until the
+  // daemon's flagged seq-cursor audit-delta enrichment lands.
+
+  // ProjectActivity stream — `projects` IS a deriveProjectSwitcherCounts input → recompute `counts` on a
+  // live project change (a new/changed project must re-key the switcher counts).
+  useEffect(() => {
+    let cancelled = false;
+    const recountFromProjects = (
+      prev: ShellData,
+      projects: ProjectActivityRow[],
+    ): ShellData => ({
+      ...prev,
+      projects,
+      counts: deriveProjectSwitcherCounts({
+        projects,
+        sessions: prev.sessions,
+        pullRequests: prev.pullRequests,
+        approvals: prev.approvals,
+      }),
+    });
+    const refetchProjects = async (): Promise<void> => {
+      const page = await client.get_projection("ProjectActivity");
+      if (cancelled) return;
+      setData((prev) => (prev ? recountFromProjects(prev, page.rows) : prev));
+    };
+    const coalescer = createNudgeCoalescer(refetchProjects);
+    runSubscriptionSupervisor({
+      subscribe: () => client.subscribe({ projection: "ProjectActivity" }),
+      onDelta: () => coalescer.nudge(),
+      refetch: refetchProjects,
+      setConnection: (next) => client.notifyConnectionState("ProjectActivity", next),
+      delay: (attempt) =>
+        new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SUBSCRIBE_BACKOFF_MAX_MS,
+              SUBSCRIBE_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+            ),
+          ),
+        ),
+      shouldContinue: () => !cancelled,
+    }).catch((e: unknown) => {
+      console.error("ProjectActivity subscription supervisor exited unexpectedly", e);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // PullRequest stream — `pullRequests` IS a deriveProjectSwitcherCounts input → recompute `counts` on a
+  // live PR change (a new/closed PR must re-key the per-project openPRs count).
+  useEffect(() => {
+    let cancelled = false;
+    const recountFromPullRequests = (
+      prev: ShellData,
+      pullRequests: PullRequestRow[],
+    ): ShellData => ({
+      ...prev,
+      pullRequests,
+      counts: deriveProjectSwitcherCounts({
+        projects: prev.projects,
+        sessions: prev.sessions,
+        pullRequests,
+        approvals: prev.approvals,
+      }),
+    });
+    const refetchPullRequests = async (): Promise<void> => {
+      const page = await client.get_projection("PullRequest");
+      if (cancelled) return;
+      setData((prev) => (prev ? recountFromPullRequests(prev, page.rows) : prev));
+    };
+    const coalescer = createNudgeCoalescer(refetchPullRequests);
+    runSubscriptionSupervisor({
+      subscribe: () => client.subscribe({ projection: "PullRequest" }),
+      onDelta: () => coalescer.nudge(),
+      refetch: refetchPullRequests,
+      setConnection: (next) => client.notifyConnectionState("PullRequest", next),
+      delay: (attempt) =>
+        new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SUBSCRIBE_BACKOFF_MAX_MS,
+              SUBSCRIBE_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+            ),
+          ),
+        ),
+      shouldContinue: () => !cancelled,
+    }).catch((e: unknown) => {
+      console.error("PullRequest subscription supervisor exited unexpectedly", e);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // UsageLedger stream — usage is NOT a deriveProjectSwitcherCounts input → a PLAIN REPLACE (usage +
+  // creditPool), NO recount. The live producer (TelemetrySampled ingress) is daemon-P4-dormant, so this
+  // stream connects + stays quiet until telemetry flows; the handler is correct + refetches the moment it
+  // does (built now, future-proof — identical pattern, harmless while dormant).
+  useEffect(() => {
+    let cancelled = false;
+    const refetchUsage = async (): Promise<void> => {
+      const page = await client.get_projection("UsageLedger");
+      if (cancelled) return;
+      setData((prev) =>
+        prev ? { ...prev, usage: page.rows, creditPool: page.creditPool ?? null } : prev,
+      );
+    };
+    const coalescer = createNudgeCoalescer(refetchUsage);
+    runSubscriptionSupervisor({
+      subscribe: () => client.subscribe({ projection: "UsageLedger" }),
+      onDelta: () => coalescer.nudge(),
+      refetch: refetchUsage,
+      setConnection: (next) => client.notifyConnectionState("UsageLedger", next),
+      delay: (attempt) =>
+        new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SUBSCRIBE_BACKOFF_MAX_MS,
+              SUBSCRIBE_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+            ),
+          ),
+        ),
+      shouldContinue: () => !cancelled,
+    }).catch((e: unknown) => {
+      console.error("UsageLedger subscription supervisor exited unexpectedly", e);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // Review stream (ui-064) — the PR-review verticals stay live as the daemon syncs GitHub reviews
+  // (ReviewSynced → a `row:None` Review nudge). reviews is NOT a deriveProjectSwitcherCounts input → a
+  // PLAIN REPLACE, NO recount (mirrors UsageLedger). Completes the live-relevant served set (Review was
+  // the one projection deferred from the ui-063 whole-cockpit-live spread).
+  useEffect(() => {
+    let cancelled = false;
+    const refetchReviews = async (): Promise<void> => {
+      const page = await client.get_projection("Review");
+      if (cancelled) return;
+      setData((prev) => (prev ? { ...prev, reviews: page.rows } : prev));
+    };
+    const coalescer = createNudgeCoalescer(refetchReviews);
+    runSubscriptionSupervisor({
+      subscribe: () => client.subscribe({ projection: "Review" }),
+      onDelta: () => coalescer.nudge(),
+      refetch: refetchReviews,
+      setConnection: (next) => client.notifyConnectionState("Review", next),
+      delay: (attempt) =>
+        new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SUBSCRIBE_BACKOFF_MAX_MS,
+              SUBSCRIBE_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+            ),
+          ),
+        ),
+      shouldContinue: () => !cancelled,
+    }).catch((e: unknown) => {
+      console.error("Review subscription supervisor exited unexpectedly", e);
+    });
     return () => {
       cancelled = true;
     };
@@ -225,11 +546,11 @@ export function Shell({
   // no-projects guard). resolveActiveProject guards the stale-ID case.
   const activeProjectId = resolveActiveProject(data.projects, rawActiveProjectId);
   const activeProject = data.projects.find((p) => p.project_id === activeProjectId);
-  // The "checking" (connected + version-unknown) window surfaces at the real
-  // daemon-1.5 reconnect re-handshake; the MockGatewayPort resolves version
-  // together with data (one Promise.all behind the !data load gate), so the
-  // window is trigger-pending here (wired, not yet driven). See the ui↔daemon-1.5
-  // Carry-forward spread.
+  // The "checking" (connected + version-unknown) window: the real UdsGatewayPort now
+  // drives connection→"connected" during get_capabilities while `version` resolves in
+  // the same load Promise.all, so a transient checking frame is possible; after load it
+  // settles to connected+compatible→ok. The live reconnect re-handshake that re-enters
+  // this window is the 052 subscribe-recovery path.
   const degraded = deriveDegradedState(connection, version);
 
   // Global waiting-on-you count (the HIQ badge in TopBar + Sidebar): summed
@@ -381,6 +702,7 @@ export function Shell({
               sessions={filterByActiveProject(data.sessions, activeProjectId)}
               projects={data.projects}
               usage={data.usage}
+              gateway={client}
             />
           ) : contentView === "settings" ? (
             // Settings folds the Usage dashboard into its Usage tab (§11.2).
@@ -401,7 +723,11 @@ export function Shell({
           ) : contentView === "editor" ? (
             <EditorView />
           ) : contentView === "code" ? (
-            <DiffReview prs={filterByActiveProject(data.pullRequests, activeProjectId)} />
+            <DiffReview
+              prs={filterByActiveProject(data.pullRequests, activeProjectId)}
+              reviews={data.reviews}
+              gateway={client}
+            />
           ) : contentView === "team" ? (
             <AgentTeamView />
           ) : contentView === "packs" ? (
@@ -440,7 +766,11 @@ export function Shell({
         ) : overlay?.kind === "tasks" ? (
           <TaskInbox onClose={() => setOverlay(null)} />
         ) : overlay?.kind === "gateway" ? (
-          <GatewayModal approval={overlay.approval} onClose={() => setOverlay(null)} />
+          <GatewayModal
+            {...enrichApproval(overlay.approval)}
+            port={client}
+            onClose={() => setOverlay(null)}
+          />
         ) : overlay?.kind === "brain" ? (
           <BrainDrawer
             onClose={() => setOverlay(null)}

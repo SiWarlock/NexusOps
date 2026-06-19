@@ -1,10 +1,48 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach } from "vitest";
-import { act, cleanup, render, screen, fireEvent, within } from "@testing-library/react";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import {
+  act,
+  cleanup,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
+
+// xterm is a canvas lib (not jsdom-renderable) — mock it so opening a live session
+// (fixture_2 has a terminalId → TerminalDisplay) doesn't boot real xterm. Its
+// appearance is visual-gate territory (Lesson 10); these tests assert Shell wiring.
+vi.mock("@xterm/xterm", () => ({
+  Terminal: class {
+    open() {}
+    write() {}
+    loadAddon() {}
+    dispose() {}
+    onData() {
+      return { dispose() {} };
+    }
+    resize() {}
+  },
+}));
+vi.mock("@xterm/addon-fit", () => ({
+  FitAddon: class {
+    fit() {}
+    activate() {}
+    dispose() {}
+  },
+}));
+
 import { Shell } from "./Shell";
 import { MockGatewayPort } from "../gateway-client/mock";
 import { BoundaryValidationError } from "../gateway-client/boundary";
 import { SessionProjectionPage } from "../contracts/index";
+import type {
+  ProjectionDelta,
+  ProjectionName,
+  ProjectionPageByName,
+} from "../contracts/index";
+import type { ProjectionScope, ProjectionPageParams } from "../gateway-client/types";
 import type { GatewayPort } from "../gateway-client/types";
 import { projectActivityFixture } from "../projections/fixtures/proj_project_activity";
 import { fencingConflictFixture } from "../safety/fixtures";
@@ -31,18 +69,64 @@ function makeBoundaryError(): BoundaryValidationError {
   if (res.success) throw new Error("test setup: expected a parse failure");
   return new BoundaryValidationError("Session", res.error);
 }
+const notExercised = () =>
+  Promise.reject(new Error("rejectingGateway: mutation methods not exercised here"));
 const rejectingGateway: GatewayPort = {
   get_projection: () => Promise.reject(makeBoundaryError()),
   // eslint-disable-next-line require-yield
   subscribe: async function* () {
     return;
   },
+  // eslint-disable-next-line require-yield
+  subscribe_terminal: async function* () {
+    return;
+  },
   get_capabilities: () =>
     Promise.resolve({ protocol_version: 1, contract_version: "0.5.0" }),
+  // §6.1 get_diff (unused in this read-path test — 6.3e Code/Diff has its own suite).
+  get_diff: notExercised,
+  // §6.1 mutation surface (unused in this read-path test — the seam has its own suite).
+  submit_action: notExercised,
+  preview_action: notExercised,
+  approve: notExercised,
+  deny: notExercised,
   getConnectionState: () => "connected",
   onConnectionChange: () => () => {},
   reconnect: () => {},
+  notifyConnectionState: () => {},
+  mutationsEnabled: false,
 };
+
+// A gateway whose live stream CLOSES once (→ the supervisor degrades) then stays open, with the
+// recovery refetch hanging — so the connection sits STABLY degraded (no recovery flicker) for the
+// single-writer assertion. Reads otherwise reuse MockGatewayPort.
+class ClosingStreamGateway extends MockGatewayPort {
+  private firstStream = true;
+  private sessionLoads = 0;
+  // The first stream is an empty async generator that closes immediately (a yield-less return),
+  // simulating a daemon lag-close; subsequent streams stay open (a live stream).
+  // eslint-disable-next-line require-yield
+  async *subscribe(): AsyncIterable<ProjectionDelta> {
+    if (this.firstStream) {
+      this.firstStream = false;
+      return; // the first stream ends immediately → the supervisor degrades
+    }
+    await new Promise<void>(() => {}); // then stay open (a live stream)
+  }
+  async get_projection<K extends ProjectionName>(
+    name: K,
+    scope?: ProjectionScope,
+    page?: ProjectionPageParams,
+  ): Promise<ProjectionPageByName[K]> {
+    if (name === "Session") {
+      this.sessionLoads += 1;
+      // the initial load (1st) resolves; the supervisor's recovery refetch (2nd) hangs → the
+      // connection stays degraded (no recovery flicker — a stable surface for the assertion).
+      if (this.sessionLoads > 1) await new Promise<never>(() => {});
+    }
+    return super.get_projection(name, scope, page);
+  }
+}
 
 describe("Shell", () => {
   it("shell_renders_projects_from_projection", async () => {
@@ -61,6 +145,18 @@ describe("Shell", () => {
     render(<Shell gateway={rejectingGateway} />);
     // a boundary reject surfaces as a handled error state, never a raw render / crash
     expect(await screen.findByTestId("shell-load-error")).toBeTruthy();
+  });
+
+  it("shell_loads_review_projection", async () => {
+    // ui-064 Layer 1 [§7.2]: the initial load now includes get_projection("Review") → ShellData.reviews
+    // (parsed at the boundary), feeding the PR Review Workspace. Empty/served Review → no load error.
+    const mock = new MockGatewayPort();
+    const spy = vi.spyOn(mock, "get_projection");
+    render(<Shell gateway={mock} />);
+    await awaitLoaded();
+    expect(spy.mock.calls.some((c) => c[0] === "Review")).toBe(true);
+    // the Review page parsed cleanly → the chrome rendered, not the boundary load-error surface.
+    expect(screen.queryByTestId("shell-load-error")).toBeNull();
   });
 
   it("shell_event_dock_collapsed_and_expanded", async () => {
@@ -107,6 +203,23 @@ describe("Shell", () => {
       mock.setConnectionState("disconnected");
     });
     expect(await screen.findByRole("alert")).toBeTruthy(); // degraded banner shown
+  });
+
+  it("shell_supervisor_drives_connection_through_the_port_single_writer", async () => {
+    // spec(052 Finding / §11.4) — 054: the subscribe supervisor's degrade reaches React connection
+    // state THROUGH the port (notifyConnectionState → onConnectionChange), NOT a second raw React
+    // setter. A closing stream → the supervisor degrades → the port's single authority → the banner.
+    // (The Shell's only React connection writer is onConnectionChange.)
+    const mock = new ClosingStreamGateway();
+    const notifySpy = vi.spyOn(mock, "notifyConnectionState");
+    render(<Shell gateway={mock} />);
+    await awaitLoaded();
+
+    // the supervisor drove its degrade THROUGH the port's drive method (the single authority)…
+    // ui-059: per-stream — the Session supervisor reports as the "Session" stream.
+    await waitFor(() => expect(notifySpy).toHaveBeenCalledWith("Session", "disconnected"));
+    // …and it reached React connection state (the degraded banner) via onConnectionChange.
+    expect(await screen.findByRole("alert")).toBeTruthy();
   });
 
   it("sidebar_nav_mounts_project_graph", async () => {

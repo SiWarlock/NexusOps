@@ -11,11 +11,16 @@
 // branch into read-only / degraded mode with structured context.
 import type { ZodError } from "zod";
 import {
+  ActionAck,
+  ActionPreview,
   ApprovalQueuePage,
   AuditTrailPage,
+  Capabilities,
+  DiffResult,
   ProjectActivityPage,
   ProjectionDelta,
   PullRequestProjectionPage,
+  ReviewProjectionPage,
   SessionProjectionPage,
   UsageProjectionPage,
   type ProjectionPage,
@@ -40,6 +45,7 @@ const PAGE_SCHEMAS = {
   Session: SessionProjectionPage,
   ProjectActivity: ProjectActivityPage,
   PullRequest: PullRequestProjectionPage,
+  Review: ReviewProjectionPage,
   ApprovalQueue: ApprovalQueuePage,
   AuditTrail: AuditTrailPage,
   UsageLedger: UsageProjectionPage,
@@ -75,6 +81,47 @@ export function parseDelta(payload: unknown): ProjectionDelta {
   const result = ProjectionDelta.safeParse(payload);
   if (!result.success) {
     throw new BoundaryValidationError("delta", result.error);
+  }
+  return result.data;
+}
+
+/** Validate a `get_diff` result at the boundary (same fail-closed posture). The real
+ *  UdsGatewayPort gets this from the daemon over the wire — parse-don't-trust before
+ *  it reaches the Code/Diff view. */
+export function parseDiff(payload: unknown): DiffResult {
+  const result = DiffResult.safeParse(payload);
+  if (!result.success) {
+    throw new BoundaryValidationError("diff", result.error);
+  }
+  return result.data;
+}
+
+/** Validate a `get_capabilities` result at the boundary (same fail-closed posture);
+ *  feeds the §6.4/§16 version-compat check. */
+export function parseCapabilities(payload: unknown): Capabilities {
+  const result = Capabilities.safeParse(payload);
+  if (!result.success) {
+    throw new BoundaryValidationError("capabilities", result.error);
+  }
+  return result.data;
+}
+
+/** Validate a `submit_action`/`approve`/`deny` result (the daemon's `ActionAck`) at the boundary —
+ *  parse-don't-trust the mutation ack before it reaches the consumer (L2-B; LESSON 22 fail-closed). */
+export function parseAck(payload: unknown): ActionAck {
+  const result = ActionAck.safeParse(payload);
+  if (!result.success) {
+    throw new BoundaryValidationError("ActionAck", result.error);
+  }
+  return result.data;
+}
+
+/** Validate a `preview_action` result (the daemon's `ActionPreview`) at the boundary (same fail-closed
+ *  posture) — the human approves against the daemon's real risk/consequences, never a fabricated one. */
+export function parsePreview(payload: unknown): ActionPreview {
+  const result = ActionPreview.safeParse(payload);
+  if (!result.success) {
+    throw new BoundaryValidationError("ActionPreview", result.error);
   }
   return result.data;
 }

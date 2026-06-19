@@ -79,7 +79,7 @@ export function SessionRowCard({
               flex: 1,
             }}
           >
-            {session.title ?? session.session_id}
+            {session.display_name ?? session.session_id}
           </span>
           {ctx ? (
             ctx.pct === null || ctx.accuracy === "unavailable" ? (

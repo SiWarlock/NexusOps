@@ -112,7 +112,7 @@ export function HumanInputQueue({
                             ) : null}
                           </div>
                           <div style={{ font: "var(--fw-medium) var(--fs-label)/1.35 var(--font-sans)", color: "var(--text-primary)" }}>
-                            {a.title ?? a.approval_id}
+                            {a.preview_summary ?? a.approval_id}
                           </div>
                           <div style={{ display: "flex", gap: 6 }}>
                             <Button
@@ -169,7 +169,7 @@ export function HumanInputQueue({
                             ) : null}
                           </div>
                           <div style={{ font: "var(--fw-medium) var(--fs-label)/1.35 var(--font-sans)", color: "var(--text-primary)" }}>
-                            {s.title ?? s.session_id}
+                            {s.display_name ?? s.session_id}
                           </div>
                           <div style={{ font: "var(--fs-micro) var(--font-mono)", color: "var(--text-muted)" }}>
                             {display?.current ?? s.status}

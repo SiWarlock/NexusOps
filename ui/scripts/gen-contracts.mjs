@@ -38,6 +38,24 @@ for (const [name, def] of Object.entries(defs)) {
   if (def && Array.isArray(def.enum)) {
     properties[name] = def;
     required.push(name);
+  } else if (
+    def &&
+    Array.isArray(def.oneOf) &&
+    def.oneOf.length > 0 &&
+    def.oneOf.every((m) => m && typeof m.const === "string")
+  ) {
+    // Doc-commented enums freeze as `oneOf`-of-`const` (each member `{const, description}`), which
+    // json-schema-to-zod would emit as a z.union of literals. Synthesize a FLAT enum from the const
+    // values so it emits an identical `z.enum(...)` — uniform with the flat enums, so the §5.0 drift
+    // gate's `.options` comparison stays one shape (ui-065). Object-discriminated unions
+    // (ActionError/ServerFrame) have no member-level `const` → the `every(const is string)` guard
+    // skips them (they are not value enums).
+    properties[name] = {
+      type: "string",
+      enum: def.oneOf.map((m) => m.const),
+      description: def.description,
+    };
+    required.push(name);
   }
 }
 if (required.length === 0) {

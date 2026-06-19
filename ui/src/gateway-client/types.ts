@@ -7,10 +7,15 @@
 // All daemon access in the UI flows through a single implementation of this
 // interface (ui/CLAUDE.md forbidden #3).
 import type {
+  ActionAck,
+  ActionPreview,
+  ActionRequest,
   Capabilities,
+  DiffResult,
   ProjectionDelta,
   ProjectionName,
   ProjectionPageByName,
+  TerminalOutputFrame,
 } from "../contracts/index";
 import type { ConnectionState } from "../connection/state";
 
@@ -39,7 +44,37 @@ export interface GatewayPort {
     page?: ProjectionPageParams,
   ): Promise<ProjectionPageByName[K]>;
   subscribe(params: SubscribeParams): AsyncIterable<ProjectionDelta>;
+
+  // §6.4 Terminal-Channel display READ: subscribe to a terminal's output stream.
+  // A READ (NOT a mutation — qualified to build provisionally, unlike the 043
+  // intent path). Yields frozen `terminal_output` frames, OUTPUT ONLY (the §17
+  // PTY-death is a daemon event→projection, never pushed over this channel — the
+  // well's ended-state reads `session.status`). DISPLAY-ONLY #9: the UI renders
+  // these bytes and never sends keystroke input to the PTY (no input method here).
+  // The real UdsGatewayPort demux of `ServerFrame.terminal_output` is a transport/P4 spread.
+  subscribe_terminal(terminal_id: string): AsyncIterable<TerminalOutputFrame>;
+
   get_capabilities(): Promise<Capabilities>;
+
+  // §6.1 get_diff — a read-only structured diff (HEAD→workdir) for a file in a
+  // worktree (the 6.3e Code/Diff surface). A READ (NOT a mutation — qualified to
+  // adopt ahead of its consumer): the daemon resolves `worktree_id → proj_worktree.path`
+  // then reads git2. Errors surface a `WireError` (e.g. the §6.4 `not_found` read
+  // code) the same as the other methods; there is NO diff-mutation method here (the
+  // per-hunk git.* actions go through the submit_action intent path, not this read).
+  get_diff(worktree_id: string, file: string): Promise<DiffResult>;
+
+  // §6.1 mutation-intent surface (daemon/src/ipc/methods.rs:169-211). INV-SEC-1 /
+  // §4.2 law 1: the UI SUBMITS intents only — the daemon's Action Gateway is the
+  // single executor + DB writer; the daemon mints `action_request_id`. The wire
+  // params are IDs (not objects) for preview/approve/deny (the daemon owns the
+  // record). Each method REJECTS with a `WireError` (the daemon's §6.4
+  // `IpcErrorCode`) on the daemon error path; the intent seam surfaces that code
+  // VERBATIM (never collapsed/remapped). There is NO execution method here.
+  submit_action(request: ActionRequest): Promise<ActionAck>;
+  preview_action(action_request_id: string): Promise<ActionPreview>;
+  approve(approval_id: string, step_id?: string): Promise<ActionAck>;
+  deny(approval_id: string, reason: string): Promise<ActionAck>;
 
   // Connection management (transport liveness; §11.4). These are UI-client
   // transport concerns, NOT part of the frozen §6.1 RPC method surface.
@@ -47,4 +82,23 @@ export interface GatewayPort {
   onConnectionChange(cb: (state: ConnectionState) => void): () => void;
   /** Attempt to (re)establish the transport — the Retry/Repair action. */
   reconnect(): void;
+  /**
+   * The subscribe supervisor's connection-state drive (054 — the single authority; ui-059 per-stream).
+   * Each live subscribe stream reports its computed lifecycle (`disconnected`/`reconnecting`/`connected`)
+   * keyed by `streamId` (e.g. "Session", "ApprovalQueue"). The port is the SINGLE writer of connection
+   * state (no second raw React setter), records each stream's last state, and drives the global to the
+   * WORST-OF aggregate — so an ad-hoc read can never mask a down stream AND a healthy stream can never
+   * clear another stream's degrade (forbidden #6 / LESSON 4). The stream-degraded axis derives from the
+   * committed aggregate; it gates the read-path UPGRADE while degraded; DEGRADE always flows (fail-safe).
+   */
+  notifyConnectionState(streamId: string, next: ConnectionState): void;
+
+  /**
+   * The L2 go-live gate (cat-1, 056/L2-B). The SINGLE flag both the transport (a mutation method
+   * throws-not-enabled + never reaches the daemon when false) AND the UI submit controls (disabled
+   * when false) honor — so L2-C is one flip that lights up the wire + the controls together.
+   * `UdsGatewayPort` defaults it FALSE (production: no live mutation until the USER-gated L2-C enable);
+   * `MockGatewayPort` defaults it TRUE (a fully-working test/dev port). NOT a §6.1 RPC method.
+   */
+  readonly mutationsEnabled: boolean;
 }

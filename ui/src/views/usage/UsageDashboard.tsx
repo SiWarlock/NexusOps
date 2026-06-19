@@ -83,7 +83,7 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub: st
 export function UsageDashboard({ rows, creditPool }: UsageDashboardProps) {
   const vms = buildUsageRows(rows);
   const poolState: CreditPoolState | null = creditPool
-    ? creditPoolState(creditPool.used, creditPool.limit)
+    ? creditPoolState(creditPool.used, creditPool.limit, creditPool.kind)
     : null;
 
   const spend = rows.reduce((s, r) => s + r.cost, 0);

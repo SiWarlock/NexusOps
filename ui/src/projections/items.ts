@@ -8,6 +8,7 @@ import type {
   SessionRow,
   PullRequestRow,
   ApprovalQueueRow,
+  ReviewRow,
 } from "../contracts/index";
 
 /**
@@ -31,7 +32,8 @@ export interface ProjectionItem {
 export function toSessionItems(rows: SessionRow[]): ProjectionItem[] {
   return rows.map((s) => ({
     id: s.session_id,
-    label: s.title ?? s.session_id,
+    // `display_name` is the daemon-canonical name (was the ui-provisional `title`, ui-062).
+    label: s.display_name ?? s.session_id,
     machine: "Session",
     status: s.status,
   }));
@@ -39,8 +41,10 @@ export function toSessionItems(rows: SessionRow[]): ProjectionItem[] {
 
 export function toPrItems(rows: PullRequestRow[]): ProjectionItem[] {
   return rows.map((pr) => ({
-    id: pr.pr_number,
-    label: pr.title ?? `PR #${pr.pr_number}`,
+    // The PK is `pr_id` (the daemon's NOT-NULL composite); `pr_number` is the GitHub-native
+    // display number (nullable u64), used only for the human label.
+    id: pr.pr_id,
+    label: pr.title ?? (pr.pr_number != null ? `PR #${pr.pr_number}` : pr.pr_id),
     machine: "PullRequest",
     status: pr.status,
   }));
@@ -49,8 +53,28 @@ export function toPrItems(rows: PullRequestRow[]): ProjectionItem[] {
 export function toApprovalItems(rows: ApprovalQueueRow[]): ProjectionItem[] {
   return rows.map((a) => ({
     id: a.approval_id,
-    label: a.title ?? a.approval_id,
+    // the frozen ApprovalQueueRow has no `title` — `preview_summary` is the human label.
+    label: a.preview_summary ?? a.approval_id,
     machine: "Approval",
     status: a.status,
   }));
+}
+
+/**
+ * Group Review-projection rows by `pr_number` — the client-side join key to a PullRequest (ui-064,
+ * §11.2 PR Review Workspace). `ReviewRow` carries no `pr_id` PK reference, so the GitHub-native
+ * `pr_number` is the join axis; a row with a `null` pr_number is unattributable to a PR and is excluded.
+ * Multiple reviews per PR are retained in input order (the daemon serves them submitted-time ordered).
+ */
+export function reviewsByPr(reviews: ReviewRow[]): Map<number, ReviewRow[]> {
+  const out = new Map<number, ReviewRow[]>();
+  for (const review of reviews) {
+    // `== null` excludes BOTH undefined and the daemon's explicit `null` — a review with no pr_number
+    // is unattributable to a PR (the client-side join has no key), so it contributes no entry.
+    if (review.pr_number == null) continue;
+    const list = out.get(review.pr_number);
+    if (list) list.push(review);
+    else out.set(review.pr_number, [review]);
+  }
+  return out;
 }

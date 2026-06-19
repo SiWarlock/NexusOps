@@ -1,16 +1,28 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Brain,
-  Check,
   ChevronRight,
   FileCode,
   FolderGit2,
   GitCommitHorizontal,
   GitMerge,
   GitPullRequest,
+  Minus,
   Plus,
+  Trash2,
 } from "lucide-react";
-import type { PullRequestRow } from "../../contracts/index";
+import type {
+  ActionAck,
+  DiffLine,
+  DiffResult,
+  Hunk,
+  PerHunkGitActionType,
+  PullRequestRow,
+  ReviewRow,
+} from "../../contracts/index";
+import { reviewsByPr } from "../../projections/items";
+import { PrWorkspace } from "./PrWorkspace";
+import { WireError } from "../../contracts/index";
 import {
   Badge,
   Button,
@@ -22,107 +34,255 @@ import {
 } from "../../design-system/kit";
 import { StatusPill } from "../../status/StatusPill";
 import { Eyebrow } from "../cockpit";
-import { diffFixture, prDisplayFixture, worktreesFixture } from "../display-fixtures";
+import { prDisplayFixture, worktreesFixture, diffReviewContext } from "../display-fixtures";
+import type { GatewayPort } from "../../gateway-client/types";
+import { useSubmitIntent, type IntentResult } from "../../intent/submit-intent";
+import { useCanSubmitIntent } from "../../connection/read-only";
+import { buildHunkActionRequest } from "../../intent/hunk-resource-ref";
+import {
+  enrichHunkAction,
+  type GatewayApprovalEnrichment,
+} from "../../shell/display-meta";
+import { GatewayModal, ResultNotice } from "../../overlays/GatewayModal";
 
-type Tab = "Review" | "Worktrees" | "Pull requests";
+/** DiffLineKind → the kit DiffHunk line `type`. */
+const KIT_LINE_TYPE: Record<DiffLine["kind"], "ctx" | "add" | "del"> = {
+  context: "ctx",
+  added: "add",
+  removed: "del",
+};
 
-/** Review tab — kit DiffHunk over the diff DISPLAY FIXTURE (the worktree/diff
- *  contract is daemon-gated; accept/approve/fix are disabled, not faked). */
-function ReviewTab() {
+type DiffState =
+  | { kind: "loading" }
+  | { kind: "ready"; diff: DiffResult }
+  | { kind: "error"; code?: string };
+
+/** The per-hunk git-action bar (6.3e, cat-1). stage/unstage/discard are PURE SUBMITTERS
+ *  over the seam (Q1); disabled when !canSubmitIntent (Q2 fail-safe); discard is the
+ *  destructive (risk-3 daemon-side), explicitly labeled + danger-toned. Each button's
+ *  accessible name carries the hunk header (unique per hunk; §11.6). */
+function HunkGitActions({
+  hunk,
+  canSubmit,
+  onAction,
+}: {
+  hunk: Hunk;
+  canSubmit: boolean;
+  onAction: (actionType: PerHunkGitActionType, hunk: Hunk) => void;
+}) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", height: "100%", background: "var(--surface-canvas)" }}>
-      <aside
-        style={{
-          borderRight: "1px solid var(--border-default)",
-          background: "var(--surface-panel)",
-          overflowY: "auto",
-          padding: "12px 8px",
-        }}
+    <div
+      role="group"
+      aria-label={`Hunk actions ${hunk.header}`}
+      style={{ display: "flex", gap: 6, padding: "6px 0 2px" }}
+    >
+      <Button
+        size="sm"
+        variant="secondary"
+        icon={<Plus size={13} />}
+        disabled={!canSubmit}
+        aria-label={`Stage hunk ${hunk.header}`}
+        onClick={() => onAction("git.stage_hunk", hunk)}
       >
-        <Eyebrow style={{ padding: "0 8px 10px" }}>Changed files</Eyebrow>
-        {diffFixture.map((f, i) => (
-          <div
-            key={f.file}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 7,
-              padding: "6px 8px",
-              borderRadius: "var(--r-2)",
-              background: i === 0 ? "var(--surface-active)" : "transparent",
-              marginBottom: 2,
-            }}
-          >
-            <FileCode size={13} aria-hidden="true" style={{ color: "var(--text-faint)", flex: "none" }} />
-            <span
-              style={{
-                flex: 1,
-                font: "var(--fs-meta) var(--font-mono)",
-                color: "var(--text-secondary)",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {f.file.split("/").pop()}
-            </span>
-            {f.comments > 0 ? (
-              <Badge tone="review" size="xs" mono>
-                {f.comments}
-              </Badge>
-            ) : null}
-          </div>
-        ))}
-        <div style={{ marginTop: "auto", padding: "10px 8px 0", display: "flex", gap: 6 }}>
-          <Badge tone="success" variant="dot">
-            +476
-          </Badge>
-          <Badge tone="danger" variant="dot">
-            −110
-          </Badge>
-        </div>
-      </aside>
-      <div style={{ overflowY: "auto", padding: "14px 16px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-          <h1 style={{ margin: 0, font: "var(--fw-semibold) var(--fs-h3)/1 var(--font-sans)" }}>
-            Review · PR #101
-          </h1>
-          <MetaChip tone="pr">#101</MetaChip>
-          <Badge mono style={{ color: "var(--text-faint)" }}>
-            display fixture — diff contract pending
-          </Badge>
-          <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-            <span title="Brain co-pilot arrives with the sidecar contract (Phase 8)">
-              <Button variant="secondary" size="sm" icon={<Brain size={14} />} disabled>
-                Ask Brain
-              </Button>
-            </span>
-            <span title="PR approval is a Gateway mutation (intent seam — daemon-gated)">
-              <Button variant="primary" size="sm" icon={<Check size={14} />} disabled>
-                Approve PR
-              </Button>
-            </span>
-          </div>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {/* actions={false}: the kit's per-hunk Accept/Reject bar has no
-              disabled mode — until review intents land, rendering it would be
-              dead clicks (§11.6 wire-or-disable). */}
-          {diffFixture.map((f) => (
-            <DiffHunk
-              key={f.file}
-              file={f.file}
-              header={f.header}
-              lines={f.lines}
-              comments={f.comments}
-              actions={false}
-            />
-          ))}
-        </div>
-      </div>
+        Stage
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        icon={<Minus size={13} />}
+        disabled={!canSubmit}
+        aria-label={`Unstage hunk ${hunk.header}`}
+        onClick={() => onAction("git.unstage_hunk", hunk)}
+      >
+        Unstage
+      </Button>
+      <Button
+        size="sm"
+        variant="danger"
+        icon={<Trash2 size={13} />}
+        disabled={!canSubmit}
+        aria-label={`Discard hunk ${hunk.header}`}
+        onClick={() => onAction("git.discard_hunk", hunk)}
+      >
+        Discard
+      </Button>
     </div>
   );
 }
+
+type Tab = "Review" | "Worktrees" | "Pull requests";
+
+/** Review tab (6.3e, cat-1) — sources the diff from the `get_diff` READ RPC and wires
+ *  the per-hunk stage/unstage/discard buttons to the 043/044 intent seam. The UI NEVER
+ *  mutates: a click submits a typed `git.*` ActionRequest (resource_ref targets the EXACT
+ *  displayed hunk) → the daemon adjudicates → the GatewayModal renders the daemon's
+ *  policy/preview → the human approves/denies. No optimistic "done"; a get_diff error/
+ *  not_found renders an honest unavailable state (never a fabricated diff, forbidden #2). */
+function ReviewTab({ gateway }: { gateway: GatewayPort }) {
+  const seam = useSubmitIntent(gateway);
+  // The effective per-hunk submit gate (056/L2-B): a live link AND the L2 go-live enable. While
+  // `mutationsEnabled` is false (the L2-B honest disabled state), the per-hunk buttons stay disabled
+  // — L2-B enables nothing in the UI (the go-live is the USER-gated L2-C single flip).
+  const canSubmit = useCanSubmitIntent() && gateway.mutationsEnabled;
+  const { worktreeId, file } = diffReviewContext;
+  const [state, setState] = useState<DiffState>({ kind: "loading" });
+  const [pendingApproval, setPendingApproval] =
+    useState<GatewayApprovalEnrichment | null>(null);
+  const [submitResult, setSubmitResult] = useState<IntentResult<ActionAck> | null>(null);
+  // The submit succeeded but the approval-card enrichment re-fetch (053b) failed → an honest
+  // degrade (never a silent stall, §11.7), kept separate from the intent-rejection surface.
+  const [enrichFailed, setEnrichFailed] = useState(false);
+
+  // Source the diff LIVE from get_diff (no static fixture). An error/not_found → an
+  // honest unavailable state (the code carried verbatim), never a fabricated diff.
+  useEffect(() => {
+    let active = true;
+    setState({ kind: "loading" });
+    gateway.get_diff(worktreeId, file).then(
+      (diff) => {
+        if (active) setState({ kind: "ready", diff });
+      },
+      (e: unknown) => {
+        if (!active) return;
+        const parsed = WireError.safeParse(e);
+        if (parsed.success) {
+          // A daemon-reported read error (e.g. not_found) — honest unavailable, code verbatim.
+          setState({ kind: "error", code: parsed.data.code });
+        } else {
+          // A non-WireError (a real transport/JS Error) — DEGRADE honestly (a read failure
+          // must not crash the cockpit, §11.7; re-throw would be an unhandled rejection) but
+          // surface the unexpected failure for diagnosis: never SILENTLY swallow a bug
+          // (LESSON §16's spirit, adapted to a READ — degrade + log, the GatewayModal-preview
+          // read pattern, not the mutation seam's re-throw).
+          console.error("get_diff failed unexpectedly", e);
+          setState({ kind: "error" });
+        }
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [gateway, worktreeId, file]);
+
+  // A per-hunk button → a typed ActionRequest over the seam (Q1 pure submitter). On a
+  // daemon-recorded ack, open the approval card (Q3 — its daemon-reported pending status,
+  // never optimistic "done"); a rejection routes through ResultNotice → describeRejection.
+  async function onAction(actionType: PerHunkGitActionType, hunk: Hunk) {
+    const request = buildHunkActionRequest(
+      actionType,
+      worktreeId,
+      file,
+      hunk,
+      new Date().toISOString(),
+    );
+    const r = await seam.submitAction(request);
+    if ("ok" in r) {
+      setSubmitResult(null);
+      setEnrichFailed(false);
+      try {
+        // 053b: source the daemon's REAL risk/policy by re-fetching the ApprovalQueue + matching the
+        // minted action_request_id (no UI-derived fixture); absent → an honest awaiting placeholder.
+        setPendingApproval(await enrichHunkAction(gateway, r.ok));
+      } catch (e) {
+        // The intent WAS recorded (the daemon acked); only the approval-card enrichment re-fetch
+        // failed — a malformed ApprovalQueue payload (BoundaryValidationError) or a transport fault.
+        // Degrade HONESTLY (the get_diff read-degrade pattern above, §11.7): log + an honest notice,
+        // NEVER a silent stall and NEVER a card built from un-parsed data (forbidden #2). The approval
+        // is still in the global queue; a read failure must not crash the cockpit (no re-throw).
+        console.error("enrichHunkAction (ApprovalQueue re-fetch) failed", e);
+        setEnrichFailed(true);
+      }
+    } else {
+      setSubmitResult(r);
+    }
+  }
+
+  return (
+    <div style={{ height: "100%", overflowY: "auto", padding: "14px 16px", background: "var(--surface-canvas)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <span aria-hidden="true" style={{ color: "var(--text-faint)", display: "inline-flex" }}>
+          <FileCode size={15} />
+        </span>
+        <h1 style={{ margin: 0, font: "var(--fw-semibold) var(--fs-h3)/1 var(--font-mono)" }}>
+          {file}
+        </h1>
+        <Badge mono style={{ color: "var(--text-faint)" }}>
+          changed-files list pending worktree projection
+        </Badge>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          <span title="Brain co-pilot arrives with the sidecar contract (Phase 8)">
+            <Button variant="secondary" size="sm" icon={<Brain size={14} />} disabled>
+              Ask Brain
+            </Button>
+          </span>
+        </div>
+      </div>
+
+      {submitResult ? (
+        <div style={{ marginBottom: 12 }}>
+          <ResultNotice result={submitResult} onReapprove={() => setSubmitResult(null)} />
+        </div>
+      ) : null}
+
+      {enrichFailed ? (
+        <div data-testid="enrich-unavailable" style={{ marginBottom: 12 }}>
+          <div style={NOTE}>
+            The action was submitted, but its approval preview couldn’t load (the daemon’s approval
+            queue read failed). Find it in the approval queue to approve or deny.
+          </div>
+        </div>
+      ) : null}
+
+      {state.kind === "loading" ? (
+        <div data-testid="diff-loading" style={NOTE}>
+          Loading the diff…
+        </div>
+      ) : state.kind === "error" ? (
+        <div data-testid="diff-unavailable" style={NOTE}>
+          Diff unavailable{state.code ? ` (the daemon reported ${state.code})` : ""} — no
+          changes are shown.
+        </div>
+      ) : state.diff.hunks.length === 0 ? (
+        <div data-testid="diff-no-changes" style={NOTE}>
+          No changes in this file.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {state.diff.hunks.map((hunk, i) => (
+            // key on the hunk position identity (unique per hunk in a diff — the same
+            // identity the resource_ref encodes), stable across get_diff re-reads.
+            <div key={`${hunk.old_start}:${hunk.new_start}:${i}`}>
+              <DiffHunk
+                file={file}
+                header={hunk.header}
+                lines={hunk.lines.map((l) => ({ type: KIT_LINE_TYPE[l.kind], text: l.content }))}
+                actions={false}
+              />
+              <HunkGitActions hunk={hunk} canSubmit={canSubmit} onAction={onAction} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {pendingApproval ? (
+        <GatewayModal
+          approval={pendingApproval.approval}
+          policyDecision={pendingApproval.policyDecision}
+          port={gateway}
+          onClose={() => setPendingApproval(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+const NOTE: React.CSSProperties = {
+  font: "var(--fs-label)/1.5 var(--font-sans)",
+  color: "var(--text-muted)",
+  padding: "12px 14px",
+  border: "1px dashed var(--border-subtle)",
+  borderRadius: "var(--r-2)",
+};
 
 // worktree status → kit pill kind + label (prototype WT_STATUS; "dirty" has no
 // kit kind — the prototype falls to idle visuals with the "Dirty" label).
@@ -243,8 +403,17 @@ const LANES: { lane: "open" | "ready" | "merged"; label: string; tone: string }[
 ];
 
 /** Pull-requests tab — lanes over the REAL PullRequest projection; diff stats /
- *  branch / age ride the display side-map (projection enrichment flagged). */
-function PRsTab({ prs }: { prs: PullRequestRow[] }) {
+ *  branch / age ride the display side-map (projection enrichment flagged). A card's
+ *  header is a SELECTING button (keyboard-reachable; carries the `data-item-id`) → it
+ *  opens the PR Review Workspace (ui-064); the disabled Merge button is a SIBLING (no
+ *  nested-interactive — WAI-ARIA). */
+function PRsTab({
+  prs,
+  onSelect,
+}: {
+  prs: PullRequestRow[];
+  onSelect: (prId: string) => void;
+}) {
   return (
     <div style={{ height: "100%", overflowY: "auto", padding: "14px 16px" }}>
       <div style={{ display: "flex", gap: 12, alignItems: "flex-start", minWidth: 0 }}>
@@ -268,11 +437,12 @@ function PRsTab({ prs }: { prs: PullRequestRow[] }) {
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {items.map((p) => {
-                  const d = prDisplayFixture[p.pr_number];
+                  // pr_number is now a nullable u64 (ui-061 reconcile); the display side-map is
+                  // keyed by the string form. Key/locator on the PK pr_id (the toPrItems precedent).
+                  const d = prDisplayFixture[String(p.pr_number ?? "")];
                   return (
                     <div
-                      key={p.pr_number}
-                      data-item-id={`PullRequest:${p.pr_number}`}
+                      key={p.pr_id}
                       style={{
                         border: "1px solid var(--border-default)",
                         borderRadius: "var(--r-3)",
@@ -283,37 +453,60 @@ function PRsTab({ prs }: { prs: PullRequestRow[] }) {
                         gap: 8,
                       }}
                     >
-                      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                        <MetaChip tone="pr">#{p.pr_number}</MetaChip>
-                        <StatusPill machine="PullRequest" status={p.status} size="xs" />
-                        {d ? (
-                          <span style={{ marginLeft: "auto", font: "var(--fs-micro) var(--font-mono)", color: "var(--text-faint)" }}>
-                            {d.age}
-                          </span>
-                        ) : null}
-                      </div>
-                      <div style={{ font: "var(--fw-medium) var(--fs-label)/1.3 var(--font-sans)", color: "var(--text-primary)" }}>
-                        {p.title ?? `PR #${p.pr_number}`}
-                      </div>
-                      {d ? (
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            font: "var(--fs-micro) var(--font-mono)",
-                            color: "var(--text-faint)",
-                          }}
-                        >
-                          <span style={{ color: "var(--diff-add-ink)" }}>+{d.adds}</span>
-                          <span style={{ color: "var(--diff-del-ink)" }}>−{d.dels}</span>
-                          <span>· {d.files} files</span>
-                          {d.comments > 0 ? <span>· 🗩 {d.comments}</span> : null}
+                      {/* The selecting button — opens the PR Review Workspace (ui-064). Carries the
+                          data-item-id locator; keyboard-reachable; the Merge button is a sibling below. */}
+                      <button
+                        type="button"
+                        data-item-id={`PullRequest:${p.pr_id}`}
+                        onClick={() => onSelect(p.pr_id)}
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 8,
+                          width: "100%",
+                          padding: 0,
+                          border: "none",
+                          background: "transparent",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                          {/* null-safe: a tone="pr" chip is a "#<number>" badge — omit it entirely
+                              when pr_number is null (never a bare "#"); the label below carries the
+                              pr_id identity (the :485 fallback). Mirrors the label's null-safety. */}
+                          {p.pr_number != null ? <MetaChip tone="pr">#{p.pr_number}</MetaChip> : null}
+                          <StatusPill machine="PullRequest" status={p.status} size="xs" />
+                          {d ? (
+                            <span style={{ marginLeft: "auto", font: "var(--fs-micro) var(--font-mono)", color: "var(--text-faint)" }}>
+                              {d.age}
+                            </span>
+                          ) : null}
                         </div>
-                      ) : null}
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <div style={{ font: "var(--fw-medium) var(--fs-label)/1.3 var(--font-sans)", color: "var(--text-primary)" }}>
+                          {/* null-safe label: title → `PR #<n>` → the always-present pr_id PK (toPrItems parity) */}
+                          {p.title ?? (p.pr_number != null ? `PR #${p.pr_number}` : p.pr_id)}
+                        </div>
+                        {d ? (
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              font: "var(--fs-micro) var(--font-mono)",
+                              color: "var(--text-faint)",
+                            }}
+                          >
+                            <span style={{ color: "var(--diff-add-ink)" }}>+{d.adds}</span>
+                            <span style={{ color: "var(--diff-del-ink)" }}>−{d.dels}</span>
+                            <span>· {d.files} files</span>
+                            {d.comments > 0 ? <span>· 🗩 {d.comments}</span> : null}
+                          </div>
+                        ) : null}
                         {d ? <MetaChip tone="branch">{d.branch}</MetaChip> : null}
-                        {lane === "ready" ? (
+                      </button>
+                      {lane === "ready" ? (
+                        <div style={{ display: "flex" }}>
                           <span
                             title="Merge is a Gateway mutation (intent seam — daemon-gated)"
                             style={{ marginLeft: "auto" }}
@@ -322,8 +515,8 @@ function PRsTab({ prs }: { prs: PullRequestRow[] }) {
                               Merge
                             </Button>
                           </span>
-                        ) : null}
-                      </div>
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -357,8 +550,25 @@ function PRsTab({ prs }: { prs: PullRequestRow[] }) {
  * prototype treatment over DISPLAY FIXTURES until the worktree/diff contracts
  * land (flagged). All mutations disabled, not faked (§11.6).
  */
-export function DiffReview({ prs }: { prs: PullRequestRow[] }) {
+export function DiffReview({
+  prs,
+  reviews,
+  gateway,
+}: {
+  prs: PullRequestRow[];
+  reviews: ReviewRow[];
+  gateway: GatewayPort;
+}) {
   const [tab, setTab] = useState<Tab>("Review");
+  // The PR selected from the Kanban → the Review tab shows its PR Workspace (ui-064, §11.2). Pure UI
+  // selection state (LESSON §13 family — mirrors selectedSessionId); a stale id (the PR left the set)
+  // re-resolves to none (no ghost), falling back to the 6.3e worktree per-hunk diff.
+  const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
+  const selectedPr =
+    selectedPrId != null ? prs.find((p) => p.pr_id === selectedPrId) : undefined;
+  // Build the pr_number→reviews join once per `reviews` change (not per render — mirrors the memoized
+  // item-builder pattern), so a tab keystroke doesn't re-group the whole set.
+  const reviewsByPrNumber = useMemo(() => reviewsByPr(reviews), [reviews]);
   const tabs: Tab[] = ["Review", "Worktrees", "Pull requests"];
   const counts: Partial<Record<Tab, number>> = {
     Worktrees: worktreesFixture.length,
@@ -407,7 +617,33 @@ export function DiffReview({ prs }: { prs: PullRequestRow[] }) {
         ))}
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
-        {tab === "Review" ? <ReviewTab /> : tab === "Worktrees" ? <WorktreesTab /> : <PRsTab prs={prs} />}
+        {tab === "Review" ? (
+          // A selected PR → its read-only PR Review Workspace (ui-064); else the 6.3e worktree per-hunk
+          // diff (preserved, not deleted). Reviews join to the PR client-side on pr_number.
+          selectedPr ? (
+            <PrWorkspace
+              pr={selectedPr}
+              reviews={
+                selectedPr.pr_number != null
+                  ? (reviewsByPrNumber.get(selectedPr.pr_number) ?? [])
+                  : []
+              }
+              onBack={() => setSelectedPrId(null)}
+            />
+          ) : (
+            <ReviewTab gateway={gateway} />
+          )
+        ) : tab === "Worktrees" ? (
+          <WorktreesTab />
+        ) : (
+          <PRsTab
+            prs={prs}
+            onSelect={(id) => {
+              setSelectedPrId(id);
+              setTab("Review");
+            }}
+          />
+        )}
       </div>
     </div>
   );

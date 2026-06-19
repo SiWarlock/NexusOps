@@ -7,28 +7,35 @@
 // §5.0 / §6.1 / §7.2 and the brief's Step-2.5 Q2.
 import { z } from "zod";
 import bundle from "./generated";
+// The §6.2 risk axis + the PolicyDecision shadow live in intent-contracts (which depends only on
+// zod+generated — no cycle). The frozen ApprovalQueueRow carries both, so the row shadow reuses them.
+import { PolicyDecision, RiskLevel } from "./intent-contracts";
 
-// Delegate to the generated enums (no hand-declared status unions).
+// Delegate to the generated enums (no hand-declared status unions). The two R-5
+// status enums were renamed to their `$def` names at the 0.19.0 Gateway freeze
+// (`Approval`→`ApprovalStatus`, `ActionRequest`→`ActionRequestStatus`).
 const Session = bundle.shape.Session;
 const PullRequest = bundle.shape.PullRequest;
-const Approval = bundle.shape.Approval;
+const ReviewState = bundle.shape.ReviewState;
+const ApprovalStatus = bundle.shape.ApprovalStatus;
 const ActorType = bundle.shape.ActorType;
-const ActionRequest = bundle.shape.ActionRequest;
+const ActionRequestStatus = bundle.shape.ActionRequestStatus;
+const RequesterType = bundle.shape.RequesterType;
 
-// ─── Survival/recovery (PROVISIONAL — 6.4d) ──────────────────────────────────
-// The daemon's O-2 survival schema is NOT frozen. RecoveryState/ResumeMode/
-// RecoveryStatus are hand-declared provisional shapes (Lesson §2); they reconcile
-// at the daemon survival-schema freeze (Carry-forward provisional→generated spread).
+// ─── Survival/recovery (GENERATED since ui-065) ──────────────────────────────
+// The daemon froze the O-2 survival schema (`ResumeMode`/`RecoveryState`) as `oneOf`-of-`const` defs
+// (doc-commented). Since ui-065 the generator emits oneOf-const, so these are REAL generated enums —
+// exported from `contracts/index` (the §5.0 drift gate pins them); the prior hand-declared drift-pinned
+// SHADOWS are retired. Here we take LOCAL handles from the generated bundle (the Session/PullRequest/
+// ReviewState precedent above) for the internal `RecoveryStatus.state` / `SessionRow.resume_mode` uses.
+// `RecoveryStatus` is a ui-local wrapper the daemon did NOT freeze → stays provisional, re-based over
+// the generated `RecoveryState`.
+const RecoveryState = bundle.shape.RecoveryState;
+const ResumeMode = bundle.shape.ResumeMode;
 
-/** Post-restart recovery state (O-2, §11.4). PROVISIONAL. */
-export const RecoveryState = z.enum(["recovering", "recovered", "recovery_failed"]);
-export type RecoveryState = z.infer<typeof RecoveryState>;
-
-/** How a session was brought back after a restart (O-2): live vs relaunched. PROVISIONAL. */
-export const ResumeMode = z.enum(["resumed", "replayed"]);
-export type ResumeMode = z.infer<typeof ResumeMode>;
-
-/** The recovery status input (fixture-driven; daemon survival logic not built). */
+/** The recovery status input (ui-local wrapper — the daemon froze RecoveryState but not this
+ *  wrapper; re-based over the drift-pinned RecoveryState). The SessionRecovered-event→aggregate
+ *  consumption (§11.4 recovery-UX) is a deferred follow-on. */
 export const RecoveryStatus = z.object({
   state: RecoveryState,
   // sessions affected by a failed recovery (subject ids); empty/absent otherwise.
@@ -78,8 +85,8 @@ export type FencingConflict = z.infer<typeof FencingConflict>;
 // `.extract` — it THROWS at load if the frozen enum renames them; never a re-
 // declaration, Lesson §2). Only the net-new integrity signals are provisional.
 
-/** The two frozen ActionRequest outcomes that raise an audit-integrity alert. */
-export const AuditOutcomeStatus = ActionRequest.extract([
+/** The two frozen ActionRequestStatus outcomes that raise an audit-integrity alert. */
+export const AuditOutcomeStatus = ActionRequestStatus.extract([
   "partially_succeeded",
   "rollback_failed",
 ]);
@@ -119,15 +126,28 @@ export const SafetyState = z.object({
 });
 export type SafetyState = z.infer<typeof SafetyState>;
 
-/** A single row of the Session projection (provisional shape). */
-export const SessionRow = z.object({
-  session_id: z.string(),
-  status: Session,
-  title: z.string().optional(),
-  project_id: z.string().optional(),
-  // O-2 survival display (PROVISIONAL): how the session came back after a restart.
-  resume_mode: ResumeMode.optional(),
-});
+/** A row of the Session projection — the 3rd frozen projection-row (@0.35, D2,
+ *  `shared/src/projections.rs`). Reconciled 5→10 (ui-062): a drift-pinned frozen-shadow snapshot-pinned
+ *  to `$defs.SessionRow` (the ApprovalQueueRow precedent §37). `session_id`/`project_id`/`status` are the
+ *  non-Option required core (the daemon's NOT-NULL columns — `project_id` was wrongly optional); the rest
+ *  present-and-nullable. `display_name` is the daemon-canonical name (was the ui-provisional `title`). The
+ *  §8.1/§11.4 survival fields (`resume_mode`/`replayed_event_count`/`recovered_at`) are now consumed (the
+ *  per-session resume-mode indicator). `.strict()` per the frozen `deny_unknown_fields`. */
+export const SessionRow = z
+  .object({
+    session_id: z.string(),
+    project_id: z.string(),
+    status: Session,
+    display_name: z.string().nullable().optional(),
+    harness: z.string().nullable().optional(),
+    model: z.string().nullable().optional(),
+    execution_profile_id: z.string().nullable().optional(),
+    // O-2 survival display: how the session came back after a daemon restart.
+    resume_mode: ResumeMode.nullable().optional(),
+    replayed_event_count: z.number().int().nonnegative().nullable().optional(),
+    recovered_at: z.string().nullable().optional(),
+  })
+  .strict();
 export type SessionRow = z.infer<typeof SessionRow>;
 
 /** A page of the Session projection returned by get_projection (provisional). */
@@ -152,13 +172,28 @@ export const ProjectActivityPage = z.object({
 });
 export type ProjectActivityPage = z.infer<typeof ProjectActivityPage>;
 
-/** A row of the PullRequest projection (provisional; status delegates to the frozen enum). */
-export const PullRequestRow = z.object({
-  pr_number: z.string(),
-  project_id: z.string(),
-  status: PullRequest,
-  title: z.string().optional(),
-});
+/** A row of the PullRequest projection — the 2nd frozen projection-row (@0.34/0.36,
+ *  `shared/src/projections.rs`). A drift-pinned frozen-shadow reconciled 4→11 (P7.2/D5a): the field
+ *  set + types are snapshot-pinned to the schema `$defs.PullRequestRow` (provisional.test); `status`
+ *  delegates to the generated `PullRequest` enum. `.strict()` per the frozen `deny_unknown_fields`;
+ *  `pr_id` (PK) + `status` are non-Option (the daemon serves a NOT-NULL PK), the rest present-and-
+ *  nullable (serialized as explicit `null`, tolerated-absent on read). `pr_number` is the GitHub-native
+ *  PR number — a u64 shadow (NOT a string — the work-order str→number drift), `mergeable` a bool. */
+export const PullRequestRow = z
+  .object({
+    pr_id: z.string(),
+    project_id: z.string().nullable().optional(),
+    repo_id: z.string().nullable().optional(),
+    pr_number: z.number().int().nonnegative().nullable().optional(),
+    title: z.string().nullable().optional(),
+    status: PullRequest,
+    head_branch: z.string().nullable().optional(),
+    base_branch: z.string().nullable().optional(),
+    pr_checked_at: z.string().nullable().optional(),
+    mergeable: z.boolean().nullable().optional(),
+    checks_summary: z.string().nullable().optional(),
+  })
+  .strict();
 export type PullRequestRow = z.infer<typeof PullRequestRow>;
 
 export const PullRequestProjectionPage = z.object({
@@ -168,13 +203,60 @@ export const PullRequestProjectionPage = z.object({
 });
 export type PullRequestProjectionPage = z.infer<typeof PullRequestProjectionPage>;
 
-/** A row of the ApprovalQueue projection (provisional; status delegates to the frozen enum). */
-export const ApprovalQueueRow = z.object({
-  approval_id: z.string(),
-  project_id: z.string(),
-  status: Approval,
-  title: z.string().optional(),
+/** A row of the Review projection — the 4th frozen projection-row (@0.37, D5b-1,
+ *  `shared/src/projections.rs`). A single structured GitHub PR review the L2 PR Review Workspace
+ *  (§11.2) renders, a separate `get_projection("Review")` page joined to a PR client-side on
+ *  `pr_number`. Drift-pinned frozen-shadow (8 fields snapshot-pinned to `$defs.ReviewRow`); `state`
+ *  delegates to the generated `ReviewState` VALUE enum (a fixed verdict, reject-unknown). `.strict()`;
+ *  `review_id` (PK) + `state` non-Option, the rest present-and-nullable. `review_id`/`pr_number` are
+ *  u64 shadows; `body` is the §15-redacted review text the row serves (the redacted value). */
+export const ReviewRow = z
+  .object({
+    review_id: z.number().int().nonnegative(),
+    pr_number: z.number().int().nonnegative().nullable().optional(),
+    project_id: z.string().nullable().optional(),
+    repo_id: z.string().nullable().optional(),
+    reviewer: z.string().nullable().optional(),
+    state: ReviewState,
+    submitted_at: z.string().nullable().optional(),
+    body: z.string().nullable().optional(),
+  })
+  .strict();
+export type ReviewRow = z.infer<typeof ReviewRow>;
+
+export const ReviewProjectionPage = z.object({
+  projection: z.literal("Review"),
+  rows: z.array(ReviewRow),
+  cursor: z.string().nullable().optional(),
 });
+export type ReviewProjectionPage = z.infer<typeof ReviewProjectionPage>;
+
+/** A row of the ApprovalQueue projection — the FIRST frozen projection-row (@0.30,
+ *  `shared/src/projections.rs`). A drift-pinned frozen-shadow: the 14-field set + types are
+ *  snapshot-pinned to the schema `$defs.ApprovalQueueRow` (provisional.test); enum fields delegate
+ *  to the generated value-sets (`risk_level`→`RiskLevel` int 0–4, `status`→`ApprovalStatus`,
+ *  `requester_type`→`RequesterType`); `policy_decision` delegates to the `PolicyDecision` shadow.
+ *  `.strict()` per the frozen `deny_unknown_fields`; the `Option<>` fields are present-and-nullable
+ *  (the daemon serializes them as explicit `null` — no `skip_serializing_if`), tolerated-absent on read.
+ *  The card sources real `risk_level`/`policy_decision` from this row (053 Layer C — no fixture risk). */
+export const ApprovalQueueRow = z
+  .object({
+    approval_id: z.string(),
+    action_request_id: z.string().nullable().optional(),
+    plan_id: z.string().nullable().optional(),
+    project_id: z.string().nullable().optional(),
+    session_id: z.string().nullable().optional(),
+    agent_team_id: z.string().nullable().optional(),
+    risk_level: RiskLevel,
+    status: ApprovalStatus,
+    requester_type: RequesterType,
+    requester_id: z.string(),
+    preview_summary: z.string().nullable().optional(),
+    requested_at: z.string(),
+    expires_at: z.string().nullable().optional(),
+    policy_decision: PolicyDecision.nullable().optional(),
+  })
+  .strict();
 export type ApprovalQueueRow = z.infer<typeof ApprovalQueueRow>;
 
 export const ApprovalQueuePage = z.object({
@@ -207,11 +289,11 @@ export type AuditTrailPage = z.infer<typeof AuditTrailPage>;
 // metric_quality + Harness are hand-declared provisional shapes (Lesson §2); they
 // (incl. the credit-pool thresholds + enum delegation) reconcile at the daemon
 // usage-schema freeze — tracked in the MVP_TASKS Carry-forward provisional→generated
-// spread. No frozen MetricQuality/Harness enum exists yet, so these are local.
-
-/** Adapter-reported accuracy of a usage metric (§9.1 metric_quality). PROVISIONAL. */
-export const MetricQuality = z.enum(["exact", "estimated", "unavailable"]);
-export type MetricQuality = z.infer<typeof MetricQuality>;
+// spread. `MetricQuality` IS frozen at 0.23.0 as a `oneOf`-of-`const` (its variants carry
+// doc-comments); since ui-065 the generator emits oneOf-const, so it is a REAL generated enum
+// (exported from `contracts/index`, drift-gate-pinned) — a LOCAL handle here for `UsageRow.metric_quality`.
+// `Harness` has no frozen enum yet, so it stays local.
+const MetricQuality = bundle.shape.MetricQuality;
 
 /** The agent harness a session runs under. PROVISIONAL (no frozen Harness enum). */
 export const Harness = z.enum(["claude", "codex"]);
@@ -229,8 +311,17 @@ export const UsageRow = z.object({
 });
 export type UsageRow = z.infer<typeof UsageRow>;
 
-/** The capped Agent-SDK credit pool (hard-stops — §0.1), distinct from token spend. */
+/**
+ * A harness billing pool (§11.4/§9.1), distinct from token spend. The `kind`
+ * discriminator encodes the confirmed two-pool asymmetry: `"sdk"` is the capped
+ * monthly SDK/`-p` pool that HARD-STOPS with no fallback; `"interactive"` is the
+ * auto-resetting rolling-window pool that NEVER hard-stops. REQUIRED — every pool
+ * declares its kind (no silent default; a future interactive pool can't inherit
+ * `"sdk"` and false-alarm a hard-stop, §11 never-a-silent-false-safety-state).
+ * PROVISIONAL — the daemon has not frozen a credit-pool schema.
+ */
 export const CreditPool = z.object({
+  kind: z.enum(["sdk", "interactive"]),
   used: z.number(),
   limit: z.number(),
 });
@@ -254,6 +345,7 @@ export type ProjectionPageByName = {
   Session: SessionProjectionPage;
   ProjectActivity: ProjectActivityPage;
   PullRequest: PullRequestProjectionPage;
+  Review: ReviewProjectionPage;
   ApprovalQueue: ApprovalQueuePage;
   AuditTrail: AuditTrailPage;
   UsageLedger: UsageProjectionPage;
@@ -272,6 +364,126 @@ export const ProjectionDelta = z.object({
   id: z.string().optional(),
 });
 export type ProjectionDelta = z.infer<typeof ProjectionDelta>;
+
+// ─── §6.4 frame-mux (PROVISIONAL — contract-ahead) ───────────────────────────
+// The server→client multiplexed frame surface. Hand-modeled here (the GatewayPort
+// frame types are Appendix-A prose, not a generated artifact); the enum-typed
+// fields delegate to the generated enums (never re-declared — Lesson §1/§2). Both
+// shapes are pinned to the frozen schema by the provisional.test §2.5-seam snapshot.
+
+/** A structured daemon→client error frame (§6.4) — carries one closed
+ *  [`IpcErrorCode`]. Frozen §6.4 $def (`additionalProperties:false`), hand-modeled;
+ *  field-set == {code}. `.strict()` MATCHES the frozen closed shape and is
+ *  security-load-bearing for the intent seam: a thrown runtime/transport `Error`
+ *  that happens to carry a colliding `code` (plus `message`/`stack`) is REJECTED, so
+ *  the seam re-throws it as a real bug instead of misclassifying it as a daemon error. */
+export const WireError = z
+  .object({
+    code: bundle.shape.IpcErrorCode,
+  })
+  .strict();
+export type WireError = z.infer<typeof WireError>;
+
+/**
+ * The §6.4 Terminal-Channel OUTPUT frame (P3.4) — the daemon→client raw PTY output
+ * push, the `terminal_output` `ServerFrame` variant EXTRACTED so the 6.3d Session
+ * Terminal well + its `subscribe_terminal` consumer take it directly (one source;
+ * still a `ServerFrame` member below). DISPLAY-ONLY #9: `data` is opaque base64 the
+ * well DECODES for display, NEVER scraped for state. All 4 fields REQUIRED;
+ * field-set drift-pinned to the frozen `ServerFrame.terminal_output`
+ * (provisional.test.ts). Output ONLY — the §17 PTY-death is a daemon
+ * event→projection (`TerminalProcessExited`), not pushed over this channel.
+ */
+export const TerminalOutputFrame = z.object({
+  frame_type: z.literal("terminal_output"),
+  terminal_id: z.string(), // opaque daemon-minted handle — NOT a frozen-22 ID; re-minted on resume.
+  seq: z.number().int().nonnegative(), // uint64 PTY chunk sequence (frozen: integer ≥0).
+  data: z.string(), // base64-encoded raw PTY bytes — opaque; the 6.3d well decodes, not the contract layer.
+});
+export type TerminalOutputFrame = z.infer<typeof TerminalOutputFrame>;
+
+/**
+ * The server→client multiplexed frame envelope (§6.4 `frame_type` tag). The
+ * internally-tagged discriminant demuxes one connection: an RPC response
+ * (`rpc_response`, correlated by `id`, one of result/error) vs a subscription
+ * push (`subscription_push`, the changed projection/kind/row). PROVISIONAL +
+ * contract-ahead — adopted for the intent-seam/transport slice that actually
+ * demuxes; MVP subscribe stays a dedicated single-connection `ProjectionDelta`
+ * stream (no demux yet). The Terminal-Channel `terminal_output` variant
+ * (`TerminalOutputFrame` above) was defined at 0.23.0 (P3.4 §6.4) — the 6.3d
+ * Session Terminal well consumes it. Variant field-sets pinned to `ServerFrame.oneOf`.
+ */
+export const ServerFrame = z.discriminatedUnion("frame_type", [
+  z.object({
+    frame_type: z.literal("rpc_response"),
+    // uint64 correlation id (frozen schema: integer, minimum 0, REQUIRED) — a
+    // numeric id, NOT a string; the JSON-RPC client matches the daemon's id type.
+    id: z.number().int().nonnegative(),
+    result: z.unknown().optional(),
+    error: WireError.nullable().optional(),
+  }),
+  z.object({
+    frame_type: z.literal("subscription_push"),
+    projection: bundle.shape.ProjectionName,
+    kind: bundle.shape.DeltaKind,
+    id: z.string().nullable().optional(),
+    row: SessionRow.optional(),
+  }),
+  TerminalOutputFrame,
+]);
+export type ServerFrame = z.infer<typeof ServerFrame>;
+
+// ─── §6.1 diff read surface (PROVISIONAL — the 6.3e get_diff result) ──────────
+// The `get_diff` RPC's structured result (HEAD→workdir), adopted AHEAD of its
+// consumer (the 6.3e Code/Diff slice maps DiffResult → the render + targets the
+// per-hunk git.* actions by old_start/new_start hunk-identity). Hand-modeled
+// provisional shadows of the frozen §6.1 $defs (objects aren't generated — Lesson
+// §2); the enum field (DiffLine.kind) delegates to the GENERATED DiffLineKind
+// (never re-declared, Lesson §1/§2). All four are `.strict()` (the frozen $defs are
+// `additionalProperties:false`) + field-set/-type drift-pinned (provisional.test).
+
+/** One line within a [`Hunk`] (§6.1): kind + verbatim content. PROVISIONAL. */
+export const DiffLine = z
+  .object({
+    kind: bundle.shape.DiffLineKind,
+    content: z.string(),
+  })
+  .strict();
+export type DiffLine = z.infer<typeof DiffLine>;
+
+/** One unified-diff hunk (§6.1). The old_start/new_start POSITION fields are the
+ *  hunk-identity the per-hunk git.* actions target; offsets are frozen uint32
+ *  (integer, minimum 0). PROVISIONAL. */
+export const Hunk = z
+  .object({
+    header: z.string(),
+    old_start: z.number().int().nonnegative(),
+    old_lines: z.number().int().nonnegative(),
+    new_start: z.number().int().nonnegative(),
+    new_lines: z.number().int().nonnegative(),
+    lines: z.array(DiffLine),
+  })
+  .strict();
+export type Hunk = z.infer<typeof Hunk>;
+
+/** `get_diff` result (§6.1) — the file's structured diff (HEAD→workdir). PROVISIONAL. */
+export const DiffResult = z
+  .object({
+    hunks: z.array(Hunk),
+  })
+  .strict();
+export type DiffResult = z.infer<typeof DiffResult>;
+
+/** `get_diff` params (§6.1) — keyed off the stable `wt_` worktree id (NOT a path;
+ *  the git.* actions ALSO target the id → read-by-id ↔ mutate-by-id consistency,
+ *  §17). The daemon resolves worktree_id → proj_worktree.path. PROVISIONAL. */
+export const GetDiffParams = z
+  .object({
+    worktree_id: z.string(),
+    file: z.string(),
+  })
+  .strict();
+export type GetDiffParams = z.infer<typeof GetDiffParams>;
 
 /** get_capabilities result (provisional; §6.4 handshake surface). */
 export const Capabilities = z.object({

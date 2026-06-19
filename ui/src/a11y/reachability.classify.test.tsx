@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach } from "vitest";
 import { cleanup, render } from "@testing-library/react";
-import { auditFocusable } from "./reachability";
+import { auditFocusable, auditAccessibleNames } from "./reachability";
 
 afterEach(cleanup);
 
@@ -111,5 +111,106 @@ describe("auditFocusable classification", () => {
       </div>,
     );
     expect(() => auditFocusable(pass.container)).not.toThrow();
+  });
+});
+
+// Test-first the §11.6 accessible-NAME net (045): every interactive control must
+// compute a non-empty accessible name (a control can be keyboard-reachable yet a
+// screen-reader dead end). The classifier is a pragmatic subset of WAI-ARIA
+// accname — aria-label / aria-labelledby / non-aria-hidden visible text (incl.
+// .sr-only, Lesson §6) / title / an associated <label>. It throws on the first
+// nameless control, mirroring auditFocusable.
+
+describe("auditAccessibleNames classification", () => {
+  it("accessible_names_throws_on_nameless_control", () => {
+    // spec(§11.6): an icon-only button with no name is a screen-reader dead end.
+    // Assert the SPECIFIC violation (not just "throws") so a future regression
+    // can't masquerade as a pass.
+    const { container } = render(
+      <div>
+        <button type="button">
+          <svg aria-hidden="true" />
+        </button>
+      </div>,
+    );
+    expect(() => auditAccessibleNames(container)).toThrow(/no accessible name/);
+  });
+
+  it.each([
+    ["aria_label", <button type="button" aria-label="Settings" key="a"><span aria-hidden="true">⚙</span></button>],
+    [
+      "aria_labelledby",
+      <span key="b">
+        <span id="an-lbl">Project graph</span>
+        <button type="button" aria-labelledby="an-lbl" />
+      </span>,
+    ],
+    ["visible_text", <button type="button" key="c">Save</button>],
+    ["title", <button type="button" title="Switch project" key="d"><span aria-hidden="true">⇄</span></button>],
+    ["input_label", <label key="e">Filter<input type="text" /></label>],
+  ])("accessible_names_accepts_%s", (_source, node) => {
+    // spec(§11.6): each name source yields a non-empty accessible name → passes.
+    const { container } = render(<div>{node}</div>);
+    expect(() => auditAccessibleNames(container)).not.toThrow();
+  });
+
+  it("accessible_names_accepts_sr_only_child", () => {
+    // spec(§11.6) / Lesson §6: the name comes from a visually-hidden child INSIDE
+    // the control (.sr-only is NOT aria-hidden → a11y-visible), never a wrapper
+    // aria-label; the decorative glyph is aria-hidden (excluded).
+    const { container } = render(
+      <div>
+        <button type="button">
+          <span className="sr-only">Close tab</span>
+          <span aria-hidden="true">×</span>
+        </button>
+      </div>,
+    );
+    expect(() => auditAccessibleNames(container)).not.toThrow();
+  });
+
+  it("accessible_names_excludes_aria_hidden_in_labelledby_target", () => {
+    // spec(§11.6): the aria-labelledby target's name is itself computed with its
+    // aria-hidden subtrees excluded (consistent with the direct-descendant rule) —
+    // a labelledby pointing at an all-aria-hidden element yields no name → throws.
+    const { container } = render(
+      <div>
+        <span id="an-hidden-lbl">
+          <span aria-hidden="true">Hidden</span>
+        </span>
+        <button type="button" aria-labelledby="an-hidden-lbl" />
+      </div>,
+    );
+    expect(() => auditAccessibleNames(container)).toThrow(/no accessible name/);
+  });
+
+  it("accessible_names_excludes_aria_hidden_text", () => {
+    // spec(§11.6): text inside an aria-hidden subtree is out of the a11y tree →
+    // it does NOT count as a name (the glyph is hidden; the name must come from a
+    // non-hidden source). The only text here is aria-hidden → nameless → throws.
+    const { container } = render(
+      <div>
+        <button type="button">
+          <span aria-hidden="true">Decorative</span>
+        </button>
+      </div>,
+    );
+    expect(() => auditAccessibleNames(container)).toThrow(/no accessible name/);
+  });
+
+  it("accessible_names_skips_roving_member_at_-1", () => {
+    // spec(§11.6): a roving member (role="tab"/"option") at tabIndex=-1 in a
+    // one-tabstop container is skipped — the one tabstop carries the group name
+    // (symmetric with isRovingMember in auditFocusable). The -1 member here is
+    // deliberately nameless to prove the skip; the tabstop is named.
+    const { container } = render(
+      <div role="tablist" aria-label="views">
+        <button type="button" role="tab" tabIndex={0} aria-label="Overview" />
+        <button type="button" role="tab" tabIndex={-1}>
+          <svg aria-hidden="true" />
+        </button>
+      </div>,
+    );
+    expect(() => auditAccessibleNames(container)).not.toThrow();
   });
 });

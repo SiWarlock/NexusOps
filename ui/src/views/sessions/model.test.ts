@@ -34,14 +34,13 @@ describe("sessions table model", () => {
 
   it("unknown_project_id_falls_back_visibly", () => {
     const custom: SessionRow[] = [
-      { session_id: "s_x", status: "idle", title: "X", project_id: "nope_404" },
-      { session_id: "s_y", status: "idle", title: "Y" }, // absent project_id
+      { session_id: "s_x", status: "idle", display_name: "X", project_id: "nope_404" },
     ];
     const rows = buildSessionRows(custom, projects);
-    // unmatched project_id → the raw id (visible), never a crash/blank
+    // unmatched project_id → the raw id (visible), never a crash/blank.
+    // (project_id is non-Option in the frozen SessionRow, so an "absent project_id" row is no longer
+    // a valid input — the NO_PROJECT="—" branch stays as defensive code for an undefined-session edge.)
     expect(rows[0]!.projectName).toBe("nope_404");
-    // absent project_id → a visible fallback marker
-    expect(rows[1]!.projectName).toBe("—");
   });
 
   it("default_sort_is_attention_desc", () => {

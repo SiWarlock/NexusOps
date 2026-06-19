@@ -11,7 +11,15 @@
 // FLAG (not faked): every field here needs a daemon projection field to go live.
 // When the daemon lands them, these maps are built from the projection rows and
 // this fixture is deleted — no view-layer change.
-import type { SessionRow, UsageRow } from "../contracts/index";
+import type {
+  ActionAck,
+  Approval,
+  ApprovalQueueRow,
+  PolicyDecision,
+  SessionRow,
+  UsageRow,
+} from "../contracts/index";
+import type { GatewayPort } from "../gateway-client/types";
 
 /** Kit HarnessBadge kinds (NexusOps-ui-kit components/badges/HarnessBadge). */
 export type HarnessKind = "claude-code" | "codex-cli" | "codex-cloud" | "shell";
@@ -33,6 +41,14 @@ export interface SessionDisplayMeta {
   activity?: string;
   /** Session is an agent-team lead (AgentTeam projection not wired yet). */
   team?: boolean;
+  /**
+   * The §6.4 terminal runtime handle for a session that has a LIVE terminal stream
+   * (6.3d). FIXTURE STAND-IN — the real handle is the opaque daemon-minted
+   * `terminal_id` (re-minted on resume); the daemon will surface it on the session
+   * projection at P4, and this side-map entry is built from it then (Lesson §8).
+   * Absent → the well shows the honest placeholder (no live terminal).
+   */
+  terminalId?: string;
 }
 
 export interface ProjectDisplayMeta {
@@ -65,6 +81,10 @@ export const sessionDisplayFixture: Record<string, SessionDisplayMeta> = {
     worktree: "~/wt/rate-limit",
     current: "$ npm test — awaiting permission",
     activity: "2m ago",
+    // Live terminal + a pending permission card (the real cockpit's "streaming
+    // output behind an approval" case): the well renders the xterm stream AND the
+    // permission prompt. Sidebar-reachable (the openable demo of TerminalDisplay).
+    terminalId: "term_fixture_2", // fixture stand-in for the P4 daemon handle
   },
   session_fixture_3: {
     harness: "codex-cli",
@@ -75,6 +95,7 @@ export const sessionDisplayFixture: Record<string, SessionDisplayMeta> = {
     worktree: "~/wt/flaky-it",
     current: "diff ready for review",
     activity: "6m ago",
+    terminalId: "term_fixture_3", // live terminal (fixture stand-in for the P4 daemon handle)
   },
   session_fixture_4: {
     harness: "claude-code",
@@ -94,6 +115,7 @@ export const sessionDisplayFixture: Record<string, SessionDisplayMeta> = {
     worktree: "~/wt/migration",
     current: "needs a decision on plan step 2",
     activity: "1m ago",
+    terminalId: "term_fixture_5", // live terminal (fixture stand-in for the P4 daemon handle)
   },
 };
 
@@ -119,6 +141,139 @@ export const approvalDisplayFixture: Record<string, ApprovalDisplayMeta> = {
   approval_fixture_1: { risk: "medium", who: "Claude · ENG-310 · Claude Max Main" },
   approval_fixture_2: { risk: "low", who: "Claude · docs · Claude Team Work" },
 };
+
+// ─── GatewayModal {Approval, PolicyDecision} SAMPLE (test fixture, post-053) ──
+// As of 053 Layer C the PRODUCTION path no longer uses this side-map: `enrichApproval`
+// reads the daemon's real `risk_level`/`policy_decision` from the now-frozen 14-field
+// ApprovalQueueRow (the ②-mini-enriched proj_approval_queue). This map remains only as a
+// daemon-SHAPED SAMPLE for GatewayModal.test.tsx (a valid {Approval, PolicyDecision} to
+// render). A later cleanup may relocate it to a test fixture / build it via enrichApproval.
+export interface GatewayApprovalEnrichment {
+  approval: Approval;
+  policyDecision: PolicyDecision;
+}
+
+export const gatewayApprovalEnrichment: Record<string, GatewayApprovalEnrichment> = {
+  approval_fixture_1: {
+    approval: {
+      approval_id: "approval_fixture_1",
+      required_approver: { kind: "current_user" },
+      status: "awaiting_approval",
+      scope: "single_action",
+      risk_level: 3,
+      action_request_id: "ar_fixture_1",
+    },
+    policyDecision: {
+      status: "require_approval",
+      reasons: ["Writes to a tracked file outside the session worktree."],
+      required_approvals: [{ kind: "current_user" }],
+      constraints: [],
+      safer_alt: null,
+    },
+  },
+  approval_fixture_2: {
+    approval: {
+      approval_id: "approval_fixture_2",
+      required_approver: { kind: "project_owner" },
+      status: "awaiting_approval",
+      scope: "single_action",
+      risk_level: 1,
+      action_request_id: "ar_fixture_2",
+    },
+    policyDecision: {
+      status: "require_approval",
+      reasons: ["Edits documentation."],
+      required_approvals: [{ kind: "project_owner" }],
+      constraints: [],
+      safer_alt: null,
+    },
+  },
+};
+
+/** Build the {Approval, PolicyDecision} the GatewayModal renders from the FROZEN ApprovalQueueRow
+ *  (053 Layer C — the real-row swap). The card sources the daemon's AUTHORITATIVE `risk_level` +
+ *  `policy_decision` directly from the row (no fixture side-map, no UI-derived risk — LESSON 17;
+ *  resolves the 044 [med]: no real human approves against fixture risk). The row carries
+ *  `risk_level` (always) + `policy_decision` (the ②-mini-enriched proj_approval_queue); an absent
+ *  policy is a transparent "awaiting" placeholder — never a fabricated decision (the risk stays the
+ *  row's real value, forbidden #2/#4). The projection row carries no `scope` → default `single_action`
+ *  (not risk-bearing; the modal renders risk/policy, never a scope-derived risk). */
+export function enrichApproval(row: ApprovalQueueRow): GatewayApprovalEnrichment {
+  // The Approval's single required_approver is a best-effort mirror of the policy's first approver
+  // (falls back to current_user when policy is absent OR carries an empty list). NOTE: the modal
+  // renders the daemon's full `policyDecision.required_approvals` list VERBATIM (below) — this single
+  // field is not the displayed approval requirement, so the fallback never fabricates the shown list.
+  const requiredApprover = row.policy_decision?.required_approvals?.[0] ?? {
+    kind: "current_user",
+  };
+  return {
+    approval: {
+      approval_id: row.approval_id,
+      required_approver: requiredApprover,
+      status: row.status,
+      scope: "single_action",
+      risk_level: row.risk_level, // REAL daemon risk (was the fixture side-map)
+      action_request_id: row.action_request_id ?? null,
+      expires_at: row.expires_at ?? null,
+      plan_id: row.plan_id ?? null,
+    },
+    policyDecision: row.policy_decision ?? {
+      // absent (the daemon hasn't enriched yet) → an honest "awaiting" placeholder, NOT a
+      // fabricated specific decision; the risk above is still the row's real value.
+      status: "require_approval",
+      reasons: ["Awaiting the daemon's policy decision."],
+      required_approvals: [requiredApprover],
+      constraints: [],
+      safer_alt: null,
+    },
+  };
+}
+
+// ─── Per-hunk git-action enrichment (053b — the real-row swap completes the 044 [med]) ──
+// The DiffReview per-hunk git action (stage/unstage/discard) has NO ApprovalQueueRow in hand — the
+// submit ack carries an `action_request_id`, not an `approval_id`. So sourcing the daemon's
+// AUTHORITATIVE risk/policy means RE-FETCHING get_projection("ApprovalQueue") and matching the row by
+// EXACT action_request_id (the ApprovalQueue isn't subscribed — 052 Q3). On a match → enrichApproval
+// (the 053 Layer C real-row builder, reused for DRY): the card renders the daemon's real risk/policy,
+// no fixture (LESSON 17 — resolves the 044 [med] on the per-hunk path too). On NO match (timing — the
+// daemon mints the approval row async) → an HONEST awaiting placeholder, never a fabricated/UI-derived
+// decision (forbidden #2). Parse-don't-trust is intrinsic: get_projection boundary-validates the page
+// (a malformed payload → BoundaryValidationError, never a fabricated row — LESSON 22). The handle is
+// typed `Pick<…,"get_projection">` → compile-time NO mutation reach; the per-hunk submit stays L2-HELD.
+export async function enrichHunkAction(
+  gateway: Pick<GatewayPort, "get_projection">,
+  ack: ActionAck,
+): Promise<GatewayApprovalEnrichment> {
+  const page = await gateway.get_projection("ApprovalQueue");
+  // EXACT, non-null string match: ApprovalQueueRow.action_request_id is Option<String>; a null/absent
+  // row id must NEVER collapse-match the ack (a wrong-approval false match). The ack id is always a
+  // non-null string and `===` makes null/undefined never equal it — no fuzzy/first-row fallback.
+  const row = page.rows.find((r) => r.action_request_id === ack.action_request_id);
+  if (row) return enrichApproval(row); // the daemon's real risk + policy (DRY w/ 053 Layer C)
+  // Absent: the daemon hasn't surfaced the approval row in the queue snapshot yet. An honest awaiting
+  // placeholder — the card's SHOWN risk comes from the live preview_action (previewRisk), so this
+  // risk_level is a NON-displayed structural field, set FAIL-SAFE to 4 (over-warn, never under-warn;
+  // §17 spirit) — it can never surface as a fabricated shown number (the modal reads the preview).
+  return {
+    approval: {
+      approval_id: `appr_for_${ack.action_request_id}`,
+      required_approver: { kind: "current_user" },
+      // single_action ONLY — a per-hunk action is never standing-/bulk-granted here
+      // (git.discard_hunk is non-standing-grantable daemon-side regardless; LESSON §32).
+      scope: "single_action",
+      status: "awaiting_approval",
+      risk_level: 4,
+      action_request_id: ack.action_request_id,
+    },
+    policyDecision: {
+      status: "require_approval",
+      reasons: ["Awaiting the daemon's policy decision."],
+      required_approvals: [{ kind: "current_user" }],
+      constraints: [],
+      safer_alt: null,
+    },
+  };
+}
 
 // ─── Settings display fixtures (Integrations / Execution profiles) ──────────
 // No Integration or ExecutionProfile projection exists yet (Phase 7 connectors;

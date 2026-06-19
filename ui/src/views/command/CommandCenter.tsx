@@ -104,7 +104,7 @@ function AttentionCard({
         ) : null}
       </div>
       <div style={{ font: "var(--fw-medium) var(--fs-body)/1.3 var(--font-sans)", marginBottom: 6 }}>
-        {session.title ?? session.session_id}
+        {session.display_name ?? session.session_id}
       </div>
       <div
         style={{
@@ -328,7 +328,7 @@ function CommandRail({
                     key={a.approval_id}
                     risk={meta?.risk}
                     who={meta?.who}
-                    text={a.title ?? a.approval_id}
+                    text={a.preview_summary ?? a.approval_id}
                   />
                 );
               })}
@@ -339,7 +339,7 @@ function CommandRail({
                     key={s.session_id}
                     risk={s.status === "waiting_on_permission" ? "medium" : undefined}
                     who={display?.profile}
-                    text={display?.current ?? s.title ?? s.session_id}
+                    text={display?.current ?? s.display_name ?? s.session_id}
                   />
                 );
               })}

@@ -7,17 +7,26 @@
 // is the only source, and the drift test pins it to the frozen schema.
 // ARCHITECTURE.md §5.0 (generated, drift-caught consumer); §11.3 (status keys
 // == §5.1 enum strings, verbatim snake_case).
+import { z } from "zod";
 import bundle from "./generated";
 
 const shape = bundle.shape;
 
-export const ActionRequest = shape.ActionRequest;
+// 0.19.0 rename (Phase-2 Gateway freeze): the schema renamed the two R-5 status
+// value-sets to their `$def` names (was bare `ActionRequest`/`Approval`). The
+// UI's status-machine identifiers (`"ActionRequest"`/`"Approval"`) are a separate
+// UI-render-policy naming (descriptor table keys / data-machine) and DON'T follow.
+export const ActionRequestStatus = shape.ActionRequestStatus;
 export const ActorType = shape.ActorType;
 export const AgentTeam = shape.AgentTeam;
-export const Approval = shape.Approval;
+export const ApprovalStatus = shape.ApprovalStatus;
 // 0.12.0 additions (daemon 1.5/1.6 IPC + projection-name freeze).
 export const DeltaKind = shape.DeltaKind;
 export const DesktopObjectKind = shape.DesktopObjectKind;
+// 0.28.0 (§6.3e get_diff): DiffLineKind is consumed by the DiffLine provisional
+// shape. ExecutionProfile/Provider are also generated at 0.28.0 but exposed-ahead
+// (no consumer yet) → not re-exported here until a typed consumer lands.
+export const DiffLineKind = shape.DiffLineKind;
 export const IdKind = shape.IdKind;
 export const IpcErrorCode = shape.IpcErrorCode;
 // Exported as ...Enum: the provisional registry KEY TYPE `ProjectionName`
@@ -26,6 +35,9 @@ export const IpcErrorCode = shape.IpcErrorCode;
 export const ProjectionNameEnum = shape.ProjectionName;
 export const ProjectBrain = shape.ProjectBrain;
 export const PullRequest = shape.PullRequest;
+// 0.38.0 (D5b-1 review vertical): ReviewState is consumed by the ReviewRow provisional
+// shape (ui-061) — the exposed-ahead→re-export-on-consume pattern (DiffLineKind@0.28).
+export const ReviewState = shape.ReviewState;
 // 0.8.0 additions (daemon Phase 1 event-store/redaction contract surface).
 export const RedactionStatus = shape.RedactionStatus;
 export const Sensitivity = shape.Sensitivity;
@@ -37,31 +49,29 @@ export const WorkflowInstance = shape.WorkflowInstance;
 export const WorktreeGit = shape.WorktreeGit;
 export const WorktreeOverlay = shape.WorktreeOverlay;
 
+// ui-065: the 3 doc-commented `oneOf`-of-`const` enums are now generator-emitted (the gen-contracts
+// oneOf-const extension) — their prior hand-declared provisional drift-pinned SHADOWS retired. Re-export
+// the schema VALUE from the generated source (the `shape.X` value-export precedent, e.g. ActorType above)
+// PLUS the inferred TYPE — unlike most generated enums these have `import type` consumers (`recovery/`,
+// `views/usage/`, `shell/Sidebar`), so the explicit type re-export keeps their imports unchanged.
+export const MetricQuality = shape.MetricQuality;
+export type MetricQuality = z.infer<typeof MetricQuality>;
+export const RecoveryState = shape.RecoveryState;
+export type RecoveryState = z.infer<typeof RecoveryState>;
+export const ResumeMode = shape.ResumeMode;
+export type ResumeMode = z.infer<typeof ResumeMode>;
+
 type EnumValidator = (typeof shape)[keyof typeof shape];
 
-/** Name → generated enum validator, for drift-checking against the frozen schema. */
-export const validators: Record<string, EnumValidator> = {
-  ActionRequest,
-  ActorType,
-  AgentTeam,
-  Approval,
-  DeltaKind,
-  DesktopObjectKind,
-  IdKind,
-  IpcErrorCode,
-  ProjectionName: ProjectionNameEnum,
-  ProjectBrain,
-  PullRequest,
-  RedactionStatus,
-  Sensitivity,
-  Session,
-  SourceType,
-  Task,
-  Visibility,
-  WorkflowInstance,
-  WorktreeGit,
-  WorktreeOverlay,
-};
+/**
+ * Name → generated enum validator, for drift-checking against the frozen schema.
+ * DERIVED from the generated bundle (every value-set, self-maintaining across
+ * contract bumps) — never hand-listed. A hand-list is exactly what drifted at
+ * 0.12.0 (20 listed vs 33 frozen); deriving keeps the §5.0 "keys equal" drift
+ * check self-maintaining so a future bump is a pure `pnpm gen:contracts`.
+ */
+export const validators: Record<string, EnumValidator> = shape;
 
 export { CONTRACT_VERSION } from "./generated";
 export * from "./provisional";
+export * from "./intent-contracts";

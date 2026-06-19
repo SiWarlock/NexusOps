@@ -20,12 +20,20 @@ const STATUS_MACHINES = [
   "WorktreeOverlay",
 ] as const;
 
+// The UI machine identifier is UI-render-policy naming, decoupled from the frozen
+// enum `$def` name. The 0.19.0 Gateway freeze renamed the two R-5 value-sets; the
+// validators record is `$def`-keyed, so the two diverging machines alias here.
+const VALIDATOR_KEY: Record<string, string> = {
+  Approval: "ApprovalStatus",
+  ActionRequest: "ActionRequestStatus",
+};
+
 describe("StatusPill wrapper", () => {
   it("status_pill_renders_every_frozen_state_four_channel", () => {
     // [load-bearing] every frozen §5.1 state renders glyph + text label (the two
     // jsdom-testable non-color channels) — never color-only, never empty/idle.
     for (const machine of STATUS_MACHINES) {
-      const validator = validators[machine];
+      const validator = validators[VALIDATOR_KEY[machine] ?? machine];
       expect(validator, `STATUS_MACHINES/validators out of sync: ${machine}`).toBeDefined();
       for (const status of validator!.options as readonly string[]) {
         const { container, unmount } = render(

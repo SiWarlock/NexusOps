@@ -4,6 +4,7 @@ import type { ComponentProps } from "react";
 import { cleanup, render, screen, fireEvent, within } from "@testing-library/react";
 import { CommandCenter } from "./CommandCenter";
 import type { SessionRow } from "../../contracts/index";
+import { makeApprovalRow } from "../../projections/fixtures/proj_approval_queue";
 
 afterEach(cleanup);
 
@@ -14,7 +15,7 @@ const sessionOf = (
 ): SessionRow => ({
   session_id: id,
   status,
-  title: title ?? `session ${id}`,
+  display_name: title ?? `session ${id}`,
   project_id: "p1",
 });
 
@@ -98,12 +99,12 @@ describe("CommandCenter triage cockpit", () => {
   it("rail_queue_lists_global_approvals_and_waiting_sessions", () => {
     renderCC({
       approvals: [
-        {
+        makeApprovalRow({
           approval_id: "a1",
           project_id: "p2",
           status: "awaiting_approval",
-          title: "git.create_worktree",
-        },
+          preview_summary: "git.create_worktree",
+        }),
       ],
       waiting: [sessionOf("w1", "waiting_on_permission", "Add rate limiting")],
     });
@@ -118,7 +119,7 @@ describe("CommandCenter triage cockpit", () => {
   });
 
   it("capacity_renders_real_credit_pool_meter", () => {
-    renderCC({ creditPool: { used: 870, limit: 1000 } });
+    renderCC({ creditPool: { kind: "sdk", used: 870, limit: 1000 } });
     expect(screen.getByText("870 / 1000")).toBeTruthy();
   });
 

@@ -44,6 +44,11 @@ pub fn serve_connection(
     // daemon). The `intercept` handler parks here for the approval-wait so concurrent waits can't
     // exhaust the general accept pool + starve the UI/reads (reserved headroom; fail-closed on exhaustion).
     wait_class: &crate::runtime::InterceptWaitClass,
+    // D7 — the GitHub read client for the `get_pr_diff` §6.1 network read (the FIRST IPC-layer network
+    // read); shared across connections (Arc inside). The production client's per-repo keychain auth is
+    // the deferred follow-on (constructed unauthenticated → a private-repo fetch returns a typed error
+    // until auth lands); the live fetch is test-seamed via `FakeGithubReadClient`.
+    github: &dyn crate::integrations::github::GithubReadClient,
 ) -> Result<(), IpcError> {
     // Rule #7 (§15 / ADR-004): peer-auth before anything else — before any frame is read.
     authorize_peer(peer_uid, daemon_uid)?;
@@ -125,7 +130,7 @@ pub fn serve_connection(
         if req.method == "subscribe" {
             if let Ok(params) = serde_json::from_value::<SubscribeParams>(req.params.clone()) {
                 let rx = deltas.subscribe();
-                let ack = methods::dispatch(&req, db_path, write, registry, wait_class)?;
+                let ack = methods::dispatch(&req, db_path, write, registry, wait_class, github)?;
                 let accepted = ack.error.is_none();
                 let buf = serde_json::to_vec(&ServerFrame::RpcResponse(ack))
                     .map_err(|e| IpcError::Protocol(e.to_string()))?;
@@ -156,7 +161,7 @@ pub fn serve_connection(
         // wrap the response in the frame-type-tagged ServerFrame envelope (§6.4 multiplexing) so
         // the client demuxes rpc-responses from subscription-push frames on one connection.
         let frame = ServerFrame::RpcResponse(methods::dispatch(
-            &req, db_path, write, registry, wait_class,
+            &req, db_path, write, registry, wait_class, github,
         )?);
         let buf = serde_json::to_vec(&frame).map_err(|e| IpcError::Protocol(e.to_string()))?;
         write_frame(&mut stream, &buf)?;

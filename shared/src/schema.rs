@@ -23,9 +23,10 @@ use crate::events::{
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
     AuditIntegrityViolation, BranchCreated, DeviceRegistered, GithubSyncFailed,
     IntegrationConnectionRegistered, LinearSyncFailed, LocalRunnerRegistered, ProjectRescanned,
-    Provider, PullRequestSynced, ReviewSynced, SensitiveOutputRedacted, SessionFailed,
-    SessionRecovered, SessionStarted, TelemetrySampled, TerminalProcessExited, WorktreeCreated,
-    WorktreeDeleted, WorktreeLocked, WorktreeMerged, WorktreePrunable,
+    Provider, PullRequestMerged, PullRequestSynced, ReviewSubmitted, ReviewSynced,
+    SensitiveOutputRedacted, SessionFailed, SessionRecovered, SessionStarted, TelemetrySampled,
+    TerminalProcessExited, WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged,
+    WorktreePrunable,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::harness::{
@@ -35,9 +36,9 @@ use crate::harness::{
 use crate::ids::IdKind;
 use crate::ipc::{
     ActionAck, Capabilities, DeltaKind, DiffLine, DiffLineKind, DiffResult, GetDiffParams,
-    GetProjectionParams, HelloAck, HelloFrame, Hunk, IpcErrorCode, PlanAck, PlanStepAck,
-    ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, RpcResponse, ServerFrame,
-    SubscribeParams, TerminalControlFrame, TerminalControlKind, TerminalInputFrame,
+    GetPrDiffParams, GetProjectionParams, HelloAck, HelloFrame, Hunk, IpcErrorCode, PlanAck,
+    PlanStepAck, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, RpcResponse,
+    ServerFrame, SubscribeParams, TerminalControlFrame, TerminalControlKind, TerminalInputFrame,
     TerminalOutputFrame, VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
@@ -102,6 +103,8 @@ struct ContractBundle {
     // P4.0b-ui1 — the §6.1 get_diff RPC wire types (the ui-6.3e diff source). DiffResult transitively
     // pulls Hunk/DiffLine/DiffLineKind into $defs; listed explicitly for a stable named snapshot.
     get_diff_params: GetDiffParams,
+    // D7 — the §6.1 get_pr_diff RPC params (remote-PR head-vs-base); reuses DiffResult/Hunk/DiffLine.
+    get_pr_diff_params: GetPrDiffParams,
     diff_result: DiffResult,
     hunk: Hunk,
     diff_line: DiffLine,
@@ -234,6 +237,15 @@ struct ContractBundle {
     review_synced: ReviewSynced,
     review_state: ReviewState,
     review_row: ReviewRow,
+    // D9/P4.7 (CONTRACT 0.41.0) — the cat-1 github.merge_pr mutation's OBSERVATION event: PullRequestMerged
+    // (the gateway emits it on a successful merge; the PullRequestProjector folds → terminal Merged). The
+    // catalog entry rides the existing ActionTypeCatalogEntry registration. Additive (shared/src/events.rs).
+    pull_request_merged: PullRequestMerged,
+    // D10/P4.7 (CONTRACT 0.42.0) — the cat-1 github.submit_review mutation's OBSERVATION event:
+    // ReviewSubmitted (the gateway emits it on a successful review-submit; the ReviewProjector folds →
+    // proj_review). Reuses the frozen ReviewState; the catalog entry rides the existing
+    // ActionTypeCatalogEntry registration. Additive (shared/src/events.rs).
+    review_submitted: ReviewSubmitted,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

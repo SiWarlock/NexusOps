@@ -67,6 +67,13 @@ pub struct PullRequestRow {
     pub pr_checked_at: Option<String>,
     pub mergeable: Option<bool>,
     pub checks_summary: Option<String>,
+    /// D6 — the diff-stats the §11.2 PR card renders (folded from `PullRequestSynced.additions?`/…).
+    /// INTEGER projection columns surfacing as JSON numbers → bind directly to `Option<u64>` (no
+    /// bool-coercion, unlike `mergeable`); `None`/NULL where GitHub omitted them or pre-D6 rows.
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
+    pub changed_files: Option<u64>,
+    pub commits: Option<u64>,
 }
 
 /// One row of the `proj_session` read model (§7.2 / §11.4) — the derived current state of a session, the

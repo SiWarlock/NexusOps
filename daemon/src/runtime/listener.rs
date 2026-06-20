@@ -58,6 +58,10 @@ pub fn spawn_accept_loop(
     // C2 — the per-session decision_sink registry (shared across the `intercept` + approve/deny
     // connections + the supervisor reap); cloned (Arc) per connection into its serve task.
     registry: Arc<crate::decisions::DecisionRegistry>,
+    // D7 — the GitHub read client for `get_pr_diff` (the first IPC-layer network read); cloned (Arc) per
+    // connection into its serve task. The production client's per-repo keychain auth is the deferred
+    // follow-on (constructed unauthenticated in main.rs).
+    github: Arc<dyn crate::integrations::github::GithubReadClient>,
     mut shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     let permits = Arc::new(Semaphore::new(max_connections));
@@ -97,6 +101,8 @@ pub fn spawn_accept_loop(
                     let registry = Arc::clone(&registry);
                     // a per-connection clone of the F2 intercept-wait permit class (cheap — Arc inside).
                     let wait_class = wait_class.clone();
+                    // a per-connection clone of the D7 GitHub read client (Arc, cheap).
+                    let github = Arc::clone(&github);
                     tokio::task::spawn_blocking(move || {
                         // the permit is held for the connection's lifetime; it RELEASES when this
                         // closure ends (connection closed) — no leak / self-DoS.
@@ -133,6 +139,7 @@ pub fn spawn_accept_loop(
                             &write,
                             &registry,
                             &wait_class,
+                            github.as_ref(),
                         ) {
                             eprintln!("nexusopsd: connection closed: {e}");
                         }

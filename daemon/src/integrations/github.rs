@@ -59,14 +59,21 @@ pub fn extract_pr_signals(
             (status, c.conclusion.as_deref())
         })
         .collect();
-    signals_from_github_response(
+    let mut signals = signals_from_github_response(
         issue_state_str(&pr.state),
         pr.draft.unwrap_or(false),
         pr.merged.unwrap_or(false),
         mergeable_state_str(&pr.mergeable_state),
         &review_states,
         &check_inputs,
-    )
+    );
+    // D6 — capture the GET-only diff-stats from the octocrab PR (all `Option<u64>`; `None` when GitHub
+    // omitted them, e.g. the list endpoint). NOT status signals → set here, not in the status aggregator.
+    signals.additions = pr.additions;
+    signals.deletions = pr.deletions;
+    signals.changed_files = pr.changed_files;
+    signals.commits = pr.commits;
+    signals
 }
 
 /// octocrab `IssueState` → the canonical GitHub `state` string for edges-008's `parse_pr_state`.
@@ -162,18 +169,40 @@ pub trait GithubReadClient: Send + Sync {
         repo: &str,
         pr_number: u64,
     ) -> Result<PullRequestSignals, GithubReadError>;
+
+    /// D7 — fetch a PR's head-vs-base diff as a **unified-diff string** (the
+    /// `application/vnd.github.diff` media type; octocrab `pulls().get_diff(pr)`). The `get_pr_diff` read
+    /// RPC parses it into `DiffResult`. Read-only; the daemon bounds it with a MANDATORY timeout (§46).
+    async fn fetch_pr_diff(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<String, GithubReadError>;
 }
 
-/// Test double — returns a canned `Ok(signals)` / `Err(GithubReadError)`. The seam the gated
-/// `proj_pull_request` projector + `github` executor consume in tests (the live HTTP edge is
+/// Test double — returns a canned `Ok(signals)` / `Err(GithubReadError)` for `fetch_pr_signals` and a
+/// canned diff for `fetch_pr_diff` (D7; default `Ok("")`, set via [`with_diff`](Self::with_diff)). The
+/// seam the gated projector / executor / `get_pr_diff` handler consume in tests (the live HTTP edge is
 /// non-deterministic — fake-covered per CLAUDE.md).
 pub struct FakeGithubReadClient {
     result: Result<PullRequestSignals, GithubReadError>,
+    diff: Result<String, GithubReadError>,
 }
 
 impl FakeGithubReadClient {
     pub fn new(result: Result<PullRequestSignals, GithubReadError>) -> Self {
-        Self { result }
+        Self {
+            result,
+            diff: Ok(String::new()),
+        }
+    }
+
+    /// Set the canned `fetch_pr_diff` result (D7) — builder over [`new`](Self::new).
+    #[must_use]
+    pub fn with_diff(mut self, diff: Result<String, GithubReadError>) -> Self {
+        self.diff = diff;
+        self
     }
 }
 
@@ -186,6 +215,15 @@ impl GithubReadClient for FakeGithubReadClient {
         _pr_number: u64,
     ) -> Result<PullRequestSignals, GithubReadError> {
         self.result.clone()
+    }
+
+    async fn fetch_pr_diff(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _pr_number: u64,
+    ) -> Result<String, GithubReadError> {
+        self.diff.clone()
     }
 }
 
@@ -243,6 +281,21 @@ impl GithubReadClient for OctocrabGithubReadClient {
         // Any GraphQL failure degrades to None → the REST aggregate stands (never fails the read).
         let decision = fetch_review_decision(&self.octocrab, owner, repo, pr_number).await;
         Ok(layer_review_decision(signals, decision))
+    }
+
+    async fn fetch_pr_diff(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<String, GithubReadError> {
+        // the `application/vnd.github.diff` media type → a unified-diff string (octocrab 0.53.1
+        // `pulls().get_diff(pr)`). The daemon parses it via `git::parse_unified_diff`.
+        self.octocrab
+            .pulls(owner, repo)
+            .get_diff(pr_number)
+            .await
+            .map_err(|e| to_read_error(&e))
     }
 }
 

@@ -922,7 +922,7 @@
     },
     "DiffResult": {
       "additionalProperties": false,
-      "description": "`get_diff` result (§6.1) — the file's structured diff (HEAD→workdir), reject-unknown.",
+      "description": "`get_diff` result (§6.1) — the file's structured diff (HEAD→workdir), reject-unknown. REUSED by the\nD7 `get_pr_diff` (remote-PR head-vs-base) for ui consistency.",
       "properties": {
         "hunks": {
           "items": {
@@ -1211,6 +1211,32 @@
       "required": [
         "worktree_id",
         "file"
+      ],
+      "type": "object"
+    },
+    "GetPrDiffParams": {
+      "additionalProperties": false,
+      "description": "`get_pr_diff` params (§6.1; D7) — the remote-PR code-diff (head-vs-base) the §11.2 Review tab renders.\nKeyed off the `repo_id` (the proj_pull_request repo handle) + the GitHub-native `pr_number`; the daemon\nresolves `(repo_id, pr_number) → proj_repository.remote_url → owner/repo` (read-only WAL) then fetches\nthe PR diff from GitHub. `file: Some` filters to one file's hunks (the primary Review-tab use); `None`\nreturns the whole changeset (all files' hunks FLATTENED — the reused flat [`DiffResult`] carries NO\nper-file attribution; a per-file file-tree is a post-D7 follow-on). Returns the REUSED `DiffResult`.",
+      "properties": {
+        "file": {
+          "description": "one file's hunks, or the whole changeset when `None`. Serialized as explicit `null` (no\n`skip_serializing_if`) → a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_number": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repo_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo_id",
+        "pr_number"
       ],
       "type": "object"
     },
@@ -1824,19 +1850,79 @@
       ],
       "type": "string"
     },
+    "PullRequestMerged": {
+      "additionalProperties": false,
+      "description": "`PullRequestMerged` payload (§7.1; D9/P4.7 — the cat-1 `github.merge_pr` mutation). Emitted by the\n`GithubExecutor`'s merge arm on a SUCCESSFUL octocrab `pulls().merge()` (SHA-pinned to the approved\nhead); the `PullRequestProjector` folds it → terminal `Merged` (§5.1) on the `proj_pull_request` row.\nThe PR/repo IDENTITY is on the [`crate::event_envelope::EventEnvelope`] columns + the action's Repo\n`resource_ref` (the projector's repo_id sibling-read); `pr_number` is the GitHub-native PR id echoed\nfrom the merge inputs (the projector keys the `{repo_id}#{pr_number}` row). `merge_commit_sha` is the\nresulting merge-commit SHA (None if the API omitted it). Optionals serialize as explicit `null` (no\n`skip_serializing_if`) for a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).",
+      "properties": {
+        "merge_commit_sha": {
+          "description": "the resulting merge-commit SHA (None when the API response omitted it).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merged_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "pr_number": {
+          "description": "the GitHub-native PR number merged (echoed from the merge inputs; a non-negative external natural).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pr_number",
+        "merged_at"
+      ],
+      "type": "object"
+    },
     "PullRequestRow": {
       "additionalProperties": false,
       "description": "One row of the `proj_pull_request` read model (§7.2 / §11.2) — the GitHub-authoritative PR cache the\nui PR Review Workspace renders. The 2nd frozen projection-row (after [`ApprovalQueueRow`], P7.2). The\nBASIC columns the edges-P7.1 `PullRequestProjector` folds: `status` is the frozen §5.1 [`PullRequest`]\nenum (reject-unknown — no loose status string). `mergeable`/`checks_summary` are the **D5a enrichment**\n(the basic-now + SPREAD consumed) — folded from `PullRequestSynced.mergeable?`/`checks_summary?` into\nthe 2 columns the row now carries (`mergeable` is the FIRST bool projection column → stored as a SQLite\nINTEGER 0/1; the daemon read layer coerces it to this JSON bool, so the contract stays a pure\n`Option<bool>`). The internal `updated_at_seq` is NOT a wire field. **Nullability matches the DDL**\n(a display read model tolerates a NULL over failing the whole typed serve closed — contrast the\nsafety-critical `ApprovalQueueRow`): `pr_id` (PK) + `status` (NOT NULL) are non-Option; the rest are\n`Option`. `pr_number` is the GitHub-native PR number (a non-negative external natural → `u64`, a\nbounded integer in schemars — LESSON §15 trap 2). Optionals serialize as explicit `null` (no\n`skip_serializing_if`) so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
       "properties": {
+        "additions": {
+          "description": "D6 — the diff-stats the §11.2 PR card renders (folded from `PullRequestSynced.additions?`/…).\nINTEGER projection columns surfacing as JSON numbers → bind directly to `Option<u64>` (no\nbool-coercion, unlike `mergeable`); `None`/NULL where GitHub omitted them or pre-D6 rows.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "base_branch": {
           "type": [
             "string",
             "null"
           ]
         },
+        "changed_files": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "checks_summary": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "commits": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "deletions": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },
@@ -1901,15 +1987,48 @@
       "additionalProperties": false,
       "description": "`PullRequestSynced` payload (§7.1; P7.1 — from edges' github PR-sync executor). Feeds\n`proj_pull_request` (the GitHub-authoritative cache, §7.2). `status` REUSES the frozen §5.1\n[`PullRequest`] machine (no fork — adapters map INTO it). `pr_number` is the GitHub-native PR id\n(external integer, not a frozen-22 ID). Identity on the envelope; payload = the synced-PR delta.",
       "properties": {
+        "additions": {
+          "description": "D6 — the GitHub diff-stats the §11.2 PR card renders. GET-only octocrab fields\n(`models::pulls::PullRequest`, all `Option<u64>`, absent on the list endpoint) → bounded\nintegers in schemars (LESSON §15 trap 2); `None` when GitHub omitted them.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "base": {
           "type": "string"
         },
         "branch": {
           "type": "string"
         },
+        "changed_files": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "checks_summary": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "commits": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "deletions": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },
@@ -2173,6 +2292,60 @@
         "pending"
       ],
       "type": "string"
+    },
+    "ReviewSubmitted": {
+      "additionalProperties": false,
+      "description": "`ReviewSubmitted` payload (§7.1; D10/P4.7 — the cat-1 `github.submit_review` mutation). The WRITE\ncounterpart to [`ReviewSynced`] (a *read* sync): emitted by the `GithubExecutor`'s submit arm on a\nsuccessful octocrab `create_review` (SHA-pinned to the reviewed head via `commit_id`); the\n`ReviewProjector` folds it → `proj_review` (upsert by `review_id`, identical to the `ReviewSynced`\nfold). A NEW event, NOT a `ReviewSynced` reuse — \"the user SUBMITTED this verdict\" ≠ \"we synced an\nexisting review\" (the D9 `PullRequestMerged`-not-`PullRequestSynced` audit-semantics precedent). The\nreview/repo IDENTITY is on the envelope + the action's Repo `resource_ref`; `pr_number` echoes the\nreviewed PR. `state` reuses the frozen [`ReviewState`] value enum. `body` is FREE-FORM user review\ntext — §15-redacted at persist like every payload (the `ReviewSynced.body` precedent). `commit_id` =\nthe reviewed head SHA (audit-integrity). Optionals serialize as explicit `null` (no\n`skip_serializing_if`) for a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).",
+      "properties": {
+        "body": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit_id": {
+          "description": "the reviewed head SHA the verdict is pinned to (audit-integrity; None only pre-pin).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_number": {
+          "description": "the PR this review was submitted to (GitHub-native PR number; a display column on the row).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "review_id": {
+          "description": "the GitHub-native review id from the create-response (the proj_review PK).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reviewer": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/ReviewState"
+        },
+        "submitted_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "review_id",
+        "pr_number",
+        "reviewer",
+        "state"
+      ],
+      "type": "object"
     },
     "ReviewSynced": {
       "additionalProperties": false,
@@ -3098,6 +3271,9 @@
     "get_diff_params": {
       "$ref": "#/$defs/GetDiffParams"
     },
+    "get_pr_diff_params": {
+      "$ref": "#/$defs/GetPrDiffParams"
+    },
     "get_projection_params": {
       "$ref": "#/$defs/GetProjectionParams"
     },
@@ -3176,6 +3352,9 @@
     "pull_request": {
       "$ref": "#/$defs/PullRequest"
     },
+    "pull_request_merged": {
+      "$ref": "#/$defs/PullRequestMerged"
+    },
     "pull_request_row": {
       "$ref": "#/$defs/PullRequestRow"
     },
@@ -3214,6 +3393,9 @@
     },
     "review_state": {
       "$ref": "#/$defs/ReviewState"
+    },
+    "review_submitted": {
+      "$ref": "#/$defs/ReviewSubmitted"
     },
     "review_synced": {
       "$ref": "#/$defs/ReviewSynced"
@@ -3360,6 +3542,7 @@
     "get_projection_params",
     "projection_scope",
     "get_diff_params",
+    "get_pr_diff_params",
     "diff_result",
     "hunk",
     "diff_line",
@@ -3443,9 +3626,11 @@
     "session_row",
     "review_synced",
     "review_state",
-    "review_row"
+    "review_row",
+    "pull_request_merged",
+    "review_submitted"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.38.0"
+  "x-contract-version": "0.42.0"
 }

@@ -17,7 +17,10 @@ use nexusops_shared::actions::{
 use nexusops_shared::actor::ActorType;
 use nexusops_shared::catalog::ExecutorKind;
 use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType, Visibility};
-use nexusops_shared::events::{PullRequestSynced, ReviewSynced, SessionRecovered, WorktreeCreated};
+use nexusops_shared::events::{
+    PullRequestMerged, PullRequestSynced, ReviewSubmitted, ReviewSynced, SessionRecovered,
+    WorktreeCreated,
+};
 use nexusops_shared::harness::ResumeMode;
 use nexusops_shared::ids::{ActionRequestId, ProjectId, SessionId, WorkspaceId, WorktreeId};
 use nexusops_shared::status::{ActionRequestStatus, PullRequest, ReviewState, Session};
@@ -1571,6 +1574,30 @@ fn pr_synced_intent(
     i
 }
 
+/// D9 — a PullRequestMerged append intent linked to `action_request_id` (the repo_id sibling-read key) +
+/// `project_id` (same envelope as the synced event → folds the SAME `{repo_id}#{pr_number}` row).
+fn pr_merged_intent(
+    project_id: Option<ProjectId>,
+    action_request_id: Option<ActionRequestId>,
+    payload: &str,
+) -> AppendIntent {
+    let mut i = intent(payload);
+    i.event_type = "PullRequestMerged".to_string();
+    i.project_id = project_id;
+    i.action_request_id = action_request_id;
+    i
+}
+
+/// D9 — a PullRequestMerged payload (pr_number + the merge-commit SHA + the merged-at stamp).
+fn pr_merged_payload(pr_number: u64, merge_commit_sha: Option<&str>) -> String {
+    serde_json::to_string(&PullRequestMerged {
+        pr_number,
+        merge_commit_sha: merge_commit_sha.map(|s| s.to_string()),
+        merged_at: Timestamp::parse("2026-06-20T00:00:00Z").unwrap(),
+    })
+    .unwrap()
+}
+
 fn pr_payload(pr_number: u64, status: PullRequest, branch: &str, base: &str) -> String {
     serde_json::to_string(&PullRequestSynced {
         pr_number,
@@ -1579,6 +1606,10 @@ fn pr_payload(pr_number: u64, status: PullRequest, branch: &str, base: &str) -> 
         base: base.to_string(),
         mergeable: None,
         checks_summary: None,
+        additions: None,
+        deletions: None,
+        changed_files: None,
+        commits: None,
         pr_checked_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
     })
     .unwrap()
@@ -1601,6 +1632,39 @@ fn pr_payload_rich(
         base: base.to_string(),
         mergeable,
         checks_summary: checks_summary.map(|s| s.to_string()),
+        additions: None,
+        deletions: None,
+        changed_files: None,
+        commits: None,
+        pr_checked_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    })
+    .unwrap()
+}
+
+/// D6 — like `pr_payload` but sets the diff-stats enrichment (additions/deletions/changed_files/commits),
+/// the data the octocrab GET PR carries; the §11.2 PR card renders them.
+#[allow(clippy::too_many_arguments)]
+fn pr_payload_diff_stats(
+    pr_number: u64,
+    status: PullRequest,
+    branch: &str,
+    base: &str,
+    additions: Option<u64>,
+    deletions: Option<u64>,
+    changed_files: Option<u64>,
+    commits: Option<u64>,
+) -> String {
+    serde_json::to_string(&PullRequestSynced {
+        pr_number,
+        status,
+        branch: branch.to_string(),
+        base: base.to_string(),
+        mergeable: None,
+        checks_summary: None,
+        additions,
+        deletions,
+        changed_files,
+        commits,
         pr_checked_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
     })
     .unwrap()
@@ -1622,6 +1686,11 @@ struct PrRow {
     // coerces INTEGER → Option<bool> on the typed `get` (distinct from the JSON-read serve path).
     mergeable: Option<bool>,
     checks_summary: Option<String>,
+    // D6 — the diff-stats enrichment (INTEGER columns; u64 stored as i64, lossless for real PR stats).
+    additions: Option<i64>,
+    deletions: Option<i64>,
+    changed_files: Option<i64>,
+    commits: Option<i64>,
     updated_at_seq: i64,
 }
 
@@ -1630,7 +1699,8 @@ fn proj_pull_request_rows(path: &std::path::Path) -> Vec<PrRow> {
     let mut stmt = conn
         .prepare(
             "SELECT pr_id, project_id, repo_id, pr_number, title, status, head_branch, base_branch, \
-             pr_checked_at, mergeable, checks_summary, updated_at_seq FROM proj_pull_request \
+             pr_checked_at, mergeable, checks_summary, additions, deletions, changed_files, commits, \
+             updated_at_seq FROM proj_pull_request \
              ORDER BY pr_id",
         )
         .unwrap();
@@ -1648,7 +1718,11 @@ fn proj_pull_request_rows(path: &std::path::Path) -> Vec<PrRow> {
                 pr_checked_at: r.get(8)?,
                 mergeable: r.get(9)?,
                 checks_summary: r.get(10)?,
-                updated_at_seq: r.get(11)?,
+                additions: r.get(11)?,
+                deletions: r.get(12)?,
+                changed_files: r.get(13)?,
+                commits: r.get(14)?,
+                updated_at_seq: r.get(15)?,
             })
         })
         .unwrap();
@@ -1952,6 +2026,261 @@ fn test_migration_13_applies() {
         cols.contains("checks_summary"),
         "MIGRATION_13 adds checks_summary"
     );
+}
+
+#[test]
+fn test_migration_15_applies() {
+    // spec(MIGRATION_15 floor, LESSON §50): a fresh DB opens at/above user_version 15 and
+    // proj_pull_request gained the 4 diff-stats columns (ALTER-only, the MIGRATION_13 precedent; the
+    // historical CREATE untouched). FLOOR (>= 15), not exact-latest — the single exact-latest pin lives
+    // in gateway_plan.rs.
+    let (_d, path) = temp_db();
+    let store = open(&path);
+    assert!(
+        store.user_version().unwrap() >= 15,
+        "open migrates at/above MIGRATION_15"
+    );
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let cols: std::collections::BTreeSet<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('proj_pull_request')")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    for c in ["additions", "deletions", "changed_files", "commits"] {
+        assert!(cols.contains(c), "MIGRATION_15 adds proj_pull_request.{c}");
+    }
+}
+
+#[test]
+fn test_pr_diff_stats_folded() {
+    // spec(§7.2 / LESSON §53): the projector folds PullRequestSynced.additions?/deletions?/changed_files?/
+    // commits? into the 4 D6 columns (Some → value, None → NULL); rebuild-equivalent (derive-from-event,
+    // LESSON §17). A populated event → the 4 values on the row; an absent-stats event → NULL (the
+    // rebuild-safe None arm).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    // a fully-populated diff-stats event.
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid.clone()),
+            &pr_payload_diff_stats(
+                42,
+                PullRequest::Open,
+                "feature",
+                "main",
+                Some(120),
+                Some(7),
+                Some(4),
+                Some(3),
+            ),
+        ))
+        .expect("append folds in-band");
+    // a 2nd PR with NO diff-stats (all None) → the NULL arm.
+    let arid_none = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_beta"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid_none),
+            &pr_payload_diff_stats(7, PullRequest::Merged, "f", "m", None, None, None, None),
+        ))
+        .unwrap();
+
+    let rows = proj_pull_request_rows(&path);
+    let some = rows.iter().find(|r| r.pr_id == "repo_alpha#42").unwrap();
+    assert_eq!(some.additions, Some(120), "additions folded from the event");
+    assert_eq!(some.deletions, Some(7), "deletions folded from the event");
+    assert_eq!(some.changed_files, Some(4), "changed_files folded");
+    assert_eq!(some.commits, Some(3), "commits folded");
+    let none = rows.iter().find(|r| r.pr_id == "repo_beta#7").unwrap();
+    assert_eq!(none.additions, None, "absent additions → NULL");
+    assert_eq!(none.deletions, None, "absent deletions → NULL");
+    assert_eq!(none.changed_files, None, "absent changed_files → NULL");
+    assert_eq!(none.commits, None, "absent commits → NULL");
+
+    // ON CONFLICT DO UPDATE folds the diff-stats too (the D5a mergeable/checks precedent): re-sync the
+    // SAME pr_id with CHANGED stats → the row reflects the new values, not the stale INSERT values.
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid),
+            &pr_payload_diff_stats(
+                42,
+                PullRequest::Open,
+                "feature",
+                "main",
+                Some(200),
+                Some(50),
+                Some(9),
+                Some(5),
+            ),
+        ))
+        .unwrap();
+    let resynced = proj_pull_request_rows(&path);
+    let some = resynced
+        .iter()
+        .find(|r| r.pr_id == "repo_alpha#42")
+        .unwrap();
+    assert_eq!(some.additions, Some(200), "DO UPDATE folds additions");
+    assert_eq!(some.deletions, Some(50), "DO UPDATE folds deletions");
+    assert_eq!(some.changed_files, Some(9), "DO UPDATE folds changed_files");
+    assert_eq!(some.commits, Some(5), "DO UPDATE folds commits");
+
+    // rebuild-equivalent: the diff-stat columns survive a rebuild (derive-from-event, REBUILD_TABLES).
+    let before = proj_pull_request_rows(&path);
+    store.rebuild_projections().unwrap();
+    assert_eq!(
+        before,
+        proj_pull_request_rows(&path),
+        "the diff-stats row is reproduced byte-identically on rebuild (LESSON §17)"
+    );
+}
+
+#[test]
+fn test_pull_request_merged_folds_to_terminal() {
+    // spec(§5.1/§7.2 / D9 / LESSON 17): a PullRequestMerged append folds proj_pull_request.status →
+    // terminal `merged` for the SAME `{repo_id}#{pr_number}` row a prior PullRequestSynced created. The
+    // status is derived from the EVENT TYPE (not the row's current value) → rebuild-safe. Other columns
+    // (branch/base/pr_number) are untouched; updated_at_seq advances. rebuild-equivalent.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    // 1. a synced PR → the row at Open. (The synced + merged events share ONE action_requests sibling row
+    // here — the projector only needs it to resolve repo_id via the LESSON-17 sibling-read; in production
+    // the merge is a separate github.merge_pr action carrying its own Repo ref to the SAME repo_id. A 2nd
+    // seed_pr_action would DEDUP on the NaturalResourceRef idempotency key [same repo] → no new row.)
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid.clone()),
+            &pr_payload(42, PullRequest::Open, "feature", "main"),
+        ))
+        .expect("synced fold");
+    assert_eq!(
+        proj_pull_request_rows(&path)[0].status,
+        "open",
+        "the PR starts Open"
+    );
+
+    // 2. a merge of the SAME PR (same repo_id sibling → same `{repo_id}#{pr_number}` pr_id) → `merged`.
+    store
+        .append(pr_merged_intent(
+            Some(pid),
+            Some(arid),
+            &pr_merged_payload(42, Some("9fceb02")),
+        ))
+        .expect("merged fold");
+    let rows = proj_pull_request_rows(&path);
+    assert_eq!(
+        rows.len(),
+        1,
+        "the merge UPDATES the existing row (no new row)"
+    );
+    let r = &rows[0];
+    assert_eq!(r.pr_id, "repo_alpha#42");
+    assert_eq!(
+        r.status, "merged",
+        "PullRequestMerged folds status → terminal merged (derived from the event type)"
+    );
+    assert_eq!(
+        r.pr_number,
+        Some(42),
+        "pr_number untouched by the merge fold"
+    );
+    assert_eq!(
+        r.head_branch.as_deref(),
+        Some("feature"),
+        "branch untouched"
+    );
+
+    // 3. rebuild-equivalent: the merged status survives a full rebuild (derive-from-event, REBUILD_TABLES).
+    let before = proj_pull_request_rows(&path);
+    store.rebuild_projections().unwrap();
+    assert_eq!(
+        before,
+        proj_pull_request_rows(&path),
+        "the merged row is reproduced byte-identically on rebuild (LESSON 17)"
+    );
+}
+
+#[test]
+fn test_pull_request_merged_no_prior_row_is_healthy_noop() {
+    // spec(D9): a PullRequestMerged with NO prior PullRequestSynced row → the projector's UPDATE hits 0
+    // rows → a HEALTHY no-op (NOT an error, NOT a fabricated INSERT). The row materializes only when the
+    // PR is synced; on a full event log the synced event always precedes the merge, so this guards the
+    // partial/out-of-order edge (an unintended INSERT or a 0-rows-error regression would fail here).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_merged_intent(
+            Some(pid),
+            Some(arid),
+            &pr_merged_payload(99, Some("deadbeef")),
+        ))
+        .expect("a merge with no prior synced row is a healthy no-op (not an error)");
+    assert!(
+        proj_pull_request_rows(&path).is_empty(),
+        "no row is created by a bare merge (the UPDATE hit 0 rows — no fabricated INSERT)"
+    );
+}
+
+#[test]
+fn test_read_pull_request_typed_diff_stats() {
+    // spec(§7.2/§5.0 / LESSON §53): the fail-closed typed serve round-trips the 4 D6 fields — a populated
+    // row AND a NULL row both deserialize STRICTLY into the frozen PullRequestRow. The diff-stats are
+    // INTEGER columns surfacing as JSON numbers → bind directly into Option<u64> (NO bool-coercion, unlike
+    // D5a's mergeable). The column+row-field+serve must land together or the serve fails closed (LESSON §53).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &pr_payload_diff_stats(
+                42,
+                PullRequest::Open,
+                "feature",
+                "main",
+                Some(120),
+                Some(7),
+                Some(4),
+                Some(3),
+            ),
+        ))
+        .unwrap();
+    let arid2 = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_beta"));
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid2),
+            &pr_payload_diff_stats(7, PullRequest::Merged, "f", "m", None, None, None, None),
+        ))
+        .unwrap();
+
+    let rows = nexusopsd::ipc::read_pull_request_typed(&path).expect("typed pull-request read");
+    let some = rows.iter().find(|r| r.pr_id == "repo_alpha#42").unwrap();
+    assert_eq!(some.additions, Some(120), "additions served as typed u64");
+    assert_eq!(some.deletions, Some(7));
+    assert_eq!(some.changed_files, Some(4));
+    assert_eq!(some.commits, Some(3));
+    let none = rows.iter().find(|r| r.pr_id == "repo_beta#7").unwrap();
+    assert_eq!(none.additions, None, "absent additions → None on the wire");
+    assert_eq!(none.deletions, None);
+    assert_eq!(none.changed_files, None);
+    assert_eq!(none.commits, None);
 }
 
 #[test]
@@ -2441,6 +2770,41 @@ fn review_payload(
     .unwrap()
 }
 
+/// D10 — a ReviewSubmitted append intent linked to `action_request_id` (the repo_id sibling-read key) +
+/// `project_id` (same envelope shape as ReviewSynced → folds the SAME proj_review row by review_id).
+fn review_submitted_intent(
+    project_id: Option<ProjectId>,
+    action_request_id: Option<ActionRequestId>,
+    payload: &str,
+) -> AppendIntent {
+    let mut i = intent(payload);
+    i.event_type = "ReviewSubmitted".to_string();
+    i.project_id = project_id;
+    i.action_request_id = action_request_id;
+    i
+}
+
+/// D10 — a ReviewSubmitted payload (the write counterpart to ReviewSynced; + commit_id).
+fn review_submitted_payload(
+    review_id: u64,
+    pr_number: u64,
+    reviewer: &str,
+    state: ReviewState,
+    body: Option<&str>,
+    commit_id: Option<&str>,
+) -> String {
+    serde_json::to_string(&ReviewSubmitted {
+        review_id,
+        pr_number,
+        reviewer: reviewer.to_string(),
+        state,
+        body: body.map(|s| s.to_string()),
+        submitted_at: Some(Timestamp::parse("2026-06-20T00:00:00Z").unwrap()),
+        commit_id: commit_id.map(|s| s.to_string()),
+    })
+    .unwrap()
+}
+
 /// the proj_review rows (the asserted columns), ordered by review_id, for byte-identical compare.
 #[derive(Debug, PartialEq)]
 struct ReviewRowT {
@@ -2582,6 +2946,91 @@ fn test_review_synced_on_conflict_updates_row() {
     assert_eq!(rows[0].state, "changes_requested", "DO UPDATE folds state");
     assert_eq!(rows[0].body.as_deref(), Some("nit"), "DO UPDATE folds body");
     assert!(rows[0].updated_at_seq > seq1, "seq advanced on re-sync");
+}
+
+#[test]
+fn test_review_submitted_folds_to_proj_review() {
+    // spec(§7.2 / D10 / LESSON 17/54): a ReviewSubmitted folds into proj_review (upsert by review_id, the
+    // SAME path as ReviewSynced) — fields from the payload + project_id from the envelope + repo_id
+    // sibling-read; state derived from the event. Rebuild-equivalent. Then a ReviewSubmitted over an
+    // EXISTING ReviewSynced row UPDATES it (a sync-then-submit re-review is one row).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(review_submitted_intent(
+            Some(pid.clone()),
+            Some(arid.clone()),
+            &review_submitted_payload(
+                9100,
+                42,
+                "octocat",
+                ReviewState::ChangesRequested,
+                Some("Please address the inline notes."),
+                Some("9fceb02"),
+            ),
+        ))
+        .expect("submitted fold");
+    let rows = proj_review_rows(&path);
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert_eq!(r.review_id, 9100);
+    assert_eq!(r.pr_number, Some(42));
+    assert_eq!(
+        r.project_id.as_deref(),
+        Some(pid.as_str()),
+        "project_id folded from the envelope"
+    );
+    assert_eq!(r.repo_id.as_deref(), Some("repo_alpha"));
+    assert_eq!(r.reviewer.as_deref(), Some("octocat"));
+    assert_eq!(
+        r.state, "changes_requested",
+        "ReviewSubmitted folds state (derived from the event)"
+    );
+    assert_eq!(r.body.as_deref(), Some("Please address the inline notes."));
+
+    // rebuild-equivalent.
+    let before = proj_review_rows(&path);
+    store.rebuild_projections().unwrap();
+    assert_eq!(
+        before,
+        proj_review_rows(&path),
+        "rebuild reproduces the ReviewSubmitted-folded row (LESSON 17)"
+    );
+
+    // a ReviewSubmitted over an EXISTING ReviewSynced row (same review_id) UPDATES it — one row.
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    let gw2 = gw_with_git();
+    let pid2 = ProjectId::new();
+    let arid2 = seed_pr_action(&mut store2, &gw2, Some(pid2.clone()), Some("repo_beta"));
+    store2
+        .append(review_synced_intent(
+            Some(pid2.clone()),
+            Some(arid2.clone()),
+            &review_payload(5, 1, "octocat", ReviewState::Commented, None, Some("wip")),
+        ))
+        .unwrap();
+    store2
+        .append(review_submitted_intent(
+            Some(pid2),
+            Some(arid2),
+            &review_submitted_payload(5, 1, "octocat", ReviewState::Approved, Some("LGTM"), None),
+        ))
+        .unwrap();
+    let rows2 = proj_review_rows(&path2);
+    assert_eq!(
+        rows2.len(),
+        1,
+        "submit over an existing synced review → one row"
+    );
+    assert_eq!(
+        rows2[0].state, "approved",
+        "ReviewSubmitted UPDATEs the state"
+    );
+    assert_eq!(rows2[0].body.as_deref(), Some("LGTM"), "and the body");
 }
 
 #[test]

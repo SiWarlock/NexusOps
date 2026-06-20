@@ -15,7 +15,9 @@
 //! so the composite is unambiguous + unique per repo+PR. `status` binds the frozen §5.1 `PullRequest`
 //! machine via `wire_value` (the layer-correct serde producer — no fork). `title` is NULL (the event
 //! carries none); `mergeable`/`checks_summary` are folded into the 2 D5a columns (the §7.2 rich-PR
-//! enrichment — `mergeable` as a SQLite INTEGER 0/1, the read layer coerces it to the contract bool).
+//! enrichment — `mergeable` as a SQLite INTEGER 0/1, the read layer coerces it to the contract bool);
+//! `additions`/`deletions`/`changed_files`/`commits` are the D6 diff-stats (INTEGER columns, contract
+//! `Option<u64>` — bound directly, no coercion; None→NULL).
 //!
 //! Failure taxonomy (three distinct cases — the edges-022 precedent):
 //!  * **Healthy SKIP (no-op, not a degrade):** no `env.project_id`, no `env.action_request_id`, or no
@@ -32,7 +34,8 @@ use rusqlite::{params, Transaction};
 
 use nexusops_shared::actions::{ResourceRef, ResourceType};
 use nexusops_shared::event_envelope::EventEnvelope;
-use nexusops_shared::events::PullRequestSynced;
+use nexusops_shared::events::{PullRequestMerged, PullRequestSynced};
+use nexusops_shared::status::PullRequest;
 
 use super::{wire_value, ProjectionError, Projector};
 
@@ -44,8 +47,10 @@ impl Projector for PullRequestProjector {
     }
 
     fn apply(&self, tx: &Transaction, env: &EventEnvelope) -> Result<(), ProjectionError> {
-        if env.event_type != PullRequestSynced::EVENT_TYPE {
-            // folds ONLY PullRequestSynced.
+        let is_synced = env.event_type == PullRequestSynced::EVENT_TYPE;
+        let is_merged = env.event_type == PullRequestMerged::EVENT_TYPE;
+        if !is_synced && !is_merged {
+            // folds ONLY PullRequestSynced (upsert) + PullRequestMerged (D9 — terminal Merged fold).
             return Ok(());
         }
         // identity-less → healthy skip: project_id is the envelope's; action_request_id is the link to
@@ -77,6 +82,26 @@ impl Projector for PullRequestProjector {
             return Ok(());
         };
 
+        // D9 — PullRequestMerged folds the EXISTING row's status → terminal `merged`. The status is
+        // derived from the EVENT TYPE (a constant `PullRequest::Merged`), NEVER the row's current value →
+        // rebuild-safe (LESSON 17 — proj_pull_request is in REBUILD_TABLES; on replay the prior
+        // PullRequestSynced creates the row before this UPDATE runs). Other columns (branch/base/diff-stats)
+        // are untouched; `updated_at_seq` advances. An UPDATE that hits 0 rows (a merge with no prior
+        // synced row) is a healthy no-op — the row materializes when the PR is synced.
+        if is_merged {
+            let payload: PullRequestMerged =
+                serde_json::from_str(&env.payload_json).map_err(|_| {
+                    ProjectionError::Decode("PullRequestMerged payload did not bind".into())
+                })?;
+            let pr_id = format!("{repo_id}#{}", payload.pr_number);
+            let merged_status = wire_value(&PullRequest::Merged)?;
+            tx.execute(
+                "UPDATE proj_pull_request SET status = ?1, updated_at_seq = ?2 WHERE pr_id = ?3",
+                params![merged_status, env.seq, pr_id],
+            )?;
+            return Ok(());
+        }
+
         // reject-unknown on the payload — the reason MUST NOT echo (possibly sensitive) payload bytes (§15).
         let payload: PullRequestSynced = serde_json::from_str(&env.payload_json).map_err(|_| {
             ProjectionError::Decode("PullRequestSynced payload did not bind".into())
@@ -100,13 +125,15 @@ impl Projector for PullRequestProjector {
         tx.execute(
             "INSERT INTO proj_pull_request \
              (pr_id, project_id, repo_id, pr_number, status, head_branch, base_branch, pr_checked_at, \
-              mergeable, checks_summary, updated_at_seq) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+              mergeable, checks_summary, additions, deletions, changed_files, commits, updated_at_seq) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
              ON CONFLICT(pr_id) DO UPDATE SET \
                project_id=excluded.project_id, repo_id=excluded.repo_id, pr_number=excluded.pr_number, \
                status=excluded.status, head_branch=excluded.head_branch, base_branch=excluded.base_branch, \
                pr_checked_at=excluded.pr_checked_at, mergeable=excluded.mergeable, \
-               checks_summary=excluded.checks_summary, updated_at_seq=excluded.updated_at_seq",
+               checks_summary=excluded.checks_summary, additions=excluded.additions, \
+               deletions=excluded.deletions, changed_files=excluded.changed_files, \
+               commits=excluded.commits, updated_at_seq=excluded.updated_at_seq",
             params![
                 pr_id,
                 project_id.as_str(),
@@ -118,6 +145,12 @@ impl Projector for PullRequestProjector {
                 payload.pr_checked_at.as_str(),
                 payload.mergeable,
                 payload.checks_summary,
+                // D6 — the diff-stats fold (None → NULL, rebuild-safe). `Option<u64>` → the INTEGER column
+                // (a GitHub natural; u64→i64 is lossless for any real diff size).
+                payload.additions.map(|n| n as i64),
+                payload.deletions.map(|n| n as i64),
+                payload.changed_files.map(|n| n as i64),
+                payload.commits.map(|n| n as i64),
                 env.seq,
             ],
         )?;

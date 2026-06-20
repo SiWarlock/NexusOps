@@ -88,6 +88,92 @@ pub(crate) fn map_review_state(
     }
 }
 
+/// (D9) The operational params for a `github.merge_pr` call — owner/repo/pr_number/sha read from
+/// `req.inputs` by the `GithubExecutor` (the Repo resource_ref stays the audit/policy IDENTITY). `sha` is
+/// the head SHA the merge is PINNED to (the anti-race guard — octocrab 409s if the head moved; the human
+/// approved THIS head). `merge_method` is the already-mapped octocrab enum (validated fail-closed by
+/// [`map_merge_method`] at the executor BEFORE the call — the approved+audited method executes exactly).
+/// No `Eq` derive — octocrab's `MergeMethod` is `PartialEq`-only + `#[non_exhaustive]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MergePrArgs {
+    pub owner: String,
+    pub repo: String,
+    pub pr_number: u64,
+    pub sha: String,
+    pub merge_method: octocrab::params::pulls::MergeMethod,
+}
+
+/// (D9) The DOMAIN result of a merged PR — NOT an octocrab `Merge` (the `CreatedPr` precedent: keep the
+/// daemon types decoupled from octocrab's response models). `merge_commit_sha` feeds the
+/// `PullRequestMerged` event; `None` when the API response omitted it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergedPr {
+    pub merge_commit_sha: Option<String>,
+}
+
+/// (D9) map a `merge_method` string → octocrab's `MergeMethod`. A PURE deterministic mapping (NOT network
+/// I/O — the live octocrab CALL is the fake-covered edge; this is unit-tested). `merge`/`squash`/`rebase`
+/// map 1:1 (case-insensitive + trimmed for API resilience, the `parse_*` precedent); any unknown value →
+/// a **fail-closed `Err`** — NEVER a silent default (the approved+audited method must execute EXACTLY; a
+/// silent `Merge` default would diverge the on-disk result from the audited Action, F2 audit-integrity).
+/// §15: the `Err` is a STRUCTURAL reason, NEVER echoes the raw (possibly attacker-chosen) input value.
+pub fn map_merge_method(method: &str) -> Result<octocrab::params::pulls::MergeMethod, String> {
+    use octocrab::params::pulls::MergeMethod as M;
+    match method.trim().to_ascii_lowercase().as_str() {
+        "merge" => Ok(M::Merge),
+        "squash" => Ok(M::Squash),
+        "rebase" => Ok(M::Rebase),
+        _ => Err("unknown merge_method (expected merge|squash|rebase)".to_string()),
+    }
+}
+
+/// (D10) The operational params for a `github.submit_review` call — read from `req.inputs` by the
+/// `GithubExecutor` (the Repo resource_ref stays the audit/policy IDENTITY). `commit_id` is the reviewed
+/// head SHA the verdict is PINNED to (audit-integrity/anti-race; the merge_pr `sha` precedent). `event` is
+/// the already-mapped octocrab review verb (validated fail-closed by [`map_review_event`] at the executor
+/// BEFORE the call). `body` is the resolved review text — `""` for an `approve` with no body, the
+/// validated non-empty text for `request_changes`/`comment` (GitHub 422s on an empty body there). No `Eq`
+/// derive — octocrab's `ReviewAction` is `PartialEq`-only + `#[non_exhaustive]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubmitReviewArgs {
+    pub owner: String,
+    pub repo: String,
+    pub pr_number: u64,
+    pub commit_id: String,
+    pub event: octocrab::models::pulls::ReviewAction,
+    pub body: String,
+}
+
+/// (D10) The DOMAIN result of a submitted review — NOT an octocrab `Review` (`#[non_exhaustive]`; the
+/// `ReviewData`/`MergedPr` precedent). Mirrors [`ReviewData`] (+ `commit_id`): the executor maps it → a
+/// `ReviewSubmitted` event. `state` is already the frozen shared [`ReviewState`] (mapped via
+/// [`map_review_state`] at the client boundary).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubmittedReview {
+    pub review_id: u64,
+    pub reviewer: String,
+    pub state: ReviewState,
+    pub submitted_at: Option<Timestamp>,
+    pub body: Option<String>,
+    pub commit_id: Option<String>,
+}
+
+/// (D10) map a review `event` string → octocrab's `ReviewAction`. PURE + deterministic (NOT network I/O —
+/// the live octocrab CALL is the fake-covered edge; this is unit-tested). `approve`/`request_changes`/
+/// `comment` map 1:1 (case-insensitive + trimmed, the `map_merge_method`/`parse_*` precedent); any unknown
+/// value → a **fail-closed `Err`** — NEVER a silent default (the approved+audited verdict must execute
+/// EXACTLY — a silent default would diverge the posted review from the audited Action). §15: the `Err` is a
+/// STRUCTURAL reason, NEVER echoes the raw (possibly attacker-chosen) input value.
+pub fn map_review_event(event: &str) -> Result<octocrab::models::pulls::ReviewAction, String> {
+    use octocrab::models::pulls::ReviewAction as A;
+    match event.trim().to_ascii_lowercase().as_str() {
+        "approve" => Ok(A::Approve),
+        "request_changes" => Ok(A::RequestChanges),
+        "comment" => Ok(A::Comment),
+        _ => Err("unknown review event (expected approve|request_changes|comment)".to_string()),
+    }
+}
+
 /// A write-failure carrying the §17 `IntegrationOutcomeClass` (mirrors `GithubReadError`) so the executor
 /// can branch terminal-non-auth (`ClientError`/`NotFound` → `GithubSyncFailed`) vs `AuthFailed` (the
 /// deferred `auth_expired` path) vs transient (retry/queue). The `message` is for daemon LOGS ONLY —
@@ -114,6 +200,17 @@ pub trait GithubWriteClient: Send + Sync {
         &self,
         args: &SyncReviewsArgs,
     ) -> Result<Vec<ReviewData>, GithubWriteError>;
+
+    /// (D9) Merge a PR on GitHub — the cat-1 WRITE. SHA-pinned to `args.sha` (octocrab 409s on a head
+    /// move) with the explicit `args.merge_method`. The live HTTP round-trip is the fake-covered edge.
+    async fn merge_pull_request(&self, args: &MergePrArgs) -> Result<MergedPr, GithubWriteError>;
+
+    /// (D10) Submit a PR review verdict on GitHub — the cat-1 WRITE. SHA-pinned to `args.commit_id` with
+    /// the explicit `args.event`. The live HTTP round-trip is the fake-covered edge.
+    async fn submit_review(
+        &self,
+        args: &SubmitReviewArgs,
+    ) -> Result<SubmittedReview, GithubWriteError>;
 }
 
 /// The live client over an **injected** `octocrab::Octocrab` (auth bootstrap deferred — never builds the
@@ -199,6 +296,83 @@ impl GithubWriteClient for OctocrabGithubWriteClient {
             .collect();
         Ok(reviews)
     }
+
+    async fn merge_pull_request(&self, args: &MergePrArgs) -> Result<MergedPr, GithubWriteError> {
+        let merge = self
+            .octocrab
+            .pulls(&args.owner, &args.repo)
+            .merge(args.pr_number)
+            // SHA-pin: GitHub refuses (409) if the head moved off this SHA — the anti-race guard so the
+            // merge applies to EXACTLY the head the human approved (audit-integrity, F1).
+            .sha(args.sha.clone())
+            .method(args.merge_method)
+            .send()
+            .await
+            .map_err(|e| GithubWriteError {
+                class: classify_octocrab_error(&e),
+                message: e.to_string(),
+            })?;
+        // a 200 with `merged: false` (rare — e.g. a server-side merge precondition not met) must NEVER
+        // fabricate a `PullRequestMerged` event: treat it as a TRANSIENT failure (→ retry/queue via
+        // classify_failure), the create_pr numberless-201 fail-safe-over-fail-silent precedent. NOT
+        // unit-tested (live edge).
+        if !merge.merged {
+            return Err(GithubWriteError {
+                class: IntegrationOutcomeClass::ServerError,
+                message: "github merge response reported not merged".to_string(),
+            });
+        }
+        Ok(MergedPr {
+            merge_commit_sha: merge.sha,
+        })
+    }
+
+    async fn submit_review(
+        &self,
+        args: &SubmitReviewArgs,
+    ) -> Result<SubmittedReview, GithubWriteError> {
+        // octocrab 0.53 DEPRECATED the high-level create path (`pull_number().reviews().create_review()`):
+        // only `pr_review_actions(pr, review_id)` survives — for actions on an EXISTING review, no CREATE
+        // path. So drive the create directly via the typed lower-level POST — BYTE-EQUIVALENT to what
+        // `create_review` does internally (octocrab `pr_reviews.rs`): POST /repos/{o}/{r}/pulls/{n}/reviews
+        // with {commit_id, body, event, comments}. SAME URL interpolation as every other github write
+        // (`pulls(&owner,&repo)`) → no new injection surface; pr_number is a u64. `event` serializes via
+        // its `ReviewAction` Serialize (SCREAMING_SNAKE: APPROVE/REQUEST_CHANGES/COMMENT). comments=[] —
+        // the per-hunk inline surface is the deferred §4.7 follow-on (D10 Step-2.5 Q1). commit_id PINS the
+        // verdict to the reviewed head (audit-integrity).
+        let route = format!(
+            "/repos/{}/{}/pulls/{}/reviews",
+            args.owner, args.repo, args.pr_number
+        );
+        let request_body = serde_json::json!({
+            "commit_id": args.commit_id,
+            "body": args.body,
+            "event": args.event,
+            "comments": [],
+        });
+        let review: octocrab::models::pulls::Review = self
+            .octocrab
+            .post(route, Some(&request_body))
+            .await
+            .map_err(|e| GithubWriteError {
+                class: classify_octocrab_error(&e),
+                message: e.to_string(),
+            })?;
+        Ok(SubmittedReview {
+            // the create-response's review id is the proj_review PK + the ReviewSubmitted identity.
+            review_id: review.id.0,
+            // the reviewer is the authenticated submitter (response `user.login`); empty if unattributed.
+            reviewer: review.user.map(|u| u.login).unwrap_or_default(),
+            // octocrab's response ReviewState → the frozen shared enum (the list_reviews precedent).
+            state: map_review_state(&review.state),
+            // GitHub's ISO timestamp → the daemon Timestamp; an unparseable/absent value → None (defensive).
+            submitted_at: review
+                .submitted_at
+                .and_then(|dt| Timestamp::parse(&dt.to_rfc3339()).ok()),
+            body: review.body,
+            commit_id: review.commit_id,
+        })
+    }
 }
 
 /// Test double — records each call's args + returns a canned `Ok`/`Err`, or HANGS (the timeout test).
@@ -217,6 +391,13 @@ pub struct FakeGithubWriteClient {
     // op's mode stays `None` (its impl `expect`s configuration, so a mis-targeted call fails loud in tests).
     review_calls: std::sync::Arc<std::sync::Mutex<Vec<SyncReviewsArgs>>>,
     reviews_mode: Option<FakeReviewsMode>,
+    // D9 — the merge_pull_request half (the cat-1 WRITE). Same one-op-per-fake discipline: the unused op's
+    // mode stays `None` (its impl `expect`s configuration → a mis-targeted call fails LOUD in tests).
+    merge_calls: std::sync::Arc<std::sync::Mutex<Vec<MergePrArgs>>>,
+    merge_mode: Option<FakeMergeMode>,
+    // D10 — the submit_review half (the cat-1 WRITE). Same one-op-per-fake discipline.
+    submit_calls: std::sync::Arc<std::sync::Mutex<Vec<SubmitReviewArgs>>>,
+    submit_mode: Option<FakeSubmitMode>,
 }
 
 #[cfg(feature = "test-support")]
@@ -236,6 +417,22 @@ enum FakeReviewsMode {
 }
 
 #[cfg(feature = "test-support")]
+enum FakeMergeMode {
+    Ok(MergedPr),
+    Err(GithubWriteError),
+    /// a future that never resolves — exercises the executor's `block_on` timeout.
+    Hang,
+}
+
+#[cfg(feature = "test-support")]
+enum FakeSubmitMode {
+    Ok(SubmittedReview),
+    Err(GithubWriteError),
+    /// a future that never resolves — exercises the executor's `block_on` timeout.
+    Hang,
+}
+
+#[cfg(feature = "test-support")]
 impl FakeGithubWriteClient {
     /// records the call; returns the canned `CreatedPr`.
     pub fn ok(created: CreatedPr) -> Self {
@@ -244,6 +441,10 @@ impl FakeGithubWriteClient {
             mode: Some(FakeWriteMode::Ok(created)),
             review_calls: Default::default(),
             reviews_mode: None,
+            merge_calls: Default::default(),
+            merge_mode: None,
+            submit_calls: Default::default(),
+            submit_mode: None,
         }
     }
     /// records the call; returns the canned `GithubWriteError`.
@@ -253,6 +454,10 @@ impl FakeGithubWriteClient {
             mode: Some(FakeWriteMode::Err(error)),
             review_calls: Default::default(),
             reviews_mode: None,
+            merge_calls: Default::default(),
+            merge_mode: None,
+            submit_calls: Default::default(),
+            submit_mode: None,
         }
     }
     /// records the call; then NEVER resolves (the write-actor timeout bound is the only escape).
@@ -262,6 +467,10 @@ impl FakeGithubWriteClient {
             mode: Some(FakeWriteMode::Hang),
             review_calls: Default::default(),
             reviews_mode: None,
+            merge_calls: Default::default(),
+            merge_mode: None,
+            submit_calls: Default::default(),
+            submit_mode: None,
         }
     }
     /// (D5b-2) records the call; returns the canned `Vec<ReviewData>`.
@@ -271,6 +480,10 @@ impl FakeGithubWriteClient {
             mode: None,
             review_calls: Default::default(),
             reviews_mode: Some(FakeReviewsMode::Ok(reviews)),
+            merge_calls: Default::default(),
+            merge_mode: None,
+            submit_calls: Default::default(),
+            submit_mode: None,
         }
     }
     /// (D5b-2) records the call; returns the canned `GithubWriteError` from `list_reviews`.
@@ -280,6 +493,10 @@ impl FakeGithubWriteClient {
             mode: None,
             review_calls: Default::default(),
             reviews_mode: Some(FakeReviewsMode::Err(error)),
+            merge_calls: Default::default(),
+            merge_mode: None,
+            submit_calls: Default::default(),
+            submit_mode: None,
         }
     }
     /// (D5b-2) records the call; then NEVER resolves (the `list_reviews` timeout bound).
@@ -289,6 +506,88 @@ impl FakeGithubWriteClient {
             mode: None,
             review_calls: Default::default(),
             reviews_mode: Some(FakeReviewsMode::Hang),
+            merge_calls: Default::default(),
+            merge_mode: None,
+            submit_calls: Default::default(),
+            submit_mode: None,
+        }
+    }
+    /// (D9) records the call; returns the canned `MergedPr` (a successful merge).
+    pub fn merged(merged: MergedPr) -> Self {
+        Self {
+            calls: Default::default(),
+            mode: None,
+            review_calls: Default::default(),
+            reviews_mode: None,
+            merge_calls: Default::default(),
+            merge_mode: Some(FakeMergeMode::Ok(merged)),
+            submit_calls: Default::default(),
+            submit_mode: None,
+        }
+    }
+    /// (D9) records the call; returns the canned `GithubWriteError` from `merge_pull_request`.
+    pub fn merge_err(error: GithubWriteError) -> Self {
+        Self {
+            calls: Default::default(),
+            mode: None,
+            review_calls: Default::default(),
+            reviews_mode: None,
+            merge_calls: Default::default(),
+            merge_mode: Some(FakeMergeMode::Err(error)),
+            submit_calls: Default::default(),
+            submit_mode: None,
+        }
+    }
+    /// (D9) records the call; then NEVER resolves (the merge `block_on` timeout bound).
+    pub fn merge_hanging() -> Self {
+        Self {
+            calls: Default::default(),
+            mode: None,
+            review_calls: Default::default(),
+            reviews_mode: None,
+            merge_calls: Default::default(),
+            merge_mode: Some(FakeMergeMode::Hang),
+            submit_calls: Default::default(),
+            submit_mode: None,
+        }
+    }
+    /// (D10) records the call; returns the canned `SubmittedReview` (a successful submit).
+    pub fn submitted(submitted: SubmittedReview) -> Self {
+        Self {
+            calls: Default::default(),
+            mode: None,
+            review_calls: Default::default(),
+            reviews_mode: None,
+            merge_calls: Default::default(),
+            merge_mode: None,
+            submit_calls: Default::default(),
+            submit_mode: Some(FakeSubmitMode::Ok(submitted)),
+        }
+    }
+    /// (D10) records the call; returns the canned `GithubWriteError` from `submit_review`.
+    pub fn submit_err(error: GithubWriteError) -> Self {
+        Self {
+            calls: Default::default(),
+            mode: None,
+            review_calls: Default::default(),
+            reviews_mode: None,
+            merge_calls: Default::default(),
+            merge_mode: None,
+            submit_calls: Default::default(),
+            submit_mode: Some(FakeSubmitMode::Err(error)),
+        }
+    }
+    /// (D10) records the call; then NEVER resolves (the submit `block_on` timeout bound).
+    pub fn submit_hanging() -> Self {
+        Self {
+            calls: Default::default(),
+            mode: None,
+            review_calls: Default::default(),
+            reviews_mode: None,
+            merge_calls: Default::default(),
+            merge_mode: None,
+            submit_calls: Default::default(),
+            submit_mode: Some(FakeSubmitMode::Hang),
         }
     }
     /// a handle to the recorded create-PR call args — clone it BEFORE the client is boxed.
@@ -298,6 +597,14 @@ impl FakeGithubWriteClient {
     /// (D5b-2) a handle to the recorded list_reviews call args.
     pub fn review_calls(&self) -> std::sync::Arc<std::sync::Mutex<Vec<SyncReviewsArgs>>> {
         self.review_calls.clone()
+    }
+    /// (D9) a handle to the recorded merge_pull_request call args — clone it BEFORE the client is boxed.
+    pub fn merge_calls(&self) -> std::sync::Arc<std::sync::Mutex<Vec<MergePrArgs>>> {
+        self.merge_calls.clone()
+    }
+    /// (D10) a handle to the recorded submit_review call args — clone it BEFORE the client is boxed.
+    pub fn submit_calls(&self) -> std::sync::Arc<std::sync::Mutex<Vec<SubmitReviewArgs>>> {
+        self.submit_calls.clone()
     }
 }
 
@@ -335,6 +642,31 @@ impl GithubWriteClient for FakeGithubWriteClient {
             FakeReviewsMode::Ok(reviews) => Ok(reviews.clone()),
             FakeReviewsMode::Err(e) => Err(e.clone()),
             FakeReviewsMode::Hang => std::future::pending().await,
+        }
+    }
+
+    async fn merge_pull_request(&self, args: &MergePrArgs) -> Result<MergedPr, GithubWriteError> {
+        self.merge_calls.lock().unwrap().push(args.clone());
+        match self.merge_mode.as_ref().expect(
+            "FakeGithubWriteClient merge mode not configured (use ::merged/::merge_err/::merge_hanging)",
+        ) {
+            FakeMergeMode::Ok(merged) => Ok(merged.clone()),
+            FakeMergeMode::Err(e) => Err(e.clone()),
+            FakeMergeMode::Hang => std::future::pending().await,
+        }
+    }
+
+    async fn submit_review(
+        &self,
+        args: &SubmitReviewArgs,
+    ) -> Result<SubmittedReview, GithubWriteError> {
+        self.submit_calls.lock().unwrap().push(args.clone());
+        match self.submit_mode.as_ref().expect(
+            "FakeGithubWriteClient submit mode not configured (use ::submitted/::submit_err/::submit_hanging)",
+        ) {
+            FakeSubmitMode::Ok(submitted) => Ok(submitted.clone()),
+            FakeSubmitMode::Err(e) => Err(e.clone()),
+            FakeSubmitMode::Hang => std::future::pending().await,
         }
     }
 }

@@ -6,7 +6,9 @@ use nexusops_shared::actions::{
     RequiredApprover, ResourceType, RiskLevel,
 };
 use nexusops_shared::catalog;
-use nexusops_shared::events::{PullRequestSynced, ReviewSynced, WorktreeCreated};
+use nexusops_shared::events::{
+    PullRequestMerged, PullRequestSynced, ReviewSubmitted, ReviewSynced, WorktreeCreated,
+};
 use nexusops_shared::gateway_ids::ApprovalId;
 use nexusops_shared::ipc::{
     ActionAck, DeltaKind, PlanAck, PlanStepAck, ProjectionDelta, ProjectionName,
@@ -125,10 +127,26 @@ fn emitted_event_deltas(req: &ActionRequest, ev: &EmittedEvent) -> Vec<Projectio
                         .map(|r| r.id.clone());
                     ids.pr_id = repo_id.map(|r| format!("{r}#{}", p.pr_number));
                 }
+            } else if *event_type == PullRequestMerged::EVENT_TYPE {
+                // D9 — same pr_id formula as PullRequestSynced: repo_id (the action's Repo ref) + the
+                // payload's pr_number → the `{repo_id}#{pr_number}` row PK the PullRequestProjector folds.
+                if let Ok(p) = serde_json::from_str::<PullRequestMerged>(payload_json) {
+                    let repo_id = req
+                        .resource_refs
+                        .iter()
+                        .find(|r| r.resource_type == ResourceType::Repo)
+                        .map(|r| r.id.clone());
+                    ids.pr_id = repo_id.map(|r| format!("{r}#{}", p.pr_number));
+                }
             } else if *event_type == ReviewSynced::EVENT_TYPE {
                 // review_id is self-contained in the payload (globally unique → the proj_review PK); no
                 // sibling Repo-ref needed for the NUDGE (only the projector's repo_id column sibling-reads).
                 if let Ok(r) = serde_json::from_str::<ReviewSynced>(payload_json) {
+                    ids.review_id = Some(r.review_id.to_string());
+                }
+            } else if *event_type == ReviewSubmitted::EVENT_TYPE {
+                // D10 — same as ReviewSynced: review_id self-contained in the payload (the proj_review PK).
+                if let Ok(r) = serde_json::from_str::<ReviewSubmitted>(payload_json) {
                     ids.review_id = Some(r.review_id.to_string());
                 }
             }

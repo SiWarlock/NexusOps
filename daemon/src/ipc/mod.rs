@@ -26,6 +26,9 @@ mod transport;
 // P4.0b-ui1 — the §6.1 get_diff read core (resolve worktree_id→path + git2 read-only); pub for the
 // integration test + a future direct caller. The RPC dispatch routes "get_diff" to it.
 pub use methods::read_worktree_diff;
+// D7 — the §6.1 get_pr_diff read core (resolve repo_id/pr_number→owner/repo + fetch+parse the PR diff);
+// pub for the integration test + a future direct caller. The RPC dispatch routes "get_pr_diff" to it.
+pub use methods::read_pr_diff;
 // P4.0b-ui2 (②-mini / pin #2) — the typed ApprovalQueue serve (proj_approval_queue → frozen
 // ApprovalQueueRow); pub for the integration test. `get_projection` routes ApprovalQueue to it.
 pub use methods::read_approval_queue_typed;

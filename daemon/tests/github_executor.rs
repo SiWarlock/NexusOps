@@ -286,6 +286,38 @@ fn test_create_pr_emits_pull_request_synced() {
     assert_eq!(synced.pr_checked_at, Timestamp::parse(FIXED_TS).unwrap());
 }
 
+#[test]
+fn test_create_pr_emits_diff_stats() {
+    // spec(§7.2 / D6): the create_pr emit THREADS the diff-stats (additions/deletions/changed_files/
+    // commits) from `created.signals` (captured by extract_pr_signals off the GET PR) into the
+    // PullRequestSynced payload. Pins the glue between the producer capture and the event — the canned
+    // default is all-None, so a dropped/swapped/zeroed field would otherwise pass every other test.
+    let created = CreatedPr {
+        pr_number: 101,
+        signals: PullRequestSignals {
+            additions: Some(120),
+            deletions: Some(7),
+            changed_files: Some(4),
+            commits: Some(3),
+            ..Default::default()
+        },
+        branch: "feature/x".to_string(),
+        base: "main".to_string(),
+    };
+    let (_rt, exec, _calls) = ok_executor(created);
+    let outcome = exec.execute(&create_pr_req());
+    let (_event_type, payload_json) = single_namespaced(&outcome);
+    let synced: PullRequestSynced = serde_json::from_str(&payload_json).expect("parses");
+    assert_eq!(
+        synced.additions,
+        Some(120),
+        "additions threaded from created.signals into the emit"
+    );
+    assert_eq!(synced.deletions, Some(7), "deletions threaded");
+    assert_eq!(synced.changed_files, Some(4), "changed_files threaded");
+    assert_eq!(synced.commits, Some(3), "commits threaded");
+}
+
 // ---- 4. side_effect_applied (a real external change) -----------------------
 
 #[test]

@@ -166,4 +166,26 @@ pub mod time;
 /// network READS: not risk-0 auto-execute (an external API read), below the risk-2 github writes (no
 /// mutation/credential). Reuses `ExecutorKind::Github` (no new enum → the 3-way verify count is unchanged).
 /// Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.38.0";
+/// 0.39.0 (D6/P4.7) adds the PR-card diff-stats — `additions`/`deletions`/`changed_files`/`commits`
+/// (`Option<u64>`) on `PullRequestSynced` (§7.1) + `PullRequestRow` (§7.2), folded onto `proj_pull_request`
+/// (MIGRATION_15) + served typed; captured from the octocrab GET PR in `extract_pr_signals` + threaded
+/// into the `create_pr` emit (the §11.2 PR card render data). The D5a LOCKSTEP recipe (LESSON §53);
+/// additive, no frozen type reshaped (§5.0).
+/// 0.40.0 (D7/P4.7) adds the `get_pr_diff` §6.1 read RPC — a NEW `GetPrDiffParams` wire type
+/// (`{repo_id, pr_number, file?}`) for the §11.2 Review-tab remote-PR code-diff (head-vs-base);
+/// `DiffResult`/`Hunk`/`DiffLine` are REUSED (no new result shape). The first network read in the IPC
+/// read layer (an `Arc<dyn GithubReadClient>` threaded into the dispatch). Additive (§5.0).
+/// 0.41.0 (D9/P4.7) adds the cat-1 `github.merge_pr` mutation surface: the §6.3 catalog entry (risk-3,
+/// `ExecutorKind::Github`, FromInputs, requires_resource_refs, **NON-standing-grantable** — F1; MVP set
+/// 29→30) + the §7.1 `PullRequestMerged` OBSERVATION event (`{pr_number, merge_commit_sha?, merged_at}`,
+/// emitted by the gateway on a successful merge; the `PullRequestProjector` folds it → terminal `Merged`).
+/// The F2 UI/IPC-only requester gate is a daemon policy concern (no `shared/` surface). Additive, no
+/// frozen type reshaped (§5.0).
+/// 0.42.0 (D10/P4.7) adds the cat-1 `github.submit_review` mutation surface: the §6.3 catalog entry (risk-3,
+/// `ExecutorKind::Github`, FromInputs, requires_resource_refs, **NON-standing-grantable** — F1; MVP set
+/// 30→31) + the §7.1 `ReviewSubmitted` OBSERVATION event (`{review_id, pr_number, reviewer, state, body?,
+/// submitted_at?, commit_id?}`, the WRITE counterpart to `ReviewSynced`, reusing the frozen `ReviewState`;
+/// emitted by the gateway on a successful review-submit; the `ReviewProjector` folds it → `proj_review`).
+/// The F2 UI/IPC-only requester gate extends the D9 daemon-policy const (no `shared/` surface). Additive,
+/// no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.42.0";

@@ -131,6 +131,7 @@ fn test_unauthorized_peer_disconnects_unserved() {
         &nexusopsd::runtime::WriteHandle::disconnected(),
         &decision_registry(),
         &wait_class(),
+        &fake_github(),
     );
     assert!(
         matches!(outcome, Err(IpcError::UnauthorizedPeer { .. })),
@@ -183,6 +184,16 @@ fn wait_class() -> nexusopsd::runtime::InterceptWaitClass {
     nexusopsd::runtime::InterceptWaitClass::production_default()
 }
 
+/// D7 — a placeholder GitHub read client for the serve-connection tests (none exercise `get_pr_diff`).
+fn fake_github() -> nexusopsd::integrations::github::FakeGithubReadClient {
+    nexusopsd::integrations::github::FakeGithubReadClient::new(Err(
+        nexusopsd::integrations::github::GithubReadError {
+            class: nexusopsd::integrations::classifier::IntegrationOutcomeClass::ServerError,
+            message: "unused in ipc tests".into(),
+        },
+    ))
+}
+
 // ---- Test 5 — handshake: in-range HelloFrame → HelloAck (§6.4) ---------------
 
 #[test]
@@ -210,6 +221,7 @@ fn test_handshake_hello_ack() {
         &nexusopsd::runtime::WriteHandle::disconnected(),
         &decision_registry(),
         &wait_class(),
+        &fake_github(),
     )
     .expect("authorized in-range handshake succeeds");
 
@@ -252,6 +264,7 @@ fn test_version_skew_disconnects() {
         &nexusopsd::runtime::WriteHandle::disconnected(),
         &decision_registry(),
         &wait_class(),
+        &fake_github(),
     );
     assert!(
         matches!(outcome, Err(IpcError::VersionSkew { .. })),
@@ -298,6 +311,7 @@ fn test_method_before_handshake_rejected() {
         &nexusopsd::runtime::WriteHandle::disconnected(),
         &decision_registry(),
         &wait_class(),
+        &fake_github(),
     );
     assert!(
         matches!(outcome, Err(IpcError::Protocol(_))),
@@ -436,6 +450,7 @@ fn test_get_projection_returns_rows() {
             &nexusopsd::runtime::WriteHandle::disconnected(),
             &decision_registry(),
             &wait_class(),
+            &fake_github(),
         )
         .expect("serve get_projection");
         h.join().unwrap()
@@ -523,6 +538,7 @@ fn test_submit_action_reachable_through_ipc_dispatch() {
             &handle,
             &decision_registry(),
             &wait_class(),
+            &fake_github(),
         )
         .expect("serve submit");
         h.join().unwrap()
@@ -574,6 +590,7 @@ fn test_get_projection_unfed_is_empty_not_error() {
             &nexusopsd::runtime::WriteHandle::disconnected(),
             &decision_registry(),
             &wait_class(),
+            &fake_github(),
         )
         .expect("serve unfed projection");
         h.join().unwrap()
@@ -621,6 +638,7 @@ fn test_unknown_method_and_get_capabilities() {
             &nexusopsd::runtime::WriteHandle::disconnected(),
             &decision_registry(),
             &wait_class(),
+            &fake_github(),
         )
         .expect("serve capabilities + unknown");
         h.join().unwrap()
@@ -671,6 +689,7 @@ fn test_get_projection_scope_not_yet_enforced() {
             &nexusopsd::runtime::WriteHandle::disconnected(),
             &decision_registry(),
             &wait_class(),
+            &fake_github(),
         )
         .expect("serve scoped projection");
         h.join().unwrap()
@@ -793,6 +812,7 @@ fn test_subscribe_method_recognized() {
             &nexusopsd::runtime::WriteHandle::disconnected(),
             &decision_registry(),
             &wait_class(),
+            &fake_github(),
         )
         .expect("serve subscribe ack");
         h.join().unwrap()
@@ -890,6 +910,7 @@ fn test_subscriber_receives_delta_frame() {
                 &nexusopsd::runtime::WriteHandle::disconnected(),
                 &decision_registry(),
                 &wait_class(),
+                &fake_github(),
             );
         });
         let client_h = s.spawn(move || {
@@ -976,6 +997,7 @@ fn test_subscribe_connection_is_dedicated() {
                 &nexusopsd::runtime::WriteHandle::disconnected(),
                 &decision_registry(),
                 &wait_class(),
+                &fake_github(),
             );
         });
         let client_h = s.spawn(move || {

@@ -42,6 +42,16 @@ fn no_deltas() -> tokio::sync::broadcast::Sender<nexusops_shared::ipc::Projectio
     tokio::sync::broadcast::channel(1).0
 }
 
+/// D7 — a placeholder GitHub read client for the accept-loop tests (they don't exercise `get_pr_diff`).
+fn fake_github() -> std::sync::Arc<dyn nexusopsd::integrations::github::GithubReadClient> {
+    std::sync::Arc::new(nexusopsd::integrations::github::FakeGithubReadClient::new(
+        Err(nexusopsd::integrations::github::GithubReadError {
+            class: nexusopsd::integrations::classifier::IntegrationOutcomeClass::ServerError,
+            message: "unused in runtime tests".into(),
+        }),
+    ))
+}
+
 fn temp_db() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nexusops.db");
@@ -499,6 +509,7 @@ async fn test_foreign_peer_rejected_in_accept_path() {
         no_deltas(),
         nexusopsd::runtime::WriteHandle::disconnected(),
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
+        fake_github(),
         sd_rx,
     );
 
@@ -534,6 +545,7 @@ async fn test_connection_cap_enforced() {
         no_deltas(),
         nexusopsd::runtime::WriteHandle::disconnected(),
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
+        fake_github(),
         sd_rx,
     ); // cap = 1
 
@@ -577,6 +589,7 @@ async fn test_connection_permit_released_on_close() {
         no_deltas(),
         nexusopsd::runtime::WriteHandle::disconnected(),
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
+        fake_github(),
         sd_rx,
     ); // cap = 1
 
@@ -621,6 +634,7 @@ async fn test_read_projection_over_real_socket() {
         no_deltas(),
         nexusopsd::runtime::WriteHandle::disconnected(),
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
+        fake_github(),
         sd_rx,
     );
 
@@ -1098,6 +1112,240 @@ async fn test_gateway_approval_publishes_queue_delta() {
         "a rolled-back gateway submit publishes no delta (Empty, not Lagged)"
     );
     actor2.shutdown().await;
+}
+
+// ---- D9 (P4.7) — github.merge_pr through the REAL gateway publishes a PullRequest delta (LESSON 51/52) -
+
+/// a github.merge_pr ActionRequest: operational params in `inputs` + the repo identity resource_ref.
+fn merge_pr_request(repo_id: &str, pr_number: u64) -> nexusops_shared::actions::ActionRequest {
+    use nexusops_shared::actions::{
+        ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
+    };
+    use nexusops_shared::ids::ActionRequestId;
+    use nexusops_shared::status::ActionRequestStatus;
+    use nexusops_shared::time::Timestamp;
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id: None,
+        action_type: "github.merge_pr".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs: vec![ResourceRef {
+            resource_type: ResourceType::Repo,
+            id: repo_id.to_string(),
+            uri: None,
+        }],
+        inputs: serde_json::json!({
+            "owner": "acme",
+            "repo": "widget",
+            "pr_number": pr_number,
+            "sha": "9fceb02d0ae598e95dc970b74767f19372d61af8",
+            "merge_method": "squash",
+        }),
+        risk_level: RiskLevel::Level3,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn test_merge_production_path_publishes_pr_nudge() {
+    // spec(LESSON 51/52 / D9): a github.merge_pr through the REAL gateway execute (submit → approve →
+    // execute → PullRequestMerged emitted) publishes a PullRequest Upsert delta keyed by the
+    // `{repo_id}#{pr_number}` row PK — the production path, NOT a direct store.append (a non-production
+    // test would mask an orphaned nudge, the D4b Finding class). The GithubExecutor drives its async
+    // client via a captured multi-thread Handle's block_on on the write-actor std::thread (the 3a
+    // mechanism); the row-less delta publishes regardless of whether a prior synced row exists.
+    use nexusops_shared::catalog::ExecutorKind;
+
+    // a multi-thread runtime so the captured Handle's block_on completes the (fake) client off the
+    // write-actor's std::thread (the github_executor 3a precedent — NOT the test's current-thread rt).
+    let rt = tokio::runtime::Runtime::new().expect("multi-thread runtime for the github block_on");
+    let mut catalog = nexusopsd::gateway::executor::CatalogExecutor::new();
+    catalog.register(
+        ExecutorKind::Github,
+        Arc::new(nexusopsd::integrations::executor::GithubExecutor::new(
+            Box::new(
+                nexusopsd::integrations::github_write::FakeGithubWriteClient::merged(
+                    nexusopsd::integrations::github_write::MergedPr {
+                        merge_commit_sha: Some("9fceb02".to_string()),
+                    },
+                ),
+            ),
+            rt.handle().clone(),
+            Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        )),
+    );
+    let gw = nexusopsd::gateway::Gateway::new(
+        Box::new(nexusopsd::gateway::policy::CatalogPolicy),
+        Box::new(catalog),
+    );
+
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        gw,
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+
+    // submit github.merge_pr (risk-3) → AwaitingApproval; capture the appr_ id off the queue delta.
+    let h = handle.clone();
+    tokio::task::spawn_blocking(move || h.submit_action_blocking(merge_pr_request("repo_x", 55)))
+        .await
+        .unwrap()
+        .expect("write-actor reachable")
+        .expect("submit");
+    let submit_deltas = drain_deltas(&mut rx);
+    let appr_id = submit_deltas
+        .iter()
+        .find(|d| d.projection == ProjectionName::ApprovalQueue)
+        .and_then(|d| d.id.clone())
+        .expect("submit opened an approval (the queue delta carries the appr_ id)");
+
+    // approve → execute → PullRequestMerged emitted → publish_after_commit nudges PullRequest.
+    let h = handle.clone();
+    tokio::task::spawn_blocking(move || h.approve_blocking(appr_id))
+        .await
+        .unwrap()
+        .expect("write-actor reachable")
+        .expect("approve drives execute");
+    let approve_deltas = drain_deltas(&mut rx);
+    let pr = approve_deltas
+        .iter()
+        .find(|d| d.projection == ProjectionName::PullRequest)
+        .expect("the merge's PullRequestMerged publishes a PullRequest delta (LESSON 51/52)");
+    assert!(matches!(pr.kind, DeltaKind::Upsert));
+    assert_eq!(
+        pr.id.as_deref(),
+        Some("repo_x#55"),
+        "the PullRequest delta is keyed by the {{repo_id}}#{{pr_number}} row PK"
+    );
+    actor.shutdown().await;
+    // shut the multi-thread runtime down in the BACKGROUND — dropping a Runtime inside an async context
+    // (this #[tokio::test]) would block-on-shutdown and panic. shutdown_background returns immediately.
+    rt.shutdown_background();
+}
+
+// ---- D10 (P4.7) — github.submit_review through the REAL gateway publishes a Review delta (LESSON 51/52) -
+
+/// a github.submit_review ActionRequest: operational params in `inputs` + the repo identity resource_ref.
+fn submit_review_request(repo_id: &str, pr_number: u64) -> nexusops_shared::actions::ActionRequest {
+    use nexusops_shared::actions::{
+        ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
+    };
+    use nexusops_shared::ids::ActionRequestId;
+    use nexusops_shared::status::ActionRequestStatus;
+    use nexusops_shared::time::Timestamp;
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id: None,
+        action_type: "github.submit_review".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs: vec![ResourceRef {
+            resource_type: ResourceType::Repo,
+            id: repo_id.to_string(),
+            uri: None,
+        }],
+        inputs: serde_json::json!({
+            "owner": "acme",
+            "repo": "widget",
+            "pr_number": pr_number,
+            "commit_id": "9fceb02d0ae598e95dc970b74767f19372d61af8",
+            "event": "approve",
+        }),
+        risk_level: RiskLevel::Level3,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn test_submit_production_path_publishes_review_nudge() {
+    // spec(LESSON 51/52 / D10): a github.submit_review through the REAL gateway execute (submit → approve →
+    // execute → ReviewSubmitted emitted) publishes a Review Upsert delta keyed by the review_id (the
+    // proj_review PK) — the production path, NOT a direct store.append. The GithubExecutor drives its async
+    // client via a captured multi-thread Handle's block_on on the write-actor std::thread (the 3a mechanism).
+    use nexusops_shared::catalog::ExecutorKind;
+    use nexusops_shared::status::ReviewState;
+    use nexusops_shared::time::Timestamp;
+
+    let rt = tokio::runtime::Runtime::new().expect("multi-thread runtime for the github block_on");
+    let mut catalog = nexusopsd::gateway::executor::CatalogExecutor::new();
+    catalog.register(
+        ExecutorKind::Github,
+        Arc::new(nexusopsd::integrations::executor::GithubExecutor::new(
+            Box::new(
+                nexusopsd::integrations::github_write::FakeGithubWriteClient::submitted(
+                    nexusopsd::integrations::github_write::SubmittedReview {
+                        review_id: 9100,
+                        reviewer: "octocat".to_string(),
+                        state: ReviewState::Approved,
+                        submitted_at: Some(Timestamp::parse("2026-06-08T00:00:00Z").unwrap()),
+                        body: None,
+                        commit_id: Some("9fceb02d0ae598e95dc970b74767f19372d61af8".to_string()),
+                    },
+                ),
+            ),
+            rt.handle().clone(),
+            Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        )),
+    );
+    let gw = nexusopsd::gateway::Gateway::new(
+        Box::new(nexusopsd::gateway::policy::CatalogPolicy),
+        Box::new(catalog),
+    );
+
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        gw,
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+
+    let h = handle.clone();
+    tokio::task::spawn_blocking(move || {
+        h.submit_action_blocking(submit_review_request("repo_x", 55))
+    })
+    .await
+    .unwrap()
+    .expect("write-actor reachable")
+    .expect("submit");
+    let appr_id = drain_deltas(&mut rx)
+        .iter()
+        .find(|d| d.projection == ProjectionName::ApprovalQueue)
+        .and_then(|d| d.id.clone())
+        .expect("submit opened an approval (the queue delta carries the appr_ id)");
+
+    let h = handle.clone();
+    tokio::task::spawn_blocking(move || h.approve_blocking(appr_id))
+        .await
+        .unwrap()
+        .expect("write-actor reachable")
+        .expect("approve drives execute");
+    let approve_deltas = drain_deltas(&mut rx);
+    let review = approve_deltas
+        .iter()
+        .find(|d| d.projection == ProjectionName::Review)
+        .expect("the submit's ReviewSubmitted publishes a Review delta (LESSON 51/52)");
+    assert!(matches!(review.kind, DeltaKind::Upsert));
+    assert_eq!(
+        review.id.as_deref(),
+        Some("9100"),
+        "the Review delta is keyed by the review_id (the proj_review PK)"
+    );
+    actor.shutdown().await;
+    rt.shutdown_background();
 }
 
 #[tokio::test]

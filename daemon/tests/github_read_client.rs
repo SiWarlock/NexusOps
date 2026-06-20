@@ -135,6 +135,27 @@ fn extract_running_check_is_pending_not_failure() {
     assert_eq!(s.checks, ChecksConclusion::Pending);
 }
 
+#[test]
+fn test_extract_pr_signals_captures_diff_stats() {
+    // spec(§7.2 / work-order D6): the octocrab GET PR carries additions/deletions/changed_files/commits
+    // (all Option<u64>, GET-only — absent on the list endpoint). The producer captures them into
+    // PullRequestSignals so they thread into PullRequestSynced at the create_pr emit. A fixture WITH the
+    // stats → the 4 values; a fixture WITHOUT (PR_OPEN_CLEAN) → None (octocrab Option-None).
+    const PR_WITH_STATS: &str = r#"{"locked":false,"number":7,"state":"open","mergeable_state":"clean","draft":false,"merged":false,"additions":120,"deletions":7,"changed_files":4,"commits":3}"#;
+    let s = extract_pr_signals(&pr(PR_WITH_STATS), &[], &[]);
+    assert_eq!(s.additions, Some(120), "additions captured from the GET PR");
+    assert_eq!(s.deletions, Some(7), "deletions captured");
+    assert_eq!(s.changed_files, Some(4), "changed_files captured");
+    assert_eq!(s.commits, Some(3), "commits captured");
+
+    // absent stats (the open-clean fixture has none) → None (no fabrication).
+    let none = extract_pr_signals(&pr(PR_OPEN_CLEAN), &[], &[]);
+    assert_eq!(none.additions, None, "absent additions → None");
+    assert_eq!(none.deletions, None);
+    assert_eq!(none.changed_files, None);
+    assert_eq!(none.commits, None);
+}
+
 // ---- the trait seam (the gated projector/executor consume this) --------------------------------
 
 #[tokio::test]

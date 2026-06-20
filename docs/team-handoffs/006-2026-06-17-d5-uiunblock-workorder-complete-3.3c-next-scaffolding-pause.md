@@ -4,7 +4,7 @@
 **Track:** daemon (single-track; critical path P2 → P3 → P4)
 **Worktree:** root checkout (single-track, `main`)
 **Predecessor handoff:** `docs/team-handoffs/005-2026-06-13-phase4-live-drive-loop-done-smoke-harness-ready.md`
-**Successor handoff:** _(filled in when the next /team-end runs)_
+**Successor handoff:** `docs/team-handoffs/007-2026-06-20-d6d7-sealed-d9d10-cat1-next-tmux-restart.md`
 **Round-seal commit at handoff:** `3d0cba5` (D5 seal; tip is `8bd9990` = impl session doc 028)
 
 ## Why this handoff exists

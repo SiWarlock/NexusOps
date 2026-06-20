@@ -102,3 +102,111 @@ pub fn read_diff(repo_path: &Path, file: &str) -> Result<DiffResult, GitReadErro
 
     Ok(DiffResult { hunks })
 }
+
+/// Parse a GitHub PR **unified-diff string** (octocrab `pulls().get_diff(pr) → String`, D7) into the
+/// frozen [`DiffResult`] — the SAME shape `read_diff` produces from git2, reused for ui consistency.
+/// `file: Some(path)` keeps only that file's hunks (matched against the `diff --git … b/<path>`); `None`
+/// keeps EVERY file's hunks FLATTENED (the flat `DiffResult` carries no per-file attribution — a per-file
+/// file-tree is a post-D7 follow-on). Tolerant (the §42 no-panic posture): a malformed input parses what
+/// it can; the `\ No newline at eof` marker + all metadata (`index`/`---`/`+++`/`new file`) are skipped
+/// (the `Hunk` doc defers the no-newline marker). `DiffLine.content` retains the trailing newline.
+pub fn parse_unified_diff(diff: &str, file: Option<&str>) -> DiffResult {
+    let mut hunks: Vec<Hunk> = Vec::new();
+    let mut in_selected_file = file.is_none(); // None → every file is selected
+    let mut cur: Option<Hunk> = None;
+
+    for line in diff.split_inclusive('\n') {
+        // `trimmed` is the line WITHOUT its terminator, for prefix/header matching (CRLF-tolerant — a
+        // GitHub diff is LF, but a stray `\r` must not leak into a `diff --git … b/<path>` file match or
+        // a hunk header). The CONTENT lines below use `line` verbatim (the trailing newline retained).
+        let trimmed = line.strip_suffix('\n').unwrap_or(line);
+        let trimmed = trimmed.strip_suffix('\r').unwrap_or(trimmed);
+        if let Some(rest) = trimmed.strip_prefix("diff --git ") {
+            // a new file section → flush the prior hunk under the PRIOR selection, then re-select.
+            if let Some(h) = cur.take() {
+                if in_selected_file {
+                    hunks.push(h);
+                }
+            }
+            let b_path = diff_git_b_path(rest);
+            in_selected_file = match file {
+                None => true,
+                Some(want) => b_path.as_deref() == Some(want),
+            };
+        } else if trimmed.starts_with("@@") {
+            if let Some(h) = cur.take() {
+                if in_selected_file {
+                    hunks.push(h);
+                }
+            }
+            if in_selected_file {
+                cur = Some(parse_hunk_header(trimmed));
+            }
+        } else if in_selected_file {
+            if let Some(h) = cur.as_mut() {
+                // a line within a hunk — classify by the first byte (the +/-/space marker). `---`/`+++`
+                // file-header lines appear BEFORE the first `@@` (cur is None) → never misread here.
+                let kind = match line.as_bytes().first() {
+                    Some(b' ') => DiffLineKind::Context,
+                    Some(b'+') => DiffLineKind::Added,
+                    Some(b'-') => DiffLineKind::Removed,
+                    _ => continue, // `\ No newline…`, a stray blank, or EOF marker → not a diff line.
+                };
+                // strip the 1-byte ASCII marker; the rest (incl. the trailing newline) is the content.
+                h.lines.push(DiffLine {
+                    kind,
+                    content: line.get(1..).unwrap_or("").to_string(),
+                });
+            }
+        }
+    }
+    if let Some(h) = cur.take() {
+        if in_selected_file {
+            hunks.push(h);
+        }
+    }
+    DiffResult { hunks }
+}
+
+/// The `b/<path>` (new-side) file path from a `diff --git a/<path> b/<path>` operand string. Renames
+/// (`a/old b/new`) yield the NEW path; a path containing ` b/` resolves to the LAST occurrence.
+fn diff_git_b_path(rest: &str) -> Option<String> {
+    rest.rsplit_once(" b/").map(|(_, b)| b.to_string())
+}
+
+/// Parse a `@@ -old_start[,old_lines] +new_start[,new_lines] @@ [section]` header into a `Hunk` (no
+/// lines yet). An OMITTED length means 1 (the unified-diff grammar); an unparseable count degrades to 0
+/// start / 1 length (tolerant). `header` is the verbatim `@@` line (the ui's hunk-identity, §17).
+fn parse_hunk_header(line: &str) -> Hunk {
+    // strip the leading `@@`, take the ranges up to the closing `@@`.
+    let ranges = line
+        .trim_start_matches('@')
+        .split("@@")
+        .next()
+        .unwrap_or("")
+        .trim();
+    let (mut old_start, mut old_lines, mut new_start, mut new_lines) = (0u32, 1u32, 0u32, 1u32);
+    for tok in ranges.split_whitespace() {
+        if let Some(old) = tok.strip_prefix('-') {
+            (old_start, old_lines) = parse_range(old);
+        } else if let Some(new) = tok.strip_prefix('+') {
+            (new_start, new_lines) = parse_range(new);
+        }
+    }
+    Hunk {
+        header: line.to_string(),
+        old_start,
+        old_lines,
+        new_start,
+        new_lines,
+        lines: Vec::new(),
+    }
+}
+
+/// `start[,len]` → `(start, len)`; an omitted `len` is 1 (unified-diff grammar). Unparseable → (0, 1).
+fn parse_range(s: &str) -> (u32, u32) {
+    match s.split_once(',') {
+        Some((start, len)) => (start.parse().unwrap_or(0), len.parse().unwrap_or(1)),
+        None => (s.parse().unwrap_or(0), 1),
+    }
+}

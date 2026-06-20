@@ -107,6 +107,8 @@ pub const MVP_ACTION_TYPES: &[&str] = &[
     "git.discard_hunk",
     "github.create_pr_draft",
     "github.create_pr",
+    "github.merge_pr",
+    "github.submit_review",
     "github.sync_reviews",
     "linear.link_issue",
     "linear.create_issue",
@@ -334,6 +336,29 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
             true,
             true,
         ),
+        // D9/P4.7 — github.merge_pr: the cat-1 GitHub WRITE that merges a remote PR (head→base). risk-3
+        // (the github WRITE tier) + **NON-standing-grantable** (`entry_no_standing_grant`, F1 USER-steer):
+        // a remote-repo merge is irreversible-enough that it ALWAYS gets a fresh per-action human approval,
+        // NEVER folded into a plan-level approve-all (the eligibility axis is blast-radius, NOT risk class —
+        // risk-3 github.create_pr stays grantable; this does not — the git.discard_hunk precedent, LESSON
+        // 32). FromInputs idempotency: the key hashes the raw inputs (incl. pr_number+the SHA-pin) → it
+        // uniquely identifies THIS merge (executing→keep-key double-run protection, LESSON 21). The F2
+        // UI/IPC-only requester gate lives in the policy engine (a credential/write action; no agent/Brain
+        // merge). requires_resource_refs (the Repo identity for audit/policy + the projector's sibling-read).
+        "github.merge_pr" => {
+            entry_no_standing_grant(R::Level3, P::Api, I::FromInputs, X::Github, true, true)
+        }
+        // D10/P4.7 — github.submit_review: the cat-1 GitHub WRITE that submits a PR review verdict
+        // (approve/request_changes/comment). A *communication/attestation* write (does NOT mutate
+        // branch/code/repo state) — BUT an `approve` can satisfy branch-protection (merge-gate power), so
+        // it is gated IDENTICALLY to github.merge_pr: risk-3 + NON-standing-grantable (F1 — every submit a
+        // fresh per-action approval; the §6.2 floor is blast-radius/authority, NOT risk class, LESSON 32).
+        // FromInputs idempotency (key hashes pr_number+commit_id+event → an identical re-submit dedups,
+        // LESSON 21). The F2 UI/IPC-only gate is in the policy engine (the D9 GITHUB_MUTATION_TYPES gate
+        // extended). requires_resource_refs (the Repo identity).
+        "github.submit_review" => {
+            entry_no_standing_grant(R::Level3, P::Api, I::FromInputs, X::Github, true, true)
+        }
         "review.request_agent_fix" => {
             entry(R::Level3, P::Workflow, I::FromInputs, X::Review, true, true)
         }

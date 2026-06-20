@@ -8,6 +8,11 @@
 >
 > **Merge gate:** the UI lead HOLDS the `main→ui` merge until the daemon lands the REQUIRED items
 > (D2–D4) so it's ONE merge that unblocks everything — not a partial.
+>
+> **⚠️ UI-RESUME PREREQUISITE (daemon Finding, 2026-06-19, 075e):** the repo now carries a
+> `rust-toolchain.toml` pin (exact `1.93.0`). The ui track must run `cargo fmt` on `ui/gateway-uds` +
+> `ui/src-tauri` once under the 1.93.0 toolchain pin before its next `/preflight` (those crates have
+> pre-existing fmt-drift that a repo-root `cargo fmt --check` under the pin will now flag).
 
 ---
 

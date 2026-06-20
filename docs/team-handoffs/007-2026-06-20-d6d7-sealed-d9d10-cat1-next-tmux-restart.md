@@ -4,7 +4,7 @@
 **Track:** daemon (single-track; critical path P2 → P3 → P4 → now §4.7 ui-unblock wave)
 **Worktree:** root checkout (single-track, `main`)
 **Predecessor handoff:** `docs/team-handoffs/006-2026-06-17-d5-uiunblock-workorder-complete-3.3c-next-scaffolding-pause.md`
-**Successor handoff:** _(filled in when the next /team-end runs)_
+**Successor handoff:** `docs/team-handoffs/008-2026-06-20-d9d10-cat1-arc-complete-team-idle-for-ui-merge.md`
 **Round-seal commit at handoff:** `ffd33ab`
 
 ## Why this handoff exists

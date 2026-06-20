@@ -922,7 +922,7 @@
     },
     "DiffResult": {
       "additionalProperties": false,
-      "description": "`get_diff` result (§6.1) — the file's structured diff (HEAD→workdir), reject-unknown.",
+      "description": "`get_diff` result (§6.1) — the file's structured diff (HEAD→workdir), reject-unknown. REUSED by the\nD7 `get_pr_diff` (remote-PR head-vs-base) for ui consistency.",
       "properties": {
         "hunks": {
           "items": {
@@ -1211,6 +1211,32 @@
       "required": [
         "worktree_id",
         "file"
+      ],
+      "type": "object"
+    },
+    "GetPrDiffParams": {
+      "additionalProperties": false,
+      "description": "`get_pr_diff` params (§6.1; D7) — the remote-PR code-diff (head-vs-base) the §11.2 Review tab renders.\nKeyed off the `repo_id` (the proj_pull_request repo handle) + the GitHub-native `pr_number`; the daemon\nresolves `(repo_id, pr_number) → proj_repository.remote_url → owner/repo` (read-only WAL) then fetches\nthe PR diff from GitHub. `file: Some` filters to one file's hunks (the primary Review-tab use); `None`\nreturns the whole changeset (all files' hunks FLATTENED — the reused flat [`DiffResult`] carries NO\nper-file attribution; a per-file file-tree is a post-D7 follow-on). Returns the REUSED `DiffResult`.",
+      "properties": {
+        "file": {
+          "description": "one file's hunks, or the whole changeset when `None`. Serialized as explicit `null` (no\n`skip_serializing_if`) → a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_number": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repo_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo_id",
+        "pr_number"
       ],
       "type": "object"
     },
@@ -3164,6 +3190,9 @@
     "get_diff_params": {
       "$ref": "#/$defs/GetDiffParams"
     },
+    "get_pr_diff_params": {
+      "$ref": "#/$defs/GetPrDiffParams"
+    },
     "get_projection_params": {
       "$ref": "#/$defs/GetProjectionParams"
     },
@@ -3426,6 +3455,7 @@
     "get_projection_params",
     "projection_scope",
     "get_diff_params",
+    "get_pr_diff_params",
     "diff_result",
     "hunk",
     "diff_line",
@@ -3513,5 +3543,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.39.0"
+  "x-contract-version": "0.40.0"
 }

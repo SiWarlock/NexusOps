@@ -406,6 +406,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = bind(&base_dir.join(SOCKET_FILE))?;
     eprintln!("nexusopsd: GatewayPort listening at {SOCKET_FILE}");
+    // D7 — the GitHub read client for the `get_pr_diff` §6.1 network read. Constructed UNAUTHENTICATED
+    // (`Octocrab::default()`, the write-client precedent): a public-repo PR diff fetch works; the per-repo
+    // keychain auth bootstrap is the named deferred follow-on (LESSON 43/49) → a private-repo fetch returns
+    // a typed error until it lands. The interception/handler are live + test-seamed (FakeGithubReadClient).
+    let github_read: std::sync::Arc<dyn nexusopsd::integrations::github::GithubReadClient> =
+        std::sync::Arc::new(
+            nexusopsd::integrations::github::OctocrabGithubReadClient::new(
+                octocrab::Octocrab::default(),
+            ),
+        );
     let accept = spawn_accept_loop(
         listener,
         db_path,
@@ -414,6 +424,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         deltas,
         handle, // the §6.1 mutation path → the Gateway pipeline on the write-actor
         registry.clone(),
+        github_read,
         shutdown_rx,
     );
 

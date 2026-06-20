@@ -17,8 +17,8 @@ use nexusops_shared::actions::{
 };
 use nexusops_shared::ids::{ActionRequestId, ProjectId};
 use nexusops_shared::ipc::{
-    Capabilities, DiffResult, GetDiffParams, GetProjectionParams, IpcErrorCode, ProjectionName,
-    RpcRequest, RpcResponse, SubscribeParams, WireError,
+    Capabilities, DiffResult, GetDiffParams, GetPrDiffParams, GetProjectionParams, IpcErrorCode,
+    ProjectionName, RpcRequest, RpcResponse, SubscribeParams, WireError,
 };
 use nexusops_shared::projections::{ApprovalQueueRow, PullRequestRow, ReviewRow, SessionRow};
 use nexusops_shared::status::ActionRequest as ActionRequestStatus;
@@ -60,12 +60,14 @@ fn projection_table(name: ProjectionName) -> &'static str {
 /// Dispatch one §6.1 request → a response. A client error (unknown method / bad params) becomes
 /// a structured `WireError` response (the loop continues); an infrastructure read failure is an
 /// `Err(IpcError)` (the connection disconnects). Reads never mutate — no Action, no event.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch(
     req: &RpcRequest,
     db_path: &Path,
     write: &WriteHandle,
     registry: &DecisionRegistry,
     wait_class: &InterceptWaitClass,
+    github: &dyn crate::integrations::github::GithubReadClient,
 ) -> Result<RpcResponse, IpcError> {
     let outcome: Result<serde_json::Value, IpcErrorCode> = match req.method.as_str() {
         "get_capabilities" => Ok(capabilities_value()),
@@ -73,6 +75,10 @@ pub(crate) fn dispatch(
         // P4.0b-ui1 — the §6.1 hunk-structured diff READ (the ui-6.3e source). Resolves
         // worktree_id→proj_worktree.path (read-only WAL) then reads git2 LIVE read-only; NO mutation.
         "get_diff" => get_diff(&req.params, db_path)?,
+        // D7 — the §6.1 remote-PR code-diff READ (the Review tab). The FIRST network read in the IPC
+        // layer: resolves (repo_id,pr_number)→owner/repo (read-only WAL) then fetches the PR diff via the
+        // injected GithubReadClient (block_on the captured handle + a MANDATORY timeout); NO mutation.
+        "get_pr_diff" => get_pr_diff(&req.params, db_path, github)?,
         "subscribe" => subscribe_ack(&req.params),
         // §6.1 mutation methods (2.1b) — run the Gateway pipeline on the write-actor (the sole
         // mutator, forbidden #2/#3). A `GatewayError` → a structured `IpcErrorCode` response; the
@@ -736,6 +742,151 @@ pub fn read_worktree_diff(
     })
 }
 
+/// (D7) `get_pr_diff` — the REMOTE-PR head-vs-base code-diff the §11.2 Review tab renders. Bad params →
+/// `protocol_error`; an unresolvable/failed read → a typed `IpcErrorCode`; success → the serialized
+/// [`DiffResult`]. A pure read — NO mutation, NO write-actor, NO event (LESSON 33; contrast the
+/// `github.sync_reviews` EMITTING action). The `client`/`handle` are threaded from the accept-loop.
+fn get_pr_diff(
+    params: &serde_json::Value,
+    db_path: &Path,
+    client: &dyn crate::integrations::github::GithubReadClient,
+) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
+    let params: GetPrDiffParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(_) => return Ok(Err(IpcErrorCode::ProtocolError)),
+    };
+    // LESSON §46 — capture the runtime handle for the async fetch's `block_on`. serve_connection runs on
+    // a `spawn_blocking` task within the runtime (the `intercept` handler's precedent), so `current()` is
+    // valid here; read_pr_diff's `block_on` is fine off a blocking (non-async) thread.
+    let handle = tokio::runtime::Handle::current();
+    match read_pr_diff(
+        db_path,
+        client,
+        &handle,
+        PR_DIFF_TIMEOUT,
+        &params.repo_id,
+        params.pr_number,
+        params.file.as_deref(),
+    ) {
+        // infallible: `DiffResult` is plain `String`/`u32`/`Vec` → `to_value` cannot fail (the `get_diff`
+        // precedent; a `Null` fallback would be unreachable, never a real "null-as-success").
+        Ok(diff) => Ok(Ok(
+            serde_json::to_value(diff).unwrap_or(serde_json::Value::Null)
+        )),
+        Err(code) => Ok(Err(code)),
+    }
+}
+
+/// The MANDATORY bound on the GitHub PR-diff fetch (LESSON §46): a hung call returns a typed error,
+/// never wedges the read handler (which runs on the accept-loop's blocking thread).
+const PR_DIFF_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Resolve a PR to its remote diff via the injected [`GithubReadClient`], then parse the unified diff
+/// (the testable core of [`get_pr_diff`]). Resolves `(repo_id, pr_number) → proj_pull_request.project_id
+/// → proj_repository.remote_url → owner/repo` over a READ-ONLY WAL conn (the EXACT PR row must exist —
+/// its absence IS the `NotFound`); the live fetch runs on the captured `handle` (`block_on`) under a
+/// MANDATORY `timeout`. **No mutation, no write-actor.** A timeout / GitHub failure → a typed error
+/// (NEVER raw API text — §15-safe: the structural error class only); a 404-class → `NotFound`.
+#[allow(clippy::too_many_arguments)]
+pub fn read_pr_diff(
+    db_path: &Path,
+    client: &dyn crate::integrations::github::GithubReadClient,
+    handle: &tokio::runtime::Handle,
+    timeout: Duration,
+    repo_id: &str,
+    pr_number: u64,
+    file: Option<&str>,
+) -> Result<DiffResult, IpcErrorCode> {
+    let (owner, repo) = resolve_pr_owner_repo(db_path, repo_id, pr_number)?;
+    // LESSON §46: the read handler runs on the accept-loop's blocking thread (no entered runtime) →
+    // drive the async client via the CAPTURED handle's `block_on`, never `Handle::current()`. A hard
+    // timeout bounds it so a hung GitHub call can never wedge the handler.
+    let fetched = handle.block_on(async {
+        tokio::time::timeout(timeout, client.fetch_pr_diff(&owner, &repo, pr_number)).await
+    });
+    let diff_text = match fetched {
+        // timed out → a typed internal error (structural; §15 — never raw text).
+        Err(_elapsed) => return Err(IpcErrorCode::InternalError),
+        // a GitHub failure → NotFound for a 404-class (the PR/repo is gone), else internal. The error
+        // MESSAGE is never surfaced (§15 — only the structural class maps to a code).
+        Ok(Err(e)) => {
+            return Err(match e.class {
+                crate::integrations::classifier::IntegrationOutcomeClass::NotFound => {
+                    IpcErrorCode::NotFound
+                }
+                _ => IpcErrorCode::InternalError,
+            })
+        }
+        Ok(Ok(text)) => text,
+    };
+    Ok(crate::git::parse_unified_diff(&diff_text, file))
+}
+
+/// Resolve `(repo_id, pr_number)` → the GitHub `(owner, repo)` over a READ-ONLY WAL conn: the EXACT PR
+/// row (`proj_pull_request WHERE repo_id=? AND pr_number=?`) → its `project_id` → `proj_repository`'s
+/// `remote_url` → parsed owner/repo. Any missing link or an unparseable URL → [`IpcErrorCode::NotFound`]
+/// (the `get_diff`-unpopulated precedent). NB: `repo_id` is not first-class in `proj_repository` (keyed
+/// by `project_id`) — a direct `repo_id → owner/repo` projection link is a future-TODO (Step-9).
+fn resolve_pr_owner_repo(
+    db_path: &Path,
+    repo_id: &str,
+    pr_number: u64,
+) -> Result<(String, String), IpcErrorCode> {
+    use rusqlite::OptionalExtension as _;
+    let conn =
+        crate::eventstore::open_read_only(db_path).map_err(|_| IpcErrorCode::InternalError)?;
+    // pr_number is `u64` on the wire but stored as a SQLite INTEGER (i64). A value above i64::MAX can't
+    // be a real GitHub PR number → it matches no row → NotFound (fail-fast, never a silent wrap).
+    let pr_number = i64::try_from(pr_number).map_err(|_| IpcErrorCode::NotFound)?;
+    let project_id: Option<String> = conn
+        .query_row(
+            "SELECT project_id FROM proj_pull_request WHERE repo_id = ?1 AND pr_number = ?2",
+            rusqlite::params![repo_id, pr_number],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|_| IpcErrorCode::InternalError)?;
+    let Some(project_id) = project_id else {
+        return Err(IpcErrorCode::NotFound);
+    };
+    let remote_url: Option<String> = conn
+        .query_row(
+            "SELECT remote_url FROM proj_repository WHERE project_id = ?1",
+            [&project_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|_| IpcErrorCode::InternalError)?;
+    let Some(remote_url) = remote_url else {
+        return Err(IpcErrorCode::NotFound);
+    };
+    parse_owner_repo(&remote_url).ok_or(IpcErrorCode::NotFound)
+}
+
+/// Parse a GitHub `(owner, repo)` from a git `remote_url` — `https://[user:tok@]github.com/owner/repo[.git]`
+/// (the `user:token@` userinfo STRIPPED, LESSON §44) OR scp-style `git@github.com:owner/repo[.git]`. The
+/// `.git` suffix + any trailing path are dropped. Returns `None` for an unrecognizable URL (→ NotFound).
+fn parse_owner_repo(remote_url: &str) -> Option<(String, String)> {
+    let path = if let Some(after_scheme) = remote_url.split_once("://").map(|(_, r)| r) {
+        // https://[userinfo@]host/owner/repo… → strip the userinfo, then drop the host segment.
+        let host_and_path = after_scheme
+            .split_once('@')
+            .map_or(after_scheme, |(_, r)| r);
+        host_and_path.split_once('/').map(|(_, p)| p)?.to_string()
+    } else {
+        // scp-style git@host:owner/repo… → the part after the first ':'.
+        remote_url.split_once(':').map(|(_, p)| p)?.to_string()
+    };
+    let (owner, rest) = path.trim_end_matches('/').split_once('/')?;
+    // repo = the first path segment after the owner, sans the `.git` suffix.
+    let repo = rest.split('/').next().unwrap_or(rest);
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
+}
+
 /// `SELECT *` a projection table → a JSON array (one object per row). `table` is the compile-time
 /// constant from [`projection_table`] (never client input). An unfed projection's table exists
 /// (created by the 1.2 migration) but is empty → an empty array, not an error.
@@ -778,6 +929,43 @@ fn read_err(e: rusqlite::Error) -> IpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_owner_repo_handles_url_forms() {
+        // spec(D7 / LESSON 44): https (with/without `.git`, a port) + scp-style → (owner, repo); a
+        // `user:token@` userinfo is STRIPPED before the parse (defense-in-depth — the canonical strip is
+        // upstream at the ProjectExecutor emit-source); an unrecognizable / owner-only URL → None (→ NotFound).
+        let ok = |o: &str, r: &str| Some((o.to_string(), r.to_string()));
+        assert_eq!(
+            parse_owner_repo("https://github.com/acme/widget.git"),
+            ok("acme", "widget")
+        );
+        assert_eq!(
+            parse_owner_repo("https://github.com/acme/widget"),
+            ok("acme", "widget")
+        );
+        assert_eq!(
+            parse_owner_repo("git@github.com:acme/widget.git"),
+            ok("acme", "widget")
+        );
+        // a credential in the userinfo is stripped, never reaching the parsed owner/repo (LESSON 44).
+        assert_eq!(
+            parse_owner_repo("https://user:ghp_TOKEN@github.com/acme/widget.git"),
+            ok("acme", "widget")
+        );
+        assert_eq!(
+            parse_owner_repo("https://ghp_TOKEN@github.com/acme/widget"),
+            ok("acme", "widget")
+        );
+        // a host:port is dropped as the host segment.
+        assert_eq!(
+            parse_owner_repo("https://github.example.com:8080/acme/widget"),
+            ok("acme", "widget")
+        );
+        // unrecognizable / incomplete → None (→ NotFound).
+        assert_eq!(parse_owner_repo("not a url"), None);
+        assert_eq!(parse_owner_repo("https://github.com/justowner"), None);
+    }
 
     #[test]
     fn session_row_wire_fields_match_struct() {

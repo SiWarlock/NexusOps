@@ -244,7 +244,24 @@ pub struct GetDiffParams {
     pub file: String,
 }
 
-/// `get_diff` result (§6.1) — the file's structured diff (HEAD→workdir), reject-unknown.
+/// `get_pr_diff` params (§6.1; D7) — the remote-PR code-diff (head-vs-base) the §11.2 Review tab renders.
+/// Keyed off the `repo_id` (the proj_pull_request repo handle) + the GitHub-native `pr_number`; the daemon
+/// resolves `(repo_id, pr_number) → proj_repository.remote_url → owner/repo` (read-only WAL) then fetches
+/// the PR diff from GitHub. `file: Some` filters to one file's hunks (the primary Review-tab use); `None`
+/// returns the whole changeset (all files' hunks FLATTENED — the reused flat [`DiffResult`] carries NO
+/// per-file attribution; a per-file file-tree is a post-D7 follow-on). Returns the REUSED `DiffResult`.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GetPrDiffParams {
+    pub repo_id: String,
+    pub pr_number: u64,
+    /// one file's hunks, or the whole changeset when `None`. Serialized as explicit `null` (no
+    /// `skip_serializing_if`) → a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).
+    pub file: Option<String>,
+}
+
+/// `get_diff` result (§6.1) — the file's structured diff (HEAD→workdir), reject-unknown. REUSED by the
+/// D7 `get_pr_diff` (remote-PR head-vs-base) for ui consistency.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DiffResult {

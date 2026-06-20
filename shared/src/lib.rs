@@ -171,4 +171,8 @@ pub mod time;
 /// (MIGRATION_15) + served typed; captured from the octocrab GET PR in `extract_pr_signals` + threaded
 /// into the `create_pr` emit (the §11.2 PR card render data). The D5a LOCKSTEP recipe (LESSON §53);
 /// additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.39.0";
+/// 0.40.0 (D7/P4.7) adds the `get_pr_diff` §6.1 read RPC — a NEW `GetPrDiffParams` wire type
+/// (`{repo_id, pr_number, file?}`) for the §11.2 Review-tab remote-PR code-diff (head-vs-base);
+/// `DiffResult`/`Hunk`/`DiffLine` are REUSED (no new result shape). The first network read in the IPC
+/// read layer (an `Arc<dyn GithubReadClient>` threaded into the dispatch). Additive (§5.0).
+pub const CONTRACT_VERSION: &str = "0.40.0";

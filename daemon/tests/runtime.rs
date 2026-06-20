@@ -42,6 +42,16 @@ fn no_deltas() -> tokio::sync::broadcast::Sender<nexusops_shared::ipc::Projectio
     tokio::sync::broadcast::channel(1).0
 }
 
+/// D7 — a placeholder GitHub read client for the accept-loop tests (they don't exercise `get_pr_diff`).
+fn fake_github() -> std::sync::Arc<dyn nexusopsd::integrations::github::GithubReadClient> {
+    std::sync::Arc::new(nexusopsd::integrations::github::FakeGithubReadClient::new(
+        Err(nexusopsd::integrations::github::GithubReadError {
+            class: nexusopsd::integrations::classifier::IntegrationOutcomeClass::ServerError,
+            message: "unused in runtime tests".into(),
+        }),
+    ))
+}
+
 fn temp_db() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nexusops.db");
@@ -499,6 +509,7 @@ async fn test_foreign_peer_rejected_in_accept_path() {
         no_deltas(),
         nexusopsd::runtime::WriteHandle::disconnected(),
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
+        fake_github(),
         sd_rx,
     );
 
@@ -534,6 +545,7 @@ async fn test_connection_cap_enforced() {
         no_deltas(),
         nexusopsd::runtime::WriteHandle::disconnected(),
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
+        fake_github(),
         sd_rx,
     ); // cap = 1
 
@@ -577,6 +589,7 @@ async fn test_connection_permit_released_on_close() {
         no_deltas(),
         nexusopsd::runtime::WriteHandle::disconnected(),
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
+        fake_github(),
         sd_rx,
     ); // cap = 1
 
@@ -621,6 +634,7 @@ async fn test_read_projection_over_real_socket() {
         no_deltas(),
         nexusopsd::runtime::WriteHandle::disconnected(),
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
+        fake_github(),
         sd_rx,
     );
 

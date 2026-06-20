@@ -35,7 +35,7 @@ use crate::harness::{
 use crate::ids::IdKind;
 use crate::ipc::{
     ActionAck, Capabilities, DeltaKind, DiffLine, DiffLineKind, DiffResult, GetDiffParams,
-    GetProjectionParams, HelloAck, HelloFrame, Hunk, IpcErrorCode, PlanAck, PlanStepAck,
+    GetPrDiffParams, GetProjectionParams, HelloAck, HelloFrame, Hunk, IpcErrorCode, PlanAck, PlanStepAck,
     ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, RpcResponse, ServerFrame,
     SubscribeParams, TerminalControlFrame, TerminalControlKind, TerminalInputFrame,
     TerminalOutputFrame, VersionSkewError, WireError,
@@ -102,6 +102,8 @@ struct ContractBundle {
     // P4.0b-ui1 — the §6.1 get_diff RPC wire types (the ui-6.3e diff source). DiffResult transitively
     // pulls Hunk/DiffLine/DiffLineKind into $defs; listed explicitly for a stable named snapshot.
     get_diff_params: GetDiffParams,
+    // D7 — the §6.1 get_pr_diff RPC params (remote-PR head-vs-base); reuses DiffResult/Hunk/DiffLine.
+    get_pr_diff_params: GetPrDiffParams,
     diff_result: DiffResult,
     hunk: Hunk,
     diff_line: DiffLine,

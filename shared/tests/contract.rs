@@ -846,6 +846,37 @@ fn test_hunk_types_snapshot() {
     );
 }
 
+#[test]
+fn test_get_pr_diff_params_snapshot() {
+    // spec(§6.1 / §2.5-seam, D7) — the NEW GetPrDiffParams wire type for the remote-PR code-diff read
+    // (head-vs-base). Returns the REUSED DiffResult (no new result shape). `file: None` = the whole
+    // changeset; the optional serializes as explicit `null` (no skip_serializing_if) → a stable field-name
+    // snapshot (LESSON §15 trap 3). CONTRACT 0.40.0.
+    use nexusops_shared::ipc::GetPrDiffParams;
+    expect_fields(
+        &GetPrDiffParams {
+            repo_id: "repo_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+            pr_number: 42,
+            file: Some("src/x.rs".to_string()),
+        },
+        &["repo_id", "pr_number", "file"],
+    );
+    // file: None still serializes the key (explicit null) → the field-name set is stable.
+    expect_fields(
+        &GetPrDiffParams {
+            repo_id: "repo_x".to_string(),
+            pr_number: 1,
+            file: None,
+        },
+        &["repo_id", "pr_number", "file"],
+    );
+    let rogue = serde_json::json!({ "repo_id": "repo_x", "pr_number": 1, "file": null, "extra": true });
+    assert!(
+        serde_json::from_value::<GetPrDiffParams>(rogue).is_err(),
+        "unknown field rejected on GetPrDiffParams"
+    );
+}
+
 // =====================================================================================
 // Phase 2.1a — §6.2 action-contract freeze (NEW: shared/src/{actions,time,gateway_ids}.rs)
 // The §6.2 Gateway core data model + its enums + the gateway platform IDs + Timestamp.
@@ -2994,15 +3025,14 @@ fn test_review_row_rejects_unknown_field() {
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_39_0() {
+fn test_contract_version_bumped_0_40_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.36.0 =
-    // the D5a `PullRequestRow` mergeable/checks_summary enrichment; 0.37.0 = the D5b-1 structured-review
-    // vertical (`ReviewSynced` + `ReviewState` + `ReviewRow` + `ProjectionName::Review`); 0.38.0 = the
-    // D5b-2 `github.sync_reviews` catalog action (the live review producer); **0.39.0** = the D6
-    // PR-card diff-stats enrichment (`additions`/`deletions`/`changed_files`/`commits` on
-    // `PullRequestSynced` + `PullRequestRow`). Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.39.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.37.0 = the
+    // D5b-1 structured-review vertical; 0.38.0 = the D5b-2 `github.sync_reviews` catalog action; 0.39.0 =
+    // the D6 PR-card diff-stats enrichment (`additions`/`deletions`/`changed_files`/`commits`); **0.40.0**
+    // = the D7 `get_pr_diff` §6.1 read RPC (the NEW `GetPrDiffParams` wire type; `DiffResult`/`Hunk`/
+    // `DiffLine` reused). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.40.0");
 }
 
 // =================================================================================================

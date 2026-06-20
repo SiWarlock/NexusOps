@@ -479,6 +479,13 @@ pub struct PullRequestSynced {
     pub base: String,
     pub mergeable: Option<bool>,
     pub checks_summary: Option<String>,
+    /// D6 — the GitHub diff-stats the §11.2 PR card renders. GET-only octocrab fields
+    /// (`models::pulls::PullRequest`, all `Option<u64>`, absent on the list endpoint) → bounded
+    /// integers in schemars (LESSON §15 trap 2); `None` when GitHub omitted them.
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
+    pub changed_files: Option<u64>,
+    pub commits: Option<u64>,
     pub pr_checked_at: Timestamp,
 }
 

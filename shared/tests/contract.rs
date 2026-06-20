@@ -2722,6 +2722,10 @@ fn sample_pull_request_row() -> nexusops_shared::projections::PullRequestRow {
         pr_checked_at: Some("2026-06-14T00:00:00Z".to_string()),
         mergeable: Some(true),
         checks_summary: Some("3 passing".to_string()),
+        additions: Some(120),
+        deletions: Some(7),
+        changed_files: Some(4),
+        commits: Some(3),
     }
 }
 
@@ -2746,6 +2750,10 @@ fn test_pull_request_row_frozen_shape() {
             "pr_checked_at",
             "mergeable",
             "checks_summary",
+            "additions",
+            "deletions",
+            "changed_files",
+            "commits",
         ],
     );
     let json = serde_json::to_string(&sample_pull_request_row()).unwrap();
@@ -2986,15 +2994,15 @@ fn test_review_row_rejects_unknown_field() {
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_38_0() {
+fn test_contract_version_bumped_0_39_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.35.0 =
-    // the D2 `SessionRow` frozen projection-row (the 3rd) + the now-consumed `SessionRecovered` fold;
-    // 0.36.0 = the D5a `PullRequestRow` mergeable/checks_summary enrichment; 0.37.0 = the D5b-1
-    // structured-review vertical (`ReviewSynced` + `ReviewState` + `ReviewRow` + `ProjectionName::Review`);
-    // **0.38.0** = the D5b-2 `github.sync_reviews` catalog action (the live review producer). Additive, no
-    // frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.38.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.36.0 =
+    // the D5a `PullRequestRow` mergeable/checks_summary enrichment; 0.37.0 = the D5b-1 structured-review
+    // vertical (`ReviewSynced` + `ReviewState` + `ReviewRow` + `ProjectionName::Review`); 0.38.0 = the
+    // D5b-2 `github.sync_reviews` catalog action (the live review producer); **0.39.0** = the D6
+    // PR-card diff-stats enrichment (`additions`/`deletions`/`changed_files`/`commits` on
+    // `PullRequestSynced` + `PullRequestRow`). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.39.0");
 }
 
 // =================================================================================================
@@ -3046,6 +3054,10 @@ fn sample_pull_request_synced() -> nexusops_shared::events::PullRequestSynced {
         base: "main".to_string(),
         mergeable: Some(true),
         checks_summary: Some("3/3 passing".to_string()),
+        additions: Some(120),
+        deletions: Some(7),
+        changed_files: Some(4),
+        commits: Some(3),
         pr_checked_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
     }
 }
@@ -3136,6 +3148,10 @@ fn test_p7_integration_snapshots() {
             "base",
             "mergeable",
             "checks_summary",
+            "additions",
+            "deletions",
+            "changed_files",
+            "commits",
             "pr_checked_at",
         ],
     );

@@ -1579,6 +1579,10 @@ fn pr_payload(pr_number: u64, status: PullRequest, branch: &str, base: &str) -> 
         base: base.to_string(),
         mergeable: None,
         checks_summary: None,
+        additions: None,
+        deletions: None,
+        changed_files: None,
+        commits: None,
         pr_checked_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
     })
     .unwrap()
@@ -1601,6 +1605,39 @@ fn pr_payload_rich(
         base: base.to_string(),
         mergeable,
         checks_summary: checks_summary.map(|s| s.to_string()),
+        additions: None,
+        deletions: None,
+        changed_files: None,
+        commits: None,
+        pr_checked_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    })
+    .unwrap()
+}
+
+/// D6 — like `pr_payload` but sets the diff-stats enrichment (additions/deletions/changed_files/commits),
+/// the data the octocrab GET PR carries; the §11.2 PR card renders them.
+#[allow(clippy::too_many_arguments)]
+fn pr_payload_diff_stats(
+    pr_number: u64,
+    status: PullRequest,
+    branch: &str,
+    base: &str,
+    additions: Option<u64>,
+    deletions: Option<u64>,
+    changed_files: Option<u64>,
+    commits: Option<u64>,
+) -> String {
+    serde_json::to_string(&PullRequestSynced {
+        pr_number,
+        status,
+        branch: branch.to_string(),
+        base: base.to_string(),
+        mergeable: None,
+        checks_summary: None,
+        additions,
+        deletions,
+        changed_files,
+        commits,
         pr_checked_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
     })
     .unwrap()
@@ -1622,6 +1659,11 @@ struct PrRow {
     // coerces INTEGER → Option<bool> on the typed `get` (distinct from the JSON-read serve path).
     mergeable: Option<bool>,
     checks_summary: Option<String>,
+    // D6 — the diff-stats enrichment (INTEGER columns; u64 stored as i64, lossless for real PR stats).
+    additions: Option<i64>,
+    deletions: Option<i64>,
+    changed_files: Option<i64>,
+    commits: Option<i64>,
     updated_at_seq: i64,
 }
 
@@ -1630,7 +1672,8 @@ fn proj_pull_request_rows(path: &std::path::Path) -> Vec<PrRow> {
     let mut stmt = conn
         .prepare(
             "SELECT pr_id, project_id, repo_id, pr_number, title, status, head_branch, base_branch, \
-             pr_checked_at, mergeable, checks_summary, updated_at_seq FROM proj_pull_request \
+             pr_checked_at, mergeable, checks_summary, additions, deletions, changed_files, commits, \
+             updated_at_seq FROM proj_pull_request \
              ORDER BY pr_id",
         )
         .unwrap();
@@ -1648,7 +1691,11 @@ fn proj_pull_request_rows(path: &std::path::Path) -> Vec<PrRow> {
                 pr_checked_at: r.get(8)?,
                 mergeable: r.get(9)?,
                 checks_summary: r.get(10)?,
-                updated_at_seq: r.get(11)?,
+                additions: r.get(11)?,
+                deletions: r.get(12)?,
+                changed_files: r.get(13)?,
+                commits: r.get(14)?,
+                updated_at_seq: r.get(15)?,
             })
         })
         .unwrap();
@@ -1952,6 +1999,168 @@ fn test_migration_13_applies() {
         cols.contains("checks_summary"),
         "MIGRATION_13 adds checks_summary"
     );
+}
+
+#[test]
+fn test_migration_15_applies() {
+    // spec(MIGRATION_15 floor, LESSON §50): a fresh DB opens at/above user_version 15 and
+    // proj_pull_request gained the 4 diff-stats columns (ALTER-only, the MIGRATION_13 precedent; the
+    // historical CREATE untouched). FLOOR (>= 15), not exact-latest — the single exact-latest pin lives
+    // in gateway_plan.rs.
+    let (_d, path) = temp_db();
+    let store = open(&path);
+    assert!(
+        store.user_version().unwrap() >= 15,
+        "open migrates at/above MIGRATION_15"
+    );
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let cols: std::collections::BTreeSet<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('proj_pull_request')")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    for c in ["additions", "deletions", "changed_files", "commits"] {
+        assert!(cols.contains(c), "MIGRATION_15 adds proj_pull_request.{c}");
+    }
+}
+
+#[test]
+fn test_pr_diff_stats_folded() {
+    // spec(§7.2 / LESSON §53): the projector folds PullRequestSynced.additions?/deletions?/changed_files?/
+    // commits? into the 4 D6 columns (Some → value, None → NULL); rebuild-equivalent (derive-from-event,
+    // LESSON §17). A populated event → the 4 values on the row; an absent-stats event → NULL (the
+    // rebuild-safe None arm).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    // a fully-populated diff-stats event.
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid.clone()),
+            &pr_payload_diff_stats(
+                42,
+                PullRequest::Open,
+                "feature",
+                "main",
+                Some(120),
+                Some(7),
+                Some(4),
+                Some(3),
+            ),
+        ))
+        .expect("append folds in-band");
+    // a 2nd PR with NO diff-stats (all None) → the NULL arm.
+    let arid_none = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_beta"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid_none),
+            &pr_payload_diff_stats(7, PullRequest::Merged, "f", "m", None, None, None, None),
+        ))
+        .unwrap();
+
+    let rows = proj_pull_request_rows(&path);
+    let some = rows.iter().find(|r| r.pr_id == "repo_alpha#42").unwrap();
+    assert_eq!(some.additions, Some(120), "additions folded from the event");
+    assert_eq!(some.deletions, Some(7), "deletions folded from the event");
+    assert_eq!(some.changed_files, Some(4), "changed_files folded");
+    assert_eq!(some.commits, Some(3), "commits folded");
+    let none = rows.iter().find(|r| r.pr_id == "repo_beta#7").unwrap();
+    assert_eq!(none.additions, None, "absent additions → NULL");
+    assert_eq!(none.deletions, None, "absent deletions → NULL");
+    assert_eq!(none.changed_files, None, "absent changed_files → NULL");
+    assert_eq!(none.commits, None, "absent commits → NULL");
+
+    // ON CONFLICT DO UPDATE folds the diff-stats too (the D5a mergeable/checks precedent): re-sync the
+    // SAME pr_id with CHANGED stats → the row reflects the new values, not the stale INSERT values.
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid),
+            &pr_payload_diff_stats(
+                42,
+                PullRequest::Open,
+                "feature",
+                "main",
+                Some(200),
+                Some(50),
+                Some(9),
+                Some(5),
+            ),
+        ))
+        .unwrap();
+    let resynced = proj_pull_request_rows(&path);
+    let some = resynced
+        .iter()
+        .find(|r| r.pr_id == "repo_alpha#42")
+        .unwrap();
+    assert_eq!(some.additions, Some(200), "DO UPDATE folds additions");
+    assert_eq!(some.deletions, Some(50), "DO UPDATE folds deletions");
+    assert_eq!(some.changed_files, Some(9), "DO UPDATE folds changed_files");
+    assert_eq!(some.commits, Some(5), "DO UPDATE folds commits");
+
+    // rebuild-equivalent: the diff-stat columns survive a rebuild (derive-from-event, REBUILD_TABLES).
+    let before = proj_pull_request_rows(&path);
+    store.rebuild_projections().unwrap();
+    assert_eq!(
+        before,
+        proj_pull_request_rows(&path),
+        "the diff-stats row is reproduced byte-identically on rebuild (LESSON §17)"
+    );
+}
+
+#[test]
+fn test_read_pull_request_typed_diff_stats() {
+    // spec(§7.2/§5.0 / LESSON §53): the fail-closed typed serve round-trips the 4 D6 fields — a populated
+    // row AND a NULL row both deserialize STRICTLY into the frozen PullRequestRow. The diff-stats are
+    // INTEGER columns surfacing as JSON numbers → bind directly into Option<u64> (NO bool-coercion, unlike
+    // D5a's mergeable). The column+row-field+serve must land together or the serve fails closed (LESSON §53).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &pr_payload_diff_stats(
+                42,
+                PullRequest::Open,
+                "feature",
+                "main",
+                Some(120),
+                Some(7),
+                Some(4),
+                Some(3),
+            ),
+        ))
+        .unwrap();
+    let arid2 = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_beta"));
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid2),
+            &pr_payload_diff_stats(7, PullRequest::Merged, "f", "m", None, None, None, None),
+        ))
+        .unwrap();
+
+    let rows = nexusopsd::ipc::read_pull_request_typed(&path).expect("typed pull-request read");
+    let some = rows.iter().find(|r| r.pr_id == "repo_alpha#42").unwrap();
+    assert_eq!(some.additions, Some(120), "additions served as typed u64");
+    assert_eq!(some.deletions, Some(7));
+    assert_eq!(some.changed_files, Some(4));
+    assert_eq!(some.commits, Some(3));
+    let none = rows.iter().find(|r| r.pr_id == "repo_beta#7").unwrap();
+    assert_eq!(none.additions, None, "absent additions → None on the wire");
+    assert_eq!(none.deletions, None);
+    assert_eq!(none.changed_files, None);
+    assert_eq!(none.commits, None);
 }
 
 #[test]

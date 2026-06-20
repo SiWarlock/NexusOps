@@ -59,14 +59,21 @@ pub fn extract_pr_signals(
             (status, c.conclusion.as_deref())
         })
         .collect();
-    signals_from_github_response(
+    let mut signals = signals_from_github_response(
         issue_state_str(&pr.state),
         pr.draft.unwrap_or(false),
         pr.merged.unwrap_or(false),
         mergeable_state_str(&pr.mergeable_state),
         &review_states,
         &check_inputs,
-    )
+    );
+    // D6 — capture the GET-only diff-stats from the octocrab PR (all `Option<u64>`; `None` when GitHub
+    // omitted them, e.g. the list endpoint). NOT status signals → set here, not in the status aggregator.
+    signals.additions = pr.additions;
+    signals.deletions = pr.deletions;
+    signals.changed_files = pr.changed_files;
+    signals.commits = pr.commits;
+    signals
 }
 
 /// octocrab `IssueState` → the canonical GitHub `state` string for edges-008's `parse_pr_state`.

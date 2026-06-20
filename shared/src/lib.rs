@@ -166,4 +166,9 @@ pub mod time;
 /// network READS: not risk-0 auto-execute (an external API read), below the risk-2 github writes (no
 /// mutation/credential). Reuses `ExecutorKind::Github` (no new enum → the 3-way verify count is unchanged).
 /// Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.38.0";
+/// 0.39.0 (D6/P4.7) adds the PR-card diff-stats — `additions`/`deletions`/`changed_files`/`commits`
+/// (`Option<u64>`) on `PullRequestSynced` (§7.1) + `PullRequestRow` (§7.2), folded onto `proj_pull_request`
+/// (MIGRATION_15) + served typed; captured from the octocrab GET PR in `extract_pr_signals` + threaded
+/// into the `create_pr` emit (the §11.2 PR card render data). The D5a LOCKSTEP recipe (LESSON §53);
+/// additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.39.0";

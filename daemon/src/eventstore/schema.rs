@@ -556,3 +556,19 @@ CREATE TABLE proj_review (
   updated_at_seq INTEGER NOT NULL
 );
 ";
+
+/// Migration 15 (D6/P4.7) — the §7.2/§11.2 PR-card diff-stats enrichment: surface `additions` +
+/// `deletions` + `changed_files` + `commits` on `proj_pull_request` so the ui PR Review Workspace renders
+/// the diff size. Folded from `PullRequestSynced.additions?`/…(captured from the octocrab GET PR in
+/// `extract_pr_signals`). All 4 are INTEGER (a GitHub natural; the contract is `Option<u64>` — the read
+/// layer binds the JSON number directly, NO bool-coercion, unlike the D5a `mergeable`). `ALTER ADD COLUMN`:
+/// additive nullable → historical / stats-absent rows carry NULL, and `proj_pull_request` is in
+/// `REBUILD_TABLES` so a rebuild re-folds — no DROP+CREATE / offset-reset (the MIGRATION_13 precedent). The
+/// historical `proj_pull_request` CREATE (MIGRATION_3) is deliberately UNCHANGED (editing it would
+/// duplicate-column-fail a fresh DB).
+pub const MIGRATION_15_PULL_REQUEST_DIFF_STATS: &str = "\
+ALTER TABLE proj_pull_request ADD COLUMN additions INTEGER;
+ALTER TABLE proj_pull_request ADD COLUMN deletions INTEGER;
+ALTER TABLE proj_pull_request ADD COLUMN changed_files INTEGER;
+ALTER TABLE proj_pull_request ADD COLUMN commits INTEGER;
+";

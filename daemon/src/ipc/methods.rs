@@ -588,6 +588,9 @@ pub fn read_pull_request_typed(db_path: &Path) -> Result<Vec<PullRequestRow>, Ip
                 *m = serde_json::Value::Bool(n != 0);
             }
         }
+        // D6: the diff-stats (additions/deletions/changed_files/commits) are INTEGER columns surfacing as
+        // JSON numbers → they bind DIRECTLY into the frozen row's `Option<u64>` (no coercion, unlike the
+        // bool `mergeable` above). The generic `read_table_as_json` already includes them — no SELECT change.
         // STRICT deserialize (reject-unknown; `status` binds the §5.1 PullRequest enum). A row that no
         // longer binds is corrupt/contract-broken → fail-closed, never a silent skip (LESSON §37).
         let typed: PullRequestRow =

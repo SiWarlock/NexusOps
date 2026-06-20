@@ -1828,15 +1828,48 @@
       "additionalProperties": false,
       "description": "One row of the `proj_pull_request` read model (§7.2 / §11.2) — the GitHub-authoritative PR cache the\nui PR Review Workspace renders. The 2nd frozen projection-row (after [`ApprovalQueueRow`], P7.2). The\nBASIC columns the edges-P7.1 `PullRequestProjector` folds: `status` is the frozen §5.1 [`PullRequest`]\nenum (reject-unknown — no loose status string). `mergeable`/`checks_summary` are the **D5a enrichment**\n(the basic-now + SPREAD consumed) — folded from `PullRequestSynced.mergeable?`/`checks_summary?` into\nthe 2 columns the row now carries (`mergeable` is the FIRST bool projection column → stored as a SQLite\nINTEGER 0/1; the daemon read layer coerces it to this JSON bool, so the contract stays a pure\n`Option<bool>`). The internal `updated_at_seq` is NOT a wire field. **Nullability matches the DDL**\n(a display read model tolerates a NULL over failing the whole typed serve closed — contrast the\nsafety-critical `ApprovalQueueRow`): `pr_id` (PK) + `status` (NOT NULL) are non-Option; the rest are\n`Option`. `pr_number` is the GitHub-native PR number (a non-negative external natural → `u64`, a\nbounded integer in schemars — LESSON §15 trap 2). Optionals serialize as explicit `null` (no\n`skip_serializing_if`) so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
       "properties": {
+        "additions": {
+          "description": "D6 — the diff-stats the §11.2 PR card renders (folded from `PullRequestSynced.additions?`/…).\nINTEGER projection columns surfacing as JSON numbers → bind directly to `Option<u64>` (no\nbool-coercion, unlike `mergeable`); `None`/NULL where GitHub omitted them or pre-D6 rows.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "base_branch": {
           "type": [
             "string",
             "null"
           ]
         },
+        "changed_files": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "checks_summary": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "commits": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "deletions": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },
@@ -1901,15 +1934,48 @@
       "additionalProperties": false,
       "description": "`PullRequestSynced` payload (§7.1; P7.1 — from edges' github PR-sync executor). Feeds\n`proj_pull_request` (the GitHub-authoritative cache, §7.2). `status` REUSES the frozen §5.1\n[`PullRequest`] machine (no fork — adapters map INTO it). `pr_number` is the GitHub-native PR id\n(external integer, not a frozen-22 ID). Identity on the envelope; payload = the synced-PR delta.",
       "properties": {
+        "additions": {
+          "description": "D6 — the GitHub diff-stats the §11.2 PR card renders. GET-only octocrab fields\n(`models::pulls::PullRequest`, all `Option<u64>`, absent on the list endpoint) → bounded\nintegers in schemars (LESSON §15 trap 2); `None` when GitHub omitted them.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "base": {
           "type": "string"
         },
         "branch": {
           "type": "string"
         },
+        "changed_files": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "checks_summary": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "commits": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "deletions": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },
@@ -3447,5 +3513,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.38.0"
+  "x-contract-version": "0.39.0"
 }

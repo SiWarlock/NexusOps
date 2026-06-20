@@ -15,7 +15,9 @@
 //! so the composite is unambiguous + unique per repo+PR. `status` binds the frozen §5.1 `PullRequest`
 //! machine via `wire_value` (the layer-correct serde producer — no fork). `title` is NULL (the event
 //! carries none); `mergeable`/`checks_summary` are folded into the 2 D5a columns (the §7.2 rich-PR
-//! enrichment — `mergeable` as a SQLite INTEGER 0/1, the read layer coerces it to the contract bool).
+//! enrichment — `mergeable` as a SQLite INTEGER 0/1, the read layer coerces it to the contract bool);
+//! `additions`/`deletions`/`changed_files`/`commits` are the D6 diff-stats (INTEGER columns, contract
+//! `Option<u64>` — bound directly, no coercion; None→NULL).
 //!
 //! Failure taxonomy (three distinct cases — the edges-022 precedent):
 //!  * **Healthy SKIP (no-op, not a degrade):** no `env.project_id`, no `env.action_request_id`, or no
@@ -100,13 +102,15 @@ impl Projector for PullRequestProjector {
         tx.execute(
             "INSERT INTO proj_pull_request \
              (pr_id, project_id, repo_id, pr_number, status, head_branch, base_branch, pr_checked_at, \
-              mergeable, checks_summary, updated_at_seq) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+              mergeable, checks_summary, additions, deletions, changed_files, commits, updated_at_seq) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
              ON CONFLICT(pr_id) DO UPDATE SET \
                project_id=excluded.project_id, repo_id=excluded.repo_id, pr_number=excluded.pr_number, \
                status=excluded.status, head_branch=excluded.head_branch, base_branch=excluded.base_branch, \
                pr_checked_at=excluded.pr_checked_at, mergeable=excluded.mergeable, \
-               checks_summary=excluded.checks_summary, updated_at_seq=excluded.updated_at_seq",
+               checks_summary=excluded.checks_summary, additions=excluded.additions, \
+               deletions=excluded.deletions, changed_files=excluded.changed_files, \
+               commits=excluded.commits, updated_at_seq=excluded.updated_at_seq",
             params![
                 pr_id,
                 project_id.as_str(),
@@ -118,6 +122,12 @@ impl Projector for PullRequestProjector {
                 payload.pr_checked_at.as_str(),
                 payload.mergeable,
                 payload.checks_summary,
+                // D6 — the diff-stats fold (None → NULL, rebuild-safe). `Option<u64>` → the INTEGER column
+                // (a GitHub natural; u64→i64 is lossless for any real diff size).
+                payload.additions.map(|n| n as i64),
+                payload.deletions.map(|n| n as i64),
+                payload.changed_files.map(|n| n as i64),
+                payload.commits.map(|n| n as i64),
                 env.seq,
             ],
         )?;

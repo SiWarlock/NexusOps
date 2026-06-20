@@ -65,6 +65,13 @@ pub struct PullRequestSignals {
     pub mergeable: Mergeability,
     pub review: ReviewDecision,
     pub checks: ChecksConclusion,
+    /// D6 — the GitHub diff-stats (GET-only, `Option<u64>`); NOT status signals — `extract_pr_signals`
+    /// sets them from the octocrab PR (the status aggregators leave them `None`). Thread into
+    /// `PullRequestSynced` at the `create_pr` emit (the §11.2 PR card render data).
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
+    pub changed_files: Option<u64>,
+    pub commits: Option<u64>,
 }
 
 /// Derive the single most-salient §5.1 `PullRequest` status from the signals (§7.2 derived cache).
@@ -178,6 +185,8 @@ impl PullRequestSignals {
             mergeable: map_mergeable(mergeable),
             review: aggregate_reviews(reviews),
             checks: aggregate_checks(checks),
+            // diff-stats are NOT status signals — `extract_pr_signals` sets them from the octocrab PR.
+            ..Default::default()
         }
     }
 }

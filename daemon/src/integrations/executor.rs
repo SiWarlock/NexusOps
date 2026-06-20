@@ -188,6 +188,12 @@ impl GithubExecutor {
             // the deferred proj_pull_request follow-on).
             mergeable: None,
             checks_summary: None,
+            // D6 — the diff-stats captured from the create response's PR (the §11.2 PR card render data);
+            // `extract_pr_signals` populated them on `created.signals`. `None` if GitHub omitted them.
+            additions: created.signals.additions,
+            deletions: created.signals.deletions,
+            changed_files: created.signals.changed_files,
+            commits: created.signals.commits,
             pr_checked_at,
         };
         // serialize the FROZEN event struct (the Namespaced bridge, Q1=B); a serialize fault fails CLOSED.

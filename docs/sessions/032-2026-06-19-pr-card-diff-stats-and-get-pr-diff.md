@@ -3,7 +3,7 @@
 - **Date:** 2026-06-19
 - **Phase:** Phase 4 / **P4.7** (the ui-unblock work-order wave-2 — read-surface enrichments for the §11.2 PR Review Workspace; homed under Phase 4 like 4.4/4.5/4.6).
 - **Predecessor:** [031 — VT-arc tie-off + build-hygiene (075e)](031-2026-06-18-vt-arc-tieoff-and-build-hygiene.md)
-- **Successor:** _(next implementer session — D9 cat-1 PR-mutation safety-design, post-cycle)_
+- **Successor:** [033 — PR-mutation cat-1 arc: github.merge_pr (D9) + github.submit_review (D10)](033-2026-06-20-pr-mutations-merge-and-submit-review.md)
 
 ## Why this session existed
 

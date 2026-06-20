@@ -12,10 +12,11 @@ use nexusops_shared::catalog;
 const SESSION_LIFECYCLE_TYPES: &[&str] = &["session.create", "session.kill"];
 
 /// D9/P4.7 (F2) — the GitHub-mutation action types that are **UI/human-initiated ONLY**: an
-/// agent / Brain / pack / system requester is DENIED before risk resolution (no agent/Brain may merge
-/// a PR — a remote-repo WRITE on the user's behalf is a human-only decision; the PIN-e session-lifecycle
-/// precedent generalized to github writes, §15 #8). D10 (`github.submit_review`) joins this set.
-const GITHUB_MUTATION_TYPES: &[&str] = &["github.merge_pr"];
+/// agent / Brain / pack / system requester is DENIED before risk resolution (no agent/Brain may merge a
+/// PR or post a review verdict — a remote-repo WRITE on the user's behalf is a human-only decision; the
+/// PIN-e session-lifecycle precedent generalized to github writes, §15 #8). D10 added
+/// `github.submit_review` (a review verdict is a human attestation; an `approve` carries merge-gate power).
+const GITHUB_MUTATION_TYPES: &[&str] = &["github.merge_pr", "github.submit_review"];
 
 /// The risk-0 action types PERMITTED to auto-execute (PIN d — the lead-ruled EXPLICIT allowlist,
 /// belt-and-suspenders over the catalog + the LESSON 19 re-gate). A risk-0 type NOT here fails CLOSED

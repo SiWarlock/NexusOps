@@ -32,7 +32,7 @@ use std::time::Duration;
 use nexusops_shared::actions::{ActionPreview, ActionRequest};
 use nexusops_shared::events::{
     GithubSyncFailed, LinearSyncFailed, Provider, PullRequestMerged, PullRequestSynced,
-    ReviewSynced,
+    ReviewSubmitted, ReviewSynced,
 };
 use nexusops_shared::time::Timestamp;
 
@@ -42,8 +42,8 @@ use crate::gateway::executor::{
 };
 use crate::integrations::classifier::IntegrationOutcomeClass;
 use crate::integrations::github_write::{
-    map_merge_method, CreatePrArgs, GithubWriteClient, GithubWriteError, MergePrArgs,
-    SyncReviewsArgs,
+    map_merge_method, map_review_event, CreatePrArgs, GithubWriteClient, GithubWriteError,
+    MergePrArgs, SubmitReviewArgs, SyncReviewsArgs,
 };
 use crate::integrations::linear_write::{
     CreateIssueArgs, LinearWriteClient, LinearWriteError, LinkIssueArgs,
@@ -56,6 +56,8 @@ const GITHUB_CREATE_PR_DRAFT: &str = "github.create_pr_draft";
 const GITHUB_SYNC_REVIEWS: &str = "github.sync_reviews";
 /// D9 — the cat-1 GitHub WRITE that merges a remote PR (head→base).
 const GITHUB_MERGE_PR: &str = "github.merge_pr";
+/// D10 — the cat-1 GitHub WRITE that submits a PR review verdict.
+const GITHUB_SUBMIT_REVIEW: &str = "github.submit_review";
 /// The action types `LinearExecutor` handles directly (`ExecutorKind::Linear`); the rest delegate.
 const LINEAR_LINK_ISSUE: &str = "linear.link_issue";
 const LINEAR_CREATE_ISSUE: &str = "linear.create_issue";
@@ -443,6 +445,127 @@ impl GithubExecutor {
             }],
         }
     }
+
+    /// D10 — the cat-1 `github.submit_review` WRITE. Validates the catalog `requires_resource_refs`
+    /// precondition (the Repo IDENTITY) FIRST, then fail-closed validation of EVERY operand BEFORE the
+    /// network call (the `execute_merge_pr` precedent): owner/repo/pr_number(>0)/commit_id/event always;
+    /// `body` required-non-empty WHEN `event ∈ {request_changes, comment}` (GitHub 422s otherwise),
+    /// optional for `approve`. Drives the SHA-pinned submit via the captured-`Handle` `block_on`+timeout.
+    /// Success → a `ReviewSubmitted` event with `side_effect_applied: true` (a real review was POSTed
+    /// BEFORE txn-B → a lost terminal write yields the honest `ActionPartiallySucceeded`, LESSON 21).
+    /// Failure → the SHARED `classify_failure` (§17; the reason a §15 structural class-name).
+    fn execute_submit_review(&self, req: &ActionRequest) -> ExecutionOutcome {
+        // catalog precondition FIRST — a review with no auditable Repo identity must never reach GitHub.
+        if let Err(e) = self.inner.validate(req) {
+            return ExecutionOutcome::Failed(e.to_string());
+        }
+        let Some(owner) = string_input(req, "owner") else {
+            return ExecutionOutcome::Failed(
+                "github.submit_review requires a non-empty inputs[\"owner\"]".to_string(),
+            );
+        };
+        let Some(repo) = string_input(req, "repo") else {
+            return ExecutionOutcome::Failed(
+                "github.submit_review requires a non-empty inputs[\"repo\"]".to_string(),
+            );
+        };
+        let Some(pr_number) = u64_input(req, "pr_number") else {
+            return ExecutionOutcome::Failed(
+                "github.submit_review requires inputs[\"pr_number\"] (a positive integer)"
+                    .to_string(),
+            );
+        };
+        // the SHA-pin (audit-integrity/anti-race): the verdict attaches to the exact reviewed head.
+        let Some(commit_id) = string_input(req, "commit_id") else {
+            return ExecutionOutcome::Failed(
+                "github.submit_review requires a non-empty inputs[\"commit_id\"] (the reviewed head SHA)"
+                    .to_string(),
+            );
+        };
+        // the verdict (fail-closed map): an absent/blank or unmappable event fails closed (NEVER a silent
+        // default — the approved+audited verdict must execute EXACTLY).
+        let Some(event_str) = string_input(req, "event") else {
+            return ExecutionOutcome::Failed(
+                "github.submit_review requires a non-empty inputs[\"event\"] (approve|request_changes|comment)"
+                    .to_string(),
+            );
+        };
+        let event = match map_review_event(&event_str) {
+            Ok(e) => e,
+            Err(reason) => {
+                return ExecutionOutcome::Failed(format!("github.submit_review: {reason}"))
+            }
+        };
+        // the conditional-body rule (GitHub's own 422): `approve` → body OPTIONAL (default ""); every other
+        // verdict (request_changes/comment/a future variant) → body REQUIRED non-empty. The `_` arm is
+        // both the conservative non_exhaustive default AND the request_changes/comment case.
+        let body = match event {
+            octocrab::models::pulls::ReviewAction::Approve => {
+                string_input(req, "body").unwrap_or_default()
+            }
+            _ => match string_input(req, "body") {
+                Some(b) => b,
+                None => {
+                    return ExecutionOutcome::Failed(
+                        "github.submit_review requires a non-empty inputs[\"body\"] for request_changes/comment (GitHub 422s otherwise)"
+                            .to_string(),
+                    )
+                }
+            },
+        };
+
+        let args = SubmitReviewArgs {
+            owner,
+            repo,
+            pr_number,
+            commit_id,
+            event,
+            body,
+        };
+
+        // 3a (LESSON 46): drive the async client via the CAPTURED Handle's `block_on` + a hard timeout so
+        // an octocrab hang can never wedge the single write-actor.
+        let result = self.handle.block_on(async {
+            tokio::time::timeout(self.timeout, self.client.submit_review(&args)).await
+        });
+        let submitted = match result {
+            Err(_elapsed) => {
+                return ExecutionOutcome::Failed(
+                    "github.submit_review timed out (structural)".to_string(),
+                )
+            }
+            Ok(Err(write_err)) => return self.classify_failure("github.submit_review", write_err),
+            Ok(Ok(submitted)) => submitted,
+        };
+
+        // build the ReviewSubmitted event from the create-response (review_id/reviewer/state/submitted_at/
+        // body/commit_id) + the inputs' pr_number. `body` (free-form user text) rides the §15 redaction gate
+        // at persist (the write-actor append path; the ReviewSynced.body precedent).
+        let payload = ReviewSubmitted {
+            review_id: submitted.review_id,
+            pr_number,
+            reviewer: submitted.reviewer,
+            state: submitted.state,
+            body: submitted.body,
+            submitted_at: submitted.submitted_at,
+            commit_id: submitted.commit_id,
+        };
+        let payload_json = match serde_json::to_string(&payload) {
+            Ok(j) => j,
+            Err(e) => return ExecutionOutcome::Failed(format!("serialize ReviewSubmitted: {e}")),
+        };
+        ExecutionOutcome::Succeeded {
+            changed_resources: req.resource_refs.clone(),
+            detail: "github.submit_review — submitted a PR review via octocrab".to_string(),
+            // a real review was POSTed on GitHub BEFORE txn-B → a lost terminal write yields the honest
+            // ActionPartiallySucceeded (the review exists; the event didn't commit), NOT a clean rollback.
+            side_effect_applied: true,
+            emitted_events: vec![EmittedEvent::Namespaced {
+                event_type: ReviewSubmitted::EVENT_TYPE,
+                payload_json,
+            }],
+        }
+    }
 }
 
 impl ActionExecutor for GithubExecutor {
@@ -456,6 +579,7 @@ impl ActionExecutor for GithubExecutor {
             GITHUB_CREATE_PR_DRAFT => self.execute_create_pr(req, true),
             GITHUB_SYNC_REVIEWS => self.execute_sync_reviews(req),
             GITHUB_MERGE_PR => self.execute_merge_pr(req),
+            GITHUB_SUBMIT_REVIEW => self.execute_submit_review(req),
             // any other Github-kind action delegates to the inner side-effect-free stub (no event).
             _ => self.inner.execute(req),
         }

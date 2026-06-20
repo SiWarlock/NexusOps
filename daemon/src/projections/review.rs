@@ -29,7 +29,9 @@ use rusqlite::{params, Transaction};
 
 use nexusops_shared::actions::{ResourceRef, ResourceType};
 use nexusops_shared::event_envelope::EventEnvelope;
-use nexusops_shared::events::ReviewSynced;
+use nexusops_shared::events::{ReviewSubmitted, ReviewSynced};
+use nexusops_shared::status::ReviewState;
+use nexusops_shared::time::Timestamp;
 
 use super::{wire_value, ProjectionError, Projector};
 
@@ -41,8 +43,11 @@ impl Projector for ReviewProjector {
     }
 
     fn apply(&self, tx: &Transaction, env: &EventEnvelope) -> Result<(), ProjectionError> {
-        if env.event_type != ReviewSynced::EVENT_TYPE {
-            // folds ONLY ReviewSynced.
+        let is_synced = env.event_type == ReviewSynced::EVENT_TYPE;
+        let is_submitted = env.event_type == ReviewSubmitted::EVENT_TYPE;
+        if !is_synced && !is_submitted {
+            // folds ReviewSynced (the read sync, D5b-1) + ReviewSubmitted (the D10 write counterpart) —
+            // both upsert by review_id into proj_review.
             return Ok(());
         }
         // identity-less → healthy skip: project_id is the envelope's; action_request_id is the link to
@@ -74,12 +79,44 @@ impl Projector for ReviewProjector {
         };
 
         // reject-unknown on the payload — the reason MUST NOT echo (possibly sensitive) payload bytes (§15).
-        let payload: ReviewSynced = serde_json::from_str(&env.payload_json)
-            .map_err(|_| ProjectionError::Decode("ReviewSynced payload did not bind".into()))?;
+        // Both events carry the same six proj_review fields; extract them by event type (the D10 write
+        // event ReviewSubmitted has a `commit_id` the row does NOT project — like ReviewSynced's
+        // `review_synced_at`; row-irrelevant, additive-later). `state` is the frozen ReviewState (both).
+        let (review_id, pr_number, reviewer, state_enum, submitted_at, body): (
+            u64,
+            u64,
+            String,
+            ReviewState,
+            Option<Timestamp>,
+            Option<String>,
+        ) = if is_submitted {
+            let p: ReviewSubmitted = serde_json::from_str(&env.payload_json).map_err(|_| {
+                ProjectionError::Decode("ReviewSubmitted payload did not bind".into())
+            })?;
+            (
+                p.review_id,
+                p.pr_number,
+                p.reviewer,
+                p.state,
+                p.submitted_at,
+                p.body,
+            )
+        } else {
+            let p: ReviewSynced = serde_json::from_str(&env.payload_json)
+                .map_err(|_| ProjectionError::Decode("ReviewSynced payload did not bind".into()))?;
+            (
+                p.review_id,
+                p.pr_number,
+                p.reviewer,
+                p.state,
+                p.submitted_at,
+                p.body,
+            )
+        };
 
         // state binds the frozen ReviewState value enum via `wire_value` (the canonical snake_case wire
-        // string; the layer-correct serde producer — no fork).
-        let state = wire_value(&payload.state)?;
+        // string; the layer-correct serde producer — no fork; derived from the event, rebuild-safe LESSON 17).
+        let state = wire_value(&state_enum)?;
 
         // review_id/pr_number → i64 for the INTEGER columns (a GitHub review/PR id is a non-negative
         // natural; u64→i64 is lossless for any real value). submitted_at → its RFC3339 string (None→NULL).
@@ -93,14 +130,14 @@ impl Projector for ReviewProjector {
                reviewer=excluded.reviewer, state=excluded.state, submitted_at=excluded.submitted_at, \
                body=excluded.body, updated_at_seq=excluded.updated_at_seq",
             params![
-                payload.review_id as i64,
-                payload.pr_number as i64,
+                review_id as i64,
+                pr_number as i64,
                 project_id.as_str(),
                 repo_id,
-                payload.reviewer,
+                reviewer,
                 state,
-                payload.submitted_at.as_ref().map(|t| t.as_str()),
-                payload.body,
+                submitted_at.as_ref().map(|t| t.as_str()),
+                body,
                 env.seq,
             ],
         )?;

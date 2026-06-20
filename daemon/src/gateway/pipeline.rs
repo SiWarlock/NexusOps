@@ -7,7 +7,7 @@ use nexusops_shared::actions::{
 };
 use nexusops_shared::catalog;
 use nexusops_shared::events::{
-    PullRequestMerged, PullRequestSynced, ReviewSynced, WorktreeCreated,
+    PullRequestMerged, PullRequestSynced, ReviewSubmitted, ReviewSynced, WorktreeCreated,
 };
 use nexusops_shared::gateway_ids::ApprovalId;
 use nexusops_shared::ipc::{
@@ -142,6 +142,11 @@ fn emitted_event_deltas(req: &ActionRequest, ev: &EmittedEvent) -> Vec<Projectio
                 // review_id is self-contained in the payload (globally unique → the proj_review PK); no
                 // sibling Repo-ref needed for the NUDGE (only the projector's repo_id column sibling-reads).
                 if let Ok(r) = serde_json::from_str::<ReviewSynced>(payload_json) {
+                    ids.review_id = Some(r.review_id.to_string());
+                }
+            } else if *event_type == ReviewSubmitted::EVENT_TYPE {
+                // D10 — same as ReviewSynced: review_id self-contained in the payload (the proj_review PK).
+                if let Ok(r) = serde_json::from_str::<ReviewSubmitted>(payload_json) {
                     ids.review_id = Some(r.review_id.to_string());
                 }
             }

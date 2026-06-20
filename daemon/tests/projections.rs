@@ -18,7 +18,8 @@ use nexusops_shared::actor::ActorType;
 use nexusops_shared::catalog::ExecutorKind;
 use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType, Visibility};
 use nexusops_shared::events::{
-    PullRequestMerged, PullRequestSynced, ReviewSynced, SessionRecovered, WorktreeCreated,
+    PullRequestMerged, PullRequestSynced, ReviewSubmitted, ReviewSynced, SessionRecovered,
+    WorktreeCreated,
 };
 use nexusops_shared::harness::ResumeMode;
 use nexusops_shared::ids::{ActionRequestId, ProjectId, SessionId, WorkspaceId, WorktreeId};
@@ -2769,6 +2770,41 @@ fn review_payload(
     .unwrap()
 }
 
+/// D10 — a ReviewSubmitted append intent linked to `action_request_id` (the repo_id sibling-read key) +
+/// `project_id` (same envelope shape as ReviewSynced → folds the SAME proj_review row by review_id).
+fn review_submitted_intent(
+    project_id: Option<ProjectId>,
+    action_request_id: Option<ActionRequestId>,
+    payload: &str,
+) -> AppendIntent {
+    let mut i = intent(payload);
+    i.event_type = "ReviewSubmitted".to_string();
+    i.project_id = project_id;
+    i.action_request_id = action_request_id;
+    i
+}
+
+/// D10 — a ReviewSubmitted payload (the write counterpart to ReviewSynced; + commit_id).
+fn review_submitted_payload(
+    review_id: u64,
+    pr_number: u64,
+    reviewer: &str,
+    state: ReviewState,
+    body: Option<&str>,
+    commit_id: Option<&str>,
+) -> String {
+    serde_json::to_string(&ReviewSubmitted {
+        review_id,
+        pr_number,
+        reviewer: reviewer.to_string(),
+        state,
+        body: body.map(|s| s.to_string()),
+        submitted_at: Some(Timestamp::parse("2026-06-20T00:00:00Z").unwrap()),
+        commit_id: commit_id.map(|s| s.to_string()),
+    })
+    .unwrap()
+}
+
 /// the proj_review rows (the asserted columns), ordered by review_id, for byte-identical compare.
 #[derive(Debug, PartialEq)]
 struct ReviewRowT {
@@ -2910,6 +2946,91 @@ fn test_review_synced_on_conflict_updates_row() {
     assert_eq!(rows[0].state, "changes_requested", "DO UPDATE folds state");
     assert_eq!(rows[0].body.as_deref(), Some("nit"), "DO UPDATE folds body");
     assert!(rows[0].updated_at_seq > seq1, "seq advanced on re-sync");
+}
+
+#[test]
+fn test_review_submitted_folds_to_proj_review() {
+    // spec(§7.2 / D10 / LESSON 17/54): a ReviewSubmitted folds into proj_review (upsert by review_id, the
+    // SAME path as ReviewSynced) — fields from the payload + project_id from the envelope + repo_id
+    // sibling-read; state derived from the event. Rebuild-equivalent. Then a ReviewSubmitted over an
+    // EXISTING ReviewSynced row UPDATES it (a sync-then-submit re-review is one row).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(review_submitted_intent(
+            Some(pid.clone()),
+            Some(arid.clone()),
+            &review_submitted_payload(
+                9100,
+                42,
+                "octocat",
+                ReviewState::ChangesRequested,
+                Some("Please address the inline notes."),
+                Some("9fceb02"),
+            ),
+        ))
+        .expect("submitted fold");
+    let rows = proj_review_rows(&path);
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert_eq!(r.review_id, 9100);
+    assert_eq!(r.pr_number, Some(42));
+    assert_eq!(
+        r.project_id.as_deref(),
+        Some(pid.as_str()),
+        "project_id folded from the envelope"
+    );
+    assert_eq!(r.repo_id.as_deref(), Some("repo_alpha"));
+    assert_eq!(r.reviewer.as_deref(), Some("octocat"));
+    assert_eq!(
+        r.state, "changes_requested",
+        "ReviewSubmitted folds state (derived from the event)"
+    );
+    assert_eq!(r.body.as_deref(), Some("Please address the inline notes."));
+
+    // rebuild-equivalent.
+    let before = proj_review_rows(&path);
+    store.rebuild_projections().unwrap();
+    assert_eq!(
+        before,
+        proj_review_rows(&path),
+        "rebuild reproduces the ReviewSubmitted-folded row (LESSON 17)"
+    );
+
+    // a ReviewSubmitted over an EXISTING ReviewSynced row (same review_id) UPDATES it — one row.
+    let (_d2, path2) = temp_db();
+    let mut store2 = open(&path2);
+    let gw2 = gw_with_git();
+    let pid2 = ProjectId::new();
+    let arid2 = seed_pr_action(&mut store2, &gw2, Some(pid2.clone()), Some("repo_beta"));
+    store2
+        .append(review_synced_intent(
+            Some(pid2.clone()),
+            Some(arid2.clone()),
+            &review_payload(5, 1, "octocat", ReviewState::Commented, None, Some("wip")),
+        ))
+        .unwrap();
+    store2
+        .append(review_submitted_intent(
+            Some(pid2),
+            Some(arid2),
+            &review_submitted_payload(5, 1, "octocat", ReviewState::Approved, Some("LGTM"), None),
+        ))
+        .unwrap();
+    let rows2 = proj_review_rows(&path2);
+    assert_eq!(
+        rows2.len(),
+        1,
+        "submit over an existing synced review → one row"
+    );
+    assert_eq!(
+        rows2[0].state, "approved",
+        "ReviewSubmitted UPDATEs the state"
+    );
+    assert_eq!(rows2[0].body.as_deref(), Some("LGTM"), "and the body");
 }
 
 #[test]

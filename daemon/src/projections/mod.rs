@@ -30,8 +30,8 @@ use serde::Serialize;
 
 use nexusops_shared::event_envelope::EventEnvelope;
 use nexusops_shared::events::{
-    PullRequestMerged, PullRequestSynced, ReviewSynced, SessionFailed, SessionRecovered,
-    TelemetrySampled, WorktreeCreated,
+    PullRequestMerged, PullRequestSynced, ReviewSubmitted, ReviewSynced, SessionFailed,
+    SessionRecovered, TelemetrySampled, WorktreeCreated,
 };
 use nexusops_shared::ipc::{DeltaKind, ProjectionDelta, ProjectionName};
 
@@ -106,9 +106,10 @@ pub(crate) fn deltas_for_event(event_type: &str, ids: &EventDeltaIds) -> Vec<Pro
     if event_type == TelemetrySampled::EVENT_TYPE {
         out.push(upsert(ProjectionName::UsageLedger, None));
     }
-    // Review — the ReviewProjector folds ReviewSynced, keyed by review_id (payload-derived; the proj_review
-    // PK). D5b-1 — the review vertical (the live producer is D5b-2; the nudge rides the gateway path).
-    if event_type == ReviewSynced::EVENT_TYPE {
+    // Review — the ReviewProjector folds ReviewSynced (D5b-1, the read sync) + ReviewSubmitted (D10, the
+    // write verdict), keyed by review_id (payload-derived; the proj_review PK). The nudge rides the gateway
+    // path for both producers.
+    if event_type == ReviewSynced::EVENT_TYPE || event_type == ReviewSubmitted::EVENT_TYPE {
         out.push(upsert(ProjectionName::Review, ids.review_id.clone()));
     }
     out

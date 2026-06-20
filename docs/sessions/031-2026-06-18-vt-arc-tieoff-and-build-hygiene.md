@@ -3,7 +3,7 @@
 - **Date:** 2026-06-18
 - **Phase:** 3.4 (Embedded terminal) tie-off, bridging Phase 4 §8.1/§17 (the survival/recovery ladder). Task **P3.4-VT** (same family as 075a–d).
 - **Predecessor:** [030 — the headless-VT / scrollback survival arc (075a–d)](030-2026-06-17-headless-vt-scrollback-arc-075abcd.md)
-- **Successor:** _(next implementer session)_
+- **Successor:** [032 — PR-card diff-stats (D6) + get_pr_diff read RPC (D7)](032-2026-06-19-pr-card-diff-stats-and-get-pr-diff.md)
 
 ## Why this session existed
 

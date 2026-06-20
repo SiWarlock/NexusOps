@@ -17,7 +17,9 @@ use nexusops_shared::actions::{
 use nexusops_shared::actor::ActorType;
 use nexusops_shared::catalog::ExecutorKind;
 use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType, Visibility};
-use nexusops_shared::events::{PullRequestSynced, ReviewSynced, SessionRecovered, WorktreeCreated};
+use nexusops_shared::events::{
+    PullRequestMerged, PullRequestSynced, ReviewSynced, SessionRecovered, WorktreeCreated,
+};
 use nexusops_shared::harness::ResumeMode;
 use nexusops_shared::ids::{ActionRequestId, ProjectId, SessionId, WorkspaceId, WorktreeId};
 use nexusops_shared::status::{ActionRequestStatus, PullRequest, ReviewState, Session};
@@ -1571,6 +1573,30 @@ fn pr_synced_intent(
     i
 }
 
+/// D9 — a PullRequestMerged append intent linked to `action_request_id` (the repo_id sibling-read key) +
+/// `project_id` (same envelope as the synced event → folds the SAME `{repo_id}#{pr_number}` row).
+fn pr_merged_intent(
+    project_id: Option<ProjectId>,
+    action_request_id: Option<ActionRequestId>,
+    payload: &str,
+) -> AppendIntent {
+    let mut i = intent(payload);
+    i.event_type = "PullRequestMerged".to_string();
+    i.project_id = project_id;
+    i.action_request_id = action_request_id;
+    i
+}
+
+/// D9 — a PullRequestMerged payload (pr_number + the merge-commit SHA + the merged-at stamp).
+fn pr_merged_payload(pr_number: u64, merge_commit_sha: Option<&str>) -> String {
+    serde_json::to_string(&PullRequestMerged {
+        pr_number,
+        merge_commit_sha: merge_commit_sha.map(|s| s.to_string()),
+        merged_at: Timestamp::parse("2026-06-20T00:00:00Z").unwrap(),
+    })
+    .unwrap()
+}
+
 fn pr_payload(pr_number: u64, status: PullRequest, branch: &str, base: &str) -> String {
     serde_json::to_string(&PullRequestSynced {
         pr_number,
@@ -2111,6 +2137,99 @@ fn test_pr_diff_stats_folded() {
         before,
         proj_pull_request_rows(&path),
         "the diff-stats row is reproduced byte-identically on rebuild (LESSON §17)"
+    );
+}
+
+#[test]
+fn test_pull_request_merged_folds_to_terminal() {
+    // spec(§5.1/§7.2 / D9 / LESSON 17): a PullRequestMerged append folds proj_pull_request.status →
+    // terminal `merged` for the SAME `{repo_id}#{pr_number}` row a prior PullRequestSynced created. The
+    // status is derived from the EVENT TYPE (not the row's current value) → rebuild-safe. Other columns
+    // (branch/base/pr_number) are untouched; updated_at_seq advances. rebuild-equivalent.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    // 1. a synced PR → the row at Open. (The synced + merged events share ONE action_requests sibling row
+    // here — the projector only needs it to resolve repo_id via the LESSON-17 sibling-read; in production
+    // the merge is a separate github.merge_pr action carrying its own Repo ref to the SAME repo_id. A 2nd
+    // seed_pr_action would DEDUP on the NaturalResourceRef idempotency key [same repo] → no new row.)
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid.clone()),
+            &pr_payload(42, PullRequest::Open, "feature", "main"),
+        ))
+        .expect("synced fold");
+    assert_eq!(
+        proj_pull_request_rows(&path)[0].status,
+        "open",
+        "the PR starts Open"
+    );
+
+    // 2. a merge of the SAME PR (same repo_id sibling → same `{repo_id}#{pr_number}` pr_id) → `merged`.
+    store
+        .append(pr_merged_intent(
+            Some(pid),
+            Some(arid),
+            &pr_merged_payload(42, Some("9fceb02")),
+        ))
+        .expect("merged fold");
+    let rows = proj_pull_request_rows(&path);
+    assert_eq!(
+        rows.len(),
+        1,
+        "the merge UPDATES the existing row (no new row)"
+    );
+    let r = &rows[0];
+    assert_eq!(r.pr_id, "repo_alpha#42");
+    assert_eq!(
+        r.status, "merged",
+        "PullRequestMerged folds status → terminal merged (derived from the event type)"
+    );
+    assert_eq!(
+        r.pr_number,
+        Some(42),
+        "pr_number untouched by the merge fold"
+    );
+    assert_eq!(
+        r.head_branch.as_deref(),
+        Some("feature"),
+        "branch untouched"
+    );
+
+    // 3. rebuild-equivalent: the merged status survives a full rebuild (derive-from-event, REBUILD_TABLES).
+    let before = proj_pull_request_rows(&path);
+    store.rebuild_projections().unwrap();
+    assert_eq!(
+        before,
+        proj_pull_request_rows(&path),
+        "the merged row is reproduced byte-identically on rebuild (LESSON 17)"
+    );
+}
+
+#[test]
+fn test_pull_request_merged_no_prior_row_is_healthy_noop() {
+    // spec(D9): a PullRequestMerged with NO prior PullRequestSynced row → the projector's UPDATE hits 0
+    // rows → a HEALTHY no-op (NOT an error, NOT a fabricated INSERT). The row materializes only when the
+    // PR is synced; on a full event log the synced event always precedes the merge, so this guards the
+    // partial/out-of-order edge (an unintended INSERT or a 0-rows-error regression would fail here).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_merged_intent(
+            Some(pid),
+            Some(arid),
+            &pr_merged_payload(99, Some("deadbeef")),
+        ))
+        .expect("a merge with no prior synced row is a healthy no-op (not an error)");
+    assert!(
+        proj_pull_request_rows(&path).is_empty(),
+        "no row is created by a bare merge (the UPDATE hit 0 rows — no fabricated INSERT)"
     );
 }
 

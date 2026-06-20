@@ -6,7 +6,9 @@ use nexusops_shared::actions::{
     RequiredApprover, ResourceType, RiskLevel,
 };
 use nexusops_shared::catalog;
-use nexusops_shared::events::{PullRequestSynced, ReviewSynced, WorktreeCreated};
+use nexusops_shared::events::{
+    PullRequestMerged, PullRequestSynced, ReviewSynced, WorktreeCreated,
+};
 use nexusops_shared::gateway_ids::ApprovalId;
 use nexusops_shared::ipc::{
     ActionAck, DeltaKind, PlanAck, PlanStepAck, ProjectionDelta, ProjectionName,
@@ -118,6 +120,17 @@ fn emitted_event_deltas(req: &ActionRequest, ev: &EmittedEvent) -> Vec<Projectio
                 }
             } else if *event_type == PullRequestSynced::EVENT_TYPE {
                 if let Ok(p) = serde_json::from_str::<PullRequestSynced>(payload_json) {
+                    let repo_id = req
+                        .resource_refs
+                        .iter()
+                        .find(|r| r.resource_type == ResourceType::Repo)
+                        .map(|r| r.id.clone());
+                    ids.pr_id = repo_id.map(|r| format!("{r}#{}", p.pr_number));
+                }
+            } else if *event_type == PullRequestMerged::EVENT_TYPE {
+                // D9 — same pr_id formula as PullRequestSynced: repo_id (the action's Repo ref) + the
+                // payload's pr_number → the `{repo_id}#{pr_number}` row PK the PullRequestProjector folds.
+                if let Ok(p) = serde_json::from_str::<PullRequestMerged>(payload_json) {
                     let repo_id = req
                         .resource_refs
                         .iter()

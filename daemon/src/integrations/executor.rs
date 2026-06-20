@@ -31,7 +31,8 @@ use std::time::Duration;
 
 use nexusops_shared::actions::{ActionPreview, ActionRequest};
 use nexusops_shared::events::{
-    GithubSyncFailed, LinearSyncFailed, Provider, PullRequestSynced, ReviewSynced,
+    GithubSyncFailed, LinearSyncFailed, Provider, PullRequestMerged, PullRequestSynced,
+    ReviewSynced,
 };
 use nexusops_shared::time::Timestamp;
 
@@ -41,7 +42,8 @@ use crate::gateway::executor::{
 };
 use crate::integrations::classifier::IntegrationOutcomeClass;
 use crate::integrations::github_write::{
-    CreatePrArgs, GithubWriteClient, GithubWriteError, SyncReviewsArgs,
+    map_merge_method, CreatePrArgs, GithubWriteClient, GithubWriteError, MergePrArgs,
+    SyncReviewsArgs,
 };
 use crate::integrations::linear_write::{
     CreateIssueArgs, LinearWriteClient, LinearWriteError, LinkIssueArgs,
@@ -52,6 +54,8 @@ use crate::integrations::pull_request::derive_pull_request_status;
 const GITHUB_CREATE_PR: &str = "github.create_pr";
 const GITHUB_CREATE_PR_DRAFT: &str = "github.create_pr_draft";
 const GITHUB_SYNC_REVIEWS: &str = "github.sync_reviews";
+/// D9 — the cat-1 GitHub WRITE that merges a remote PR (head→base).
+const GITHUB_MERGE_PR: &str = "github.merge_pr";
 /// The action types `LinearExecutor` handles directly (`ExecutorKind::Linear`); the rest delegate.
 const LINEAR_LINK_ISSUE: &str = "linear.link_issue";
 const LINEAR_CREATE_ISSUE: &str = "linear.create_issue";
@@ -338,6 +342,107 @@ impl GithubExecutor {
             emitted_events,
         }
     }
+
+    /// D9 — the cat-1 `github.merge_pr` WRITE. Validates the catalog `requires_resource_refs` precondition
+    /// (the Repo IDENTITY) FIRST, then fail-closed non-empty/typed validation of EVERY operand BEFORE the
+    /// network call (the `execute_create_pr` param-injection-guard precedent; octocrab is a TYPED API), then
+    /// drives the SHA-pinned merge via the captured-`Handle` `block_on`+timeout (LESSON 46). Success → a
+    /// `PullRequestMerged` event with `side_effect_applied: true` (a real merge happened BEFORE txn-B → a
+    /// lost terminal write yields the honest `ActionPartiallySucceeded`, LESSON 21). Failure → the SHARED
+    /// `classify_failure` (terminal-non-auth → `GithubSyncFailed`; auth/transient → plain `Failed`; §17).
+    fn execute_merge_pr(&self, req: &ActionRequest) -> ExecutionOutcome {
+        // catalog precondition FIRST — a merge with no auditable Repo identity must never reach GitHub.
+        if let Err(e) = self.inner.validate(req) {
+            return ExecutionOutcome::Failed(e.to_string());
+        }
+        let Some(owner) = string_input(req, "owner") else {
+            return ExecutionOutcome::Failed(
+                "github.merge_pr requires a non-empty inputs[\"owner\"]".to_string(),
+            );
+        };
+        let Some(repo) = string_input(req, "repo") else {
+            return ExecutionOutcome::Failed(
+                "github.merge_pr requires a non-empty inputs[\"repo\"]".to_string(),
+            );
+        };
+        let Some(pr_number) = u64_input(req, "pr_number") else {
+            return ExecutionOutcome::Failed(
+                "github.merge_pr requires inputs[\"pr_number\"] (a positive integer)".to_string(),
+            );
+        };
+        // the SHA-pin (F1 anti-race): the merge is bound to the head the human approved; a missing/blank
+        // sha fails closed (the merge MUST be SHA-pinned — never an unpinned "merge whatever is on top").
+        let Some(sha) = string_input(req, "sha") else {
+            return ExecutionOutcome::Failed(
+                "github.merge_pr requires a non-empty inputs[\"sha\"] (the approved head SHA — anti-race pin)"
+                    .to_string(),
+            );
+        };
+        // the merge_method (F2 audit-integrity): the approved+audited method executes EXACTLY — an
+        // absent/blank or unmappable method fails closed (NEVER a silent server-side default).
+        let Some(merge_method_str) = string_input(req, "merge_method") else {
+            return ExecutionOutcome::Failed(
+                "github.merge_pr requires a non-empty inputs[\"merge_method\"] (merge|squash|rebase)"
+                    .to_string(),
+            );
+        };
+        let merge_method = match map_merge_method(&merge_method_str) {
+            Ok(m) => m,
+            Err(reason) => return ExecutionOutcome::Failed(format!("github.merge_pr: {reason}")),
+        };
+
+        let args = MergePrArgs {
+            owner,
+            repo,
+            pr_number,
+            sha,
+            merge_method,
+        };
+
+        // 3a (LESSON 46): drive the async client via the CAPTURED Handle's `block_on` + a hard timeout so
+        // an octocrab hang can never wedge the single write-actor.
+        let result = self.handle.block_on(async {
+            tokio::time::timeout(self.timeout, self.client.merge_pull_request(&args)).await
+        });
+        let merged = match result {
+            Err(_elapsed) => {
+                return ExecutionOutcome::Failed(
+                    "github.merge_pr timed out (structural)".to_string(),
+                )
+            }
+            Ok(Err(write_err)) => return self.classify_failure("github.merge_pr", write_err),
+            Ok(Ok(merged)) => merged,
+        };
+
+        // success — stamp `merged_at` via the injected Clock (UTC-Z; fail CLOSED on a malformed stamp).
+        // This is the DAEMON-clock observation time (when the daemon recorded the merge), NOT GitHub's
+        // authoritative server merge timestamp — octocrab's `Merge` response exposes only `sha`/`merged`,
+        // no `merged_at` (the `pr_checked_at` create_pr precedent). Close enough for the §11.2 PR card.
+        let merged_at = match Timestamp::parse(&self.clock.now_rfc3339()) {
+            Ok(ts) => ts,
+            Err(e) => return ExecutionOutcome::Failed(format!("invalid clock timestamp: {e}")),
+        };
+        let payload = PullRequestMerged {
+            pr_number,
+            merge_commit_sha: merged.merge_commit_sha,
+            merged_at,
+        };
+        let payload_json = match serde_json::to_string(&payload) {
+            Ok(j) => j,
+            Err(e) => return ExecutionOutcome::Failed(format!("serialize PullRequestMerged: {e}")),
+        };
+        ExecutionOutcome::Succeeded {
+            changed_resources: req.resource_refs.clone(),
+            detail: "github.merge_pr — merged a PR via octocrab".to_string(),
+            // a real merge was applied on GitHub BEFORE txn-B → a lost terminal write yields the honest
+            // ActionPartiallySucceeded (the merge happened; the event didn't commit), NOT a clean rollback.
+            side_effect_applied: true,
+            emitted_events: vec![EmittedEvent::Namespaced {
+                event_type: PullRequestMerged::EVENT_TYPE,
+                payload_json,
+            }],
+        }
+    }
 }
 
 impl ActionExecutor for GithubExecutor {
@@ -350,6 +455,7 @@ impl ActionExecutor for GithubExecutor {
             GITHUB_CREATE_PR => self.execute_create_pr(req, false),
             GITHUB_CREATE_PR_DRAFT => self.execute_create_pr(req, true),
             GITHUB_SYNC_REVIEWS => self.execute_sync_reviews(req),
+            GITHUB_MERGE_PR => self.execute_merge_pr(req),
             // any other Github-kind action delegates to the inner side-effect-free stub (no event).
             _ => self.inner.execute(req),
         }

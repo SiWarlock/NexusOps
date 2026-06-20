@@ -34,7 +34,8 @@ use rusqlite::{params, Transaction};
 
 use nexusops_shared::actions::{ResourceRef, ResourceType};
 use nexusops_shared::event_envelope::EventEnvelope;
-use nexusops_shared::events::PullRequestSynced;
+use nexusops_shared::events::{PullRequestMerged, PullRequestSynced};
+use nexusops_shared::status::PullRequest;
 
 use super::{wire_value, ProjectionError, Projector};
 
@@ -46,8 +47,10 @@ impl Projector for PullRequestProjector {
     }
 
     fn apply(&self, tx: &Transaction, env: &EventEnvelope) -> Result<(), ProjectionError> {
-        if env.event_type != PullRequestSynced::EVENT_TYPE {
-            // folds ONLY PullRequestSynced.
+        let is_synced = env.event_type == PullRequestSynced::EVENT_TYPE;
+        let is_merged = env.event_type == PullRequestMerged::EVENT_TYPE;
+        if !is_synced && !is_merged {
+            // folds ONLY PullRequestSynced (upsert) + PullRequestMerged (D9 — terminal Merged fold).
             return Ok(());
         }
         // identity-less → healthy skip: project_id is the envelope's; action_request_id is the link to
@@ -78,6 +81,26 @@ impl Projector for PullRequestProjector {
         else {
             return Ok(());
         };
+
+        // D9 — PullRequestMerged folds the EXISTING row's status → terminal `merged`. The status is
+        // derived from the EVENT TYPE (a constant `PullRequest::Merged`), NEVER the row's current value →
+        // rebuild-safe (LESSON 17 — proj_pull_request is in REBUILD_TABLES; on replay the prior
+        // PullRequestSynced creates the row before this UPDATE runs). Other columns (branch/base/diff-stats)
+        // are untouched; `updated_at_seq` advances. An UPDATE that hits 0 rows (a merge with no prior
+        // synced row) is a healthy no-op — the row materializes when the PR is synced.
+        if is_merged {
+            let payload: PullRequestMerged =
+                serde_json::from_str(&env.payload_json).map_err(|_| {
+                    ProjectionError::Decode("PullRequestMerged payload did not bind".into())
+                })?;
+            let pr_id = format!("{repo_id}#{}", payload.pr_number);
+            let merged_status = wire_value(&PullRequest::Merged)?;
+            tx.execute(
+                "UPDATE proj_pull_request SET status = ?1, updated_at_seq = ?2 WHERE pr_id = ?3",
+                params![merged_status, env.seq, pr_id],
+            )?;
+            return Ok(());
+        }
 
         // reject-unknown on the payload — the reason MUST NOT echo (possibly sensitive) payload bytes (§15).
         let payload: PullRequestSynced = serde_json::from_str(&env.payload_json).map_err(|_| {

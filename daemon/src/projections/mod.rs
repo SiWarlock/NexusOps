@@ -30,8 +30,8 @@ use serde::Serialize;
 
 use nexusops_shared::event_envelope::EventEnvelope;
 use nexusops_shared::events::{
-    PullRequestSynced, ReviewSynced, SessionFailed, SessionRecovered, TelemetrySampled,
-    WorktreeCreated,
+    PullRequestMerged, PullRequestSynced, ReviewSynced, SessionFailed, SessionRecovered,
+    TelemetrySampled, WorktreeCreated,
 };
 use nexusops_shared::ipc::{DeltaKind, ProjectionDelta, ProjectionName};
 
@@ -97,9 +97,9 @@ pub(crate) fn deltas_for_event(event_type: &str, ids: &EventDeltaIds) -> Vec<Pro
     if event_type == WorktreeCreated::EVENT_TYPE {
         out.push(upsert(ProjectionName::Worktree, ids.worktree_id.clone()));
     }
-    // PullRequest — the PullRequestProjector folds PullRequestSynced, keyed by pr_id (payload-derived;
-    // the `{repo_id}#{pr_number}` row PK).
-    if event_type == PullRequestSynced::EVENT_TYPE {
+    // PullRequest — the PullRequestProjector folds PullRequestSynced (upsert) + PullRequestMerged (D9 —
+    // terminal Merged fold), keyed by pr_id (payload-derived; the `{repo_id}#{pr_number}` row PK).
+    if event_type == PullRequestSynced::EVENT_TYPE || event_type == PullRequestMerged::EVENT_TYPE {
         out.push(upsert(ProjectionName::PullRequest, ids.pr_id.clone()));
     }
     // UsageLedger — the UsageProjector folds ONLY TelemetrySampled (id None; re-read the aggregate).

@@ -11,6 +11,12 @@ use nexusops_shared::catalog;
 /// stay governed by [`AgentMutationPolicy`] / the 043 interception). §15 #8.
 const SESSION_LIFECYCLE_TYPES: &[&str] = &["session.create", "session.kill"];
 
+/// D9/P4.7 (F2) — the GitHub-mutation action types that are **UI/human-initiated ONLY**: an
+/// agent / Brain / pack / system requester is DENIED before risk resolution (no agent/Brain may merge
+/// a PR — a remote-repo WRITE on the user's behalf is a human-only decision; the PIN-e session-lifecycle
+/// precedent generalized to github writes, §15 #8). D10 (`github.submit_review`) joins this set.
+const GITHUB_MUTATION_TYPES: &[&str] = &["github.merge_pr"];
+
 /// The risk-0 action types PERMITTED to auto-execute (PIN d — the lead-ruled EXPLICIT allowlist,
 /// belt-and-suspenders over the catalog + the LESSON 19 re-gate). A risk-0 type NOT here fails CLOSED
 /// (`RequireApproval`) at [`CatalogPolicy`], so a future risk-0 MUTATION can never silently
@@ -129,6 +135,20 @@ impl PolicyEngine for CatalogPolicy {
                 PolicyDecisionStatus::Deny,
                 format!(
                     "session-lifecycle '{}' is UI/IPC-initiated only — a {:?} requester is denied (§15 #8)",
+                    req.action_type, req.requester_type
+                ),
+            );
+        }
+        // D9/P4.7 (F2) — a github-mutation (github.merge_pr, …) is UI/human-initiated ONLY: an agent /
+        // Brain / pack / system requester is DENIED before any risk resolution (no agent/Brain PR merge;
+        // the PIN-e gate generalized to github writes, §15 #8 / USER-steer).
+        if GITHUB_MUTATION_TYPES.contains(&req.action_type.as_str())
+            && !is_ui_ipc_requester(req.requester_type)
+        {
+            return decision(
+                PolicyDecisionStatus::Deny,
+                format!(
+                    "github-mutation '{}' is UI/IPC-initiated only — a {:?} requester is denied (F2, §15 #8)",
                     req.action_type, req.requester_type
                 ),
             );

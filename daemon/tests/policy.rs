@@ -295,6 +295,45 @@ fn test_session_create_rejects_agent_brain_requester() {
     );
 }
 
+// ---- D9 (P4.7) — github.merge_pr is UI/IPC-requester-only (F2; cat-1) ----------------------------
+
+#[test]
+fn test_merge_pr_denied_for_non_ui_requester() {
+    // spec(§15 #8 / F2 — the PIN-e precedent generalized to github mutations) — github.merge_pr is a
+    // 🔴 cat-1 GitHub WRITE: it is UI/human-initiated ONLY. An AgentSession / ProjectBrain / WorkflowPack
+    // requester is DENIED *before* risk resolution — no agent/Brain may merge a PR (F2, USER-steered).
+    let policy = CatalogPolicy;
+    for requester in [
+        RequesterType::AgentSession,
+        RequesterType::ProjectBrain,
+        RequesterType::WorkflowPack,
+        RequesterType::SystemPolicy,
+    ] {
+        assert_eq!(
+            policy
+                .decide(&request_from("github.merge_pr", requester))
+                .status,
+            PolicyDecisionStatus::Deny,
+            "{requester:?} github.merge_pr is denied (UI/IPC-only, F2)"
+        );
+    }
+}
+
+#[test]
+fn test_merge_pr_require_approval_for_ui_requester() {
+    // spec(§6.2 risk-3 / F1) — a User (the desktop UI) requester is the permitted initiator → the merge
+    // routes to RequireApproval (risk-3: not auto-execute, not on the risk-0 allowlist) — NOT auto-allowed,
+    // NOT denied. (RemoteClient is the other UI/IPC requester; deferred surface.)
+    let policy = CatalogPolicy;
+    assert_eq!(
+        policy
+            .decide(&request_from("github.merge_pr", RequesterType::User))
+            .status,
+        PolicyDecisionStatus::RequireApproval,
+        "a User (UI/IPC) github.merge_pr → RequireApproval (risk-3, every merge a fresh approval)"
+    );
+}
+
 // =================================================================================================
 // L3 — the risk-0 `allow` auto-execute path (the FIRST no-human-approval execution path) + the
 // §11.5 approve-all critical-exclusion migrated onto the catalog-authoritative risk. INV-SEC-1.
@@ -778,6 +817,63 @@ fn test_standing_grant_eligible_field() {
             "{t} IS standing-grant-eligible (the normal tier)"
         );
     }
+}
+
+// ---- D9 (P4.7) — github.merge_pr is NEVER in an approve-all (F1; the discard_hunk precedent) ------
+
+#[test]
+fn test_merge_pr_never_in_approve_all() {
+    // spec(§6.2 / F1 / LESSON 32) — a plan-level approve-all can NEVER cover github.merge_pr: it is
+    // standing_grant_eligible=false → EXCLUDED from the bulk approval, getting its OWN per-step approval
+    // ALWAYS (every merge a fresh per-action human approval, USER-steered F1). A standing-grant-eligible
+    // step (git.stage_hunk) IS covered by the plan-level approve-all. Mirrors
+    // test_discard_hunk_non_standing_grantable — the exclusion keys off the catalog field, not risk-4.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = catalog_gateway();
+    let p = plan(
+        vec![
+            step(
+                "s1",
+                "git.stage_hunk",
+                RiskLevel::Level2,
+                serde_json::json!({}),
+            ),
+            step(
+                "s2",
+                "github.merge_pr",
+                RiskLevel::Level3,
+                serde_json::json!({}),
+            ),
+        ],
+        ApprovalMode::ApproveAll,
+    );
+    let plan_id = p.plan_id.as_str().to_string();
+    gw.submit_action_plan(&mut store, p).expect("submit plan");
+
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let plan_level: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM approvals WHERE action_request_id IS NULL AND plan_id = ?1",
+            [&plan_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        plan_level, 1,
+        "ONE plan-level approve-all over the standing-grant-eligible step (stage_hunk)"
+    );
+    let per_step: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM approvals WHERE action_request_id IS NOT NULL AND plan_id = ?1",
+            [&plan_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        per_step, 1,
+        "github.merge_pr gets its OWN per-step approval — NEVER folded into approve-all (F1)"
+    );
 }
 
 // ---- 052 #4 — git.discard_hunk preview_class=diff (the destructive-action preview) ---------------

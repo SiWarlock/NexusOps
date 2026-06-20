@@ -1532,8 +1532,8 @@ fn test_action_type_catalog_covers_mvp_set() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        30,
-        "the §6.3 MVP set is 30 types (29 + github.merge_pr, D9)"
+        31,
+        "the §6.3 MVP set is 31 types (30 + github.submit_review, D10)"
     );
     for at in MVP_ACTION_TYPES {
         let e = lookup(at).unwrap_or_else(|| panic!("catalog missing the MVP type {at}"));
@@ -1864,6 +1864,36 @@ fn test_catalog_merge_pr_entry() {
     );
 }
 
+// ---- D10 (P4.7) — the github.submit_review cat-1 catalog entry (risk-3, NON-standing-grantable) ----
+
+#[test]
+fn test_catalog_submit_review_entry() {
+    // spec(§6.3 / F1 / LESSON 32) — D10: github.submit_review is a 🔴 cat-1 GitHub WRITE (a review verdict
+    // submit). Gated IDENTICALLY to the D9 merge: risk-3 + Github + requires_resource_refs + params_schema
+    // + **standing_grant_eligible=false** (F1 — every submit a fresh per-action approval; an `approve`
+    // carries merge-gate power, so the §6.2 floor applies — NOT inferred from risk, LESSON 32). MVP 30→31.
+    use nexusops_shared::actions::RiskLevel;
+    use nexusops_shared::catalog::{lookup, ExecutorKind, IdempotencyFormula, MVP_ACTION_TYPES};
+
+    assert!(
+        MVP_ACTION_TYPES.contains(&"github.submit_review"),
+        "github.submit_review is in the MVP set"
+    );
+    let e = lookup("github.submit_review").expect("github.submit_review catalogued");
+    assert_eq!(e.locked_risk, RiskLevel::Level3, "a github WRITE → risk-3");
+    assert_eq!(e.executor, ExecutorKind::Github);
+    assert!(
+        e.requires_resource_refs,
+        "requires a Repo resource_ref (the audit/policy identity)"
+    );
+    assert!(e.params_schema_present);
+    assert_eq!(e.idempotency_formula, IdempotencyFormula::FromInputs);
+    assert!(
+        !e.standing_grant_eligible,
+        "github.submit_review is NON-standing-grantable (F1: every submit a fresh per-action approval)"
+    );
+}
+
 // ---- 043 L1 RED #3 — the agent-mutation family snapshot (§2.5-seam: the catalog is line-138) ----
 
 #[test]
@@ -1878,8 +1908,8 @@ fn test_agent_mutation_family_snapshot_spec_6_3() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        30,
-        "the human-facing §6.3 MVP set is 30 — the agent family stays a separate machine-internal const"
+        31,
+        "the human-facing §6.3 MVP set is 31 — the agent family stays a separate machine-internal const"
     );
     assert_eq!(
         AGENT_MUTATION_ACTION_TYPES.len(),
@@ -3066,14 +3096,14 @@ fn test_review_row_rejects_unknown_field() {
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_41_0() {
+fn test_contract_version_bumped_0_42_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.38.0 = the
-    // D5b-2 `github.sync_reviews` catalog action; 0.39.0 = the D6 PR-card diff-stats enrichment; 0.40.0 =
-    // the D7 `get_pr_diff` §6.1 read RPC; **0.41.0** = the D9 cat-1 `github.merge_pr` mutation surface (the
-    // §6.3 catalog entry [risk-3, NON-standing-grantable] + the §7.1 `PullRequestMerged` event). Additive,
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.39.0 = the
+    // D6 PR-card diff-stats; 0.40.0 = the D7 `get_pr_diff` read RPC; 0.41.0 = the D9 cat-1 `github.merge_pr`
+    // (catalog + PullRequestMerged); **0.42.0** = the D10 cat-1 `github.submit_review` mutation surface (the
+    // §6.3 catalog entry [risk-3, NON-standing-grantable] + the §7.1 `ReviewSubmitted` event). Additive,
     // no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.41.0");
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.42.0");
 }
 
 // =================================================================================================
@@ -3160,6 +3190,48 @@ fn test_pull_request_merged_field_names_snapshot() {
     assert_eq!(PullRequestMerged::EVENT_TYPE, "PullRequestMerged");
     // round-trips + reject-unknown (deny_unknown_fields, §5.0/§15).
     assert_rejects_unknown(&sample_pull_request_merged(), "PullRequestMerged");
+}
+
+fn sample_review_submitted() -> nexusops_shared::events::ReviewSubmitted {
+    use nexusops_shared::events::ReviewSubmitted;
+    use nexusops_shared::status::ReviewState;
+    use nexusops_shared::time::Timestamp;
+    ReviewSubmitted {
+        review_id: 9100,
+        pr_number: 42,
+        reviewer: "octocat".to_string(),
+        state: ReviewState::ChangesRequested,
+        body: Some("Please address the inline notes.".to_string()),
+        submitted_at: Some(Timestamp::parse("2026-06-20T00:00:00Z").unwrap()),
+        commit_id: Some("9fceb02d0ae598e95dc970b74767f19372d61af8".to_string()),
+    }
+}
+
+// ---- D10 (P4.7) RED #2 — the ReviewSubmitted event payload (§7.1/§2.5-seam) ----
+
+#[test]
+fn test_review_submitted_field_names_snapshot() {
+    // spec(§7.1 / §2.5-seam / LESSON 15/54) — D10: the cat-1 review-submit OBSERVATION event the gateway
+    // emits on a successful github.submit_review + the ReviewProjector folds → proj_review (upsert by
+    // review_id). The §2.5-seam field-name FREEZE: {review_id, pr_number, reviewer, state, body,
+    // submitted_at, commit_id}. Reuses the frozen `ReviewState` value enum; `body` rides the §15 redaction
+    // gate (the ReviewSynced precedent); `commit_id` = the reviewed head SHA (audit-integrity). The write
+    // counterpart to ReviewSynced (the D9 PullRequestMerged-not-reuse-PullRequestSynced precedent).
+    use nexusops_shared::events::ReviewSubmitted;
+    expect_fields(
+        &sample_review_submitted(),
+        &[
+            "review_id",
+            "pr_number",
+            "reviewer",
+            "state",
+            "body",
+            "submitted_at",
+            "commit_id",
+        ],
+    );
+    assert_eq!(ReviewSubmitted::EVENT_TYPE, "ReviewSubmitted");
+    assert_rejects_unknown(&sample_review_submitted(), "ReviewSubmitted");
 }
 
 // ---- R1b RED #1 — ProjectRescanned (§7.1/§2.5-seam) ----

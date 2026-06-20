@@ -542,6 +542,37 @@ impl ReviewSynced {
     pub const EVENT_TYPE: &'static str = "ReviewSynced";
 }
 
+/// `ReviewSubmitted` payload (§7.1; D10/P4.7 — the cat-1 `github.submit_review` mutation). The WRITE
+/// counterpart to [`ReviewSynced`] (a *read* sync): emitted by the `GithubExecutor`'s submit arm on a
+/// successful octocrab `create_review` (SHA-pinned to the reviewed head via `commit_id`); the
+/// `ReviewProjector` folds it → `proj_review` (upsert by `review_id`, identical to the `ReviewSynced`
+/// fold). A NEW event, NOT a `ReviewSynced` reuse — "the user SUBMITTED this verdict" ≠ "we synced an
+/// existing review" (the D9 `PullRequestMerged`-not-`PullRequestSynced` audit-semantics precedent). The
+/// review/repo IDENTITY is on the envelope + the action's Repo `resource_ref`; `pr_number` echoes the
+/// reviewed PR. `state` reuses the frozen [`ReviewState`] value enum. `body` is FREE-FORM user review
+/// text — §15-redacted at persist like every payload (the `ReviewSynced.body` precedent). `commit_id` =
+/// the reviewed head SHA (audit-integrity). Optionals serialize as explicit `null` (no
+/// `skip_serializing_if`) for a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ReviewSubmitted {
+    /// the GitHub-native review id from the create-response (the proj_review PK).
+    pub review_id: u64,
+    /// the PR this review was submitted to (GitHub-native PR number; a display column on the row).
+    pub pr_number: u64,
+    pub reviewer: String,
+    pub state: ReviewState,
+    pub body: Option<String>,
+    pub submitted_at: Option<Timestamp>,
+    /// the reviewed head SHA the verdict is pinned to (audit-integrity; None only pre-pin).
+    pub commit_id: Option<String>,
+}
+
+impl ReviewSubmitted {
+    /// The EventTypeRegistry name — ONE home (the D10 `github.submit_review` emit path + `proj_review`).
+    pub const EVENT_TYPE: &'static str = "ReviewSubmitted";
+}
+
 /// `IntegrationConnectionRegistered` payload (§7.1; P7.1 — from connecting GitHub/Linear). Feeds a
 /// private `integration_connections` registry. `connection_id` is an edges-private id (NOT a frozen-22
 /// `IdKind` — the `terminal_id`/`out_` bare-String precedent). **§15 rule #4 — load-bearing:**

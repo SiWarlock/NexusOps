@@ -23,9 +23,10 @@ use crate::events::{
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
     AuditIntegrityViolation, BranchCreated, DeviceRegistered, GithubSyncFailed,
     IntegrationConnectionRegistered, LinearSyncFailed, LocalRunnerRegistered, ProjectRescanned,
-    Provider, PullRequestMerged, PullRequestSynced, ReviewSynced, SensitiveOutputRedacted,
-    SessionFailed, SessionRecovered, SessionStarted, TelemetrySampled, TerminalProcessExited,
-    WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged, WorktreePrunable,
+    Provider, PullRequestMerged, PullRequestSynced, ReviewSubmitted, ReviewSynced,
+    SensitiveOutputRedacted, SessionFailed, SessionRecovered, SessionStarted, TelemetrySampled,
+    TerminalProcessExited, WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged,
+    WorktreePrunable,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::harness::{
@@ -240,6 +241,11 @@ struct ContractBundle {
     // (the gateway emits it on a successful merge; the PullRequestProjector folds → terminal Merged). The
     // catalog entry rides the existing ActionTypeCatalogEntry registration. Additive (shared/src/events.rs).
     pull_request_merged: PullRequestMerged,
+    // D10/P4.7 (CONTRACT 0.42.0) — the cat-1 github.submit_review mutation's OBSERVATION event:
+    // ReviewSubmitted (the gateway emits it on a successful review-submit; the ReviewProjector folds →
+    // proj_review). Reuses the frozen ReviewState; the catalog entry rides the existing
+    // ActionTypeCatalogEntry registration. Additive (shared/src/events.rs).
+    review_submitted: ReviewSubmitted,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

@@ -181,4 +181,11 @@ pub mod time;
 /// emitted by the gateway on a successful merge; the `PullRequestProjector` folds it → terminal `Merged`).
 /// The F2 UI/IPC-only requester gate is a daemon policy concern (no `shared/` surface). Additive, no
 /// frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.41.0";
+/// 0.42.0 (D10/P4.7) adds the cat-1 `github.submit_review` mutation surface: the §6.3 catalog entry (risk-3,
+/// `ExecutorKind::Github`, FromInputs, requires_resource_refs, **NON-standing-grantable** — F1; MVP set
+/// 30→31) + the §7.1 `ReviewSubmitted` OBSERVATION event (`{review_id, pr_number, reviewer, state, body?,
+/// submitted_at?, commit_id?}`, the WRITE counterpart to `ReviewSynced`, reusing the frozen `ReviewState`;
+/// emitted by the gateway on a successful review-submit; the `ReviewProjector` folds it → `proj_review`).
+/// The F2 UI/IPC-only requester gate extends the D9 daemon-policy const (no `shared/` surface). Additive,
+/// no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.42.0";

@@ -1850,6 +1850,33 @@
       ],
       "type": "string"
     },
+    "PullRequestMerged": {
+      "additionalProperties": false,
+      "description": "`PullRequestMerged` payload (§7.1; D9/P4.7 — the cat-1 `github.merge_pr` mutation). Emitted by the\n`GithubExecutor`'s merge arm on a SUCCESSFUL octocrab `pulls().merge()` (SHA-pinned to the approved\nhead); the `PullRequestProjector` folds it → terminal `Merged` (§5.1) on the `proj_pull_request` row.\nThe PR/repo IDENTITY is on the [`crate::event_envelope::EventEnvelope`] columns + the action's Repo\n`resource_ref` (the projector's repo_id sibling-read); `pr_number` is the GitHub-native PR id echoed\nfrom the merge inputs (the projector keys the `{repo_id}#{pr_number}` row). `merge_commit_sha` is the\nresulting merge-commit SHA (None if the API omitted it). Optionals serialize as explicit `null` (no\n`skip_serializing_if`) for a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).",
+      "properties": {
+        "merge_commit_sha": {
+          "description": "the resulting merge-commit SHA (None when the API response omitted it).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merged_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "pr_number": {
+          "description": "the GitHub-native PR number merged (echoed from the merge inputs; a non-negative external natural).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pr_number",
+        "merged_at"
+      ],
+      "type": "object"
+    },
     "PullRequestRow": {
       "additionalProperties": false,
       "description": "One row of the `proj_pull_request` read model (§7.2 / §11.2) — the GitHub-authoritative PR cache the\nui PR Review Workspace renders. The 2nd frozen projection-row (after [`ApprovalQueueRow`], P7.2). The\nBASIC columns the edges-P7.1 `PullRequestProjector` folds: `status` is the frozen §5.1 [`PullRequest`]\nenum (reject-unknown — no loose status string). `mergeable`/`checks_summary` are the **D5a enrichment**\n(the basic-now + SPREAD consumed) — folded from `PullRequestSynced.mergeable?`/`checks_summary?` into\nthe 2 columns the row now carries (`mergeable` is the FIRST bool projection column → stored as a SQLite\nINTEGER 0/1; the daemon read layer coerces it to this JSON bool, so the contract stays a pure\n`Option<bool>`). The internal `updated_at_seq` is NOT a wire field. **Nullability matches the DDL**\n(a display read model tolerates a NULL over failing the whole typed serve closed — contrast the\nsafety-critical `ApprovalQueueRow`): `pr_id` (PK) + `status` (NOT NULL) are non-Option; the rest are\n`Option`. `pr_number` is the GitHub-native PR number (a non-negative external natural → `u64`, a\nbounded integer in schemars — LESSON §15 trap 2). Optionals serialize as explicit `null` (no\n`skip_serializing_if`) so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
@@ -3271,6 +3298,9 @@
     "pull_request": {
       "$ref": "#/$defs/PullRequest"
     },
+    "pull_request_merged": {
+      "$ref": "#/$defs/PullRequestMerged"
+    },
     "pull_request_row": {
       "$ref": "#/$defs/PullRequestRow"
     },
@@ -3539,9 +3569,10 @@
     "session_row",
     "review_synced",
     "review_state",
-    "review_row"
+    "review_row",
+    "pull_request_merged"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.40.0"
+  "x-contract-version": "0.41.0"
 }

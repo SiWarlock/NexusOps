@@ -23,9 +23,9 @@ use crate::events::{
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
     AuditIntegrityViolation, BranchCreated, DeviceRegistered, GithubSyncFailed,
     IntegrationConnectionRegistered, LinearSyncFailed, LocalRunnerRegistered, ProjectRescanned,
-    Provider, PullRequestSynced, ReviewSynced, SensitiveOutputRedacted, SessionFailed,
-    SessionRecovered, SessionStarted, TelemetrySampled, TerminalProcessExited, WorktreeCreated,
-    WorktreeDeleted, WorktreeLocked, WorktreeMerged, WorktreePrunable,
+    Provider, PullRequestMerged, PullRequestSynced, ReviewSynced, SensitiveOutputRedacted,
+    SessionFailed, SessionRecovered, SessionStarted, TelemetrySampled, TerminalProcessExited,
+    WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged, WorktreePrunable,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::harness::{
@@ -35,9 +35,9 @@ use crate::harness::{
 use crate::ids::IdKind;
 use crate::ipc::{
     ActionAck, Capabilities, DeltaKind, DiffLine, DiffLineKind, DiffResult, GetDiffParams,
-    GetPrDiffParams, GetProjectionParams, HelloAck, HelloFrame, Hunk, IpcErrorCode, PlanAck, PlanStepAck,
-    ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, RpcResponse, ServerFrame,
-    SubscribeParams, TerminalControlFrame, TerminalControlKind, TerminalInputFrame,
+    GetPrDiffParams, GetProjectionParams, HelloAck, HelloFrame, Hunk, IpcErrorCode, PlanAck,
+    PlanStepAck, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, RpcResponse,
+    ServerFrame, SubscribeParams, TerminalControlFrame, TerminalControlKind, TerminalInputFrame,
     TerminalOutputFrame, VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
@@ -236,6 +236,10 @@ struct ContractBundle {
     review_synced: ReviewSynced,
     review_state: ReviewState,
     review_row: ReviewRow,
+    // D9/P4.7 (CONTRACT 0.41.0) — the cat-1 github.merge_pr mutation's OBSERVATION event: PullRequestMerged
+    // (the gateway emits it on a successful merge; the PullRequestProjector folds → terminal Merged). The
+    // catalog entry rides the existing ActionTypeCatalogEntry registration. Additive (shared/src/events.rs).
+    pull_request_merged: PullRequestMerged,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

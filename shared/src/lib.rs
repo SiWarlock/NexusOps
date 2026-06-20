@@ -175,4 +175,10 @@ pub mod time;
 /// (`{repo_id, pr_number, file?}`) for the §11.2 Review-tab remote-PR code-diff (head-vs-base);
 /// `DiffResult`/`Hunk`/`DiffLine` are REUSED (no new result shape). The first network read in the IPC
 /// read layer (an `Arc<dyn GithubReadClient>` threaded into the dispatch). Additive (§5.0).
-pub const CONTRACT_VERSION: &str = "0.40.0";
+/// 0.41.0 (D9/P4.7) adds the cat-1 `github.merge_pr` mutation surface: the §6.3 catalog entry (risk-3,
+/// `ExecutorKind::Github`, FromInputs, requires_resource_refs, **NON-standing-grantable** — F1; MVP set
+/// 29→30) + the §7.1 `PullRequestMerged` OBSERVATION event (`{pr_number, merge_commit_sha?, merged_at}`,
+/// emitted by the gateway on a successful merge; the `PullRequestProjector` folds it → terminal `Merged`).
+/// The F2 UI/IPC-only requester gate is a daemon policy concern (no `shared/` surface). Additive, no
+/// frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.41.0";

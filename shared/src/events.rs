@@ -494,6 +494,29 @@ impl PullRequestSynced {
     pub const EVENT_TYPE: &'static str = "PullRequestSynced";
 }
 
+/// `PullRequestMerged` payload (§7.1; D9/P4.7 — the cat-1 `github.merge_pr` mutation). Emitted by the
+/// `GithubExecutor`'s merge arm on a SUCCESSFUL octocrab `pulls().merge()` (SHA-pinned to the approved
+/// head); the `PullRequestProjector` folds it → terminal `Merged` (§5.1) on the `proj_pull_request` row.
+/// The PR/repo IDENTITY is on the [`crate::event_envelope::EventEnvelope`] columns + the action's Repo
+/// `resource_ref` (the projector's repo_id sibling-read); `pr_number` is the GitHub-native PR id echoed
+/// from the merge inputs (the projector keys the `{repo_id}#{pr_number}` row). `merge_commit_sha` is the
+/// resulting merge-commit SHA (None if the API omitted it). Optionals serialize as explicit `null` (no
+/// `skip_serializing_if`) for a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct PullRequestMerged {
+    /// the GitHub-native PR number merged (echoed from the merge inputs; a non-negative external natural).
+    pub pr_number: u64,
+    /// the resulting merge-commit SHA (None when the API response omitted it).
+    pub merge_commit_sha: Option<String>,
+    pub merged_at: Timestamp,
+}
+
+impl PullRequestMerged {
+    /// The EventTypeRegistry name — ONE home (the D9 `github.merge_pr` emit path + `proj_pull_request`).
+    pub const EVENT_TYPE: &'static str = "PullRequestMerged";
+}
+
 /// `ReviewSynced` payload (§7.1; D5b-1 — the structured-review vertical). Feeds `proj_review` (§7.2 — the
 /// per-review read model the §11.2 PR Review Workspace renders). `review_id`/`pr_number` are GitHub-native
 /// externals (non-negative naturals → `u64`, not frozen-22 IDs). `state` is the frozen [`ReviewState`]

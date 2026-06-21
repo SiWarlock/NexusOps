@@ -6,11 +6,14 @@
 //! `linear` issue-state derivation (edges-013 — `WorkflowState.type` → §5.1 `Task`). The `github`/
 //! Linear executor arms + auth bootstrap + the §17 `SyncFailed`/`auth_expired` wiring are gated/later.
 
+pub mod auth;
 pub mod classifier;
 pub mod connect;
+pub mod connections;
 pub mod executor;
 pub mod github;
 pub mod github_write;
+pub mod keychain;
 pub mod linear;
 pub mod linear_write;
 pub mod pull_request;

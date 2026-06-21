@@ -40,6 +40,7 @@ use nexusopsd::integrations::executor::GithubExecutor;
 use nexusopsd::integrations::github_write::{
     map_merge_method, FakeGithubWriteClient, GithubWriteError, MergePrArgs, MergedPr,
 };
+use nexusopsd::integrations::repo_resolve::FakeRepoResolver;
 use octocrab::params::pulls::MergeMethod;
 
 const FIXED_TS: &str = "2026-06-20T00:00:00Z";
@@ -111,8 +112,23 @@ fn default_merge_req() -> ActionRequest {
 
 /// Build a `GithubExecutor` over a `FakeGithubWriteClient::merged(canned)` + the recorded merge-calls
 /// handle. The `Runtime` is returned so it outlives the captured `Handle` (the executor's block_on source).
+/// P4.7 — the resolver returns the canonical (acme, widget) for the audited repo_id (the resource_ref
+/// repo_id → owner/repo resolution that REPLACES the literal inputs["owner"/"repo"] reads).
 fn merged_executor(
     canned: MergedPr,
+) -> (
+    tokio::runtime::Runtime,
+    GithubExecutor,
+    Arc<Mutex<Vec<MergePrArgs>>>,
+) {
+    merged_executor_with_resolver(canned, FakeRepoResolver::ok("acme", "widget"))
+}
+
+/// P4.7 — like [`merged_executor`] but with an explicit resolver (the resolve / ignore-divergent /
+/// fail-closed behavior tests inject a specific one).
+fn merged_executor_with_resolver(
+    canned: MergedPr,
+    resolver: FakeRepoResolver,
 ) -> (
     tokio::runtime::Runtime,
     GithubExecutor,
@@ -125,6 +141,7 @@ fn merged_executor(
         Box::new(fake),
         rt.handle().clone(),
         Box::new(FixedClock::new(FIXED_TS)),
+        Box::new(resolver),
     );
     (rt, exec, calls)
 }
@@ -136,6 +153,7 @@ fn merge_err_executor(error: GithubWriteError) -> (tokio::runtime::Runtime, Gith
         Box::new(FakeGithubWriteClient::merge_err(error)),
         rt.handle().clone(),
         Box::new(FixedClock::new(FIXED_TS)),
+        Box::new(FakeRepoResolver::ok("acme", "widget")),
     );
     (rt, exec)
 }
@@ -236,14 +254,12 @@ fn test_merge_pr_success_emits_pull_request_merged() {
 
 #[test]
 fn test_merge_pr_missing_operand_fails_closed() {
-    // spec(LESSON 31 analog) — a blank/absent required operand (owner/repo/pr_number/sha/merge_method) →
-    // Failed BEFORE the network call (octocrab is a typed API; the analog is fail-closed non-empty/typed
-    // validation of EVERY required operand). pr_number=0 is rejected (a GitHub PR number is >= 1).
+    // spec(LESSON 31 analog) — a blank/absent required OPERAND (pr_number/sha/merge_method) → Failed
+    // BEFORE the network call (octocrab is a typed API; the analog is fail-closed non-empty/typed
+    // validation of EVERY required operand). pr_number=0 is rejected (a GitHub PR number is >= 1). P4.7:
+    // owner/repo are NO LONGER inputs operands — they're resolved from the audited repo_id (a blank inputs
+    // owner/repo is ignored), so those cases are dropped here (the resolve/fail-closed paths are below).
     let blanks: &[serde_json::Value] = &[
-        serde_json::json!({ "repo": "w", "pr_number": 55, "sha": "s", "merge_method": "merge" }), // no owner
-        serde_json::json!({ "owner": "  ", "repo": "w", "pr_number": 55, "sha": "s", "merge_method": "merge" }), // blank owner
-        serde_json::json!({ "owner": "a", "pr_number": 55, "sha": "s", "merge_method": "merge" }), // no repo
-        serde_json::json!({ "owner": "a", "repo": "  ", "pr_number": 55, "sha": "s", "merge_method": "merge" }), // blank repo
         serde_json::json!({ "owner": "a", "repo": "w", "sha": "s", "merge_method": "merge" }), // no pr_number
         serde_json::json!({ "owner": "a", "repo": "w", "pr_number": 0, "sha": "s", "merge_method": "merge" }), // pr_number=0
         serde_json::json!({ "owner": "a", "repo": "w", "pr_number": 55, "merge_method": "merge" }), // no sha
@@ -322,6 +338,7 @@ fn test_merge_pr_timeout_is_structural_failure() {
         Box::new(FakeGithubWriteClient::merge_hanging()),
         rt.handle().clone(),
         Box::new(FixedClock::new(FIXED_TS)),
+        Box::new(FakeRepoResolver::ok("acme", "widget")),
         Duration::from_millis(50),
     );
     match exec.execute(&default_merge_req()) {
@@ -411,6 +428,7 @@ fn test_merge_pr_txnb_fault_is_partially_succeeded() {
             })),
             rt.handle().clone(),
             Box::new(FixedClock::new(FIXED_TS)),
+            Box::new(FakeRepoResolver::ok("acme", "widget")),
         )),
     );
     let gw = Gateway::new(Box::new(CatalogPolicy), Box::new(catalog));
@@ -509,5 +527,144 @@ fn d9_d10_executors_unchanged() {
     assert!(
         src.contains("\"commit_id\": args.commit_id"),
         "D10 still pins the live review verdict to the requester-supplied commit_id (safety (b))"
+    );
+}
+
+// =============================================================================
+// P4.7 — confused-deputy closure (merge_pr): owner/repo resolved from the AUDITED
+// resource_ref repo_id (not attacker-controllable inputs). security-reviewer `invariant`.
+// =============================================================================
+
+/// a merge req whose inputs["owner"/"repo"] DIVERGE from the audited resource_ref repo_id — the
+/// confused-deputy vector. The resolved (audited) target must win; these inputs must be IGNORED.
+fn merge_req_divergent_inputs() -> ActionRequest {
+    // resource_ref repo_id = repo_x (audited); inputs point at an ATTACKER repo.
+    merge_pr_req(
+        "attacker",
+        "evil",
+        55,
+        "9fceb02d0ae598e95dc970b74767f19372d61af8",
+        "squash",
+    )
+}
+
+#[test]
+fn merge_pr_resolves_owner_repo_from_repo_id() {
+    // spec(P4.7 (b) — mirror D7): with a resolvable repo_id, the merge targets the RESOLVED owner/repo,
+    // not the inputs. The resolver returns DISTINCT values (rowner/rrepo, NOT the inputs' acme/widget) so
+    // the assertion proves the call came from RESOLUTION, not the literal inputs.
+    let (_rt, exec, calls) = merged_executor_with_resolver(
+        MergedPr {
+            merge_commit_sha: Some("abc".to_string()),
+        },
+        FakeRepoResolver::ok("rowner", "rrepo"),
+    );
+    let outcome = exec.execute(&default_merge_req());
+    assert!(
+        matches!(outcome, ExecutionOutcome::Succeeded { .. }),
+        "a resolvable repo_id → the merge proceeds"
+    );
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].owner, "rowner",
+        "owner is the RESOLVED value (repo_id→owner/repo), not inputs"
+    );
+    assert_eq!(
+        calls[0].repo, "rrepo",
+        "repo is the RESOLVED value, not inputs"
+    );
+}
+
+#[test]
+fn merge_pr_ignores_divergent_inputs_owner_repo() {
+    // spec(P4.7 (c) — audited==executed): inputs["owner"/"repo"] pointing at an ATTACKER repo are
+    // IGNORED; the merge targets the resolved (audited) acme/widget — the confused-deputy is closed.
+    let (_rt, exec, calls) = merged_executor_with_resolver(
+        MergedPr {
+            merge_commit_sha: Some("abc".to_string()),
+        },
+        FakeRepoResolver::ok("acme", "widget"),
+    );
+    let _ = exec.execute(&merge_req_divergent_inputs());
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].owner, "acme",
+        "divergent inputs[\"owner\"]=attacker is IGNORED — the resolved audited owner wins"
+    );
+    assert_eq!(
+        calls[0].repo, "widget",
+        "divergent inputs[\"repo\"]=evil is IGNORED — the resolved audited repo wins"
+    );
+}
+
+#[test]
+fn merge_pr_fails_closed_on_unresolvable_repo_id() {
+    // spec(P4.7 (b) fail-closed): an unresolvable repo_id (no PR row / no remote_url / unparseable URL)
+    // → Failed (structural reason) BEFORE the network call — the merge client is NEVER invoked.
+    let (_rt, exec, calls) = merged_executor_with_resolver(
+        MergedPr {
+            merge_commit_sha: Some("abc".to_string()),
+        },
+        FakeRepoResolver::not_found(),
+    );
+    match exec.execute(&default_merge_req()) {
+        ExecutionOutcome::Failed(_) => {}
+        _ => panic!("expected Failed on an unresolvable repo_id"),
+    }
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        0,
+        "fail-closed BEFORE the network call — no merge attempted on an unresolvable target"
+    );
+}
+
+#[test]
+fn merge_pr_fails_closed_on_non_repo_resource_ref() {
+    // spec(P4.7 (a) — repo_ref_id type-discriminator): a resource_ref that is PRESENT but NOT a Repo
+    // (passes the catalog's non-empty-refs precondition) yields no audited repo_id → Failed BEFORE the
+    // network call (no merge). Pins the `.find(resource_type == Repo)` discriminator, not just empty-refs.
+    let (_rt, exec, calls) = merged_executor_with_resolver(
+        MergedPr {
+            merge_commit_sha: Some("abc".to_string()),
+        },
+        FakeRepoResolver::ok("rowner", "rrepo"),
+    );
+    let mut req = default_merge_req();
+    req.resource_refs = vec![ResourceRef {
+        resource_type: ResourceType::Session, // present, but NOT a Repo identity
+        id: "sess_x".to_string(),
+        uri: None,
+    }];
+    match exec.execute(&req) {
+        ExecutionOutcome::Failed(_) => {}
+        _ => panic!("expected Failed when no Repo resource_ref is present"),
+    }
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        0,
+        "fail-closed: a non-Repo resource_ref yields no audited target — no merge attempted"
+    );
+}
+
+#[test]
+fn no_literal_owner_repo_read_in_any_github_write_arm() {
+    // spec(P4.7 (a) — structural, ALL 4 sites): none of the 4 github-write executor arms reads a literal
+    // inputs["owner"]/inputs["repo"] for the target — the target is resolved from the audited identity at
+    // every site (the test_live_session_create_has_interception source-grep precedent). A reintroduced
+    // literal read would reopen the confused-deputy → this guard fails.
+    let exec_src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/integrations/executor.rs"
+    ))
+    .expect("executor.rs present");
+    assert!(
+        !exec_src.contains("string_input(req, \"owner\")"),
+        "no github-write arm may read a literal inputs[\"owner\"] for the target (resolve from repo_id)"
+    );
+    assert!(
+        !exec_src.contains("string_input(req, \"repo\")"),
+        "no github-write arm may read a literal inputs[\"repo\"] for the target (resolve from repo_id)"
     );
 }

@@ -290,6 +290,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             Box::new(OctocrabGithubWriteClient::new(octocrab::Octocrab::default())),
             tokio::runtime::Handle::current(),
             Box::new(SystemClock),
+            // P4.7 — resolve owner/repo from the AUDITED resource_ref repo_id / envelope project_id over a
+            // read-only WAL conn (the confused-deputy closure; never inputs["owner"/"repo"]).
+            Box::new(nexusopsd::integrations::repo_resolve::DbRepoResolver::new(
+                base_dir.join(DB_FILENAME),
+            )),
         )),
     );
     // P7.1 (edges-024) — linear.link_issue/create_issue via the Linear GraphQL write client. Same 3a

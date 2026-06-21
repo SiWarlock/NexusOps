@@ -824,69 +824,21 @@ pub fn read_pr_diff(
     Ok(crate::git::parse_unified_diff(&diff_text, file))
 }
 
-/// Resolve `(repo_id, pr_number)` → the GitHub `(owner, repo)` over a READ-ONLY WAL conn: the EXACT PR
-/// row (`proj_pull_request WHERE repo_id=? AND pr_number=?`) → its `project_id` → `proj_repository`'s
-/// `remote_url` → parsed owner/repo. Any missing link or an unparseable URL → [`IpcErrorCode::NotFound`]
-/// (the `get_diff`-unpopulated precedent). NB: `repo_id` is not first-class in `proj_repository` (keyed
-/// by `project_id`) — a direct `repo_id → owner/repo` projection link is a future-TODO (Step-9).
+/// Resolve `(repo_id, pr_number)` → the GitHub `(owner, repo)` for the D7 read path. A thin wrapper over
+/// the SHARED [`crate::integrations::repo_resolve`] authority (P4.7 extraction — the github-write executors
+/// resolve their target through the SAME helper, so audited==executed everywhere; no divergent copy).
+/// Maps the neutral [`RepoResolveError`] → the ipc [`IpcErrorCode`] (NotFound→NotFound, Internal→Internal)
+/// — D7 behavior byte-unchanged (the `get_diff`-unpopulated precedent).
 fn resolve_pr_owner_repo(
     db_path: &Path,
     repo_id: &str,
     pr_number: u64,
 ) -> Result<(String, String), IpcErrorCode> {
-    use rusqlite::OptionalExtension as _;
-    let conn =
-        crate::eventstore::open_read_only(db_path).map_err(|_| IpcErrorCode::InternalError)?;
-    // pr_number is `u64` on the wire but stored as a SQLite INTEGER (i64). A value above i64::MAX can't
-    // be a real GitHub PR number → it matches no row → NotFound (fail-fast, never a silent wrap).
-    let pr_number = i64::try_from(pr_number).map_err(|_| IpcErrorCode::NotFound)?;
-    let project_id: Option<String> = conn
-        .query_row(
-            "SELECT project_id FROM proj_pull_request WHERE repo_id = ?1 AND pr_number = ?2",
-            rusqlite::params![repo_id, pr_number],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|_| IpcErrorCode::InternalError)?;
-    let Some(project_id) = project_id else {
-        return Err(IpcErrorCode::NotFound);
-    };
-    let remote_url: Option<String> = conn
-        .query_row(
-            "SELECT remote_url FROM proj_repository WHERE project_id = ?1",
-            [&project_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|_| IpcErrorCode::InternalError)?;
-    let Some(remote_url) = remote_url else {
-        return Err(IpcErrorCode::NotFound);
-    };
-    parse_owner_repo(&remote_url).ok_or(IpcErrorCode::NotFound)
-}
-
-/// Parse a GitHub `(owner, repo)` from a git `remote_url` — `https://[user:tok@]github.com/owner/repo[.git]`
-/// (the `user:token@` userinfo STRIPPED, LESSON §44) OR scp-style `git@github.com:owner/repo[.git]`. The
-/// `.git` suffix + any trailing path are dropped. Returns `None` for an unrecognizable URL (→ NotFound).
-fn parse_owner_repo(remote_url: &str) -> Option<(String, String)> {
-    let path = if let Some(after_scheme) = remote_url.split_once("://").map(|(_, r)| r) {
-        // https://[userinfo@]host/owner/repo… → strip the userinfo, then drop the host segment.
-        let host_and_path = after_scheme
-            .split_once('@')
-            .map_or(after_scheme, |(_, r)| r);
-        host_and_path.split_once('/').map(|(_, p)| p)?.to_string()
-    } else {
-        // scp-style git@host:owner/repo… → the part after the first ':'.
-        remote_url.split_once(':').map(|(_, p)| p)?.to_string()
-    };
-    let (owner, rest) = path.trim_end_matches('/').split_once('/')?;
-    // repo = the first path segment after the owner, sans the `.git` suffix.
-    let repo = rest.split('/').next().unwrap_or(rest);
-    let repo = repo.strip_suffix(".git").unwrap_or(repo);
-    if owner.is_empty() || repo.is_empty() {
-        return None;
-    }
-    Some((owner.to_string(), repo.to_string()))
+    use crate::integrations::repo_resolve::{resolve_owner_repo_by_pr, RepoResolveError};
+    resolve_owner_repo_by_pr(db_path, repo_id, pr_number).map_err(|e| match e {
+        RepoResolveError::NotFound => IpcErrorCode::NotFound,
+        RepoResolveError::Internal => IpcErrorCode::InternalError,
+    })
 }
 
 /// `SELECT *` a projection table → a JSON array (one object per row). `table` is the compile-time
@@ -931,43 +883,6 @@ fn read_err(e: rusqlite::Error) -> IpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_owner_repo_handles_url_forms() {
-        // spec(D7 / LESSON 44): https (with/without `.git`, a port) + scp-style → (owner, repo); a
-        // `user:token@` userinfo is STRIPPED before the parse (defense-in-depth — the canonical strip is
-        // upstream at the ProjectExecutor emit-source); an unrecognizable / owner-only URL → None (→ NotFound).
-        let ok = |o: &str, r: &str| Some((o.to_string(), r.to_string()));
-        assert_eq!(
-            parse_owner_repo("https://github.com/acme/widget.git"),
-            ok("acme", "widget")
-        );
-        assert_eq!(
-            parse_owner_repo("https://github.com/acme/widget"),
-            ok("acme", "widget")
-        );
-        assert_eq!(
-            parse_owner_repo("git@github.com:acme/widget.git"),
-            ok("acme", "widget")
-        );
-        // a credential in the userinfo is stripped, never reaching the parsed owner/repo (LESSON 44).
-        assert_eq!(
-            parse_owner_repo("https://user:ghp_TOKEN@github.com/acme/widget.git"),
-            ok("acme", "widget")
-        );
-        assert_eq!(
-            parse_owner_repo("https://ghp_TOKEN@github.com/acme/widget"),
-            ok("acme", "widget")
-        );
-        // a host:port is dropped as the host segment.
-        assert_eq!(
-            parse_owner_repo("https://github.example.com:8080/acme/widget"),
-            ok("acme", "widget")
-        );
-        // unrecognizable / incomplete → None (→ NotFound).
-        assert_eq!(parse_owner_repo("not a url"), None);
-        assert_eq!(parse_owner_repo("https://github.com/justowner"), None);
-    }
 
     #[test]
     fn session_row_wire_fields_match_struct() {

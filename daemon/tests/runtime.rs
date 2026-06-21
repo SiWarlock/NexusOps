@@ -1177,6 +1177,9 @@ async fn test_merge_production_path_publishes_pr_nudge() {
             ),
             rt.handle().clone(),
             Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+            Box::new(nexusopsd::integrations::repo_resolve::FakeRepoResolver::ok(
+                "acme", "widget",
+            )),
         )),
     );
     let gw = nexusopsd::gateway::Gateway::new(
@@ -1297,6 +1300,9 @@ async fn test_submit_production_path_publishes_review_nudge() {
             ),
             rt.handle().clone(),
             Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+            Box::new(nexusopsd::integrations::repo_resolve::FakeRepoResolver::ok(
+                "acme", "widget",
+            )),
         )),
     );
     let gw = nexusopsd::gateway::Gateway::new(

@@ -17,8 +17,9 @@ use nexusops_shared::actions::{
 };
 use nexusops_shared::ids::{ActionRequestId, ProjectId};
 use nexusops_shared::ipc::{
-    Capabilities, DiffResult, GetDiffParams, GetPrDiffParams, GetProjectionParams, IpcErrorCode,
-    ProjectionName, RpcRequest, RpcResponse, SubscribeParams, WireError,
+    Capabilities, ConnectViaGhParams, ConnectViaGhResult, ConnectViaGhStatus, DiffResult,
+    GetDiffParams, GetPrDiffParams, GetProjectionParams, IpcErrorCode, ProjectionName, RpcRequest,
+    RpcResponse, SubscribeParams, WireError,
 };
 use nexusops_shared::projections::{ApprovalQueueRow, PullRequestRow, ReviewRow, SessionRow};
 use nexusops_shared::status::ActionRequest as ActionRequestStatus;
@@ -68,6 +69,7 @@ pub(crate) fn dispatch(
     registry: &DecisionRegistry,
     wait_class: &InterceptWaitClass,
     github: &dyn crate::integrations::github::GithubReadClient,
+    gh_connector: &dyn crate::integrations::auth::GhConnector,
 ) -> Result<RpcResponse, IpcError> {
     let outcome: Result<serde_json::Value, IpcErrorCode> = match req.method.as_str() {
         "get_capabilities" => Ok(capabilities_value()),
@@ -79,6 +81,12 @@ pub(crate) fn dispatch(
         // layer: resolves (repo_id,pr_number)→owner/repo (read-only WAL) then fetches the PR diff via the
         // injected GithubReadClient (block_on the captured handle + a MANDATORY timeout); NO mutation.
         "get_pr_diff" => get_pr_diff(&req.params, db_path, github)?,
+        // P4.7/083 (C3b) — the "Connect via gh" auth-bootstrap trigger: the daemon reads `gh auth token`
+        // → keychain (NO token over IPC), returns the keychain_ref POINTER. NOT a Gateway mutation (it
+        // writes the keychain, not the DB/event log — the §15/LESSON §49 non-Gateway secret-write
+        // mechanism; the AUDIT is the subsequent integration.connect registration the UI submits). The
+        // rule-#7 getpeereid gate already authed the peer; the gateway-trusted local UI is the only caller.
+        "connect_via_gh" => connect_via_gh(&req.params, gh_connector),
         "subscribe" => subscribe_ack(&req.params),
         // §6.1 mutation methods (2.1b) — run the Gateway pipeline on the write-actor (the sole
         // mutator, forbidden #2/#3). A `GatewayError` → a structured `IpcErrorCode` response; the
@@ -776,6 +784,48 @@ fn get_pr_diff(
             serde_json::to_value(diff).unwrap_or(serde_json::Value::Null)
         )),
         Err(code) => Ok(Err(code)),
+    }
+}
+
+/// (P4.7/083 C3b) `connect_via_gh` — the "Connect via gh" auth-bootstrap trigger. The daemon SOURCES the
+/// token (reads `gh auth token`) → the OS keychain under the per-account `keychain_ref`; NO token over IPC.
+/// Bad params → `protocol_error`; gh-absent → a structured `gh_unavailable` RESULT (the device-flow signal,
+/// NOT a wire error); a keychain backend fault → `internal_error` (the token NEVER appears in any message).
+/// NOT a Gateway mutation — it writes the keychain, not the DB/event log (the §15/LESSON §49 non-Gateway
+/// secret-write mechanism; the AUDIT is the subsequent `integration.connect` registration the UI submits
+/// with the returned `keychain_ref`). The rule-#7 getpeereid gate already authed the peer.
+fn connect_via_gh(
+    params: &serde_json::Value,
+    connector: &dyn crate::integrations::auth::GhConnector,
+) -> Result<serde_json::Value, IpcErrorCode> {
+    use crate::integrations::auth::AuthError;
+    let params: ConnectViaGhParams =
+        serde_json::from_value(params.clone()).map_err(|_| IpcErrorCode::ProtocolError)?;
+    // the account is the keychain_ref key + the connection account — non-empty + control-char-free (no
+    // injection into the keychain identity; the connect.rs `is_clean_account` discipline).
+    if params.account.trim().is_empty() || params.account.chars().any(|c| c.is_control()) {
+        return Err(IpcErrorCode::ProtocolError);
+    }
+    match connector.connect(params.provider, &params.account) {
+        Ok(keychain_ref) => {
+            let result = ConnectViaGhResult {
+                status: ConnectViaGhStatus::Connected,
+                keychain_ref: Some(keychain_ref),
+            };
+            // infallible: ConnectViaGhResult is plain String/enum → to_value cannot fail.
+            Ok(serde_json::to_value(result).unwrap_or(serde_json::Value::Null))
+        }
+        // gh not installed / not authed → a structured DOMAIN outcome (use device-flow 084), not an error.
+        Err(AuthError::GhUnavailable) => {
+            let result = ConnectViaGhResult {
+                status: ConnectViaGhStatus::GhUnavailable,
+                keychain_ref: None,
+            };
+            Ok(serde_json::to_value(result).unwrap_or(serde_json::Value::Null))
+        }
+        // a keychain backend fault is a real infra failure → internal_error (the token is NOT in the
+        // message — AuthError::Keychain wraps only a structural SecretStoreError class).
+        Err(AuthError::Keychain(_)) => Err(IpcErrorCode::InternalError),
     }
 }
 

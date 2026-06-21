@@ -132,6 +132,7 @@ fn test_unauthorized_peer_disconnects_unserved() {
         &decision_registry(),
         &wait_class(),
         &fake_github(),
+        &fake_gh_connector(),
     );
     assert!(
         matches!(outcome, Err(IpcError::UnauthorizedPeer { .. })),
@@ -194,6 +195,12 @@ fn fake_github() -> nexusopsd::integrations::github::FakeGithubReadClient {
     ))
 }
 
+/// P4.7/083 — a placeholder "Connect via gh" connector for the serve-connection tests (none exercise
+/// `connect_via_gh`; it only satisfies the serve/dispatch signature).
+fn fake_gh_connector() -> nexusopsd::integrations::auth::FakeGhConnector {
+    nexusopsd::integrations::auth::FakeGhConnector::connected("nexusops/github/test")
+}
+
 // ---- Test 5 — handshake: in-range HelloFrame → HelloAck (§6.4) ---------------
 
 #[test]
@@ -222,6 +229,7 @@ fn test_handshake_hello_ack() {
         &decision_registry(),
         &wait_class(),
         &fake_github(),
+        &fake_gh_connector(),
     )
     .expect("authorized in-range handshake succeeds");
 
@@ -265,6 +273,7 @@ fn test_version_skew_disconnects() {
         &decision_registry(),
         &wait_class(),
         &fake_github(),
+        &fake_gh_connector(),
     );
     assert!(
         matches!(outcome, Err(IpcError::VersionSkew { .. })),
@@ -312,6 +321,7 @@ fn test_method_before_handshake_rejected() {
         &decision_registry(),
         &wait_class(),
         &fake_github(),
+        &fake_gh_connector(),
     );
     assert!(
         matches!(outcome, Err(IpcError::Protocol(_))),
@@ -451,6 +461,7 @@ fn test_get_projection_returns_rows() {
             &decision_registry(),
             &wait_class(),
             &fake_github(),
+            &fake_gh_connector(),
         )
         .expect("serve get_projection");
         h.join().unwrap()
@@ -539,6 +550,7 @@ fn test_submit_action_reachable_through_ipc_dispatch() {
             &decision_registry(),
             &wait_class(),
             &fake_github(),
+            &fake_gh_connector(),
         )
         .expect("serve submit");
         h.join().unwrap()
@@ -559,6 +571,116 @@ fn test_submit_action_reachable_through_ipc_dispatch() {
         .query_row("SELECT COUNT(*) FROM action_requests", [], |r| r.get(0))
         .unwrap();
     assert_eq!(n, 1, "the action persisted via the REAL IPC dispatch path");
+}
+
+#[test]
+fn test_connect_via_gh_through_dispatch() {
+    // P4.7/083 (C3b) — the "Connect via gh" trigger is reachable through the REAL serve→dispatch path
+    // (peer authed by the rule-#7 gate; uid==daemon_uid here). The daemon sources the token (no token over
+    // IPC). CONNECTED → a structured result carrying ONLY the keychain_ref POINTER (NEVER a token);
+    // gh-absent → a structured gh_unavailable signal (the device-flow path), not a wire error.
+    let (_d, path) = temp_db();
+    let uid = 1000u32;
+    let req = RpcRequest {
+        method: "connect_via_gh".to_string(),
+        params: serde_json::json!({ "provider": "github", "account": "octocat" }),
+        id: 11,
+    };
+
+    // (a) connected → keychain_ref POINTER, status=connected, NO token in the response (§15 #3/#4).
+    let (server, client) = UnixStream::pair().unwrap();
+    let responses = std::thread::scope(|s| {
+        let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
+        serve_connection(
+            server,
+            uid,
+            uid,
+            &path,
+            no_deltas(),
+            &nexusopsd::runtime::WriteHandle::disconnected(),
+            &decision_registry(),
+            &wait_class(),
+            &fake_github(),
+            &fake_gh_connector(),
+        )
+        .expect("serve connect_via_gh");
+        h.join().unwrap()
+    });
+    let result = responses[0].result.as_ref().expect("a connect result");
+    assert_eq!(
+        result.get("status").and_then(|v| v.as_str()),
+        Some("connected")
+    );
+    assert_eq!(
+        result.get("keychain_ref").and_then(|v| v.as_str()),
+        Some("nexusops/github/test"),
+        "the result carries the keychain_ref POINTER"
+    );
+    let json = serde_json::to_string(result).unwrap();
+    assert!(
+        !json.contains("ghp_") && !json.contains("token"),
+        "§15 — no token-shaped value appears in the connect_via_gh response"
+    );
+
+    // (b) gh-absent → status=gh_unavailable, keychain_ref=null (the device-flow signal, NOT a wire error).
+    let (server2, client2) = UnixStream::pair().unwrap();
+    let responses2 = std::thread::scope(|s| {
+        let h = s.spawn(|| client_session(&client2, std::slice::from_ref(&req)));
+        serve_connection(
+            server2,
+            uid,
+            uid,
+            &path,
+            no_deltas(),
+            &nexusopsd::runtime::WriteHandle::disconnected(),
+            &decision_registry(),
+            &wait_class(),
+            &fake_github(),
+            &nexusopsd::integrations::auth::FakeGhConnector::gh_unavailable(),
+        )
+        .expect("serve gh-unavailable");
+        h.join().unwrap()
+    });
+    let result2 = responses2[0].result.as_ref().expect("a result");
+    assert_eq!(
+        result2.get("status").and_then(|v| v.as_str()),
+        Some("gh_unavailable"),
+        "gh-absent → the device-flow signal (a structured result, not a wire error)"
+    );
+    assert!(
+        responses2[0].error.is_none(),
+        "gh-absent is a DOMAIN outcome, not a wire error"
+    );
+
+    // (c) keychain backend fault → an `internal_error` WIRE error (NOT a structured result; the token
+    // never appears — AuthError::Keychain wraps only a structural class).
+    let (server3, client3) = UnixStream::pair().unwrap();
+    let responses3 = std::thread::scope(|s| {
+        let h = s.spawn(|| client_session(&client3, std::slice::from_ref(&req)));
+        serve_connection(
+            server3,
+            uid,
+            uid,
+            &path,
+            no_deltas(),
+            &nexusopsd::runtime::WriteHandle::disconnected(),
+            &decision_registry(),
+            &wait_class(),
+            &fake_github(),
+            &nexusopsd::integrations::auth::FakeGhConnector::keychain_fault(),
+        )
+        .expect("serve keychain-fault");
+        h.join().unwrap()
+    });
+    assert!(
+        responses3[0].result.is_none(),
+        "a keychain fault yields no result"
+    );
+    assert_eq!(
+        responses3[0].error.as_ref().expect("a wire error").code,
+        IpcErrorCode::InternalError,
+        "a keychain backend fault → internal_error (fail-closed; the token never appears)"
+    );
 }
 
 // ---- Test 9 — an unfed projection returns its empty table, not an error ------
@@ -591,6 +713,7 @@ fn test_get_projection_unfed_is_empty_not_error() {
             &decision_registry(),
             &wait_class(),
             &fake_github(),
+            &fake_gh_connector(),
         )
         .expect("serve unfed projection");
         h.join().unwrap()
@@ -639,6 +762,7 @@ fn test_unknown_method_and_get_capabilities() {
             &decision_registry(),
             &wait_class(),
             &fake_github(),
+            &fake_gh_connector(),
         )
         .expect("serve capabilities + unknown");
         h.join().unwrap()
@@ -690,6 +814,7 @@ fn test_get_projection_scope_not_yet_enforced() {
             &decision_registry(),
             &wait_class(),
             &fake_github(),
+            &fake_gh_connector(),
         )
         .expect("serve scoped projection");
         h.join().unwrap()
@@ -813,6 +938,7 @@ fn test_subscribe_method_recognized() {
             &decision_registry(),
             &wait_class(),
             &fake_github(),
+            &fake_gh_connector(),
         )
         .expect("serve subscribe ack");
         h.join().unwrap()
@@ -911,6 +1037,7 @@ fn test_subscriber_receives_delta_frame() {
                 &decision_registry(),
                 &wait_class(),
                 &fake_github(),
+                &fake_gh_connector(),
             );
         });
         let client_h = s.spawn(move || {
@@ -998,6 +1125,7 @@ fn test_subscribe_connection_is_dedicated() {
                 &decision_registry(),
                 &wait_class(),
                 &fake_github(),
+                &fake_gh_connector(),
             );
         });
         let client_h = s.spawn(move || {

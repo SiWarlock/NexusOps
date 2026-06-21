@@ -52,6 +52,14 @@ fn fake_github() -> std::sync::Arc<dyn nexusopsd::integrations::github::GithubRe
     ))
 }
 
+/// P4.7/083 — a placeholder "Connect via gh" connector for the accept-loop tests (none exercise
+/// `connect_via_gh`; it only satisfies the spawn_accept_loop signature).
+fn fake_gh_connector() -> std::sync::Arc<dyn nexusopsd::integrations::auth::GhConnector> {
+    std::sync::Arc::new(nexusopsd::integrations::auth::FakeGhConnector::connected(
+        "nexusops/github/test",
+    ))
+}
+
 fn temp_db() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nexusops.db");
@@ -510,6 +518,7 @@ async fn test_foreign_peer_rejected_in_accept_path() {
         nexusopsd::runtime::WriteHandle::disconnected(),
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         fake_github(),
+        fake_gh_connector(),
         sd_rx,
     );
 
@@ -546,6 +555,7 @@ async fn test_connection_cap_enforced() {
         nexusopsd::runtime::WriteHandle::disconnected(),
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         fake_github(),
+        fake_gh_connector(),
         sd_rx,
     ); // cap = 1
 
@@ -590,6 +600,7 @@ async fn test_connection_permit_released_on_close() {
         nexusopsd::runtime::WriteHandle::disconnected(),
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         fake_github(),
+        fake_gh_connector(),
         sd_rx,
     ); // cap = 1
 
@@ -635,6 +646,7 @@ async fn test_read_projection_over_real_socket() {
         nexusopsd::runtime::WriteHandle::disconnected(),
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         fake_github(),
+        fake_gh_connector(),
         sd_rx,
     );
 

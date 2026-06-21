@@ -516,21 +516,18 @@ impl GithubExecutor {
         if let Err(e) = self.inner.validate(req) {
             return ExecutionOutcome::Failed(e.to_string());
         }
-        let Some(owner) = string_input(req, "owner") else {
-            return ExecutionOutcome::Failed(
-                "github.submit_review requires a non-empty inputs[\"owner\"]".to_string(),
-            );
-        };
-        let Some(repo) = string_input(req, "repo") else {
-            return ExecutionOutcome::Failed(
-                "github.submit_review requires a non-empty inputs[\"repo\"]".to_string(),
-            );
-        };
         let Some(pr_number) = u64_input(req, "pr_number") else {
             return ExecutionOutcome::Failed(
                 "github.submit_review requires inputs[\"pr_number\"] (a positive integer)"
                     .to_string(),
             );
+        };
+        // P4.7 — owner/repo resolved from the AUDITED resource_ref repo_id (+ pr_number), NOT from inputs.
+        // Fail-closed BEFORE the network call (closes the confused deputy; the D9 mirror). The SHA-pin
+        // (inputs["commit_id"]) stays an operational input below.
+        let (owner, repo) = match self.resolve_pr_target(req, "github.submit_review", pr_number) {
+            Ok(t) => t,
+            Err(outcome) => return outcome,
         };
         // the SHA-pin (audit-integrity/anti-race): the verdict attaches to the exact reviewed head.
         let Some(commit_id) = string_input(req, "commit_id") else {

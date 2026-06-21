@@ -40,6 +40,7 @@ use nexusopsd::integrations::executor::GithubExecutor;
 use nexusopsd::integrations::github_write::{
     map_review_event, FakeGithubWriteClient, GithubWriteError, SubmitReviewArgs, SubmittedReview,
 };
+use nexusopsd::integrations::repo_resolve::FakeRepoResolver;
 use octocrab::models::pulls::ReviewAction;
 
 const FIXED_TS: &str = "2026-06-20T00:00:00Z";
@@ -134,6 +135,19 @@ fn submitted_executor(
     GithubExecutor,
     Arc<Mutex<Vec<SubmitReviewArgs>>>,
 ) {
+    submitted_executor_with_resolver(canned, FakeRepoResolver::ok("acme", "widget"))
+}
+
+/// P4.7 — like [`submitted_executor`] but with an explicit resolver (resolve / ignore-divergent /
+/// fail-closed). owner/repo on the submit call come from the RESOLVED audited repo_id, not inputs.
+fn submitted_executor_with_resolver(
+    canned: SubmittedReview,
+    resolver: FakeRepoResolver,
+) -> (
+    tokio::runtime::Runtime,
+    GithubExecutor,
+    Arc<Mutex<Vec<SubmitReviewArgs>>>,
+) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let fake = FakeGithubWriteClient::submitted(canned);
     let calls = fake.submit_calls();
@@ -141,6 +155,7 @@ fn submitted_executor(
         Box::new(fake),
         rt.handle().clone(),
         Box::new(FixedClock::new(FIXED_TS)),
+        Box::new(resolver),
     );
     (rt, exec, calls)
 }
@@ -151,6 +166,7 @@ fn submit_err_executor(error: GithubWriteError) -> (tokio::runtime::Runtime, Git
         Box::new(FakeGithubWriteClient::submit_err(error)),
         rt.handle().clone(),
         Box::new(FixedClock::new(FIXED_TS)),
+        Box::new(FakeRepoResolver::ok("acme", "widget")),
     );
     (rt, exec)
 }
@@ -255,12 +271,10 @@ fn test_submit_review_success_emits_review_submitted() {
 #[test]
 fn test_submit_review_missing_operand_fails_closed() {
     // spec(LESSON 31 analog + GitHub's body rule) — a blank/absent required operand → Failed BEFORE the
-    // network call. owner/repo/pr_number(>0)/commit_id/event always required; **body required-non-empty
-    // when event ∈ {request_changes, comment}** (GitHub 422s otherwise).
+    // network call. pr_number(>0)/commit_id/event always required; **body required-non-empty when event ∈
+    // {request_changes, comment}** (GitHub 422s otherwise). P4.7: owner/repo are NO LONGER inputs operands
+    // — they're resolved from the audited repo_id (blank inputs owner/repo ignored), so those cases drop.
     let blanks: &[serde_json::Value] = &[
-        serde_json::json!({ "repo": "w", "pr_number": 55, "commit_id": "s", "event": "approve" }), // no owner
-        serde_json::json!({ "owner": "  ", "repo": "w", "pr_number": 55, "commit_id": "s", "event": "approve" }), // blank owner
-        serde_json::json!({ "owner": "a", "pr_number": 55, "commit_id": "s", "event": "approve" }), // no repo
         serde_json::json!({ "owner": "a", "repo": "w", "commit_id": "s", "event": "approve" }), // no pr_number
         serde_json::json!({ "owner": "a", "repo": "w", "pr_number": 0, "commit_id": "s", "event": "approve" }), // pr_number=0
         serde_json::json!({ "owner": "a", "repo": "w", "pr_number": 55, "event": "approve" }), // no commit_id
@@ -366,6 +380,7 @@ fn test_submit_review_timeout_is_structural_failure() {
         Box::new(FakeGithubWriteClient::submit_hanging()),
         rt.handle().clone(),
         Box::new(FixedClock::new(FIXED_TS)),
+        Box::new(FakeRepoResolver::ok("acme", "widget")),
         Duration::from_millis(50),
     );
     match exec.execute(&default_submit_req()) {
@@ -453,6 +468,7 @@ fn test_submit_review_txnb_fault_is_partially_succeeded() {
             ))),
             rt.handle().clone(),
             Box::new(FixedClock::new(FIXED_TS)),
+            Box::new(FakeRepoResolver::ok("acme", "widget")),
         )),
     );
     let gw = Gateway::new(Box::new(CatalogPolicy), Box::new(catalog));
@@ -522,5 +538,82 @@ fn test_map_review_event() {
     assert_eq!(
         serde_json::to_value(map_review_event("comment").unwrap()).unwrap(),
         serde_json::json!("COMMENT")
+    );
+}
+
+// =============================================================================
+// P4.7 — confused-deputy closure (submit_review): owner/repo resolved from the
+// AUDITED resource_ref repo_id (the D10 mirror of the merge_pr closure).
+// =============================================================================
+
+/// a submit_review req whose inputs["owner"/"repo"] DIVERGE from the audited resource_ref repo_id.
+fn submit_req_divergent_inputs() -> ActionRequest {
+    submit_review_req(
+        "attacker",
+        "evil",
+        55,
+        "9fceb02d0ae598e95dc970b74767f19372d61af8",
+        "request_changes",
+        Some("notes"),
+    )
+}
+
+#[test]
+fn submit_review_resolves_owner_repo_from_repo_id() {
+    // spec(P4.7 (b) — D10 mirror): the review targets the RESOLVED owner/repo (from the audited repo_id).
+    // DISTINCT resolver values (rowner/rrepo ≠ the inputs' acme/widget) prove the call came from RESOLUTION.
+    let (_rt, exec, calls) = submitted_executor_with_resolver(
+        canned_review(9100, ReviewState::ChangesRequested, Some("x")),
+        FakeRepoResolver::ok("rowner", "rrepo"),
+    );
+    let outcome = exec.execute(&default_submit_req());
+    assert!(matches!(outcome, ExecutionOutcome::Succeeded { .. }));
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].owner, "rowner",
+        "owner is the RESOLVED value, not inputs"
+    );
+    assert_eq!(
+        calls[0].repo, "rrepo",
+        "repo is the RESOLVED value, not inputs"
+    );
+}
+
+#[test]
+fn submit_review_ignores_divergent_inputs_owner_repo() {
+    // spec(P4.7 (c) — audited==executed): divergent inputs[owner/repo] IGNORED; resolved audited target wins.
+    let (_rt, exec, calls) = submitted_executor_with_resolver(
+        canned_review(9100, ReviewState::ChangesRequested, Some("x")),
+        FakeRepoResolver::ok("acme", "widget"),
+    );
+    let _ = exec.execute(&submit_req_divergent_inputs());
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].owner, "acme",
+        "divergent inputs[owner]=attacker IGNORED"
+    );
+    assert_eq!(
+        calls[0].repo, "widget",
+        "divergent inputs[repo]=evil IGNORED"
+    );
+}
+
+#[test]
+fn submit_review_fails_closed_on_unresolvable_repo_id() {
+    // spec(P4.7 (b) fail-closed): an unresolvable repo_id → Failed BEFORE the network call (no submit).
+    let (_rt, exec, calls) = submitted_executor_with_resolver(
+        canned_review(9100, ReviewState::ChangesRequested, Some("x")),
+        FakeRepoResolver::not_found(),
+    );
+    match exec.execute(&default_submit_req()) {
+        ExecutionOutcome::Failed(_) => {}
+        _ => panic!("expected Failed on an unresolvable repo_id"),
+    }
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        0,
+        "fail-closed BEFORE the network call — no review submitted on an unresolvable target"
     );
 }

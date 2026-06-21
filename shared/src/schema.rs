@@ -21,12 +21,12 @@ use crate::event_envelope::{EventEnvelope, RedactionStatus, Sensitivity, SourceT
 use crate::events::{
     ActionApprovalRequested, ActionApproved, ActionDenied, ActionExpired, ActionFailed,
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
-    AuditIntegrityViolation, BranchCreated, DeviceRegistered, GithubSyncFailed,
-    IntegrationConnectionRegistered, LinearSyncFailed, LocalRunnerRegistered, ProjectRescanned,
-    Provider, PullRequestMerged, PullRequestSynced, ReviewSubmitted, ReviewSynced,
-    SensitiveOutputRedacted, SessionFailed, SessionRecovered, SessionStarted, TelemetrySampled,
-    TerminalProcessExited, WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged,
-    WorktreePrunable,
+    AuditIntegrityViolation, BranchCreated, DeviceRegistered, ExecutionProfileRegistered,
+    GithubSyncFailed, IntegrationConnectionRegistered, LinearSyncFailed, LocalRunnerRegistered,
+    ProjectRescanned, Provider, PullRequestMerged, PullRequestSynced, ReviewSubmitted,
+    ReviewSynced, SensitiveOutputRedacted, SessionFailed, SessionRecovered, SessionStarted,
+    TelemetrySampled, TerminalProcessExited, WorktreeCreated, WorktreeDeleted, WorktreeLocked,
+    WorktreeMerged, WorktreePrunable,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::harness::{
@@ -246,6 +246,11 @@ struct ContractBundle {
     // proj_review). Reuses the frozen ReviewState; the catalog entry rides the existing
     // ActionTypeCatalogEntry registration. Additive (shared/src/events.rs).
     review_submitted: ReviewSubmitted,
+    // P5.3a (CONTRACT 0.43.0) — the §15 #8 ExecutionProfileRegistered System-actor event: the FIRST
+    // DATA_MODEL-§2.8 canonical OBJECT registry (`execution_profiles`, Option B durable row = source of
+    // truth; this event is the audit trail). `keychain_ref` is a §15 #4 POINTER (no token; secret WRITE =
+    // 5.3b); `status` reuses the frozen §5.1 ExecutionProfile machine. Additive (shared/src/events.rs).
+    execution_profile_registered: ExecutionProfileRegistered,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

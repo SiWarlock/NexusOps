@@ -3096,14 +3096,14 @@ fn test_review_row_rejects_unknown_field() {
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_42_0() {
+fn test_contract_version_bumped_0_43_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.39.0 = the
-    // D6 PR-card diff-stats; 0.40.0 = the D7 `get_pr_diff` read RPC; 0.41.0 = the D9 cat-1 `github.merge_pr`
-    // (catalog + PullRequestMerged); **0.42.0** = the D10 cat-1 `github.submit_review` mutation surface (the
-    // §6.3 catalog entry [risk-3, NON-standing-grantable] + the §7.1 `ReviewSubmitted` event). Additive,
-    // no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.42.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.40.0 = the
+    // D7 `get_pr_diff` read RPC; 0.41.0 = the D9 cat-1 `github.merge_pr` (catalog + PullRequestMerged);
+    // 0.42.0 = the D10 cat-1 `github.submit_review` (catalog + `ReviewSubmitted`); **0.43.0** = the P5.3a
+    // `execution_profiles` durable registry — the §15 #8 `ExecutionProfileRegistered` System-actor event
+    // (the FIRST DATA_MODEL-2.8 canonical OBJECT registry). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.43.0");
 }
 
 // =================================================================================================
@@ -3232,6 +3232,61 @@ fn test_review_submitted_field_names_snapshot() {
     );
     assert_eq!(ReviewSubmitted::EVENT_TYPE, "ReviewSubmitted");
     assert_rejects_unknown(&sample_review_submitted(), "ReviewSubmitted");
+}
+
+fn sample_execution_profile_registered() -> nexusops_shared::events::ExecutionProfileRegistered {
+    use nexusops_shared::events::ExecutionProfileRegistered;
+    use nexusops_shared::ids::{ExecutionProfileId, WorkspaceId};
+    use nexusops_shared::status::ExecutionProfile;
+    use nexusops_shared::time::Timestamp;
+    ExecutionProfileRegistered {
+        execution_profile_id: ExecutionProfileId::parse("prof_01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
+        workspace_id: WorkspaceId::system(),
+        provider: "anthropic".to_string(),
+        harness: "claude_code".to_string(),
+        model: Some("claude-opus".to_string()),
+        account_alias: Some("work".to_string()),
+        keychain_ref: Some("nexusops/anthropic/work".to_string()),
+        usage_policy_json: Some("{}".to_string()),
+        status: ExecutionProfile::Available,
+        created_at: Timestamp::parse("2026-06-21T00:00:00Z").unwrap(),
+    }
+}
+
+// ---- P5.3a RED #1 — the ExecutionProfileRegistered event payload (§15 #8 / §2.5-seam) ----
+
+#[test]
+fn execution_profile_registered_schema_snapshot() {
+    // spec(§15) — P5.3a: the System-actor registration event for the FIRST DATA_MODEL-2.8 durable
+    // OBJECT registry (`execution_profiles`, Option B canonical row). The §2.5-seam field-name FREEZE:
+    // the durable identity the canonical row stores. **§15 #4 — load-bearing:** `keychain_ref` is a
+    // nullable NON-SECRET POINTER into the OS keychain, NEVER the token (the secret WRITE is 5.3b).
+    // `status` binds to the frozen §5.1 `ExecutionProfile` machine (reject-unknown). EVENT_TYPE single-home.
+    use nexusops_shared::events::ExecutionProfileRegistered;
+    expect_fields(
+        &sample_execution_profile_registered(),
+        &[
+            "execution_profile_id",
+            "workspace_id",
+            "provider",
+            "harness",
+            "model",
+            "account_alias",
+            "keychain_ref",
+            "usage_policy_json",
+            "status",
+            "created_at",
+        ],
+    );
+    assert_eq!(
+        ExecutionProfileRegistered::EVENT_TYPE,
+        "ExecutionProfileRegistered"
+    );
+    // round-trips + reject-unknown (deny_unknown_fields, §5.0/§15).
+    assert_rejects_unknown(
+        &sample_execution_profile_registered(),
+        "ExecutionProfileRegistered",
+    );
 }
 
 // ---- R1b RED #1 — ProjectRescanned (§7.1/§2.5-seam) ----

@@ -188,4 +188,8 @@ pub mod time;
 /// emitted by the gateway on a successful review-submit; the `ReviewProjector` folds it → `proj_review`).
 /// The F2 UI/IPC-only requester gate extends the D9 daemon-policy const (no `shared/` surface). Additive,
 /// no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.42.0";
+/// 0.43.0 (P5.3a) adds the §15 #8 `ExecutionProfileRegistered` System-actor event — the FIRST
+/// DATA_MODEL-§2.8 canonical OBJECT registry (`execution_profiles`, Option B durable row = source of
+/// truth, the event is the audit trail). `keychain_ref` is a §15 #4 POINTER (no token; secret WRITE =
+/// 5.3b). Additive EventTypeRegistry row, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.43.0";

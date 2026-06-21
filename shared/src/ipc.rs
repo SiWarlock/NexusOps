@@ -11,6 +11,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::events::Provider;
+
 /// The wire protocol version this binary speaks (§6.4). The daemon is the authoritative source;
 /// the ui's `SUPPORTED_PROTOCOL_RANGE` must agree. SEPARATE from `CONTRACT_VERSION` (§5.0).
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -258,6 +260,39 @@ pub struct GetPrDiffParams {
     /// one file's hunks, or the whole changeset when `None`. Serialized as explicit `null` (no
     /// `skip_serializing_if`) → a stable §2.5-seam field-name snapshot (LESSON §15 trap 3).
     pub file: Option<String>,
+}
+
+/// `connect_via_gh` params (§6.1; P4.7/083) — the "Connect via gh" auth-bootstrap trigger. NO token in the
+/// request: the daemon SOURCES the token itself (reads `gh auth token`) → the OS keychain. `account` = the
+/// GitHub login the token belongs to (the per-account `keychain_ref` key + the connection account used for
+/// per-owner token selection). Peer-authed (getpeereid §15 #7 — the gateway-trusted local UI is the only
+/// caller); `provider` is the closed `Provider` enum (reject-unknown).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectViaGhParams {
+    pub provider: Provider,
+    pub account: String,
+}
+
+/// `connect_via_gh` outcome status (§6.1; P4.7/083). `connected` = the `gh` token was copied to the
+/// keychain; `gh_unavailable` = the user has no usable `gh` login → the device-flow (084) is the path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectViaGhStatus {
+    Connected,
+    GhUnavailable,
+}
+
+/// `connect_via_gh` result (§6.1; P4.7/083). The token NEVER appears — on `connected`, `keychain_ref` is the
+/// §15 #4 POINTER only; on `gh_unavailable`, `keychain_ref` is `None`. A keychain backend FAULT is an
+/// `internal_error` wire error (not this result).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectViaGhResult {
+    pub status: ConnectViaGhStatus,
+    /// the §15 #4 keychain POINTER (NEVER the token); `Some` only when `status=connected`. Serialized as
+    /// explicit `null` (no `skip_serializing_if`) → a stable §2.5-seam field-name snapshot.
+    pub keychain_ref: Option<String>,
 }
 
 /// `get_diff` result (§6.1) — the file's structured diff (HEAD→workdir), reject-unknown. REUSED by the

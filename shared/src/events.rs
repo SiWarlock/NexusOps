@@ -633,6 +633,27 @@ impl IntegrationConnectionRegistered {
     pub const EVENT_TYPE: &'static str = "IntegrationConnectionRegistered";
 }
 
+/// `IntegrationLiveWritesSet` payload (§7.1; P4.7/083 Q3) — the per-connection live-writes AUTHORIZATION
+/// flip the `integration.set_live_writes` Gateway action emits. The `IntegrationConnection` projector
+/// folds it → `proj_integration_connection.live_writes_enabled` (derive-from-event, default OFF,
+/// rebuild-safe — LESSON §17), gating whether the authed GitHub clients go live. **§15 — load-bearing:**
+/// an authorization-state flip carries NO secret — the payload is `{connection_id, enabled}` only, never
+/// a token (the keychain pointer already lives on the connection's registration; this event never touches
+/// it). The `off`-flip is a real authorization mutation → it is audited too (both directions emit).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct IntegrationLiveWritesSet {
+    pub connection_id: String,
+    /// the live-writes authorization state this flip sets (true = ON / authed writes permitted).
+    pub enabled: bool,
+}
+
+impl IntegrationLiveWritesSet {
+    /// The EventTypeRegistry name — ONE home (the `integration.set_live_writes` executor emit path + the
+    /// `proj_integration_connection` fold).
+    pub const EVENT_TYPE: &'static str = "IntegrationLiveWritesSet";
+}
+
 /// `GithubSyncFailed` payload (§7.1/§17; P7.1 — the **non-auth** `*SyncFailed`). Driven by edges'
 /// integration classifier's TERMINAL non-auth class (a `ClientError` sync failure, NO profile
 /// mutation). **§15 — load-bearing:** `reason` is a redaction-safe STRUCTURAL class-name (the

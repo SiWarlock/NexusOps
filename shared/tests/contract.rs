@@ -1532,8 +1532,8 @@ fn test_action_type_catalog_covers_mvp_set() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        31,
-        "the §6.3 MVP set is 31 types (30 + github.submit_review, D10)"
+        32,
+        "the §6.3 MVP set is 32 types (31 + integration.set_live_writes, P4.7/083)"
     );
     for at in MVP_ACTION_TYPES {
         let e = lookup(at).unwrap_or_else(|| panic!("catalog missing the MVP type {at}"));
@@ -1824,6 +1824,83 @@ fn test_integration_connect_catalog_entry_0_33() {
     );
 }
 
+// ---- P4.7 (083) — the integration.set_live_writes toggle vertical (event + catalog) -------------
+
+#[test]
+fn test_integration_live_writes_set_snapshot() {
+    // spec(§7.1 / §2.5-seam / 083) — the live-writes-enablement OBSERVATION event the integration.set_live_writes
+    // action emits; the IntegrationConnection projector folds it → proj_integration_connection.live_writes_enabled
+    // (derive-from-event, default OFF, rebuild-safe). The §2.5-seam field-name FREEZE: {connection_id, enabled}.
+    // NO secret (an authorization-state flip carries no token). EVENT_TYPE single-home; reject-unknown.
+    use nexusops_shared::events::IntegrationLiveWritesSet;
+    let e = IntegrationLiveWritesSet {
+        connection_id: "conn_gh_octocat".to_string(),
+        enabled: true,
+    };
+    expect_fields(&e, &["connection_id", "enabled"]);
+    assert_eq!(
+        IntegrationLiveWritesSet::EVENT_TYPE,
+        "IntegrationLiveWritesSet"
+    );
+    assert_rejects_unknown(&e, "IntegrationLiveWritesSet");
+}
+
+#[test]
+fn test_integration_set_live_writes_catalog_entry() {
+    // spec(§6.3 / 083 Q3) — integration.set_live_writes is the typed Gateway action that flips a
+    // connection's live-writes authorization. risk-2 (approval-gated), ExecutorKind::Integration, and
+    // **standing_grant_eligible=false** — a live-enablement authorization is NEVER bulk-grantable (the
+    // integration.connect credential-floor precedent, LESSON §49). In the MVP set.
+    use nexusops_shared::actions::RiskLevel;
+    use nexusops_shared::catalog::{lookup, ExecutorKind, MVP_ACTION_TYPES};
+
+    assert!(
+        MVP_ACTION_TYPES.contains(&"integration.set_live_writes"),
+        "integration.set_live_writes is in the MVP set"
+    );
+    let e = lookup("integration.set_live_writes").expect("catalogued");
+    assert_eq!(e.locked_risk, RiskLevel::Level2);
+    assert_eq!(e.executor, ExecutorKind::Integration);
+    assert!(
+        !e.standing_grant_eligible,
+        "a live-enablement authorization is NON-standing-grantable (§6.2 floor)"
+    );
+}
+
+#[test]
+fn test_connect_via_gh_wire_types() {
+    // spec(§6.1 / §2.5-seam / 083 C3b) — the connect_via_gh "Connect via gh" trigger wire types. Params
+    // carry {provider, account} and NO token (the daemon sources it). The result carries ONLY the
+    // keychain_ref POINTER (never a token) + a connected|gh_unavailable status. Field-name + status-value
+    // FREEZE; reject-unknown end-to-end (§5.0/§15 fail-closed).
+    use nexusops_shared::events::Provider;
+    use nexusops_shared::ipc::{ConnectViaGhParams, ConnectViaGhResult, ConnectViaGhStatus};
+
+    let p = ConnectViaGhParams {
+        provider: Provider::Github,
+        account: "octocat".to_string(),
+    };
+    expect_fields(&p, &["provider", "account"]);
+    assert_rejects_unknown(&p, "ConnectViaGhParams");
+
+    let r = ConnectViaGhResult {
+        status: ConnectViaGhStatus::Connected,
+        keychain_ref: Some("nexusops/github/octocat".to_string()),
+    };
+    expect_fields(&r, &["status", "keychain_ref"]);
+    assert_rejects_unknown(&r, "ConnectViaGhResult");
+
+    // the status wire values (snake_case) — the closed connect outcome set.
+    assert_eq!(
+        serde_json::to_value(ConnectViaGhStatus::Connected).unwrap(),
+        serde_json::json!("connected")
+    );
+    assert_eq!(
+        serde_json::to_value(ConnectViaGhStatus::GhUnavailable).unwrap(),
+        serde_json::json!("gh_unavailable")
+    );
+}
+
 // ---- D9 (P4.7) — the github.merge_pr cat-1 catalog entry (risk-3, NON-standing-grantable) -------
 
 #[test]
@@ -1908,8 +1985,8 @@ fn test_agent_mutation_family_snapshot_spec_6_3() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        31,
-        "the human-facing §6.3 MVP set is 31 — the agent family stays a separate machine-internal const"
+        32,
+        "the human-facing §6.3 MVP set is 32 — the agent family stays a separate machine-internal const"
     );
     assert_eq!(
         AGENT_MUTATION_ACTION_TYPES.len(),
@@ -3098,14 +3175,14 @@ fn test_review_row_rejects_unknown_field() {
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_44_0() {
+fn test_contract_version_bumped_0_45_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.41.0 = the
-    // D9 cat-1 `github.merge_pr`; 0.42.0 = the D10 cat-1 `github.submit_review`; 0.43.0 = the P5.3a
-    // `execution_profiles` durable registry (`ExecutionProfileRegistered`); **0.44.0** = the P4.7 PR
-    // `head_sha` enrichment on `PullRequestSynced` + `PullRequestRow` (the anti-race SHA-pin source the
-    // UI reads). Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.44.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.42.0 = the
+    // D10 cat-1 `github.submit_review`; 0.43.0 = the P5.3a `execution_profiles` registry; 0.44.0 = the
+    // P4.7 PR `head_sha` enrichment; **0.45.0** = the P4.7 (083) auth-bootstrap toggle vertical — the
+    // `integration.set_live_writes` catalog action + the `IntegrationLiveWritesSet` event (the live-writes
+    // authorization flip). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.45.0");
 }
 
 // =================================================================================================

@@ -3,7 +3,7 @@
 - **Date:** 2026-06-20
 - **Phase:** Phase 4 / **P4.7** (the ui-unblock work-order wave-2 PR-Workspace mutation surface; homed under Phase 4 like 4.4/4.5/4.6 — the §4.7 "Future arcs — PR-review mutations").
 - **Predecessor:** [032 — PR-card diff-stats (D6) + get_pr_diff read RPC (D7)](032-2026-06-19-pr-card-diff-stats-and-get-pr-diff.md)
-- **Successor:** _(next implementer session — team idles after D10 for the user's main→ui merge; resume per the lead)_
+- **Successor:** [034 — P5.3a execution_profiles registry · head_sha · the 4-site confused-deputy closure](034-2026-06-21-p5.3a-profiles-headsha-confused-deputy.md)
 
 ## Why this session existed
 

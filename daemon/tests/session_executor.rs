@@ -537,6 +537,7 @@ async fn test_gateway_pull_request_synced_publishes_pr_delta() {
         deletions: None,
         changed_files: None,
         commits: None,
+        head_sha: None,
         pr_checked_at: Timestamp::parse("2026-06-11T00:00:00Z").unwrap(),
     })
     .unwrap();

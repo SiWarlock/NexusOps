@@ -200,6 +200,9 @@ impl GithubExecutor {
             deletions: created.signals.deletions,
             changed_files: created.signals.changed_files,
             commits: created.signals.commits,
+            // P4.7 — the head SHA captured on `created.signals` by `extract_pr_signals` (the anti-race
+            // SHA-pin source the §11.2 PR Workspace reads). `None` if GitHub omitted it.
+            head_sha: created.signals.head_sha,
             pr_checked_at,
         };
         // serialize the FROZEN event struct (the Namespaced bridge, Q1=B); a serialize fault fails CLOSED.

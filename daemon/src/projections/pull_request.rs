@@ -125,15 +125,17 @@ impl Projector for PullRequestProjector {
         tx.execute(
             "INSERT INTO proj_pull_request \
              (pr_id, project_id, repo_id, pr_number, status, head_branch, base_branch, pr_checked_at, \
-              mergeable, checks_summary, additions, deletions, changed_files, commits, updated_at_seq) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+              mergeable, checks_summary, additions, deletions, changed_files, commits, head_sha, \
+              updated_at_seq) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
              ON CONFLICT(pr_id) DO UPDATE SET \
                project_id=excluded.project_id, repo_id=excluded.repo_id, pr_number=excluded.pr_number, \
                status=excluded.status, head_branch=excluded.head_branch, base_branch=excluded.base_branch, \
                pr_checked_at=excluded.pr_checked_at, mergeable=excluded.mergeable, \
                checks_summary=excluded.checks_summary, additions=excluded.additions, \
                deletions=excluded.deletions, changed_files=excluded.changed_files, \
-               commits=excluded.commits, updated_at_seq=excluded.updated_at_seq",
+               commits=excluded.commits, head_sha=excluded.head_sha, \
+               updated_at_seq=excluded.updated_at_seq",
             params![
                 pr_id,
                 project_id.as_str(),
@@ -151,6 +153,9 @@ impl Projector for PullRequestProjector {
                 payload.deletions.map(|n| n as i64),
                 payload.changed_files.map(|n| n as i64),
                 payload.commits.map(|n| n as i64),
+                // P4.7 — the head_sha fold (None → NULL, rebuild-safe). A TEXT column → bind the String
+                // directly (no coercion, unlike the bool `mergeable`); DO UPDATE re-folds on a head move.
+                payload.head_sha,
                 env.seq,
             ],
         )?;

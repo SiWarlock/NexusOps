@@ -192,4 +192,7 @@ pub mod time;
 /// DATA_MODEL-§2.8 canonical OBJECT registry (`execution_profiles`, Option B durable row = source of
 /// truth, the event is the audit trail). `keychain_ref` is a §15 #4 POINTER (no token; secret WRITE =
 /// 5.3b). Additive EventTypeRegistry row, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.43.0";
+/// 0.44.0 (P4.7) adds `head_sha: Option<String>` to `PullRequestSynced` + `PullRequestRow` (the anti-race
+/// SHA-pin SOURCE the UI reads — captured only from `pr.head.sha`, never a proposer). Additive LOCKSTEP
+/// row enrichment (the D6 diff-stats precedent), no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.44.0";

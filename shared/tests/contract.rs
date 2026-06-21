@@ -2828,6 +2828,7 @@ fn sample_pull_request_row() -> nexusops_shared::projections::PullRequestRow {
         deletions: Some(7),
         changed_files: Some(4),
         commits: Some(3),
+        head_sha: Some("9fceb02d0ae598e95dc970b74767f19372d61af8".to_string()),
     }
 }
 
@@ -2856,6 +2857,7 @@ fn test_pull_request_row_frozen_shape() {
             "deletions",
             "changed_files",
             "commits",
+            "head_sha",
         ],
     );
     let json = serde_json::to_string(&sample_pull_request_row()).unwrap();
@@ -3096,14 +3098,14 @@ fn test_review_row_rejects_unknown_field() {
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
-fn test_contract_version_bumped_0_43_0() {
+fn test_contract_version_bumped_0_44_0() {
     // The SINGLE canonical version pin — supersedes per-version `_0_NN_0` pins (don't re-accumulate
-    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.40.0 = the
-    // D7 `get_pr_diff` read RPC; 0.41.0 = the D9 cat-1 `github.merge_pr` (catalog + PullRequestMerged);
-    // 0.42.0 = the D10 cat-1 `github.submit_review` (catalog + `ReviewSubmitted`); **0.43.0** = the P5.3a
-    // `execution_profiles` durable registry — the §15 #8 `ExecutionProfileRegistered` System-actor event
-    // (the FIRST DATA_MODEL-2.8 canonical OBJECT registry). Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.43.0");
+    // dead ones; the full bump history lives in `shared/src/lib.rs` CONTRACT_VERSION doc). 0.41.0 = the
+    // D9 cat-1 `github.merge_pr`; 0.42.0 = the D10 cat-1 `github.submit_review`; 0.43.0 = the P5.3a
+    // `execution_profiles` durable registry (`ExecutionProfileRegistered`); **0.44.0** = the P4.7 PR
+    // `head_sha` enrichment on `PullRequestSynced` + `PullRequestRow` (the anti-race SHA-pin source the
+    // UI reads). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.44.0");
 }
 
 // =================================================================================================
@@ -3159,6 +3161,7 @@ fn sample_pull_request_synced() -> nexusops_shared::events::PullRequestSynced {
         deletions: Some(7),
         changed_files: Some(4),
         commits: Some(3),
+        head_sha: Some("9fceb02d0ae598e95dc970b74767f19372d61af8".to_string()),
         pr_checked_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
     }
 }
@@ -3379,6 +3382,7 @@ fn test_p7_integration_snapshots() {
             "deletions",
             "changed_files",
             "commits",
+            "head_sha",
             "pr_checked_at",
         ],
     );

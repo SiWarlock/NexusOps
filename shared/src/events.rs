@@ -519,6 +519,13 @@ pub struct PullRequestSynced {
     pub deletions: Option<u64>,
     pub changed_files: Option<u64>,
     pub commits: Option<u64>,
+    /// P4.7 — the PR's current head commit SHA (the anti-race SHA-pin SOURCE the UI reads to form a cat-1
+    /// merge/review `sha`/`commit_id`). Captured ONLY from `pr.head.sha` on the authoritative octocrab GET
+    /// (`extract_pr_signals`), NEVER from a proposer/UI (§7.2 safety). `None` when GitHub omitted it / the
+    /// head has no commits yet. The daemon's anti-race remains the LIVE GitHub 409 on the requester-supplied
+    /// value — this field is display/pin-FORMATION only (a stale value yields a fail-closed 409, never a
+    /// wrong merge).
+    pub head_sha: Option<String>,
     pub pr_checked_at: Timestamp,
 }
 

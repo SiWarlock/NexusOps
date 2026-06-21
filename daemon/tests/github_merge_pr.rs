@@ -463,3 +463,51 @@ fn test_map_merge_method() {
         );
     }
 }
+
+// =============================================================================
+// P4.7 — head_sha safety pins (the SHA-pin axis; security-reviewer `invariant`).
+// Source-level structural pins (the `test_live_session_create_has_interception`
+// precedent): they assert a PROPERTY of github_write.rs that no value-test can.
+// =============================================================================
+
+/// The github_write.rs (D9/D10 mutation executors) source.
+fn github_write_src() -> String {
+    std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/integrations/github_write.rs"
+    ))
+    .expect("github_write.rs present")
+}
+
+#[test]
+fn head_sha_sourced_only_from_producer() {
+    // spec(P4.7 safety (a)): `head_sha` is a producer-sourced, read-only PROJECTION field — it has NO
+    // inbound path into the cat-1 mutation executors. The mutation file never references `head_sha`, so a
+    // proposer/UI value can never reach the merge/review via this field (it flows only
+    // extract_pr_signals → PullRequestSynced → fold → typed serve → UI). Unspoofable by construction.
+    assert!(
+        !github_write_src().contains("head_sha"),
+        "github_write.rs must NOT reference head_sha — the projection field has no path into the cat-1 \
+         mutation; the SHA-pin reads the requester-supplied sha/commit_id (safety (a))"
+    );
+}
+
+#[test]
+fn d9_d10_executors_unchanged() {
+    // spec(P4.7 safety (b)): the daemon's anti-race stays the LIVE GitHub 409 on the REQUESTER-supplied
+    // sha/commit_id (from req.inputs), NOT this projection field. This slice does NOT touch github_write.rs;
+    // the pin mechanism (D9 `args.sha` → octocrab merge .sha(); D10 `args.commit_id`) is intact. The
+    // existing D9/D10 value-tests in this suite stay green (the full-suite non-regression).
+    // Tight substrings unique to the ACTUAL executor pin sites (not comments) — a greedy `contains`
+    // would pass even if the call were deleted and only a comment survived. The real non-regression
+    // guarantee is the D9/D10 value-tests in this suite staying green; these pin the live call shape.
+    let src = github_write_src();
+    assert!(
+        src.contains(".sha(args.sha"),
+        "D9 still SHA-pins the live merge to the requester-supplied args.sha (the 409 anti-race, safety (b))"
+    );
+    assert!(
+        src.contains("\"commit_id\": args.commit_id"),
+        "D10 still pins the live review verdict to the requester-supplied commit_id (safety (b))"
+    );
+}

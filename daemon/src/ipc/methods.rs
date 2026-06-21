@@ -597,6 +597,8 @@ pub fn read_pull_request_typed(db_path: &Path) -> Result<Vec<PullRequestRow>, Ip
         // D6: the diff-stats (additions/deletions/changed_files/commits) are INTEGER columns surfacing as
         // JSON numbers → they bind DIRECTLY into the frozen row's `Option<u64>` (no coercion, unlike the
         // bool `mergeable` above). The generic `read_table_as_json` already includes them — no SELECT change.
+        // P4.7: `head_sha` is a TEXT column → JSON string → binds DIRECTLY into the frozen row's
+        // `Option<String>` (no coercion either; the generic read already includes it — no SELECT change).
         // STRICT deserialize (reject-unknown; `status` binds the §5.1 PullRequest enum). A row that no
         // longer binds is corrupt/contract-broken → fail-closed, never a silent skip (LESSON §37).
         let typed: PullRequestRow =

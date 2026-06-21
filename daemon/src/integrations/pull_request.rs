@@ -72,6 +72,10 @@ pub struct PullRequestSignals {
     pub deletions: Option<u64>,
     pub changed_files: Option<u64>,
     pub commits: Option<u64>,
+    /// P4.7 — the PR head commit SHA (the anti-race SHA-pin source the UI reads). Captured ONLY from
+    /// `pr.head.sha` in `extract_pr_signals` (authoritative GitHub GET); the status aggregators leave it
+    /// `None`. Threads into `PullRequestSynced` at the `create_pr` emit. NEVER from a proposer (§7.2 safety).
+    pub head_sha: Option<String>,
 }
 
 /// Derive the single most-salient §5.1 `PullRequest` status from the signals (§7.2 derived cache).

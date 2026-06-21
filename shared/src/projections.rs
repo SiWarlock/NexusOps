@@ -74,6 +74,11 @@ pub struct PullRequestRow {
     pub deletions: Option<u64>,
     pub changed_files: Option<u64>,
     pub commits: Option<u64>,
+    /// P4.7 — the PR head commit SHA the §11.2 PR Workspace reads to FORM the cat-1 merge/review SHA-pin
+    /// (folded from `PullRequestSynced.head_sha`). A TEXT column → JSON string → `Option<String>` direct
+    /// passthrough (no coercion, unlike `mergeable`); `None`/NULL where GitHub omitted it or pre-P4.7 rows.
+    /// Display/pin-FORMATION source only — the daemon's anti-race is the LIVE GitHub 409, not this field.
+    pub head_sha: Option<String>,
 }
 
 /// One row of the `proj_session` read model (§7.2 / §11.4) — the derived current state of a session, the

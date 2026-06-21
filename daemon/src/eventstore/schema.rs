@@ -596,3 +596,15 @@ CREATE TABLE execution_profiles (
   created_at        TEXT NOT NULL
 );
 ";
+
+/// Migration 17 (P4.7) — the §7.2/§11.2 PR `head_sha` enrichment: surface the PR's current head commit SHA
+/// on `proj_pull_request` so the ui PR Workspace can FORM the cat-1 merge/review SHA-pin (`sha`/`commit_id`)
+/// the daemon's live-409 anti-race then validates. Folded from `PullRequestSynced.head_sha?` (captured from
+/// `pr.head.sha` in `extract_pr_signals`). A TEXT column (the diff-stats `additions` String-vs-INTEGER
+/// contrast — here a String passthrough). `ALTER ADD COLUMN`: additive nullable → historical / head-unknown
+/// rows carry NULL, and `proj_pull_request` is in `REBUILD_TABLES` so a rebuild re-folds — no DROP+CREATE /
+/// offset-reset (the MIGRATION_15 precedent). The historical `proj_pull_request` CREATE (MIGRATION_3) is
+/// deliberately UNCHANGED (editing it would duplicate-column-fail a fresh DB).
+pub const MIGRATION_17_PULL_REQUEST_HEAD_SHA: &str = "\
+ALTER TABLE proj_pull_request ADD COLUMN head_sha TEXT;
+";

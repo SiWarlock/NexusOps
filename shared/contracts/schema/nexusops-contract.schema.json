@@ -1990,6 +1990,13 @@
             "null"
           ]
         },
+        "head_sha": {
+          "description": "P4.7 — the PR head commit SHA the §11.2 PR Workspace reads to FORM the cat-1 merge/review SHA-pin\n(folded from `PullRequestSynced.head_sha`). A TEXT column → JSON string → `Option<String>` direct\npassthrough (no coercion, unlike `mergeable`); `None`/NULL where GitHub omitted it or pre-P4.7 rows.\nDisplay/pin-FORMATION source only — the daemon's anti-race is the LIVE GitHub 409, not this field.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "mergeable": {
           "type": [
             "boolean",
@@ -2087,6 +2094,13 @@
           "minimum": 0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "head_sha": {
+          "description": "P4.7 — the PR's current head commit SHA (the anti-race SHA-pin SOURCE the UI reads to form a cat-1\nmerge/review `sha`/`commit_id`). Captured ONLY from `pr.head.sha` on the authoritative octocrab GET\n(`extract_pr_signals`), NEVER from a proposer/UI (§7.2 safety). `None` when GitHub omitted it / the\nhead has no commits yet. The daemon's anti-race remains the LIVE GitHub 409 on the requester-supplied\nvalue — this field is display/pin-FORMATION only (a stale value yields a fail-closed 409, never a\nwrong merge).",
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -3694,5 +3708,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.43.0"
+  "x-contract-version": "0.44.0"
 }

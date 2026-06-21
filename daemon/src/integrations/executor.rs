@@ -324,21 +324,17 @@ impl GithubExecutor {
         }
         // fail-closed non-empty/typed validation of EVERY required operand BEFORE the network call (the
         // execute_create_pr param-injection-guard precedent; octocrab is a TYPED API, no shell vector).
-        let Some(owner) = string_input(req, "owner") else {
-            return ExecutionOutcome::Failed(
-                "github.sync_reviews requires a non-empty inputs[\"owner\"]".to_string(),
-            );
-        };
-        let Some(repo) = string_input(req, "repo") else {
-            return ExecutionOutcome::Failed(
-                "github.sync_reviews requires a non-empty inputs[\"repo\"]".to_string(),
-            );
-        };
         let Some(pr_number) = u64_input(req, "pr_number") else {
             return ExecutionOutcome::Failed(
                 "github.sync_reviews requires inputs[\"pr_number\"] (a positive integer)"
                     .to_string(),
             );
+        };
+        // P4.7 — owner/repo resolved from the AUDITED resource_ref repo_id (+ pr_number), NOT from inputs.
+        // Fail-closed BEFORE the network call (closes the confused deputy; the only READ in the set).
+        let (owner, repo) = match self.resolve_pr_target(req, "github.sync_reviews", pr_number) {
+            Ok(t) => t,
+            Err(outcome) => return outcome,
         };
 
         let args = SyncReviewsArgs {

@@ -4,7 +4,7 @@
 **Track:** ui
 **Worktree:** `NexusOps-ui` (branch `track/ui`) — **LEFT IN PLACE** (the track resumes here for the cat-1 go-live flip once the daemon auth-bootstrap lands; not torn down).
 **Predecessor handoff:** `docs/team-handoffs/ui-004-2026-06-19-phase6-7-complete-integrated-paused-daemon-gated.md`
-**Successor handoff:** _(filled in when the next /team-end runs)_
+**Successor handoff:** `docs/team-handoffs/ui-006-2026-06-21-brain-drawer-guarded-ahead-paused-prgolive-ready.md`
 **Round-seal commit at handoff:** `4d4dd64` (the wire-pin round terminal, on top of the arc seal `7d9586f`). **LOCAL — push HELD.**
 
 ## Why this handoff exists

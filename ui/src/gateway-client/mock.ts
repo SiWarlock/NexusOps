@@ -111,6 +111,9 @@ export interface MockGatewayOptions {
    *  test/dev port (its mutations resolve), so Mock-driven UI-flow tests keep enabled controls; set
    *  false to exercise the L2-B honest-disabled state (wired-but-not-enabled). */
   mutationsEnabled?: boolean;
+  /** The PR-mutation go-live gate (cat-1, ui-070). Default TRUE — the Mock is a fully-working dev/test
+   *  port (its mutations resolve), so Mock-driven UI-flow tests can exercise the enabled merge path. */
+  prMutationsEnabled?: boolean;
 }
 
 export class MockGatewayPort implements GatewayPort {
@@ -120,12 +123,15 @@ export class MockGatewayPort implements GatewayPort {
   private readonly listeners = new Set<(state: ConnectionState) => void>();
   /** The L2 go-live gate the UI controls consult (056) — default TRUE (the Mock is a working port). */
   readonly mutationsEnabled: boolean;
+  /** The PR-mutation go-live gate (cat-1, ui-070) — default TRUE (the working Mock dev/test port). */
+  readonly prMutationsEnabled: boolean;
 
   constructor(options: MockGatewayOptions = {}) {
     this.connection = options.connection ?? "connected";
     this.protocolVersion = options.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
     this.mutationError = options.mutationError;
     this.mutationsEnabled = options.mutationsEnabled ?? true;
+    this.prMutationsEnabled = options.prMutationsEnabled ?? true;
   }
 
   async get_projection<K extends ProjectionName>(

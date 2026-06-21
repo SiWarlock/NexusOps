@@ -120,4 +120,10 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     expect(caps.contract_version).toBe("0.42.0");
     expect(caps.protocol_version).toBe(1);
   });
+
+  it("mock_pr_mutations_enabled_defaults_true", () => {
+    // spec(ui-070/C1) — the Mock is a fully-working test/dev port: prMutationsEnabled defaults TRUE
+    // (mirrors mutationsEnabled), so Mock-driven UI-flow tests can exercise the enabled merge path.
+    expect(new MockGatewayPort().prMutationsEnabled).toBe(true);
+  });
 });

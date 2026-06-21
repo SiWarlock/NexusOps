@@ -348,6 +348,30 @@ describe("ui-061 — PR + Review frozen-shadow reconcile (§5.0/§11.2)", () => 
     expect(PullRequestRow.safeParse(noId).success).toBe(false);
   });
 
+  it("pull_request_row_diff_stats_are_uint_nullable", () => {
+    // spec(§11.2) — the 4 D6 diff-stat fields (additions/deletions/changed_files/commits) are u64
+    // NUMBERS (frozen `Option<u64>`, format uint64, minimum 0), each nullable + optional (NULL on a
+    // pre-D6/unsynced row); mirrors the pr_number uint pin. A string or negative is rejected.
+    expect(
+      PullRequestRow.safeParse({ ...prBase, additions: 40, deletions: 7, changed_files: 3, commits: 2 })
+        .success,
+    ).toBe(true);
+    // null / absent are tolerated (the brief: NULL where GitHub omitted them / pre-D6 rows).
+    expect(
+      PullRequestRow.safeParse({
+        ...prBase,
+        additions: null,
+        deletions: null,
+        changed_files: null,
+        commits: null,
+      }).success,
+    ).toBe(true);
+    // a STRING diff-stat is rejected (uint NUMBER, not a string).
+    expect(PullRequestRow.safeParse({ ...prBase, additions: "40" }).success).toBe(false);
+    // a NEGATIVE diff-stat is rejected (u64, minimum 0).
+    expect(PullRequestRow.safeParse({ ...prBase, deletions: -1 }).success).toBe(false);
+  });
+
   it("review_row_field_set_matches_frozen_schema", () => {
     // spec(§11.2) — the NEW (4th) frozen projection-row: the 8-field shadow is snapshot-pinned to
     // the frozen schema `$defs.ReviewRow` (the D5b-1 review vertical; the ApprovalQueueRow precedent).

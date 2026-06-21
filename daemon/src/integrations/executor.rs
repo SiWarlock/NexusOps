@@ -178,15 +178,11 @@ impl GithubExecutor {
         // parsing) → the leading-`-` CLI vector does NOT apply; the analogous guard is fail-closed
         // non-empty validation of EVERY required operand BEFORE the network call (a blank operand never
         // reaches GitHub; the network call is never invoked on a malformed request).
-        let Some(owner) = string_input(req, "owner") else {
-            return ExecutionOutcome::Failed(
-                "github.create_pr requires a non-empty inputs[\"owner\"]".to_string(),
-            );
-        };
-        let Some(repo) = string_input(req, "repo") else {
-            return ExecutionOutcome::Failed(
-                "github.create_pr requires a non-empty inputs[\"repo\"]".to_string(),
-            );
+        // P4.7 — owner/repo resolved from the AUDITED envelope project_id (the repo-only path; no PR row
+        // exists yet), NOT from attacker-controllable inputs. Fail-closed BEFORE the network call.
+        let (owner, repo) = match self.resolve_repo_target(req, "github.create_pr") {
+            Ok(t) => t,
+            Err(outcome) => return outcome,
         };
         let Some(head) = string_input(req, "head") else {
             return ExecutionOutcome::Failed(

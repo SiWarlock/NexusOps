@@ -28,7 +28,7 @@ use nexusops_shared::actions::{
 };
 use nexusops_shared::catalog::ExecutorKind;
 use nexusops_shared::events::{GithubSyncFailed, Provider, PullRequestSynced, ReviewSynced};
-use nexusops_shared::ids::ActionRequestId;
+use nexusops_shared::ids::{ActionRequestId, ProjectId};
 use nexusops_shared::status::{ActionRequestStatus, PullRequest, ReviewState};
 use nexusops_shared::time::Timestamp;
 use nexusopsd::clock::FixedClock;
@@ -45,6 +45,7 @@ use nexusopsd::integrations::github_write::{
     CreatePrArgs, CreatedPr, FakeGithubWriteClient, GithubWriteError, ReviewData,
 };
 use nexusopsd::integrations::pull_request::{derive_pull_request_status, PullRequestSignals};
+use nexusopsd::integrations::repo_resolve::FakeRepoResolver;
 
 const FIXED_TS: &str = "2026-06-13T00:00:00Z";
 
@@ -104,7 +105,9 @@ fn pr_req(
     };
     ActionRequest {
         action_request_id: ActionRequestId::new(),
-        project_id: None,
+        // P4.7 — create_pr resolves owner/repo from the envelope project_id (the repo-only path: no PR
+        // row exists yet; proj_repository is keyed by project_id). A fixed audited project identity.
+        project_id: Some(ProjectId::parse("proj_01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap()),
         action_type: action_type.to_string(),
         requester_type: RequesterType::User,
         requester_id: "u_local".to_string(),
@@ -145,6 +148,19 @@ fn ok_executor(
     GithubExecutor,
     Arc<Mutex<Vec<CreatePrArgs>>>,
 ) {
+    ok_executor_with_resolver(created, FakeRepoResolver::ok("acme", "widget"))
+}
+
+/// P4.7 — like [`ok_executor`] but with an explicit resolver (the create_pr resolve / ignore-divergent /
+/// fail-closed tests). owner/repo on the create call come from the RESOLVED audited project_id, not inputs.
+fn ok_executor_with_resolver(
+    created: CreatedPr,
+    resolver: FakeRepoResolver,
+) -> (
+    tokio::runtime::Runtime,
+    GithubExecutor,
+    Arc<Mutex<Vec<CreatePrArgs>>>,
+) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let fake = FakeGithubWriteClient::ok(created);
     let calls = fake.calls();
@@ -152,6 +168,7 @@ fn ok_executor(
         Box::new(fake),
         rt.handle().clone(),
         Box::new(FixedClock::new(FIXED_TS)),
+        Box::new(resolver),
     );
     (rt, exec, calls)
 }
@@ -163,6 +180,7 @@ fn err_executor(error: GithubWriteError) -> (tokio::runtime::Runtime, GithubExec
         Box::new(FakeGithubWriteClient::err(error)),
         rt.handle().clone(),
         Box::new(FixedClock::new(FIXED_TS)),
+        Box::new(FakeRepoResolver::ok("acme", "widget")),
     );
     (rt, exec)
 }
@@ -434,12 +452,12 @@ fn test_create_pr_transient_no_sync_event() {
 
 #[test]
 fn test_create_pr_missing_inputs_failed_no_call() {
-    // spec(LESSON 31 analog): a blank/absent required operand (owner/repo/head/base/title) → Failed BEFORE
-    // the network call (octocrab is a typed API → the leading-`-` CLI vector does not apply; the analog is
-    // fail-closed non-empty validation of every required operand).
+    // spec(LESSON 31 analog): a blank/absent required OPERAND (head/base/title) → Failed BEFORE the network
+    // call (octocrab is a typed API → the leading-`-` CLI vector does not apply; the analog is fail-closed
+    // non-empty validation of every required operand). P4.7: owner/repo are NO LONGER inputs operands —
+    // they're resolved from the audited project_id (a blank inputs owner/repo is simply ignored), so the
+    // owner/repo blank cases are dropped here (the resolve/fail-closed paths are the P4.7 tests below).
     let blanks: &[(&str, &str, &str, &str, &str)] = &[
-        ("", "widget", "feature/x", "main", "T"),
-        ("acme", "  ", "feature/x", "main", "T"),
         ("acme", "widget", "", "main", "T"),
         ("acme", "widget", "feature/x", "  ", "T"),
         ("acme", "widget", "feature/x", "main", ""),
@@ -479,6 +497,7 @@ fn test_create_pr_timeout_is_failed() {
         Box::new(FakeGithubWriteClient::hanging()),
         rt.handle().clone(),
         Box::new(FixedClock::new(FIXED_TS)),
+        Box::new(FakeRepoResolver::ok("acme", "widget")),
         Duration::from_millis(50),
     );
     let outcome = exec.execute(&create_pr_req());
@@ -535,6 +554,7 @@ fn test_create_pr_e2e_via_submit_action_approve() {
             ))),
             rt.handle().clone(),
             Box::new(FixedClock::new(FIXED_TS)),
+            Box::new(FakeRepoResolver::ok("acme", "widget")),
         )),
     );
     let gw = Gateway::new(Box::new(CatalogPolicy), Box::new(catalog));
@@ -590,6 +610,7 @@ fn test_failed_with_events_records_action_failed_and_appends() {
             })),
             rt.handle().clone(),
             Box::new(FixedClock::new(FIXED_TS)),
+            Box::new(FakeRepoResolver::ok("acme", "widget")),
         )),
     );
     let gw = Gateway::new(Box::new(CatalogPolicy), Box::new(catalog));
@@ -722,11 +743,21 @@ fn sync_reviews_req(owner: &str, repo: &str, pr_number: u64) -> ActionRequest {
 }
 
 fn reviews_executor(fake: FakeGithubWriteClient) -> (tokio::runtime::Runtime, GithubExecutor) {
+    reviews_executor_with_resolver(fake, FakeRepoResolver::ok("acme", "widget"))
+}
+
+/// P4.7 — like [`reviews_executor`] but with an explicit resolver (sync_reviews resolve / ignore-divergent /
+/// fail-closed). owner/repo on the list-reviews call come from the RESOLVED audited repo_id, not inputs.
+fn reviews_executor_with_resolver(
+    fake: FakeGithubWriteClient,
+    resolver: FakeRepoResolver,
+) -> (tokio::runtime::Runtime, GithubExecutor) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let exec = GithubExecutor::new(
         Box::new(fake),
         rt.handle().clone(),
         Box::new(FixedClock::new(FIXED_TS)),
+        Box::new(resolver),
     );
     (rt, exec)
 }
@@ -799,19 +830,12 @@ fn test_github_sync_reviews_empty_emits_nothing() {
 
 #[test]
 fn test_github_sync_reviews_validates_inputs() {
-    // spec(§6.3): each missing/invalid required input → a validation Failed BEFORE the network call (the
-    // create_pr per-field precedent). Covers missing owner / missing repo / missing pr_number / pr_number=0
-    // (a GitHub PR number is >= 1 → 0 is rejected by u64_input's positive-guard).
+    // spec(§6.3): each missing/invalid required INPUT → a validation Failed BEFORE the network call (the
+    // create_pr per-field precedent). Covers missing pr_number / pr_number=0 (a GitHub PR number is >= 1 →
+    // 0 is rejected by u64_input's positive-guard). P4.7: owner/repo are NO LONGER inputs — they're
+    // resolved from the audited repo_id (the resolve/fail-closed paths are the P4.7 sync_reviews tests).
     let (_rt, exec) = reviews_executor(FakeGithubWriteClient::with_reviews(vec![]));
     for (label, inputs) in [
-        (
-            "missing owner",
-            serde_json::json!({ "repo": "widget", "pr_number": 42 }),
-        ),
-        (
-            "missing repo",
-            serde_json::json!({ "owner": "acme", "pr_number": 42 }),
-        ),
         (
             "missing pr_number",
             serde_json::json!({ "owner": "acme", "repo": "widget" }),
@@ -866,4 +890,142 @@ fn test_github_sync_reviews_failure_is_github_sync_failed() {
     assert_eq!(et, GithubSyncFailed::EVENT_TYPE);
     let gsf: GithubSyncFailed = serde_json::from_str(&payload).expect("GithubSyncFailed parses");
     assert_eq!(gsf.provider, Provider::Github);
+}
+
+// =============================================================================
+// P4.7 — confused-deputy closure (create_pr + sync_reviews): owner/repo resolved
+// from the AUDITED identity (create_pr via the envelope project_id [repo-only path];
+// sync_reviews via the resource_ref repo_id + pr_number). security-reviewer `invariant`.
+// =============================================================================
+
+/// a create_pr req whose inputs["owner"/"repo"] DIVERGE from the audited project/repo identity.
+fn create_pr_req_divergent_inputs() -> ActionRequest {
+    pr_req(
+        "github.create_pr",
+        "attacker",
+        "evil",
+        "feature/x",
+        "main",
+        "Add widget",
+        Some("body"),
+    )
+}
+
+#[test]
+fn create_pr_resolves_owner_repo_from_repo_id() {
+    // spec(P4.7 (b) — repo-only path): create_pr resolves owner/repo from the audited envelope project_id
+    // (no PR row exists yet) → the create targets the RESOLVED owner/repo, not a literal input. DISTINCT
+    // resolver values (rowner/rrepo ≠ the inputs' acme/widget) prove the call came from RESOLUTION.
+    let (_rt, exec, calls) = ok_executor_with_resolver(
+        canned_pr(7, "feature/x", "main"),
+        FakeRepoResolver::ok("rowner", "rrepo"),
+    );
+    let outcome = exec.execute(&create_pr_req());
+    assert!(matches!(outcome, ExecutionOutcome::Succeeded { .. }));
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].owner, "rowner",
+        "owner is the RESOLVED value (project_id→owner/repo), not inputs"
+    );
+    assert_eq!(
+        calls[0].repo, "rrepo",
+        "repo is the RESOLVED value, not inputs"
+    );
+}
+
+#[test]
+fn create_pr_ignores_divergent_inputs_owner_repo() {
+    // spec(P4.7 (c) — audited==executed): divergent inputs[owner/repo] IGNORED; the resolved audited target wins.
+    let (_rt, exec, calls) = ok_executor_with_resolver(
+        canned_pr(7, "feature/x", "main"),
+        FakeRepoResolver::ok("acme", "widget"),
+    );
+    let _ = exec.execute(&create_pr_req_divergent_inputs());
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].owner, "acme",
+        "divergent inputs[owner]=attacker IGNORED"
+    );
+    assert_eq!(
+        calls[0].repo, "widget",
+        "divergent inputs[repo]=evil IGNORED"
+    );
+}
+
+#[test]
+fn create_pr_fails_closed_on_unresolvable_repo_id() {
+    // spec(P4.7 (b) fail-closed): an unresolvable project identity → Failed BEFORE the network call (no create).
+    let (_rt, exec, calls) = ok_executor_with_resolver(
+        canned_pr(7, "feature/x", "main"),
+        FakeRepoResolver::not_found(),
+    );
+    match exec.execute(&create_pr_req()) {
+        ExecutionOutcome::Failed(_) => {}
+        _ => panic!("expected Failed on an unresolvable project"),
+    }
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        0,
+        "fail-closed BEFORE the network call — no PR created on an unresolvable target"
+    );
+}
+
+#[test]
+fn sync_reviews_resolves_owner_repo_from_repo_id() {
+    // spec(P4.7 (b) — the PR-row path, the only READ in the set): sync_reviews resolves owner/repo from the
+    // audited resource_ref repo_id (+ pr_number) → the list targets the RESOLVED owner/repo. DISTINCT
+    // resolver values (rowner/rrepo ≠ the inputs' acme/widget) prove the call came from RESOLUTION.
+    let fake = FakeGithubWriteClient::with_reviews(vec![]);
+    let calls = fake.review_calls();
+    let (_rt, exec) = reviews_executor_with_resolver(fake, FakeRepoResolver::ok("rowner", "rrepo"));
+    let outcome = exec.execute(&sync_reviews_req("acme", "widget", 42));
+    assert!(matches!(outcome, ExecutionOutcome::Succeeded { .. }));
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1, "exactly one list_reviews call");
+    assert_eq!(
+        calls[0].owner, "rowner",
+        "owner is the RESOLVED value, not inputs"
+    );
+    assert_eq!(
+        calls[0].repo, "rrepo",
+        "repo is the RESOLVED value, not inputs"
+    );
+}
+
+#[test]
+fn sync_reviews_ignores_divergent_inputs_owner_repo() {
+    // spec(P4.7 (c) — audited==executed): divergent inputs[owner/repo] IGNORED; resolved audited target wins.
+    let fake = FakeGithubWriteClient::with_reviews(vec![]);
+    let calls = fake.review_calls();
+    let (_rt, exec) = reviews_executor_with_resolver(fake, FakeRepoResolver::ok("acme", "widget"));
+    let _ = exec.execute(&sync_reviews_req("attacker", "evil", 42));
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].owner, "acme",
+        "divergent inputs[owner]=attacker IGNORED"
+    );
+    assert_eq!(
+        calls[0].repo, "widget",
+        "divergent inputs[repo]=evil IGNORED"
+    );
+}
+
+#[test]
+fn sync_reviews_fails_closed_on_unresolvable_repo_id() {
+    // spec(P4.7 (b) fail-closed): an unresolvable repo_id → Failed BEFORE the network call (no list).
+    let fake = FakeGithubWriteClient::with_reviews(vec![]);
+    let calls = fake.review_calls();
+    let (_rt, exec) = reviews_executor_with_resolver(fake, FakeRepoResolver::not_found());
+    match exec.execute(&sync_reviews_req("acme", "widget", 42)) {
+        ExecutionOutcome::Failed(_) => {}
+        _ => panic!("expected Failed on an unresolvable repo_id"),
+    }
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        0,
+        "fail-closed BEFORE the network call — no review list on an unresolvable target"
+    );
 }

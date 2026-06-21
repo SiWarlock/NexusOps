@@ -4,7 +4,7 @@
 **Track:** ui
 **Worktree:** `NexusOps-ui` (branch `track/ui`) — **LEFT IN PLACE** (the track resumes here when the daemon prerequisites land; not torn down).
 **Predecessor handoff:** `docs/team-handoffs/ui-003-2026-06-17-cycle-close-session-live-next-pr-workspace.md`
-**Successor handoff:** _(filled in when the next /team-end runs)_
+**Successor handoff:** `docs/team-handoffs/ui-005-2026-06-21-pr-mutations-built-realpinned-paused-authbootstrap-gated.md`
 **Round-seal commit at handoff:** `f41c6ff` (origin/track/ui == this; = origin/main `c22d04d` + the work-order/fidelity-note commit)
 
 ## Why this handoff exists

@@ -121,3 +121,46 @@ export const ActionRequest = z.object({
   project_id: z.string().nullable().optional(),
 });
 export type ActionRequest = z.infer<typeof ActionRequest>;
+
+/** §6.2 ActionDependency — a step-ordering edge within an ActionPlan. `.strict()` matches the
+ *  frozen `deny_unknown_fields` (reject-unknown end-to-end, §5.0/§15). */
+export const ActionDependency = z
+  .object({
+    step_id: z.string(),
+    depends_on_step_ids: z.array(z.string()),
+  })
+  .strict();
+export type ActionDependency = z.infer<typeof ActionDependency>;
+
+/** §6.2 ActionPlanStep — one step of a bundled ActionPlan (O-3). Wraps a full ActionRequest; `status`
+ *  is the step's own §5.1 ActionRequestStatus within the plan (enum DELEGATED to the generated bundle,
+ *  never re-declared). `rollback_action_type` is the frozen optional. `.strict()` matches the frozen
+ *  `deny_unknown_fields`. The step's daemon-formed `action_request.risk_level` is the daemon's
+ *  catalog-authoritative per-step risk (CatalogPolicy) — the UI renders it, never derives one (Q3). */
+export const ActionPlanStep = z
+  .object({
+    step_id: z.string(),
+    label: z.string(),
+    action_request: ActionRequest,
+    required: z.boolean(),
+    can_skip: z.boolean(),
+    rollback_action_type: z.string().nullable().optional(),
+    status: bundle.shape.ActionRequestStatus,
+  })
+  .strict();
+export type ActionPlanStep = z.infer<typeof ActionPlanStep>;
+
+/** §6.2 ActionPlan — a bundled multi-step plan (O-3). The daemon owns `overall_risk` (the §6.3
+ *  plan-level risk) + `approval_mode` (DELEGATED to the generated ApprovalMode enum); the UI renders
+ *  them, never recomputes (Q3). `.strict()` matches the frozen `deny_unknown_fields`. */
+export const ActionPlan = z
+  .object({
+    plan_id: z.string(),
+    title: z.string(),
+    steps: z.array(ActionPlanStep),
+    dependencies: z.array(ActionDependency),
+    overall_risk: RiskLevel,
+    approval_mode: bundle.shape.ApprovalMode,
+  })
+  .strict();
+export type ActionPlan = z.infer<typeof ActionPlan>;

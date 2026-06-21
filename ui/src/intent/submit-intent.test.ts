@@ -5,6 +5,9 @@ import { createIntentSeam } from "./submit-intent";
 import { MockGatewayPort } from "../gateway-client/mock";
 import {
   ActionAck,
+  ActionDependency,
+  ActionPlan,
+  ActionPlanStep,
   ActionPreview,
   ActionRequest,
   ActorRefBody,
@@ -102,6 +105,20 @@ describe("intent seam — cat-1 safety pins", () => {
     expect(denySpy).toHaveBeenCalledWith(APPROVAL.approval_id, "not now");
     // The id passed is the daemon's, verbatim — never a UI-synthesized one.
     expect(approveSpy.mock.calls[0]![0]).toBe(APPROVAL.approval_id);
+  });
+
+  it("approve_threads_optional_step_id_for_plan_steps", async () => {
+    // spec(§6.1) — the seam's approve OPTIONALLY threads a `step_id` (the §6.1
+    // `approve(approval_id, step_id?)` wire) so a plan's per-step approve reaches the daemon;
+    // a plan-level approve-all passes NO step_id (length-1 call) — the daemon owns step eligibility.
+    const port = new MockGatewayPort();
+    const approveSpy = vi.spyOn(port, "approve");
+    const seam = createIntentSeam(port, open);
+    await seam.approve(APPROVAL, "step_2");
+    expect(approveSpy).toHaveBeenCalledWith(APPROVAL.approval_id, "step_2");
+    approveSpy.mockClear();
+    await seam.approve(APPROVAL); // plan-level / single-action — NO step_id
+    expect(approveSpy.mock.calls[0]).toEqual([APPROVAL.approval_id]); // length 1, never (id, undefined)
   });
 
   it("preview_surfaces_daemon_preview_never_synthesized", async () => {
@@ -203,10 +220,54 @@ describe("intent contracts — frozen-shadow drift pin (§2.5-seam)", () => {
       ["RequiredApprover", RequiredApprover],
       ["ActorRefBody", ActorRefBody],
       ["PolicyDecision", PolicyDecision],
+      // ui-073 (§11.5 plan render) — the §6.2 ActionPlan bundle shapes, hand-modeled as
+      // provisional shadows (the generator emits flat enums only), drift-pinned to actions.rs.
+      ["ActionPlan", ActionPlan],
+      ["ActionPlanStep", ActionPlanStep],
+      ["ActionDependency", ActionDependency],
     ];
     for (const [name, zod] of cases) {
       const frozen = Object.keys(schema.$defs[name]!.properties ?? {}).toSorted();
       expect(Object.keys(zod.shape).toSorted(), `field drift in ${name}`).toEqual(frozen);
     }
+  });
+
+  it("plan_shapes_reject_unknown_fields_and_delegate_approval_mode", () => {
+    // spec(§5.0/§15) — the frozen plan $defs are `deny_unknown_fields`; the shadows are `.strict()`
+    // to match (a field-name snapshot wouldn't catch a `.strict()` drop). And ActionPlan.approval_mode
+    // delegates to the GENERATED ApprovalMode enum (reject-unknown end-to-end — never a re-literal'd union).
+    const goodStep = {
+      step_id: "s1",
+      label: "x",
+      action_request: {
+        action_request_id: "ar_1",
+        action_type: "git.commit",
+        requester_type: "project_brain",
+        requester_id: "b1",
+        resource_refs: [],
+        inputs: {},
+        risk_level: 1,
+        status: "awaiting_approval",
+        created_at: "2026-06-21T00:00:00Z",
+      },
+      required: true,
+      can_skip: false,
+      rollback_action_type: null,
+      status: "awaiting_approval",
+    };
+    expect(ActionPlanStep.safeParse(goodStep).success).toBe(true);
+    expect(ActionPlanStep.safeParse({ ...goodStep, extra: 1 }).success).toBe(false);
+    expect(ActionDependency.safeParse({ step_id: "s1", depends_on_step_ids: ["s0"], extra: 1 }).success).toBe(false);
+    const goodPlan = {
+      plan_id: "plan_1",
+      title: "t",
+      steps: [goodStep],
+      dependencies: [],
+      overall_risk: 3,
+      approval_mode: "step_by_step",
+    };
+    expect(ActionPlan.safeParse(goodPlan).success).toBe(true);
+    expect(ActionPlan.safeParse({ ...goodPlan, extra: 1 }).success).toBe(false);
+    expect(ActionPlan.safeParse({ ...goodPlan, approval_mode: "bogus_mode" }).success).toBe(false);
   });
 });

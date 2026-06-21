@@ -52,7 +52,7 @@ import {
   filterByActiveProject,
   ActiveProjectProvider,
 } from "./active-project";
-import { enrichApproval, sessionDisplayFixture } from "./display-meta";
+import { sessionDisplayFixture } from "./display-meta";
 import { useViewHistory } from "./view-history";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
@@ -60,7 +60,7 @@ import { EventDock } from "./EventDock";
 import { CommandPalette, type PaletteAction } from "../overlays/CommandPalette";
 import { HumanInputQueue } from "../overlays/HumanInputQueue";
 import { TaskInbox } from "../overlays/TaskInbox";
-import { GatewayModal } from "../overlays/GatewayModal";
+import { GatewayOverlay } from "../overlays/GatewayOverlay";
 import { BrainDrawer } from "../overlays/BrainDrawer";
 import { InspectorDrawer } from "../overlays/InspectorDrawer";
 import type { GraphNode } from "../views/graph/model";
@@ -766,8 +766,10 @@ export function Shell({
         ) : overlay?.kind === "tasks" ? (
           <TaskInbox onClose={() => setOverlay(null)} />
         ) : overlay?.kind === "gateway" ? (
-          <GatewayModal
-            {...enrichApproval(overlay.approval)}
+          // ui-073 — the dispatcher branches on the selected approval's plan_id: a plan-bearing
+          // approval → the N-step PlanModal; a single-action approval → the unchanged GatewayModal.
+          <GatewayOverlay
+            approval={overlay.approval}
             port={client}
             onClose={() => setOverlay(null)}
           />

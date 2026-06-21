@@ -83,8 +83,9 @@ const rejectingGateway: GatewayPort = {
   },
   get_capabilities: () =>
     Promise.resolve({ protocol_version: 1, contract_version: "0.5.0" }),
-  // §6.1 get_diff (unused in this read-path test — 6.3e Code/Diff has its own suite).
+  // §6.1 get_diff / get_pr_diff (unused in this read-path test — Code/Diff has its own suite).
   get_diff: notExercised,
+  get_pr_diff: notExercised,
   // §6.1 mutation surface (unused in this read-path test — the seam has its own suite).
   submit_action: notExercised,
   preview_action: notExercised,

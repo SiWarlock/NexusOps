@@ -198,6 +198,18 @@ export class MockGatewayPort implements GatewayPort {
     return DiffResult.parse(diffFixture);
   }
 
+  // §6.1 get_pr_diff (D7) — read-only PR code-diff fixture, served THROUGH the frozen
+  // DiffResult shadow (the same dogfood discipline as get_diff — the mock can never emit
+  // a diff the real boundary would reject). `repo_id`/`pr_number`/`file` are accepted but
+  // unused (the fixture is fixed); the daemon resolves repo+pr → the GitHub head-vs-base diff.
+  async get_pr_diff(
+    _repo_id: string,
+    _pr_number: number,
+    _file: string | null,
+  ): Promise<DiffResult> {
+    return DiffResult.parse(diffFixture);
+  }
+
   // §6.1 mutation-intent surface — deterministic fixtures. The daemon mints the
   // `action_request_id` + reports a lifecycle `status`. submit_action returns the
   // NON-terminal `submitted` (NEVER a synthesized `succeeded`) so the seam's

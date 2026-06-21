@@ -173,6 +173,20 @@ export class UdsGatewayPort implements GatewayPort {
     });
   }
 
+  async get_pr_diff(
+    repo_id: string,
+    pr_number: number,
+    file: string | null,
+  ): Promise<DiffResult> {
+    // D7 — the remote-PR code-diff; REUSE parseDiff (the return shape is the frozen DiffResult).
+    // Tauri auto-converts camelCase → snake_case (repoId → repo_id, prNumber → pr_number).
+    return this.invokeRead(parseDiff, "gateway_get_pr_diff", {
+      repoId: repo_id,
+      prNumber: pr_number,
+      file,
+    });
+  }
+
   async get_capabilities(): Promise<Capabilities> {
     return this.invokeRead(parseCapabilities, "gateway_get_capabilities");
   }

@@ -129,6 +129,42 @@ describe("UdsGatewayPort — single-shot reads (Layer A)", () => {
     );
   });
 
+  it("uds_get_pr_diff_invokes_and_parses (§6.1 — mirror get_diff; D7)", async () => {
+    // invoke gateway_get_pr_diff with camelCase args + boundary-parse the DiffResult (parse-don't-
+    // trust). The wire-vs-transport routing is the shared invokeRead path; this pins get_pr_diff's
+    // invoke shape, the fail-closed boundary parse, and the wire→plain {code} (LESSON §16) for it.
+    mockInvoke.mockResolvedValue(validDiff);
+    const port = new UdsGatewayPort();
+
+    const diff = await port.get_pr_diff("repo_1", 101, null);
+    // Tauri auto-converts JS camelCase → Rust snake_case (repoId → repo_id, prNumber → pr_number).
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_get_pr_diff", {
+      repoId: "repo_1",
+      prNumber: 101,
+      file: null,
+    });
+    expect(diff.hunks).toHaveLength(1);
+
+    // a malformed payload → BoundaryValidationError (fail-closed), never a bad partial value.
+    mockInvoke.mockResolvedValue({ not_a_diff: true });
+    await expect(port.get_pr_diff("repo_1", 101, null)).rejects.toBeInstanceOf(
+      BoundaryValidationError,
+    );
+
+    // a daemon WIRE error → PLAIN {code} (NOT an Error) so the §6.4 code routes verbatim (the
+    // consumer's WireError.safeParse must match it; the not_found honest-unavailable path).
+    mockInvoke.mockRejectedValue({ kind: "wire", code: "not_found" });
+    let thrown: unknown;
+    try {
+      await port.get_pr_diff("repo_1", 101, null);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown instanceof Error).toBe(false);
+    expect(WireError.safeParse(thrown).success).toBe(true);
+    expect((thrown as { code: string }).code).toBe("not_found");
+  });
+
   it("get_capabilities invokes the command and boundary-parses Capabilities (§6.4)", async () => {
     mockInvoke.mockResolvedValue(validCaps);
     const port = new UdsGatewayPort();

@@ -25,7 +25,8 @@ use std::time::Duration;
 
 use nexusops_shared::actions::{ActionPreview, ActionRequest};
 use nexusops_shared::ipc::{
-    ActionAck, Capabilities, DiffResult, GetDiffParams, GetProjectionParams, HelloAck, HelloFrame,
+    ActionAck, Capabilities, DiffResult, GetDiffParams, GetPrDiffParams, GetProjectionParams,
+    HelloAck, HelloFrame,
     IpcErrorCode, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, ServerFrame,
     SubscribeParams, VersionSkewError, PROTOCOL_VERSION,
 };
@@ -237,6 +238,25 @@ pub fn get_diff<S: Read + Write>(
         file: file.to_string(),
     })?;
     let value = call(stream, "get_diff", params, id)?;
+    Ok(serde_json::from_value(value)?)
+}
+
+/// `get_pr_diff` — forms `GetPrDiffParams{repo_id,pr_number,file}` + calls; deserializes the
+/// `DiffResult` (the D7 remote-PR code-diff, head-vs-base; `file: None` = the whole changeset).
+/// Mirrors `get_diff`; `DiffResult` is the SAME frozen shape (REUSED, no new shadow).
+pub fn get_pr_diff<S: Read + Write>(
+    stream: &mut S,
+    repo_id: &str,
+    pr_number: u64,
+    file: Option<&str>,
+    id: u64,
+) -> Result<DiffResult, ClientError> {
+    let params = serde_json::to_value(GetPrDiffParams {
+        repo_id: repo_id.to_string(),
+        pr_number,
+        file: file.map(str::to_string),
+    })?;
+    let value = call(stream, "get_pr_diff", params, id)?;
     Ok(serde_json::from_value(value)?)
 }
 
@@ -683,6 +703,42 @@ mod tests {
         let mut s = FakeStream::new(rpc_ok(3, serde_json::json!({ "not_a_diff": true })));
         assert!(matches!(
             get_diff(&mut s, "wt_1", "a.ts", 3),
+            Err(ClientError::Serde(_))
+        ));
+    }
+
+    #[test]
+    fn get_pr_diff_returns_typed_diffresult() {
+        // spec(§6.1) — get_pr_diff forms GetPrDiffParams{repo_id,pr_number,file} + calls +
+        // deserializes the typed DiffResult (the D7 remote-PR code-diff; mirrors get_diff).
+        let diff = serde_json::json!({
+            "hunks": [{
+                "header": "@@ -1,1 +1,1 @@",
+                "old_start": 1, "old_lines": 1, "new_start": 1, "new_lines": 1,
+                "lines": [{ "kind": "context", "content": "x\n" }]
+            }]
+        });
+        let mut s = FakeStream::new(rpc_ok(4, diff));
+        let result = get_pr_diff(&mut s, "repo_1", 101, None, 4).unwrap();
+        assert_eq!(result.hunks.len(), 1);
+        assert_eq!(result.hunks[0].old_start, 1);
+        // the request carried the get_pr_diff method + the GetPrDiffParams the daemon expects.
+        let req: RpcRequest = serde_json::from_slice(&s.writes[4..]).unwrap();
+        assert_eq!(req.method, "get_pr_diff");
+        assert_eq!(req.params["repo_id"], "repo_1");
+        assert_eq!(req.params["pr_number"], 101);
+        // file: None → serialized as explicit null (no skip_serializing_if — the stable §2.5-seam
+        // field-name snapshot; LESSON §15 trap 3).
+        assert_eq!(req.params["file"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn get_pr_diff_malformed_result_is_serde_error() {
+        // spec(§5.0) — a structurally valid RpcResponse whose result is NOT a DiffResult → a typed
+        // Serde error (fail-closed), never a bad partial value.
+        let mut s = FakeStream::new(rpc_ok(4, serde_json::json!({ "not_a_diff": true })));
+        assert!(matches!(
+            get_pr_diff(&mut s, "repo_1", 101, None, 4),
             Err(ClientError::Serde(_))
         ));
     }

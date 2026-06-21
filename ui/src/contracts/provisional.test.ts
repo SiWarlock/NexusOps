@@ -356,6 +356,11 @@ describe("ui-061 — PR + Review frozen-shadow reconcile (§5.0/§11.2)", () => 
       PullRequestRow.safeParse({ ...prBase, additions: 40, deletions: 7, changed_files: 3, commits: 2 })
         .success,
     ).toBe(true);
+    // a present 0 is a VALID u64 (minimum 0) — the exact value LESSON §32 protects from a falsy guard.
+    expect(
+      PullRequestRow.safeParse({ ...prBase, additions: 0, deletions: 0, changed_files: 0, commits: 0 })
+        .success,
+    ).toBe(true);
     // null / absent are tolerated (the brief: NULL where GitHub omitted them / pre-D6 rows).
     expect(
       PullRequestRow.safeParse({

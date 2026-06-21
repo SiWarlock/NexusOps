@@ -24,6 +24,58 @@ function mergeability(mergeable: boolean | null | undefined): { glyph: string; l
   return { glyph: "?", label: "Mergeability unknown", color: "var(--text-faint)" };
 }
 
+const DIFFSTATS_ROW: CSSProperties = {
+  display: "flex",
+  gap: 14,
+  flexWrap: "wrap",
+  alignItems: "center",
+  font: "var(--fs-meta) var(--font-sans)",
+};
+
+const DELTA: CSSProperties = { display: "inline-flex", alignItems: "center", gap: 4 };
+
+/** D6 diff-stats — the real PR-card stats from the frozen `PullRequestRow`. Null-safe per LESSON §32:
+ *  the guard is `!= null` (a PRESENT `0` is a real stat, NEVER hidden — never `!x` / `x || …`); each
+ *  absent field is omitted; ALL four null → an honest "unavailable" state (a pre-D6 / unsynced row),
+ *  never fabricated numbers. The +/− deltas carry a glyph + a text LABEL (never color alone — forbidden #5). */
+function DiffStats({ pr }: { pr: PullRequestRow }) {
+  const { additions, deletions, changed_files, commits } = pr;
+  if (additions == null && deletions == null && changed_files == null && commits == null) {
+    return (
+      <div data-testid="pr-diffstats-empty" style={PLACEHOLDER}>
+        Diff stats are unavailable for this PR — the daemon hasn’t captured them yet (an unsynced or
+        pre-capture row). No numbers are fabricated.
+      </div>
+    );
+  }
+  return (
+    <div data-testid="pr-diffstats" style={DIFFSTATS_ROW}>
+      {additions != null && (
+        <span style={{ ...DELTA, color: "var(--success-ink)" }}>
+          <span aria-hidden="true">+</span>
+          {additions} additions
+        </span>
+      )}
+      {deletions != null && (
+        <span style={{ ...DELTA, color: "var(--danger-ink)" }}>
+          <span aria-hidden="true">−</span>
+          {deletions} deletions
+        </span>
+      )}
+      {changed_files != null && (
+        <span style={{ color: "var(--text-secondary)" }}>
+          {changed_files} {changed_files === 1 ? "file" : "files"}
+        </span>
+      )}
+      {commits != null && (
+        <span style={{ color: "var(--text-secondary)" }}>
+          {commits} {commits === 1 ? "commit" : "commits"}
+        </span>
+      )}
+    </div>
+  );
+}
+
 /**
  * The read-only PR Review Workspace (ui-064 Layer 2, §11.2) — the PR-detail panel for a selected PR.
  * Renders the parts backed by the frozen `PullRequestRow` + `ReviewRow` (header, mergeability, checks,
@@ -81,13 +133,11 @@ export function PrWorkspace({
         <ReviewsList reviews={reviews} />
       </div>
 
-      {/* D6 diff-stats — honest daemon-gap placeholder (NO fabricated +/−/files/commits). */}
+      {/* D6 diff-stats — real null-safe stats from the frozen row (a present 0 is real; all-null → an
+          honest unavailable state; never a fabricated number — LESSON §32). */}
       <div style={SECTION}>
         <Eyebrow>Changes</Eyebrow>
-        <div data-testid="pr-diffstats-unavailable" style={PLACEHOLDER}>
-          Diff stats (additions / deletions / files / commits) are unavailable — they need the daemon’s
-          PR diff-stats capture (D6). No numbers are shown rather than fabricated ones.
-        </div>
+        <DiffStats pr={pr} />
         {/* D7 PR code-diff — honest placeholder naming the missing RPC; never get_diff (worktree-scoped). */}
         <div
           data-testid="pr-diff-unavailable"

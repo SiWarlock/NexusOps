@@ -3,7 +3,7 @@
 - **Date:** 2026-06-21
 - **Phase:** Phase 4 / **P4.7** (the auth-bootstrap arc — the live-mutation go-live prerequisite)
 - **Predecessor:** [034 — P5.3a registry · head_sha · the confused-deputy closure](034-2026-06-21-p5.3a-profiles-headsha-confused-deputy.md)
-- **Successor:** _(the post-cycle fresh implementer — resumes 083 from this clean pre-GREEN boundary)_
+- **Successor:** [036 — 083 GREEN landing (the 6-commit Option-B live vertical)](036-2026-06-21-083-auth-bootstrap-green-landing.md)
 
 ## Why this session existed
 

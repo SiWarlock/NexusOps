@@ -377,6 +377,16 @@ describe("ui-061 — PR + Review frozen-shadow reconcile (§5.0/§11.2)", () => 
     expect(PullRequestRow.safeParse({ ...prBase, deletions: -1 }).success).toBe(false);
   });
 
+  it("pull_request_row_head_sha_is_string_nullable", () => {
+    // spec(§11.2/§5.0) — head_sha (P4.7) is a TEXT field (frozen `Option<String>`, direct passthrough —
+    // NOT a uint like the diff-stats): a string parses; null/absent tolerated; a non-string rejects. The
+    // UI head_sha is display/pin-FORMATION only (the daemon's anti-race is the LIVE GitHub 409).
+    expect(PullRequestRow.safeParse({ ...prBase, head_sha: "abc123def" }).success).toBe(true);
+    expect(PullRequestRow.safeParse({ ...prBase, head_sha: null }).success).toBe(true);
+    // a non-string head_sha is rejected (TEXT, not a number).
+    expect(PullRequestRow.safeParse({ ...prBase, head_sha: 123 }).success).toBe(false);
+  });
+
   it("review_row_field_set_matches_frozen_schema", () => {
     // spec(§11.2) — the NEW (4th) frozen projection-row: the 8-field shadow is snapshot-pinned to
     // the frozen schema `$defs.ReviewRow` (the D5b-1 review vertical; the ApprovalQueueRow precedent).

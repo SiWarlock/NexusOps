@@ -147,13 +147,12 @@ function PrCodeDiff({ state }: { state: PrDiffState }) {
   );
 }
 
-/** The displayed head SHA the Merge intent pins ([[19]]/D2 — submitted==displayed; the anti-race pin
- *  the daemon 409s against). Returns `pr.head_sha` once the daemon D-head_sha freeze + a follow-up
- *  PullRequestRow shadow-reconcile add the field (A3 parallel work, routed cross-track); until then the
- *  field is absent → null → the Merge control stays disabled. Read via a tolerant cast (NO shadow change
- *  this slice) so it works forward-compatibly the moment the daemon populates it. */
+/** The displayed head SHA the cat-1 merge/review intents pin ([[19]]/D2 — submitted==displayed; the
+ *  anti-race pin the daemon 409s against). Sourced from the real `pr.head_sha` (the daemon field landed
+ *  @0.44, ui-072); `null` only when the daemon omitted it (a pre-P4.7 row) → the controls stay disabled.
+ *  NOTE: head_sha being real is NOT a go-live — the per-action `enabledPrMutations` gate is the switch. */
 export function prHeadSha(pr: PullRequestRow): string | null {
-  return (pr as { head_sha?: string | null }).head_sha ?? null;
+  return pr.head_sha ?? null;
 }
 
 /**

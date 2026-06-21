@@ -473,9 +473,9 @@ describe("DiffReview — null-safe PR-number chip (ui-067)", () => {
 });
 
 // ─── ui-070 cat-1 — github.merge_pr Merge control (guarded-disabled) ─────────────
-// A PR with a captured head_sha (injected via cast — the daemon field isn't on PullRequestRow yet;
-// prHeadSha reads it forward-compatibly). Production rows lack it → prHeadSha null → Merge disabled.
-const PR_MERGEABLE = {
+// A PR with a real head_sha (ui-072: head_sha is now a typed PullRequestRow field @0.44 — no cast).
+// prHeadSha reads it; a production row without it → null → Merge disabled.
+const PR_MERGEABLE: PullRequestRow = {
   pr_id: "repo_1#101",
   project_id: "p1",
   repo_id: "repo_1",
@@ -488,7 +488,7 @@ const PR_MERGEABLE = {
   mergeable: true,
   checks_summary: null,
   head_sha: "headsha123",
-} as unknown as PullRequestRow;
+};
 
 function renderMerge(port: MockGatewayPort, status: ConnectionStatus = CONNECTED) {
   vi.spyOn(port, "get_diff").mockResolvedValue(DIFF);
@@ -656,5 +656,55 @@ describe("DiffReview — github.submit_review controls (cat-1 ui-071)", () => {
     expect(screen.getByTestId("pr-mutation-rereview")).toBeTruthy();
     // no fabricated success (symmetry with the merge-path twin; "reviewed" excluded — honest re-review prose).
     expect(region.textContent ?? "").not.toMatch(/\b(merged|done|succeeded)\b/i);
+  });
+});
+
+// ─── ui-072 — head_sha sourced, but it is NOT the go-live switch (the per-action gate is) ──────
+describe("DiffReview — real head_sha is not a go-live (cat-1 ui-072)", () => {
+  // PR_MERGEABLE carries a real head_sha (the daemon pin source @0.44). Open the workspace + type a body
+  // so the verdict controls' ONLY remaining blocker is the per-action gate (isolating head_sha's effect).
+  function openWithBody(port: MockGatewayPort) {
+    vi.spyOn(port, "get_diff").mockResolvedValue(DIFF);
+    vi.spyOn(port, "get_pr_diff").mockResolvedValue(DIFF);
+    render(
+      <ReadOnlyProvider value={CONNECTED}>
+        <DiffReview prs={[PR_MERGEABLE]} reviews={[]} gateway={port} />
+      </ReadOnlyProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Pull requests/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Add OAuth device flow/i }));
+    fireEvent.change(screen.getByTestId("pr-review-body"), { target: { value: "lgtm" } });
+  }
+
+  it("real_head_sha_does_not_enable_controls_while_gate_empty", async () => {
+    // spec(cat-1 [[27]]/[[28]]) — THE load-bearing pin: a real head_sha + enabledPrMutations EMPTY (the
+    // production default) leaves Merge AND all 3 verdict controls DISABLED. head_sha sourcing is NOT a
+    // go-live — only the per-action gate flip is. (Sourcing the pin must never become an enable.)
+    const port = new MockGatewayPort({ enabledPrMutations: new Set() });
+    openWithBody(port);
+    expect((await screen.findByRole("button", { name: /^Merge/i })) as HTMLButtonElement).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(screen.getByRole("button", { name: /Approve PR/i })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /Request changes/i })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /^Comment/i })).toHaveProperty("disabled", true);
+  });
+
+  it("real_head_sha_with_enabled_action_enables_control", async () => {
+    // spec(ui-072) — real head_sha + the action in enabledPrMutations (Mock's full default) → the control
+    // ENABLES: head_sha was the last UI-side blocker and is now sourced (the daemon auth-bootstrap is the
+    // remaining DAEMON-side go-live blocker, out of scope). Proves the pin no longer blocks.
+    const port = new MockGatewayPort(); // enabledPrMutations defaults full
+    openWithBody(port);
+    expect((await screen.findByRole("button", { name: /^Merge/i })) as HTMLButtonElement).toHaveProperty(
+      "disabled",
+      false,
+    );
+    // all 4 controls enable (symmetry with the gate-empty pin that disabled all 4) — body typed, so the
+    // verdict controls' only gates (canReview + body) are satisfied.
+    expect(screen.getByRole("button", { name: /Approve PR/i })).toHaveProperty("disabled", false);
+    expect(screen.getByRole("button", { name: /Request changes/i })).toHaveProperty("disabled", false);
+    expect(screen.getByRole("button", { name: /^Comment/i })).toHaveProperty("disabled", false);
   });
 });

@@ -117,7 +117,9 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     //           D5b-2 github.sync_reviews 0.38).
     // → 0.42.0 (§4.7 PR-mutation boundary merge: D6 PR-card diff-stats 0.39 / D7 get_pr_diff 0.40 /
     //           D9 github.merge_pr 0.41 / D10 github.submit_review 0.42).
-    expect(caps.contract_version).toBe("0.42.0");
+    // → 0.44.0 (head_sha boundary merge: 0.43 ExecutionProfileRegistered/5.3a · 0.44 PullRequestRow.head_sha
+    //           exposure [the cat-1 merge/review pin source] + the ruling-A owner/repo daemon resolution).
+    expect(caps.contract_version).toBe("0.44.0");
     expect(caps.protocol_version).toBe(1);
   });
 

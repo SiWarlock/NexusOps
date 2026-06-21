@@ -6,7 +6,7 @@
 // mutations + Brain controls rendered DISABLED (a future cat-1 arc + the deferred Brain sibling).
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
-import { PrWorkspace, type PrDiffState } from "./PrWorkspace";
+import { PrWorkspace, prHeadSha, type PrDiffState } from "./PrWorkspace";
 import type { ReviewEvent } from "../../intent/pr-mutation-request";
 import type { DiffResult, PullRequestRow, ReviewRow } from "../../contracts/index";
 
@@ -314,5 +314,17 @@ describe("PrWorkspace (ui-064 Layer 2)", () => {
     expect(region.textContent ?? "").not.toMatch(/\b(merged|done|succeeded)\b/i);
     fireEvent.click(screen.getByTestId("pr-mutation-rereview"));
     expect(onReReview).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── ui-072 — prHeadSha sources the real daemon field (regen-to-green 0.44) ──────
+describe("prHeadSha (ui-072 — real head_sha pin source)", () => {
+  it("pr_head_sha_returns_real_field", () => {
+    // spec(§11.2) — prHeadSha returns the real pr.head_sha (the daemon-exposed pin source @0.44),
+    // retiring the =null A3 stub; null only when the daemon omitted it (a pre-P4.7 row).
+    expect(prHeadSha(pr({ head_sha: "abc123def" }))).toBe("abc123def");
+    expect(prHeadSha(pr({ head_sha: null }))).toBeNull();
+    // the absent-field (pre-P4.7 row) path: the base fixture omits head_sha → undefined ?? null → null.
+    expect(prHeadSha(pr())).toBeNull();
   });
 });

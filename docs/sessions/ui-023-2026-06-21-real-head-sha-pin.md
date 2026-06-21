@@ -4,7 +4,7 @@
 - **Phase:** Phase 7 (PR Review Workspace) — the cat-1 PR-mutations arc, UI-side go-live prereq
 - **Track:** ui (`track/ui`)
 - **Predecessor:** [ui-022](ui-022-2026-06-21-pr-workspace-d6-d7-merge-review-cat1.md)
-- **Successor:** _(none yet — UI-side arc complete; pause pending the daemon auth-bootstrap)_
+- **Successor:** [ui-024](ui-024-2026-06-21-phase8-plan-modal-and-brain-status-binding.md) — Phase-8 UI arc resumed early (PlanModal B + Brain status binding A1)
 
 ## Why this session existed
 

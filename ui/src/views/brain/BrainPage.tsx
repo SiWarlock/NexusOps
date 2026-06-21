@@ -1,7 +1,8 @@
 import { Anchor, ArrowUp, Brain, Database, Gavel, Play, Search } from "lucide-react";
 import type { ReactNode } from "react";
-import { Badge, Button, EvidenceChip, RiskBadge } from "../../design-system/kit";
+import { Button, EvidenceChip, RiskBadge } from "../../design-system/kit";
 import { Eyebrow } from "../cockpit";
+import { BrainStatusHeader } from "./BrainStatusHeader";
 import {
   brainMemoryFixture,
   brainThreadFixture,
@@ -179,9 +180,11 @@ export function BrainPage({ drawer = false }: { drawer?: boolean }) {
             <h1 style={{ margin: 0, font: "var(--fw-semibold) var(--fs-h3)/1 var(--font-sans)" }}>
               Project Brain
             </h1>
-            <Badge mono style={{ color: "var(--text-faint)" }}>
-              display fixture — sidecar contract Phase 8
-            </Badge>
+            {/* The live ProjectBrain §5.1 status + grounded-at + §13.1 honest-degraded surface
+                (replaces the static "display fixture" Badge). FakeBrain-fed via useBrainStatus —
+                the swap-point for the live daemon 8.1 source. Shown in page mode AND, via the hosted
+                page, in the drawer (BrainDrawer renders <BrainPage drawer/>). */}
+            <BrainStatusHeader />
             <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
               <Search size={14} aria-hidden="true" style={{ color: "var(--text-faint)" }} />
               <span style={{ font: "var(--fs-meta) var(--font-mono)", color: "var(--text-faint)" }}>scope:</span>

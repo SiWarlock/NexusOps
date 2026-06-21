@@ -62,6 +62,7 @@ import { HumanInputQueue } from "../overlays/HumanInputQueue";
 import { TaskInbox } from "../overlays/TaskInbox";
 import { GatewayOverlay } from "../overlays/GatewayOverlay";
 import { BrainDrawer } from "../overlays/BrainDrawer";
+import { BrainStatusProvider, fakeBrainStatus } from "../views/brain/brain-status";
 import { InspectorDrawer } from "../overlays/InspectorDrawer";
 import type { GraphNode } from "../views/graph/model";
 
@@ -613,6 +614,10 @@ export function Shell({
       {/* ActiveProjectProvider wraps the WHOLE shell (incl. TopBar) so the
           ProjectSwitcher inside TopBar can read/set the active project. */}
       <ActiveProjectProvider value={{ activeProjectId, setActiveProject }}>
+      {/* BrainStatusProvider feeds the Brain drawer/page header the ProjectBrain §5.1 status
+          (FakeBrain default — the exposed-ahead swap-point for the live daemon 8.1 source; §13.1
+          honest-degraded). A read/display provider — no daemon dep, no canSubmitIntent gate. */}
+      <BrainStatusProvider value={fakeBrainStatus}>
       <div className="shell">
         <TopBar
           projects={data.projects}
@@ -790,6 +795,7 @@ export function Shell({
           />
         ) : null}
       </div>
+      </BrainStatusProvider>
       </ActiveProjectProvider>
     </ReadOnlyProvider>
   );

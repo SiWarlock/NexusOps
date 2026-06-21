@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
-import { ArrowLeft, Brain, FileDiff, GitMerge } from "lucide-react";
-import type { PullRequestRow, ReviewRow } from "../../contracts/index";
-import { Button, MetaChip } from "../../design-system/kit";
+import { ArrowLeft, Brain, GitMerge } from "lucide-react";
+import type { DiffLine, DiffResult, PullRequestRow, ReviewRow } from "../../contracts/index";
+import { Button, DiffHunk, MetaChip } from "../../design-system/kit";
 import { StatusPill } from "../../status/StatusPill";
 import { Eyebrow } from "../cockpit";
 import { ReviewsList } from "./ReviewsList";
@@ -76,25 +76,90 @@ function DiffStats({ pr }: { pr: PullRequestRow }) {
   );
 }
 
+/** The read-only PR code-diff state DiffReview computes (the get_pr_diff fetch) and passes down. A
+ *  discriminated union — no silent default (the §15 discriminator discipline): `no-link` (null
+ *  repo_id/pr_number → don't fetch) · `loading` · `ready{diff}` · `error{code?}`. */
+export type PrDiffState =
+  | { kind: "no-link" }
+  | { kind: "loading" }
+  | { kind: "ready"; diff: DiffResult }
+  | { kind: "error"; code?: string };
+
+/** DiffLineKind → the kit DiffHunk line `type` (mirrors DiffReview's map; the same frozen DiffLine). */
+const KIT_LINE_TYPE: Record<DiffLine["kind"], "ctx" | "add" | "del"> = {
+  context: "ctx",
+  added: "add",
+  removed: "del",
+};
+
+/** D7 — the read-only PR code-diff (head-vs-base), reusing the kit DiffHunk render WITHOUT the per-hunk
+ *  git-action bar (PR-per-hunk actions are a future cat-1; `HunkGitActions` is worktree-scoped). Honest
+ *  states for no-link / loading / error — never a fabricated diff (forbidden #2). The flattened changeset
+ *  carries no per-file attribution (`file=""` — no misleading filename); a per-file file-tree is a
+ *  post-D7 follow-on. */
+function PrCodeDiff({ state }: { state: PrDiffState }) {
+  if (state.kind === "no-link")
+    return (
+      <div data-testid="pr-diff-no-link" style={PLACEHOLDER}>
+        This PR has no linked repository / PR number — there is no code diff to show.
+      </div>
+    );
+  if (state.kind === "loading")
+    return (
+      <div data-testid="pr-diff-loading" style={PLACEHOLDER}>
+        Loading the PR diff…
+      </div>
+    );
+  if (state.kind === "error")
+    return (
+      <div data-testid="pr-diff-unavailable" style={PLACEHOLDER}>
+        PR diff unavailable{state.code ? ` (the daemon reported ${state.code})` : ""} — no changes
+        are shown.
+      </div>
+    );
+  if (state.diff.hunks.length === 0)
+    return (
+      <div data-testid="pr-diff-no-changes" style={PLACEHOLDER}>
+        No changes in this PR.
+      </div>
+    );
+  return (
+    <div data-testid="pr-diff" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {state.diff.hunks.map((hunk, i) => (
+        <DiffHunk
+          key={`${hunk.old_start}:${hunk.new_start}:${i}`}
+          file=""
+          header={hunk.header}
+          lines={hunk.lines.map((l) => ({ type: KIT_LINE_TYPE[l.kind], text: l.content }))}
+          actions={false}
+        />
+      ))}
+    </div>
+  );
+}
+
 /**
- * The read-only PR Review Workspace (ui-064 Layer 2, §11.2) — the PR-detail panel for a selected PR.
+ * The read-only PR Review Workspace (ui-064/068/069, §11.2) — the PR-detail panel for a selected PR.
  * Renders the parts backed by the frozen `PullRequestRow` + `ReviewRow` (header, mergeability, checks,
- * reviews-list); the un-buildable parts (diff-stats D6, PR code-diff D7) are HONEST "unavailable — needs
- * daemon <X>" placeholders (never a fabricated stat, never `get_diff`-as-PR-diff — this component takes
- * NO gateway, so it cannot reach `get_diff` by construction). ALL mutations (Merge / Approve PR / Request
- * changes) + Brain controls render DISABLED — a future cat-1 arc + the deferred Brain sibling
- * (wire-or-disable, never a dead click). The "← Worktree diff" deselect returns to the 6.3e per-hunk view.
+ * reviews-list), the real D6 diff-stats (ui-068), and the read-only D7 PR code-diff (ui-069 — passed in
+ * via `prDiff`, never `get_diff`-as-PR-diff; this component takes NO gateway, so it cannot reach a fetch
+ * or a mutation by construction). ALL mutations (Merge / Approve PR / Request changes) + Brain controls
+ * render DISABLED — a future cat-1 arc + the deferred Brain sibling (wire-or-disable, never a dead click).
+ * The "← Worktree diff" deselect returns to the 6.3e per-hunk view.
  */
 export function PrWorkspace({
   pr,
   reviews,
   onBack,
+  prDiff,
 }: {
   pr: PullRequestRow;
   reviews: ReviewRow[];
   /** Deselect → return to the 6.3e worktree per-hunk diff. Always provided (the workspace is only shown
    *  in place of the worktree diff, so a way back is mandatory) — a wired control, never a dead click. */
   onBack: () => void;
+  /** The D7 PR code-diff state, computed + owned by DiffReview (the container fetches get_pr_diff). */
+  prDiff: PrDiffState;
 }) {
   const merge = mergeability(pr.mergeable);
   return (
@@ -133,22 +198,18 @@ export function PrWorkspace({
         <ReviewsList reviews={reviews} />
       </div>
 
-      {/* D6 diff-stats — real null-safe stats from the frozen row (a present 0 is real; all-null → an
-          honest unavailable state; never a fabricated number — LESSON §32). */}
+      {/* D6 diff-stats summary (ui-068) — real null-safe stats from the frozen row (a present 0 is real;
+          all-null → an honest unavailable state; never a fabricated number — LESSON §32). */}
       <div style={SECTION}>
         <Eyebrow>Changes</Eyebrow>
         <DiffStats pr={pr} />
-        {/* D7 PR code-diff — honest placeholder naming the missing RPC; never get_diff (worktree-scoped). */}
-        <div
-          data-testid="pr-diff-unavailable"
-          style={{ ...PLACEHOLDER, display: "flex", alignItems: "center", gap: 8 }}
-        >
-          <span aria-hidden="true" style={{ display: "inline-flex", color: "var(--text-faint)" }}>
-            <FileDiff size={15} />
-          </span>
-          The PR code-diff is unavailable — it needs a daemon <code>get_pr_diff(repo_id, pr_number)</code>{" "}
-          RPC (the worktree-scoped <code>get_diff</code> is not a PR diff; D7).
-        </div>
+      </div>
+
+      {/* D7 PR code-diff (ui-069) — the real read-only head-vs-base hunks from get_pr_diff, computed by
+          DiffReview + passed down (read-only; no per-hunk action bar — PR-per-hunk is a future cat-1). */}
+      <div style={SECTION}>
+        <Eyebrow>Code diff</Eyebrow>
+        <PrCodeDiff state={prDiff} />
       </div>
 
       {/* DISABLED mutation + Brain controls (future cat-1 arc + the deferred Brain sibling). */}

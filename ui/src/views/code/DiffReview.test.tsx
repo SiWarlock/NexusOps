@@ -301,21 +301,122 @@ describe("DiffReview — PR Workspace selection (ui-064 Layer 2)", () => {
     // "← Worktree diff" deselects → the 6.3e worktree per-hunk diff returns (preserved, not deleted).
     const port = new MockGatewayPort();
     vi.spyOn(port, "get_diff").mockResolvedValue(DIFF);
+    vi.spyOn(port, "get_pr_diff").mockResolvedValue(DIFF); // D7: the workspace fetches the PR code-diff
     render(
       <ReadOnlyProvider value={CONNECTED}>
         <DiffReview prs={[PR]} reviews={[]} gateway={port} />
       </ReadOnlyProvider>,
     );
-    // open the Kanban + select PR #101 → the PR Workspace (its D7 placeholder is unique to it)
+    // open the Kanban + select PR #101 → the PR Workspace (its read-only PR code-diff is unique to it)
     fireEvent.click(screen.getByRole("button", { name: /Pull requests/i }));
     fireEvent.click(screen.getByRole("button", { name: /Add OAuth device flow/i }));
-    expect(screen.getByTestId("pr-diff-unavailable")).toBeTruthy();
+    expect(await screen.findByTestId("pr-diff")).toBeTruthy();
     // deselect → the worktree per-hunk diff returns (get_diff-sourced), the workspace is gone
     fireEvent.click(screen.getByRole("button", { name: /Worktree diff/i }));
     await waitFor(() => {
-      expect(screen.queryByTestId("pr-diff-unavailable")).toBeNull();
+      expect(screen.queryByTestId("pr-diff")).toBeNull();
     });
     expect(port.get_diff).toHaveBeenCalled(); // the worktree ReviewTab is back (sources its diff)
+  });
+});
+
+// ─── ui-069 — D7 PR code-diff via get_pr_diff (§11.2/§11.7) ──────────────────
+// a diff whose content encodes (repo_id, pr_number) so a stale diff under the wrong PR is detectable.
+const diffFor = (repo_id: string, pr_number: number): DiffResult => ({
+  hunks: [
+    {
+      header: `@@ ${repo_id}#${pr_number} @@`,
+      old_start: 1,
+      old_lines: 1,
+      new_start: 1,
+      new_lines: 1,
+      lines: [{ kind: "context", content: `diff for ${repo_id}#${pr_number}\n` }],
+    },
+  ],
+});
+const renderWithPrs = (prs: PullRequestRow[], port: MockGatewayPort) => {
+  vi.spyOn(port, "get_diff").mockResolvedValue(DIFF);
+  render(
+    <ReadOnlyProvider value={CONNECTED}>
+      <DiffReview prs={prs} reviews={[]} gateway={port} />
+    </ReadOnlyProvider>,
+  );
+};
+const openKanban = () =>
+  fireEvent.click(screen.getByRole("button", { name: /Pull requests/i }));
+
+describe("DiffReview — D7 PR code-diff (ui-069)", () => {
+  const PR_A: PullRequestRow = {
+    pr_id: "r1#84",
+    project_id: "p1",
+    repo_id: "r1",
+    pr_number: 84,
+    title: "PR Alpha",
+    status: "open",
+    head_branch: "agent/a",
+    base_branch: "main",
+    pr_checked_at: null,
+    mergeable: true,
+    checks_summary: null,
+  };
+  const PR_B: PullRequestRow = {
+    ...PR_A,
+    pr_id: "r2#85",
+    repo_id: "r2",
+    pr_number: 85,
+    title: "PR Beta",
+  };
+  const PR_NO_REPO: PullRequestRow = {
+    ...PR_A,
+    pr_id: "r0#orphan",
+    repo_id: null,
+    title: "PR NoRepo",
+  };
+
+  it("diff_review_fetches_pr_diff_for_selected_pr", async () => {
+    // spec(§11.2 + ui-064) — selecting a PR fetches get_pr_diff(repo_id, pr_number) once and the result
+    // flows into the PR Workspace; the container owns the fetch (PrWorkspace is pure-display, no gateway).
+    const port = new MockGatewayPort();
+    const prDiffSpy = vi.spyOn(port, "get_pr_diff").mockResolvedValue(diffFor("r1", 84));
+    renderWithPrs([PR_A], port);
+    openKanban();
+    fireEvent.click(screen.getByRole("button", { name: /PR Alpha/i }));
+    await waitFor(() => expect(prDiffSpy).toHaveBeenCalledWith("r1", 84, null));
+    expect(prDiffSpy).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(/diff for r1#84/)).toBeTruthy();
+  });
+
+  it("pr_workspace_no_fetch_when_repo_or_pr_number_null", async () => {
+    // spec(§11.7) — a null repo_id (or pr_number) → DON'T fetch get_pr_diff; render an honest
+    // "no repo link" state (distinct from a daemon error, never a fabricated diff).
+    const port = new MockGatewayPort();
+    const prDiffSpy = vi.spyOn(port, "get_pr_diff").mockResolvedValue(diffFor("x", 1));
+    renderWithPrs([PR_NO_REPO], port);
+    openKanban();
+    fireEvent.click(screen.getByRole("button", { name: /PR NoRepo/i }));
+    expect(await screen.findByTestId("pr-diff-no-link")).toBeTruthy();
+    expect(prDiffSpy).not.toHaveBeenCalled();
+  });
+
+  it("diff_review_reselect_pr_refetches_no_stale_diff", async () => {
+    // spec(LESSON §17) — the fetch is keyed on the stable (repo_id, pr_number) primitives: reselecting a
+    // different PR re-fires get_pr_diff with the NEW (repo_id, pr_number) and NEVER renders the prior
+    // PR's diff under the new PR (no stale-diff-across-selection — a real correctness bug, not cosmetic).
+    const port = new MockGatewayPort();
+    const prDiffSpy = vi
+      .spyOn(port, "get_pr_diff")
+      .mockImplementation((repo_id, pr_number) => Promise.resolve(diffFor(repo_id, pr_number)));
+    renderWithPrs([PR_A, PR_B], port);
+    openKanban();
+    fireEvent.click(screen.getByRole("button", { name: /PR Alpha/i }));
+    expect(await screen.findByText(/diff for r1#84/)).toBeTruthy();
+    // reselect PR B via the Kanban → re-fetch with B's primitives
+    openKanban();
+    fireEvent.click(screen.getByRole("button", { name: /PR Beta/i }));
+    await waitFor(() => expect(prDiffSpy).toHaveBeenCalledWith("r2", 85, null));
+    expect(await screen.findByText(/diff for r2#85/)).toBeTruthy();
+    // PR A's diff is NEVER shown under PR B (no stale diff across selection).
+    expect(screen.queryByText(/diff for r1#84/)).toBeNull();
   });
 });
 

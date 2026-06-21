@@ -21,7 +21,7 @@ import type {
   ReviewRow,
 } from "../../contracts/index";
 import { reviewsByPr } from "../../projections/items";
-import { PrWorkspace } from "./PrWorkspace";
+import { PrWorkspace, type PrDiffState } from "./PrWorkspace";
 import { WireError } from "../../contracts/index";
 import {
   Badge,
@@ -543,6 +543,57 @@ function PRsTab({
   );
 }
 
+/** ui-069 D7 — owns the `get_pr_diff` fetch for the selected PR and feeds the pure-display PrWorkspace.
+ *  The fetch is keyed on the STABLE (repo_id, pr_number) primitives (LESSON §17) — and the render site
+ *  remounts it per `pr_id` — so a reselect re-fetches and NEVER shows a stale diff under the wrong PR.
+ *  PrWorkspace takes NO gateway (the ui-064 no-mutation-reach pin: a read-only display can't reach a
+ *  fetch/submit by construction). A null repo_id/pr_number → don't fetch; an honest no-link state. */
+function PrWorkspaceContainer({
+  gateway,
+  pr,
+  reviews,
+  onBack,
+}: {
+  gateway: GatewayPort;
+  pr: PullRequestRow;
+  reviews: ReviewRow[];
+  onBack: () => void;
+}) {
+  const { repo_id, pr_number } = pr;
+  const [prDiff, setPrDiff] = useState<PrDiffState>({ kind: "loading" });
+  useEffect(() => {
+    if (repo_id == null || pr_number == null) {
+      // no repo link / PR number → don't fetch; an honest no-link state (distinct from a daemon error).
+      setPrDiff({ kind: "no-link" });
+      return;
+    }
+    let active = true;
+    setPrDiff({ kind: "loading" });
+    gateway.get_pr_diff(repo_id, pr_number, null).then(
+      (diff) => {
+        if (active) setPrDiff({ kind: "ready", diff });
+      },
+      (e: unknown) => {
+        if (!active) return;
+        const parsed = WireError.safeParse(e);
+        if (parsed.success) {
+          // a daemon-reported read error (e.g. not_found) — honest unavailable, code verbatim.
+          setPrDiff({ kind: "error", code: parsed.data.code });
+        } else {
+          // a non-WireError (a real transport/JS Error) — degrade honestly + surface for diagnosis
+          // (never silently swallow), mirroring the ReviewTab get_diff read-degrade (§11.7/LESSON §16).
+          console.error("get_pr_diff failed unexpectedly", e);
+          setPrDiff({ kind: "error" });
+        }
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [gateway, repo_id, pr_number]);
+  return <PrWorkspace pr={pr} reviews={reviews} onBack={onBack} prDiff={prDiff} />;
+}
+
 /**
  * Code & Delivery (ported from kit-views2.jsx DiffReview): the Review ·
  * Worktrees · Pull requests tab strip. Pull requests ride the REAL projection
@@ -621,7 +672,9 @@ export function DiffReview({
           // A selected PR → its read-only PR Review Workspace (ui-064); else the 6.3e worktree per-hunk
           // diff (preserved, not deleted). Reviews join to the PR client-side on pr_number.
           selectedPr ? (
-            <PrWorkspace
+            <PrWorkspaceContainer
+              key={selectedPr.pr_id}
+              gateway={gateway}
               pr={selectedPr}
               reviews={
                 selectedPr.pr_number != null

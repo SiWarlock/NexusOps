@@ -7,6 +7,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import { PrWorkspace, type PrDiffState } from "./PrWorkspace";
+import type { ReviewEvent } from "../../intent/pr-mutation-request";
 import type { DiffResult, PullRequestRow, ReviewRow } from "../../contracts/index";
 
 afterEach(cleanup);
@@ -49,9 +50,9 @@ const isDisabled = (name: RegExp) =>
 
 const noop = () => {};
 
-// PrWorkspace is pure-display: `prDiff` is REQUIRED (no silent default — the discriminated-union
-// discipline). The cat-1 Merge control is container-driven: `canMerge` (the computed enablement) +
-// `onMerge` (the container submits) + `mergeResult` (a rejection to surface) + `onReReview`.
+// PrWorkspace is pure-display: `prDiff` is REQUIRED (no silent default). The cat-1 Merge (ui-070) +
+// Review (ui-071) controls are container-driven: canMerge/canReview + onMerge/onSubmitReview + the
+// SHARED mutationResult/mutationEnrichFailed honest region + onReReview.
 const renderWs = (
   opts: {
     pr?: PullRequestRow;
@@ -59,8 +60,10 @@ const renderWs = (
     prDiff?: PrDiffState;
     canMerge?: boolean;
     onMerge?: () => void;
-    mergeResult?: Parameters<typeof PrWorkspace>[0]["mergeResult"];
-    mergeEnrichFailed?: boolean;
+    canReview?: boolean;
+    onSubmitReview?: (event: ReviewEvent, body: string) => void;
+    mutationResult?: Parameters<typeof PrWorkspace>[0]["mutationResult"];
+    mutationEnrichFailed?: boolean;
     onReReview?: () => void;
   } = {},
 ) =>
@@ -72,8 +75,10 @@ const renderWs = (
       prDiff={opts.prDiff ?? NO_LINK}
       canMerge={opts.canMerge ?? false}
       onMerge={opts.onMerge ?? noop}
-      mergeResult={opts.mergeResult ?? null}
-      mergeEnrichFailed={opts.mergeEnrichFailed ?? false}
+      canReview={opts.canReview ?? false}
+      onSubmitReview={opts.onSubmitReview ?? noop}
+      mutationResult={opts.mutationResult ?? null}
+      mutationEnrichFailed={opts.mutationEnrichFailed ?? false}
       onReReview={opts.onReReview ?? noop}
     />,
   );
@@ -219,24 +224,23 @@ describe("PrWorkspace (ui-064 Layer 2)", () => {
     expect(screen.queryByTestId("pr-diffstats-empty")).toBeNull();
   });
 
-  it("pr_workspace_mutations_and_brain_disabled", () => {
-    // [a11y wire-or-disable / forbidden #6] Approve PR / Request changes (the future github.submit_review
-    // cat-1 slice) + the deferred Brain sibling render DISABLED with accessible names — present but
-    // non-interactive, never a dead click. (Merge is the wired-but-gated cat-1 control — see below.)
+  it("pr_workspace_brain_disabled_and_back_wired", () => {
+    // [a11y wire-or-disable / forbidden #6] the deferred Brain sibling renders DISABLED; the "← Worktree
+    // diff" deselect IS wired. (Merge + the 3 verdict controls are the wired-but-gated cat-1 controls.)
     renderWs();
+    expect(isDisabled(/Ask Brain/i)).toBe(true);
+    expect(isDisabled(/Worktree diff/i)).toBe(false);
+    // all cat-1 controls disabled by default (canMerge/canReview false) — the guarded-disabled state.
+    expect(isDisabled(/^Merge/i)).toBe(true);
     expect(isDisabled(/Approve PR/i)).toBe(true);
     expect(isDisabled(/Request changes/i)).toBe(true);
-    expect(isDisabled(/Ask Brain/i)).toBe(true);
-    // the "← Worktree diff" deselect IS wired (onBack provided) — not a dead click.
-    expect(isDisabled(/Worktree diff/i)).toBe(false);
-    // Merge is disabled by default (canMerge false) — the guarded-disabled cat-1 control.
-    expect(isDisabled(/^Merge/i)).toBe(true);
+    expect(isDisabled(/^Comment/i)).toBe(true);
   });
 
   it("merge_control_enabled_only_when_canMerge_and_raises_onMerge", () => {
     // [§11.6 defense-in-depth layer 1] PrWorkspace renders Merge enabled IFF canMerge (the container
-    // computes canSubmitIntent && prMutationsEnabled && headSha!=null); a disabled Merge can't fire; an
-    // enabled Merge click raises onMerge (the container does the cat-1 submit — PrWorkspace never mutates).
+    // computes canSubmitIntent && isPrMutationEnabled(merge_pr) && headSha!=null); a disabled Merge can't
+    // fire; an enabled Merge click raises onMerge (the container submits — PrWorkspace never mutates).
     const onMerge = vi.fn();
     renderWs({ canMerge: false, onMerge });
     expect((screen.getByRole("button", { name: /^Merge/i }) as HTMLButtonElement).disabled).toBe(true);
@@ -248,19 +252,67 @@ describe("PrWorkspace (ui-064 Layer 2)", () => {
     expect(onMerge).toHaveBeenCalledTimes(1);
   });
 
-  it("merge_rejection_renders_honest_verdict_and_re_review", () => {
-    // [§11.7/forbidden#2/D2] a rejected merge submit surfaces the daemon's §6.4 code VERBATIM (via
-    // ResultNotice/describeRejection) + an honest "PR may have moved — re-review" affordance, NEVER a
-    // fabricated success/optimistic "merged".
+  it("review_controls_disabled_unless_canReview", () => {
+    // [§11.6 defense-in-depth layer 1] the 3 verdict controls are disabled when canReview is false
+    // (the container's canSubmitIntent && isPrMutationEnabled(submit_review) && headSha!=null gate).
+    renderWs({ canReview: false });
+    expect(isDisabled(/Approve PR/i)).toBe(true);
+    expect(isDisabled(/Request changes/i)).toBe(true);
+    expect(isDisabled(/^Comment/i)).toBe(true);
+  });
+
+  it("request_changes_and_comment_require_nonempty_body", () => {
+    // [fork-2b conditional-required] with canReview true: Approve enables with an EMPTY body; Request
+    // changes + Comment stay disabled until the body has non-whitespace; typing a body enables them.
+    renderWs({ canReview: true });
+    expect(isDisabled(/Approve PR/i)).toBe(false); // approve: body optional
+    expect(isDisabled(/Request changes/i)).toBe(true); // empty body → disabled
+    expect(isDisabled(/^Comment/i)).toBe(true);
+    // a whitespace-only body does NOT enable them (trim guard [[33]]).
+    fireEvent.change(screen.getByTestId("pr-review-body"), { target: { value: "   " } });
+    expect(isDisabled(/Request changes/i)).toBe(true);
+    // a real body enables them.
+    fireEvent.change(screen.getByTestId("pr-review-body"), { target: { value: "needs work" } });
+    expect(isDisabled(/Request changes/i)).toBe(false);
+    expect(isDisabled(/^Comment/i)).toBe(false);
+  });
+
+  it("verdict_click_raises_onSubmitReview_with_matching_event_and_body", () => {
+    // [cat-1 no-cross-wiring] each control raises onSubmitReview with the EXACT event it represents
+    // (Approve→"approve" / Request-changes→"request_changes" / Comment→"comment") + the typed body. A
+    // mis-wired verdict (e.g. clicking Request-changes but submitting approve) is a real safety bug —
+    // approve carries branch-protection merge-gate power (daemon LESSON 61).
+    const cases: { name: RegExp; event: ReviewEvent }[] = [
+      { name: /Approve PR/i, event: "approve" },
+      { name: /Request changes/i, event: "request_changes" },
+      { name: /^Comment/i, event: "comment" },
+    ];
+    for (const c of cases) {
+      const onSubmitReview = vi.fn();
+      renderWs({ canReview: true, onSubmitReview });
+      fireEvent.change(screen.getByTestId("pr-review-body"), { target: { value: "a comment" } });
+      fireEvent.click(screen.getByRole("button", { name: c.name }));
+      expect(onSubmitReview).toHaveBeenCalledTimes(1);
+      expect(onSubmitReview.mock.calls[0]![0]).toBe(c.event); // the event matches the control — no cross-wiring
+      expect(onSubmitReview.mock.calls[0]![1]).toBe("a comment"); // the typed body is raised
+      cleanup();
+    }
+  });
+
+  it("mutation_rejection_renders_honest_verdict_and_re_review", () => {
+    // [§11.7/forbidden#2/D2] a rejected merge/review submit surfaces the daemon's §6.4 code VERBATIM (via
+    // ResultNotice/describeRejection) + an honest "PR may have moved — re-review" affordance (a REAL
+    // button, present even for non-reapprovable fencing_conflict), NEVER a fabricated success.
     const onReReview = vi.fn();
-    renderWs({ mergeResult: { error: { code: "fencing_conflict" } }, onReReview });
-    const region = screen.getByTestId("pr-merge-result");
+    renderWs({ mutationResult: { error: { code: "fencing_conflict" } }, onReReview });
+    const region = screen.getByTestId("pr-mutation-result");
     expect(region.textContent).toMatch(/fencing_conflict/); // §6.4 code verbatim
     expect(region.textContent).toMatch(/re-review/i);
-    expect(region.textContent ?? "").not.toMatch(/\b(merged|done|succeeded)\b/i); // no fabricated success
-    // the re-review affordance is a REAL button (present even for non-reapprovable fencing_conflict) that
-    // fires the re-fetch — not just static guidance text.
-    fireEvent.click(screen.getByTestId("pr-merge-rereview"));
+    // no fabricated success in the rejection region. (NOT "reviewed" — that word appears benignly in the
+    // honest re-review guidance "…since you reviewed it…"; the review-success no-optimistic-done is pinned
+    // separately on the modal by submit_review_no_optimistic_done.)
+    expect(region.textContent ?? "").not.toMatch(/\b(merged|done|succeeded)\b/i);
+    fireEvent.click(screen.getByTestId("pr-mutation-rereview"));
     expect(onReReview).toHaveBeenCalledTimes(1);
   });
 });

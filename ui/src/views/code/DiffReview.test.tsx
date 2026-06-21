@@ -555,10 +555,10 @@ describe("DiffReview — github.merge_pr Merge control (cat-1 ui-070)", () => {
     const port = new MockGatewayPort({ mutationError: { code: "fencing_conflict" } });
     renderMerge(port);
     fireEvent.click(await screen.findByRole("button", { name: /^Merge/i }));
-    const region = await screen.findByTestId("pr-merge-result");
+    const region = await screen.findByTestId("pr-mutation-result");
     expect(region.textContent).toMatch(/fencing_conflict/);
     expect(region.textContent).toMatch(/re-review/i);
-    expect(screen.getByTestId("pr-merge-rereview")).toBeTruthy(); // a real re-review button, not just text
+    expect(screen.getByTestId("pr-mutation-rereview")).toBeTruthy(); // a real re-review button, not just text
     expect(screen.queryByText(/\bmerged\b/i)).toBeNull(); // no fabricated success
   });
 
@@ -572,7 +572,89 @@ describe("DiffReview — github.merge_pr Merge control (cat-1 ui-070)", () => {
     );
     renderMerge(port);
     fireEvent.click(await screen.findByRole("button", { name: /^Merge/i }));
-    expect(await screen.findByTestId("pr-merge-enrich-unavailable")).toBeTruthy();
+    expect(await screen.findByTestId("pr-mutation-enrich-unavailable")).toBeTruthy();
     expect(screen.queryByTestId("gateway-modal")).toBeNull(); // no card from un-enriched data
+  });
+});
+
+// ─── ui-071 cat-1 — github.submit_review verdict controls (guarded-disabled) ─────
+describe("DiffReview — github.submit_review controls (cat-1 ui-071)", () => {
+  // open the PR Workspace + type a body (Request changes / Comment need a non-empty one).
+  function openReview(port: MockGatewayPort, status: ConnectionStatus = CONNECTED, body = "lgtm") {
+    vi.spyOn(port, "get_diff").mockResolvedValue(DIFF);
+    vi.spyOn(port, "get_pr_diff").mockResolvedValue(DIFF);
+    render(
+      <ReadOnlyProvider value={status}>
+        <DiffReview prs={[PR_MERGEABLE]} reviews={[]} gateway={port} />
+      </ReadOnlyProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Pull requests/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Add OAuth device flow/i }));
+    fireEvent.change(screen.getByTestId("pr-review-body"), { target: { value: body } });
+  }
+
+  it("review_controls_disabled_when_submit_review_not_enabled", async () => {
+    // spec(cat-1) — the verdict controls stay DISABLED while submit_review is NOT in enabledPrMutations
+    // (even merge_pr enabled doesn't enable review — per-action gate).
+    const port = new MockGatewayPort({ enabledPrMutations: new Set(["github.merge_pr"]) });
+    openReview(port);
+    expect((await screen.findByRole("button", { name: /Approve PR/i })) as HTMLButtonElement).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(screen.getByRole("button", { name: /Request changes/i })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /^Comment/i })).toHaveProperty("disabled", true);
+  });
+
+  it("submit_review_click_forms_event_value_per_control_and_opens_modal", async () => {
+    // spec(§11.2 + ui-064 + cat-1 no-cross-wiring) — clicking a verdict forms buildSubmitReviewActionRequest
+    // with the EXACT event of the clicked control (Approve→approve / Request-changes→request_changes /
+    // Comment→comment), commit_id-pinned, repo resource_ref, no owner/repo, body trimmed; submits + opens
+    // the GatewayModal. approve carries merge-gate power → a mis-wired verdict is a real safety bug.
+    const cases: { name: RegExp; event: string }[] = [
+      { name: /Approve PR/i, event: "approve" },
+      { name: /Request changes/i, event: "request_changes" },
+      { name: /^Comment/i, event: "comment" },
+    ];
+    for (const c of cases) {
+      const port = new MockGatewayPort(); // enabledPrMutations defaults full
+      const submitSpy = vi.spyOn(port, "submit_action");
+      openReview(port, CONNECTED, "needs a tweak");
+      fireEvent.click(await screen.findByRole("button", { name: c.name }));
+      await waitFor(() => expect(submitSpy).toHaveBeenCalledTimes(1));
+      const req = submitSpy.mock.calls[0]![0];
+      expect(req.action_type).toBe("github.submit_review");
+      expect((req.inputs as { event: string }).event).toBe(c.event); // event matches the control — no cross-wiring
+      expect((req.inputs as { commit_id: string }).commit_id).toBe("headsha123"); // displayed head pinned
+      expect((req.inputs as { body: string }).body).toBe("needs a tweak");
+      expect(req.resource_refs[0]).toEqual({ type: "repo", id: "repo_1" });
+      expect(req.inputs).not.toHaveProperty("owner");
+      expect(await screen.findByTestId("gateway-modal")).toBeTruthy();
+      cleanup();
+    }
+  });
+
+  it("submit_review_no_optimistic_done", async () => {
+    // spec([[16]]/[[17]]) — submit opens the daemon's pending approval card; the UI NEVER shows a
+    // "reviewed"/"done" success optimistically (the terminal state lands via the daemon ActionResult).
+    const port = new MockGatewayPort();
+    openReview(port);
+    fireEvent.click(await screen.findByRole("button", { name: /Approve PR/i }));
+    await screen.findByTestId("gateway-modal");
+    const modal = screen.getByTestId("gateway-modal");
+    expect(modal.textContent ?? "").not.toMatch(/\b(reviewed|approved|done|succeeded|completed)\b/i);
+  });
+
+  it("submit_review_failure_is_honest_re_review", async () => {
+    // spec(§11.7/D2/forbidden#2) — a rejected review submit surfaces the daemon's §6.4 code VERBATIM +
+    // the honest re-review affordance, NEVER a fabricated success.
+    const port = new MockGatewayPort({ mutationError: { code: "fencing_conflict" } });
+    openReview(port);
+    fireEvent.click(await screen.findByRole("button", { name: /Request changes/i }));
+    const region = await screen.findByTestId("pr-mutation-result");
+    expect(region.textContent).toMatch(/fencing_conflict/);
+    expect(screen.getByTestId("pr-mutation-rereview")).toBeTruthy();
+    // no fabricated success (symmetry with the merge-path twin; "reviewed" excluded — honest re-review prose).
+    expect(region.textContent ?? "").not.toMatch(/\b(merged|done|succeeded)\b/i);
   });
 });

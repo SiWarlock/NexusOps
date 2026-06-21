@@ -1,5 +1,5 @@
-import type { CSSProperties } from "react";
-import { ArrowLeft, Brain, GitMerge } from "lucide-react";
+import { useState, type CSSProperties } from "react";
+import { ArrowLeft, Brain, Check, GitMerge, MessageSquare, XCircle } from "lucide-react";
 import type {
   ActionAck,
   DiffLine,
@@ -13,6 +13,7 @@ import { Eyebrow } from "../cockpit";
 import { ReviewsList } from "./ReviewsList";
 import { ResultNotice } from "../../overlays/GatewayModal";
 import type { IntentResult } from "../../intent/submit-intent";
+import type { ReviewEvent } from "../../intent/pr-mutation-request";
 
 const PLACEHOLDER: CSSProperties = {
   font: "var(--fs-label)/1.5 var(--font-sans)",
@@ -160,11 +161,13 @@ export function prHeadSha(pr: PullRequestRow): string | null {
  * Renders the parts backed by the frozen `PullRequestRow` + `ReviewRow` (header, mergeability, checks,
  * reviews-list), the real D6 diff-stats (ui-068), and the read-only D7 PR code-diff (ui-069 — passed in
  * via `prDiff`, never `get_diff`-as-PR-diff; this component takes NO gateway, so it cannot reach a fetch
- * or a mutation by construction). The cat-1 Merge control (ui-070) is container-driven: `canMerge` (the
- * computed enablement) + `onMerge` (DiffReview forms + submits the github.merge_pr intent) + `mergeResult`
- * / `mergeEnrichFailed` (honest verdict surfacing) + `onReReview` — PrWorkspace stays pure-display.
- * Approve PR / Request changes (the future github.submit_review slice) + Brain render DISABLED. The
- * "← Worktree diff" deselect returns to the 6.3e per-hunk view.
+ * or a mutation by construction). The cat-1 Merge (ui-070) + Review (ui-071: Approve / Request-changes /
+ * Comment) controls are container-driven: `canMerge`/`canReview` (computed enablement) + `onMerge`/
+ * `onSubmitReview(event, body)` (DiffReview forms + submits the github.merge_pr / github.submit_review
+ * intent) + a SHARED `mutationResult` / `mutationEnrichFailed` honest-outcome region + `onReReview` —
+ * PrWorkspace stays pure-display. Brain renders DISABLED. The review `body` is a PrWorkspace-local
+ * <textarea> raised on submit (per-verdict required: approve optional, request_changes/comment non-empty).
+ * The "← Worktree diff" deselect returns to the 6.3e per-hunk view.
  */
 export function PrWorkspace({
   pr,
@@ -173,8 +176,10 @@ export function PrWorkspace({
   prDiff,
   canMerge,
   onMerge,
-  mergeResult,
-  mergeEnrichFailed,
+  canReview,
+  onSubmitReview,
+  mutationResult,
+  mutationEnrichFailed,
   onReReview,
 }: {
   pr: PullRequestRow;
@@ -184,19 +189,33 @@ export function PrWorkspace({
   onBack: () => void;
   /** The D7 PR code-diff state, computed + owned by DiffReview (the container fetches get_pr_diff). */
   prDiff: PrDiffState;
-  /** cat-1 (ui-070) — the computed Merge enablement (`canSubmitIntent && prMutationsEnabled &&
+  /** cat-1 (ui-070) — the computed Merge enablement (`canSubmitIntent && isPrMutationEnabled(merge_pr) &&
    *  headSha != null`); the container computes it (the gateway + the hook live there). */
   canMerge: boolean;
   /** Raised on a Merge click (only fires when `canMerge`) — the container forms + submits the
    *  github.merge_pr intent + opens the GatewayModal (PrWorkspace never mutates). */
   onMerge: () => void;
-  /** A rejected merge submit (the §6.4 verdict) to surface honestly via ResultNotice; null when none. */
-  mergeResult: IntentResult<ActionAck> | null;
-  /** The merge submit landed but the approval-card enrichment re-fetch failed → an honest notice. */
-  mergeEnrichFailed: boolean;
+  /** cat-1 (ui-071) — the BASE review enablement (`canSubmitIntent && isPrMutationEnabled(submit_review)
+   *  && headSha != null`); the per-verdict body-required gate is applied locally (approve vs the rest). */
+  canReview: boolean;
+  /** Raised on a verdict click (only fires when that verdict is enabled) with the chosen event + the
+   *  trimmed-at-build body — the container forms + submits the github.submit_review intent + opens the modal. */
+  onSubmitReview: (event: ReviewEvent, body: string) => void;
+  /** A rejected merge/review submit (the §6.4 verdict) to surface honestly via ResultNotice; null when none. */
+  mutationResult: IntentResult<ActionAck> | null;
+  /** The submit landed but the approval-card enrichment re-fetch failed → an honest notice. */
+  mutationEnrichFailed: boolean;
   /** Re-review affordance — re-fetch the latest PR diff (the PR may have moved since review). */
   onReReview: () => void;
 }) {
+  // The shared review body (ui-071, design-Q3) — a PrWorkspace-local <textarea> raised on submit. The
+  // per-verdict required-body gate reads its trimmed value: approve enables with an empty body;
+  // request_changes/comment require a non-empty trimmed body (GitHub's 422 rule, daemon LESSON 61).
+  // The body INTENTIONALLY persists across a submit (not cleared on click): a rejected/re-review retry
+  // keeps the user's text (clearing would lose it on a rejection); a duplicate identical-body resubmit is
+  // dedup'd daemon-side (idempotency, daemon LESSON 20) — never a silent double-execute.
+  const [reviewBody, setReviewBody] = useState("");
+  const bodyNonEmpty = reviewBody.trim().length > 0;
   const merge = mergeability(pr.mergeable);
   return (
     <div style={{ height: "100%", overflowY: "auto", padding: "14px 16px", background: "var(--surface-canvas)" }}>
@@ -248,9 +267,32 @@ export function PrWorkspace({
         <PrCodeDiff state={prDiff} />
       </div>
 
-      {/* The cat-1 Merge control (ui-070, guarded-disabled) + the still-future Brain/review controls.
-          Merge is enabled ONLY when canMerge (canSubmitIntent && prMutationsEnabled && headSha != null);
-          a click raises onMerge → the container submits the github.merge_pr intent + opens the modal. */}
+      {/* The shared review body (ui-071) — the deny-reason-precedent control ([[33]]). Required non-empty
+          for Request changes + Comment (GitHub 422s otherwise); optional for Approve. */}
+      <div style={SECTION}>
+        <Eyebrow>Review</Eyebrow>
+        <textarea
+          data-testid="pr-review-body"
+          value={reviewBody}
+          onChange={(e) => setReviewBody(e.target.value)}
+          placeholder="Review comment (required for Request changes / Comment)…"
+          rows={3}
+          style={{
+            width: "100%",
+            resize: "vertical",
+            padding: "8px 10px",
+            font: "var(--fs-meta) var(--font-sans)",
+            color: "var(--text-primary)",
+            background: "var(--surface-sunken)",
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--r-2)",
+          }}
+        />
+      </div>
+
+      {/* The cat-1 Merge (ui-070) + Review-verdict (ui-071) controls, all GUARDED-DISABLED. Each is enabled
+          only when its gate holds (Merge: canMerge; verdicts: canReview AND [approve OR a non-empty body]);
+          a click raises onMerge / onSubmitReview(event, body) → the container submits + opens the modal. */}
       <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
         <span
           title={
@@ -269,14 +311,37 @@ export function PrWorkspace({
             Merge
           </Button>
         </span>
-        <span title="Approve PR is a Gateway mutation — a future cat-1 approval arc">
-          <Button variant="secondary" size="sm" disabled>
+        <span title="Approve this PR — submits an 'approve' review (body optional)">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<Check size={13} />}
+            disabled={!canReview}
+            onClick={() => onSubmitReview("approve", reviewBody)}
+          >
             Approve PR
           </Button>
         </span>
-        <span title="Request changes is a Gateway mutation — a future cat-1 approval arc">
-          <Button variant="secondary" size="sm" disabled>
+        <span title="Request changes — submits a 'request_changes' review (a non-empty comment is required)">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<XCircle size={13} />}
+            disabled={!canReview || !bodyNonEmpty}
+            onClick={() => onSubmitReview("request_changes", reviewBody)}
+          >
             Request changes
+          </Button>
+        </span>
+        <span title="Comment — submits a 'comment' review (a non-empty comment is required)">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<MessageSquare size={13} />}
+            disabled={!canReview || !bodyNonEmpty}
+            onClick={() => onSubmitReview("comment", reviewBody)}
+          >
+            Comment
           </Button>
         </span>
         <span title="Brain co-pilot arrives with the sidecar contract (Phase 8)">
@@ -286,32 +351,32 @@ export function PrWorkspace({
         </span>
       </div>
 
-      {/* cat-1 (ui-070) — an honest merge-submit outcome. A rejection surfaces the daemon's §6.4 code
-          VERBATIM (ResultNotice/describeRejection) + a "PR may have moved — re-review" affordance (no
-          fabricated success, no optimistic "merged" — that lands only via the PullRequestMerged fold).
-          The success path opens the GatewayModal (rendered by the container), never an optimistic state. */}
-      {mergeResult ? (
-        <div data-testid="pr-merge-result" style={{ marginTop: 14 }}>
-          <ResultNotice result={mergeResult} onReapprove={onReReview} />
+      {/* cat-1 (ui-070/071) — a SHARED honest merge/review-submit outcome. A rejection surfaces the
+          daemon's §6.4 code VERBATIM (ResultNotice/describeRejection) + a "PR may have moved — re-review"
+          affordance (no fabricated success, no optimistic "merged"/"reviewed" — that lands only via the
+          confirming projection fold). The success path opens the GatewayModal (rendered by the container). */}
+      {mutationResult ? (
+        <div data-testid="pr-mutation-result" style={{ marginTop: 14 }}>
+          <ResultNotice result={mutationResult} onReapprove={onReReview} />
           <div style={{ ...PLACEHOLDER, marginTop: 8, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <span>
-              If the PR moved since you reviewed it, the merge is rejected to protect the approved head —
+              If the PR moved since you reviewed it, the action is rejected to protect the approved head —
               re-review the latest diff before retrying.
             </span>
-            {/* A dedicated re-review affordance — ALWAYS present on a merge rejection (ResultNotice's
-                reapprove button only renders for re-approvable codes; a fencing_conflict has none). */}
-            <Button variant="secondary" size="sm" data-testid="pr-merge-rereview" onClick={onReReview}>
+            {/* A dedicated re-review affordance — ALWAYS present on a rejection (ResultNotice's reapprove
+                button only renders for re-approvable codes; a fencing_conflict has none). */}
+            <Button variant="secondary" size="sm" data-testid="pr-mutation-rereview" onClick={onReReview}>
               Re-review
             </Button>
           </div>
         </div>
       ) : null}
 
-      {/* The merge intent landed but its approval-card preview couldn't load (a malformed/unavailable
-          approval queue read) — an honest degrade, never a silent stall: the approval is in the queue. */}
-      {mergeEnrichFailed ? (
-        <div data-testid="pr-merge-enrich-unavailable" style={{ ...PLACEHOLDER, marginTop: 14 }}>
-          The merge was submitted, but its approval preview couldn’t load (the daemon’s approval queue
+      {/* The intent landed but its approval-card preview couldn't load (a malformed/unavailable approval
+          queue read) — an honest degrade, never a silent stall: the approval is in the queue. */}
+      {mutationEnrichFailed ? (
+        <div data-testid="pr-mutation-enrich-unavailable" style={{ ...PLACEHOLDER, marginTop: 14 }}>
+          The action was submitted, but its approval preview couldn’t load (the daemon’s approval queue
           read failed). Find it in the approval queue to approve or deny.
         </div>
       ) : null}

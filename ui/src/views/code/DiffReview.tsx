@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type {
   ActionAck,
+  ActionRequest,
   DiffLine,
   DiffResult,
   Hunk,
@@ -39,7 +40,12 @@ import type { GatewayPort } from "../../gateway-client/types";
 import { useSubmitIntent, type IntentResult } from "../../intent/submit-intent";
 import { useCanSubmitIntent } from "../../connection/read-only";
 import { buildHunkActionRequest } from "../../intent/hunk-resource-ref";
-import { buildMergePrActionRequest, isPrMutationEnabled } from "../../intent/pr-mutation-request";
+import {
+  buildMergePrActionRequest,
+  buildSubmitReviewActionRequest,
+  isPrMutationEnabled,
+  type ReviewEvent,
+} from "../../intent/pr-mutation-request";
 import {
   enrichHunkAction,
   type GatewayApprovalEnrichment,
@@ -568,8 +574,9 @@ function PrWorkspaceContainer({
   const seam = useSubmitIntent(gateway);
   const canSubmit = useCanSubmitIntent();
   const [pendingApproval, setPendingApproval] = useState<GatewayApprovalEnrichment | null>(null);
-  const [mergeResult, setMergeResult] = useState<IntentResult<ActionAck> | null>(null);
-  const [mergeEnrichFailed, setMergeEnrichFailed] = useState(false);
+  // SHARED across both cat-1 PR mutations (merge + review) — one honest outcome region per workspace.
+  const [mutationResult, setMutationResult] = useState<IntentResult<ActionAck> | null>(null);
+  const [mutationEnrichFailed, setMutationEnrichFailed] = useState(false);
 
   useEffect(() => {
     if (repo_id == null || pr_number == null) {
@@ -609,39 +616,57 @@ function PrWorkspaceContainer({
   const headSha = prHeadSha(pr);
   const canMerge =
     canSubmit && isPrMutationEnabled(gateway, "github.merge_pr") && headSha != null;
+  // The BASE review enablement (the per-verdict body-required gate is applied in PrWorkspace).
+  const canReview =
+    canSubmit && isPrMutationEnabled(gateway, "github.submit_review") && headSha != null;
+
+  // SHARED submit path for both cat-1 PR mutations — the daemon Gateway is the single executor (the UI
+  // submits an intent). On ok → open the GatewayModal for the daemon's REAL policy/preview/approve-deny
+  // (no optimistic "merged"/"reviewed"; the terminal state lands only via the confirming projection fold);
+  // on a rejection → surface the §6.4 verdict VERBATIM (ResultNotice/describeRejection) + the honest
+  // re-review affordance; on an enrich re-fetch fault → an honest degrade (never a card from un-parsed data).
+  async function submitMutation(req: ActionRequest) {
+    const r = await seam.submitAction(req);
+    if ("ok" in r) {
+      setMutationResult(null);
+      setMutationEnrichFailed(false);
+      try {
+        setPendingApproval(await enrichHunkAction(gateway, r.ok));
+      } catch (e) {
+        console.error("approval enrich (ApprovalQueue re-fetch) failed", e);
+        setMutationEnrichFailed(true);
+      }
+    } else {
+      setMutationResult(r);
+    }
+  }
 
   async function onMerge() {
     // structural guard (the control is disabled when any is missing — belt-and-suspenders, never a
     // merge formed without a pinned head / repo identity).
     if (repo_id == null || pr_number == null || headSha == null) return;
-    const req = buildMergePrActionRequest(
-      { repo_id, pr_number, head_sha: headSha, merge_method: "merge" },
-      new Date().toISOString(),
+    await submitMutation(
+      buildMergePrActionRequest(
+        { repo_id, pr_number, head_sha: headSha, merge_method: "merge" },
+        new Date().toISOString(),
+      ),
     );
-    const r = await seam.submitAction(req);
-    if ("ok" in r) {
-      // submitted — open the GatewayModal for the daemon's REAL policy/preview/approve-deny (no
-      // optimistic "merged"; the terminal state lands only via the PullRequestMerged projection fold).
-      setMergeResult(null);
-      setMergeEnrichFailed(false);
-      try {
-        setPendingApproval(await enrichHunkAction(gateway, r.ok));
-      } catch (e) {
-        // the intent WAS recorded (the daemon acked); only the approval-card re-fetch failed — degrade
-        // HONESTLY (never a card from un-parsed data, never a silent stall; §11.7 / LESSON §16 spirit).
-        console.error("merge approval enrich (ApprovalQueue re-fetch) failed", e);
-        setMergeEnrichFailed(true);
-      }
-    } else {
-      // a rejection (a §6.4 WireError or the read-only fail-safe) — surface the verdict VERBATIM via
-      // ResultNotice (describeRejection) + the honest re-review affordance; never a fabricated success.
-      setMergeResult(r);
-    }
+  }
+
+  async function onSubmitReview(event: ReviewEvent, body: string) {
+    // structural guard (the verdict controls are disabled when any is missing — belt-and-suspenders).
+    if (repo_id == null || pr_number == null || headSha == null) return;
+    await submitMutation(
+      buildSubmitReviewActionRequest(
+        { repo_id, pr_number, head_sha: headSha, event, body },
+        new Date().toISOString(),
+      ),
+    );
   }
 
   function onReReview() {
-    setMergeResult(null);
-    setMergeEnrichFailed(false); // clear BOTH honest-degrade notices on a re-review
+    setMutationResult(null);
+    setMutationEnrichFailed(false); // clear BOTH honest-degrade notices on a re-review
     setRefreshTick((t) => t + 1); // re-fetch the latest PR diff so the user re-reviews the current head
   }
 
@@ -654,8 +679,10 @@ function PrWorkspaceContainer({
         prDiff={prDiff}
         canMerge={canMerge}
         onMerge={onMerge}
-        mergeResult={mergeResult}
-        mergeEnrichFailed={mergeEnrichFailed}
+        canReview={canReview}
+        onSubmitReview={onSubmitReview}
+        mutationResult={mutationResult}
+        mutationEnrichFailed={mutationEnrichFailed}
         onReReview={onReReview}
       />
       {pendingApproval ? (

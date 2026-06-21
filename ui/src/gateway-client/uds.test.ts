@@ -637,40 +637,49 @@ describe("UdsGatewayPort — per-stream connection aggregation (ui-059)", () => 
   });
 });
 
-// ─── ui-070 cat-1 — the github.merge_pr PR-mutation port guard (prMutationsEnabled) ──────────────
-describe("UdsGatewayPort — PR-mutation guard (cat-1 ui-070)", () => {
-  it("uds_pr_mutations_enabled_defaults_false", () => {
-    // spec(ui-070/C1) — the NEW prMutationsEnabled flag defaults FALSE on the production transport
-    // (SEPARATE from the already-live L2 mutationsEnabled; a PR mutation can't ride the L2 flag).
-    expect(new UdsGatewayPort().prMutationsEnabled).toBe(false);
+// ─── ui-070/071 cat-1 — the per-action PR-mutation port guard (enabledPrMutations) ───────────────
+describe("UdsGatewayPort — PR-mutation guard (cat-1 ui-070/071, per-action gate)", () => {
+  it("enabled_pr_mutations_defaults_empty_uds", () => {
+    // spec(ui-071/1b) — the per-action enablement set defaults EMPTY on the production transport (all PR
+    // mutations HELD; SEPARATE from the already-live L2 mutationsEnabled).
+    expect(new UdsGatewayPort().enabledPrMutations.size).toBe(0);
   });
 
-  it("uds_submit_action_throws_never_invokes_merge_pr_when_pr_mutations_disabled", async () => {
-    // spec(cat-1 [[27]]) — a github.merge_pr submit_action with prMutationsEnabled:false THROWS +
-    // NEVER invokes — EVEN with mutationsEnabled:true (the PR guard is independent of the L2 flag; the
-    // provably-unreachable layer).
-    const port = new UdsGatewayPort({ mutationsEnabled: true, prMutationsEnabled: false });
-    const mergeReq = { action_type: "github.merge_pr" } as ActionRequest;
-    await expect(port.submit_action(mergeReq)).rejects.toThrow();
+  it("uds_submit_review_throws_never_invokes_when_not_enabled", async () => {
+    // spec(cat-1 [[27]] + per-action independence) — a github.submit_review submit with submit_review NOT
+    // in enabledPrMutations THROWS + NEVER invokes, EVEN with mutationsEnabled:true AND merge_pr enabled
+    // (the per-action gate: enabling one PR mutation never enables another).
+    const port = new UdsGatewayPort({
+      mutationsEnabled: true,
+      enabledPrMutations: new Set(["github.merge_pr"]),
+    });
+    const reviewReq = { action_type: "github.submit_review" } as ActionRequest;
+    await expect(port.submit_action(reviewReq)).rejects.toThrow();
     expect(mockInvoke).not.toHaveBeenCalled();
   });
 
-  it("uds_submit_action_invokes_merge_pr_when_pr_mutations_enabled", async () => {
-    // spec(ui-070) — with prMutationsEnabled:true (the future USER-signed-off go-live) a
-    // github.merge_pr submit_action reaches the wire.
-    mockInvoke.mockResolvedValue(validAck);
-    const port = new UdsGatewayPort({ mutationsEnabled: true, prMutationsEnabled: true });
+  it("uds_merge_pr_still_gated_after_refactor", async () => {
+    // spec(fold-in correctness) — merge_pr throws-never-invokes unless merge_pr ∈ enabledPrMutations
+    // (no regression from the ui-070 bool); enabling it (the future flip) lets it reach the wire.
+    const held = new UdsGatewayPort({ mutationsEnabled: true, enabledPrMutations: new Set() });
     const mergeReq = { action_type: "github.merge_pr" } as ActionRequest;
-    await port.submit_action(mergeReq);
+    await expect(held.submit_action(mergeReq)).rejects.toThrow();
+    expect(mockInvoke).not.toHaveBeenCalled();
+
+    mockInvoke.mockResolvedValue(validAck);
+    const enabled = new UdsGatewayPort({
+      mutationsEnabled: true,
+      enabledPrMutations: new Set(["github.merge_pr"]),
+    });
+    await enabled.submit_action(mergeReq);
     expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: mergeReq });
   });
 
-  it("non_pr_mutation_submit_action_unaffected_by_pr_flag", async () => {
-    // spec(ui-070) — an L2 (non-PR-mutation) submit_action is gated by mutationsEnabled ONLY, NOT
-    // prMutationsEnabled: with mutationsEnabled:true + prMutationsEnabled:false it still invokes (no
-    // L2 regression).
+  it("non_pr_mutation_submit_action_unaffected_by_pr_gate", async () => {
+    // spec(no L2 regression) — an L2 (non-PR-mutation) submit_action is gated by mutationsEnabled ONLY,
+    // NOT enabledPrMutations: mutationsEnabled:true + an EMPTY PR set still invokes.
     mockInvoke.mockResolvedValue(validAck);
-    const port = new UdsGatewayPort({ mutationsEnabled: true, prMutationsEnabled: false });
+    const port = new UdsGatewayPort({ mutationsEnabled: true, enabledPrMutations: new Set() });
     const l2Req = { action_type: "git.stage_hunk" } as ActionRequest;
     await port.submit_action(l2Req);
     expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: l2Req });

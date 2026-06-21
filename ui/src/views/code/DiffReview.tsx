@@ -39,7 +39,7 @@ import type { GatewayPort } from "../../gateway-client/types";
 import { useSubmitIntent, type IntentResult } from "../../intent/submit-intent";
 import { useCanSubmitIntent } from "../../connection/read-only";
 import { buildHunkActionRequest } from "../../intent/hunk-resource-ref";
-import { buildMergePrActionRequest } from "../../intent/merge-pr-request";
+import { buildMergePrActionRequest, isPrMutationEnabled } from "../../intent/pr-mutation-request";
 import {
   enrichHunkAction,
   type GatewayApprovalEnrichment,
@@ -602,12 +602,13 @@ function PrWorkspaceContainer({
     };
   }, [gateway, repo_id, pr_number, refreshTick]);
 
-  // cat-1 defense-in-depth layer 1: the Merge enablement. prMutationsEnabled is the PR-mutation go-live
-  // gate (default false in prod, SEPARATE from L2 mutationsEnabled); headSha is the anti-race pin (null
-  // until the daemon field lands → disabled today); canSubmit is the live-link gate. The port's
-  // throw-never-invoke guard is the provably-unreachable layer beneath this.
+  // cat-1 defense-in-depth layer 1: the Merge enablement. isPrMutationEnabled(github.merge_pr) is the
+  // per-action PR-mutation go-live gate (empty set in prod, SEPARATE from L2 mutationsEnabled); headSha
+  // is the anti-race pin (null until the daemon field lands → disabled today); canSubmit is the live-link
+  // gate. The port's throw-never-invoke guard is the provably-unreachable layer beneath this.
   const headSha = prHeadSha(pr);
-  const canMerge = canSubmit && gateway.prMutationsEnabled && headSha != null;
+  const canMerge =
+    canSubmit && isPrMutationEnabled(gateway, "github.merge_pr") && headSha != null;
 
   async function onMerge() {
     // structural guard (the control is disabled when any is missing — belt-and-suspenders, never a

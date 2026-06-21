@@ -504,9 +504,9 @@ function renderMerge(port: MockGatewayPort, status: ConnectionStatus = CONNECTED
 
 describe("DiffReview — github.merge_pr Merge control (cat-1 ui-070)", () => {
   it("merge_disabled_when_pr_mutations_not_enabled", async () => {
-    // spec(cat-1) — even with a head_sha + a live link, Merge stays DISABLED while prMutationsEnabled is
-    // false (the guarded-disabled default; the go-live flip is a future USER-signed-off slice).
-    const port = new MockGatewayPort({ prMutationsEnabled: false });
+    // spec(cat-1) — even with a head_sha + a live link, Merge stays DISABLED while merge_pr is NOT in
+    // enabledPrMutations (the guarded-disabled default; the go-live flip is a future USER-signed-off slice).
+    const port = new MockGatewayPort({ enabledPrMutations: new Set() });
     renderMerge(port);
     const btn = await screen.findByRole("button", { name: /^Merge/i });
     expect((btn as HTMLButtonElement).disabled).toBe(true);
@@ -514,8 +514,8 @@ describe("DiffReview — github.merge_pr Merge control (cat-1 ui-070)", () => {
 
   it("merge_disabled_when_connection_degraded", async () => {
     // spec(§11.6 defense-in-depth) — Merge stays disabled when the link is degraded (canSubmitIntent
-    // false) even with prMutationsEnabled + a head_sha.
-    const port = new MockGatewayPort(); // prMutationsEnabled defaults true
+    // false) even with merge_pr enabled + a head_sha.
+    const port = new MockGatewayPort(); // enabledPrMutations defaults to the full set
     renderMerge(port, DEGRADED);
     const btn = await screen.findByRole("button", { name: /^Merge/i });
     expect((btn as HTMLButtonElement).disabled).toBe(true);

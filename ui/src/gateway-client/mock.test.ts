@@ -121,9 +121,12 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     expect(caps.protocol_version).toBe(1);
   });
 
-  it("mock_pr_mutations_enabled_defaults_true", () => {
-    // spec(ui-070/C1) — the Mock is a fully-working test/dev port: prMutationsEnabled defaults TRUE
-    // (mirrors mutationsEnabled), so Mock-driven UI-flow tests can exercise the enabled merge path.
-    expect(new MockGatewayPort().prMutationsEnabled).toBe(true);
+  it("mock_enabled_pr_mutations_defaults_full_set", () => {
+    // spec(ui-071/1b) — the Mock is a fully-working test/dev port: enabledPrMutations defaults to the
+    // FULL PR_MUTATION_ACTION_TYPES set, so Mock-driven UI-flow tests exercise the enabled merge + review
+    // paths. (Production UdsGatewayPort defaults EMPTY — the held-flip.)
+    const enabled = new MockGatewayPort().enabledPrMutations;
+    expect(enabled.has("github.merge_pr")).toBe(true);
+    expect(enabled.has("github.submit_review")).toBe(true);
   });
 });

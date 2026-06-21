@@ -111,11 +111,13 @@ export interface GatewayPort {
   readonly mutationsEnabled: boolean;
 
   /**
-   * The PR-mutation go-live gate (cat-1, ui-070) — SEPARATE from `mutationsEnabled` (which is already
-   * TRUE in production). A PR mutation (`github.merge_pr`, …) reaches the wire ONLY when this is true;
-   * the transport throws-never-invokes AND the UI Merge control is disabled when false. `UdsGatewayPort`
-   * defaults it FALSE (no live PR mutation until a future USER-signed-off go-live + the daemon
-   * auth-bootstrap re-review); `MockGatewayPort` defaults it TRUE. NOT a §6.1 RPC method.
+   * The PER-ACTION PR-mutation go-live gate (cat-1, ui-070/071 fork-1b) — the SET of enabled PR-mutation
+   * action types (`github.merge_pr`, `github.submit_review`). SEPARATE from `mutationsEnabled` (already
+   * TRUE in production). A PR mutation reaches the wire ONLY when its action_type is in this set; the
+   * transport throws-never-invokes AND the UI control is disabled otherwise. Per-action so the future
+   * go-live can stage lowest-risk-first. `UdsGatewayPort` defaults it EMPTY (all HELD until a USER-signed-off
+   * go-live + the daemon auth-bootstrap re-review); `MockGatewayPort` defaults it to the full set. NOT a
+   * §6.1 RPC method. Read via `isPrMutationEnabled` (pr-mutation-request.ts).
    */
-  readonly prMutationsEnabled: boolean;
+  readonly enabledPrMutations: ReadonlySet<string>;
 }

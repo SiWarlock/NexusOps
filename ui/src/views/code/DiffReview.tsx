@@ -21,7 +21,7 @@ import type {
   ReviewRow,
 } from "../../contracts/index";
 import { reviewsByPr } from "../../projections/items";
-import { PrWorkspace, type PrDiffState } from "./PrWorkspace";
+import { PrWorkspace, prHeadSha, type PrDiffState } from "./PrWorkspace";
 import { WireError } from "../../contracts/index";
 import {
   Badge,
@@ -39,6 +39,7 @@ import type { GatewayPort } from "../../gateway-client/types";
 import { useSubmitIntent, type IntentResult } from "../../intent/submit-intent";
 import { useCanSubmitIntent } from "../../connection/read-only";
 import { buildHunkActionRequest } from "../../intent/hunk-resource-ref";
+import { buildMergePrActionRequest } from "../../intent/merge-pr-request";
 import {
   enrichHunkAction,
   type GatewayApprovalEnrichment,
@@ -543,11 +544,13 @@ function PRsTab({
   );
 }
 
-/** ui-069 D7 — owns the `get_pr_diff` fetch for the selected PR and feeds the pure-display PrWorkspace.
- *  The fetch is keyed on the STABLE (repo_id, pr_number) primitives (LESSON §17) — and the render site
- *  remounts it per `pr_id` — so a reselect re-fetches and NEVER shows a stale diff under the wrong PR.
- *  PrWorkspace takes NO gateway (the ui-064 no-mutation-reach pin: a read-only display can't reach a
- *  fetch/submit by construction). A null repo_id/pr_number → don't fetch; an honest no-link state. */
+/** ui-069 D7 + ui-070 cat-1 — owns the `get_pr_diff` fetch for the selected PR AND the github.merge_pr
+ *  submit, feeding the pure-display PrWorkspace. The diff fetch is keyed on the STABLE (repo_id, pr_number)
+ *  primitives (LESSON §17) — and the render site remounts it per `pr_id` — so a reselect re-fetches and
+ *  NEVER shows a stale diff. PrWorkspace takes NO gateway (the ui-064 no-mutation-reach pin: a read-only
+ *  display can't reach a fetch/submit by construction). The cat-1 Merge is GUARDED-DISABLED: enabled only
+ *  when canSubmitIntent && prMutationsEnabled && headSha != null — prMutationsEnabled defaults false +
+ *  headSha is null until the daemon field lands → no production path reaches a live merge. */
 function PrWorkspaceContainer({
   gateway,
   pr,
@@ -561,6 +564,13 @@ function PrWorkspaceContainer({
 }) {
   const { repo_id, pr_number } = pr;
   const [prDiff, setPrDiff] = useState<PrDiffState>({ kind: "loading" });
+  const [refreshTick, setRefreshTick] = useState(0);
+  const seam = useSubmitIntent(gateway);
+  const canSubmit = useCanSubmitIntent();
+  const [pendingApproval, setPendingApproval] = useState<GatewayApprovalEnrichment | null>(null);
+  const [mergeResult, setMergeResult] = useState<IntentResult<ActionAck> | null>(null);
+  const [mergeEnrichFailed, setMergeEnrichFailed] = useState(false);
+
   useEffect(() => {
     if (repo_id == null || pr_number == null) {
       // no repo link / PR number → don't fetch; an honest no-link state (distinct from a daemon error).
@@ -590,8 +600,73 @@ function PrWorkspaceContainer({
     return () => {
       active = false;
     };
-  }, [gateway, repo_id, pr_number]);
-  return <PrWorkspace pr={pr} reviews={reviews} onBack={onBack} prDiff={prDiff} />;
+  }, [gateway, repo_id, pr_number, refreshTick]);
+
+  // cat-1 defense-in-depth layer 1: the Merge enablement. prMutationsEnabled is the PR-mutation go-live
+  // gate (default false in prod, SEPARATE from L2 mutationsEnabled); headSha is the anti-race pin (null
+  // until the daemon field lands → disabled today); canSubmit is the live-link gate. The port's
+  // throw-never-invoke guard is the provably-unreachable layer beneath this.
+  const headSha = prHeadSha(pr);
+  const canMerge = canSubmit && gateway.prMutationsEnabled && headSha != null;
+
+  async function onMerge() {
+    // structural guard (the control is disabled when any is missing — belt-and-suspenders, never a
+    // merge formed without a pinned head / repo identity).
+    if (repo_id == null || pr_number == null || headSha == null) return;
+    const req = buildMergePrActionRequest(
+      { repo_id, pr_number, head_sha: headSha, merge_method: "merge" },
+      new Date().toISOString(),
+    );
+    const r = await seam.submitAction(req);
+    if ("ok" in r) {
+      // submitted — open the GatewayModal for the daemon's REAL policy/preview/approve-deny (no
+      // optimistic "merged"; the terminal state lands only via the PullRequestMerged projection fold).
+      setMergeResult(null);
+      setMergeEnrichFailed(false);
+      try {
+        setPendingApproval(await enrichHunkAction(gateway, r.ok));
+      } catch (e) {
+        // the intent WAS recorded (the daemon acked); only the approval-card re-fetch failed — degrade
+        // HONESTLY (never a card from un-parsed data, never a silent stall; §11.7 / LESSON §16 spirit).
+        console.error("merge approval enrich (ApprovalQueue re-fetch) failed", e);
+        setMergeEnrichFailed(true);
+      }
+    } else {
+      // a rejection (a §6.4 WireError or the read-only fail-safe) — surface the verdict VERBATIM via
+      // ResultNotice (describeRejection) + the honest re-review affordance; never a fabricated success.
+      setMergeResult(r);
+    }
+  }
+
+  function onReReview() {
+    setMergeResult(null);
+    setMergeEnrichFailed(false); // clear BOTH honest-degrade notices on a re-review
+    setRefreshTick((t) => t + 1); // re-fetch the latest PR diff so the user re-reviews the current head
+  }
+
+  return (
+    <>
+      <PrWorkspace
+        pr={pr}
+        reviews={reviews}
+        onBack={onBack}
+        prDiff={prDiff}
+        canMerge={canMerge}
+        onMerge={onMerge}
+        mergeResult={mergeResult}
+        mergeEnrichFailed={mergeEnrichFailed}
+        onReReview={onReReview}
+      />
+      {pendingApproval ? (
+        <GatewayModal
+          approval={pendingApproval.approval}
+          policyDecision={pendingApproval.policyDecision}
+          port={gateway}
+          onClose={() => setPendingApproval(null)}
+        />
+      ) : null}
+    </>
+  );
 }
 
 /**

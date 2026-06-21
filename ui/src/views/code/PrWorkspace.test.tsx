@@ -4,8 +4,8 @@
 // header (number/title/branches/status) + mergeability/checks + the reviews-list + the real D6 diff-stats
 // (ui-068) + the read-only D7 PR code-diff (ui-069, passed down by DiffReview as `prDiff`), with ALL
 // mutations + Brain controls rendered DISABLED (a future cat-1 arc + the deferred Brain sibling).
-import { describe, it, expect, afterEach } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import { PrWorkspace, type PrDiffState } from "./PrWorkspace";
 import type { DiffResult, PullRequestRow, ReviewRow } from "../../contracts/index";
 
@@ -50,9 +50,19 @@ const isDisabled = (name: RegExp) =>
 const noop = () => {};
 
 // PrWorkspace is pure-display: `prDiff` is REQUIRED (no silent default — the discriminated-union
-// discipline). Tests that don't exercise the code-diff pass the honest no-link state.
+// discipline). The cat-1 Merge control is container-driven: `canMerge` (the computed enablement) +
+// `onMerge` (the container submits) + `mergeResult` (a rejection to surface) + `onReReview`.
 const renderWs = (
-  opts: { pr?: PullRequestRow; reviews?: ReviewRow[]; prDiff?: PrDiffState } = {},
+  opts: {
+    pr?: PullRequestRow;
+    reviews?: ReviewRow[];
+    prDiff?: PrDiffState;
+    canMerge?: boolean;
+    onMerge?: () => void;
+    mergeResult?: Parameters<typeof PrWorkspace>[0]["mergeResult"];
+    mergeEnrichFailed?: boolean;
+    onReReview?: () => void;
+  } = {},
 ) =>
   render(
     <PrWorkspace
@@ -60,6 +70,11 @@ const renderWs = (
       reviews={opts.reviews ?? []}
       onBack={noop}
       prDiff={opts.prDiff ?? NO_LINK}
+      canMerge={opts.canMerge ?? false}
+      onMerge={opts.onMerge ?? noop}
+      mergeResult={opts.mergeResult ?? null}
+      mergeEnrichFailed={opts.mergeEnrichFailed ?? false}
+      onReReview={opts.onReReview ?? noop}
     />,
   );
 
@@ -205,14 +220,47 @@ describe("PrWorkspace (ui-064 Layer 2)", () => {
   });
 
   it("pr_workspace_mutations_and_brain_disabled", () => {
-    // [a11y wire-or-disable / forbidden #6] the future cat-1 mutation arc + the deferred Brain sibling
-    // render DISABLED with accessible names — present but non-interactive, never a dead click.
+    // [a11y wire-or-disable / forbidden #6] Approve PR / Request changes (the future github.submit_review
+    // cat-1 slice) + the deferred Brain sibling render DISABLED with accessible names — present but
+    // non-interactive, never a dead click. (Merge is the wired-but-gated cat-1 control — see below.)
     renderWs();
-    expect(isDisabled(/Merge/i)).toBe(true);
     expect(isDisabled(/Approve PR/i)).toBe(true);
     expect(isDisabled(/Request changes/i)).toBe(true);
     expect(isDisabled(/Ask Brain/i)).toBe(true);
     // the "← Worktree diff" deselect IS wired (onBack provided) — not a dead click.
     expect(isDisabled(/Worktree diff/i)).toBe(false);
+    // Merge is disabled by default (canMerge false) — the guarded-disabled cat-1 control.
+    expect(isDisabled(/^Merge/i)).toBe(true);
+  });
+
+  it("merge_control_enabled_only_when_canMerge_and_raises_onMerge", () => {
+    // [§11.6 defense-in-depth layer 1] PrWorkspace renders Merge enabled IFF canMerge (the container
+    // computes canSubmitIntent && prMutationsEnabled && headSha!=null); a disabled Merge can't fire; an
+    // enabled Merge click raises onMerge (the container does the cat-1 submit — PrWorkspace never mutates).
+    const onMerge = vi.fn();
+    renderWs({ canMerge: false, onMerge });
+    expect((screen.getByRole("button", { name: /^Merge/i }) as HTMLButtonElement).disabled).toBe(true);
+    cleanup();
+    renderWs({ canMerge: true, onMerge });
+    const btn = screen.getByRole("button", { name: /^Merge/i }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    fireEvent.click(btn);
+    expect(onMerge).toHaveBeenCalledTimes(1);
+  });
+
+  it("merge_rejection_renders_honest_verdict_and_re_review", () => {
+    // [§11.7/forbidden#2/D2] a rejected merge submit surfaces the daemon's §6.4 code VERBATIM (via
+    // ResultNotice/describeRejection) + an honest "PR may have moved — re-review" affordance, NEVER a
+    // fabricated success/optimistic "merged".
+    const onReReview = vi.fn();
+    renderWs({ mergeResult: { error: { code: "fencing_conflict" } }, onReReview });
+    const region = screen.getByTestId("pr-merge-result");
+    expect(region.textContent).toMatch(/fencing_conflict/); // §6.4 code verbatim
+    expect(region.textContent).toMatch(/re-review/i);
+    expect(region.textContent ?? "").not.toMatch(/\b(merged|done|succeeded)\b/i); // no fabricated success
+    // the re-review affordance is a REAL button (present even for non-reapprovable fencing_conflict) that
+    // fires the re-fetch — not just static guidance text.
+    fireEvent.click(screen.getByTestId("pr-merge-rereview"));
+    expect(onReReview).toHaveBeenCalledTimes(1);
   });
 });

@@ -471,3 +471,108 @@ describe("DiffReview — null-safe PR-number chip (ui-067)", () => {
     expect(screen.getByText("#101")).toBeTruthy();
   });
 });
+
+// ─── ui-070 cat-1 — github.merge_pr Merge control (guarded-disabled) ─────────────
+// A PR with a captured head_sha (injected via cast — the daemon field isn't on PullRequestRow yet;
+// prHeadSha reads it forward-compatibly). Production rows lack it → prHeadSha null → Merge disabled.
+const PR_MERGEABLE = {
+  pr_id: "repo_1#101",
+  project_id: "p1",
+  repo_id: "repo_1",
+  pr_number: 101,
+  title: "Add OAuth device flow",
+  status: "open",
+  head_branch: "agent/auth",
+  base_branch: "main",
+  pr_checked_at: null,
+  mergeable: true,
+  checks_summary: null,
+  head_sha: "headsha123",
+} as unknown as PullRequestRow;
+
+function renderMerge(port: MockGatewayPort, status: ConnectionStatus = CONNECTED) {
+  vi.spyOn(port, "get_diff").mockResolvedValue(DIFF);
+  vi.spyOn(port, "get_pr_diff").mockResolvedValue(DIFF);
+  render(
+    <ReadOnlyProvider value={status}>
+      <DiffReview prs={[PR_MERGEABLE]} reviews={[]} gateway={port} />
+    </ReadOnlyProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /Pull requests/i }));
+  fireEvent.click(screen.getByRole("button", { name: /Add OAuth device flow/i }));
+}
+
+describe("DiffReview — github.merge_pr Merge control (cat-1 ui-070)", () => {
+  it("merge_disabled_when_pr_mutations_not_enabled", async () => {
+    // spec(cat-1) — even with a head_sha + a live link, Merge stays DISABLED while prMutationsEnabled is
+    // false (the guarded-disabled default; the go-live flip is a future USER-signed-off slice).
+    const port = new MockGatewayPort({ prMutationsEnabled: false });
+    renderMerge(port);
+    const btn = await screen.findByRole("button", { name: /^Merge/i });
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("merge_disabled_when_connection_degraded", async () => {
+    // spec(§11.6 defense-in-depth) — Merge stays disabled when the link is degraded (canSubmitIntent
+    // false) even with prMutationsEnabled + a head_sha.
+    const port = new MockGatewayPort(); // prMutationsEnabled defaults true
+    renderMerge(port, DEGRADED);
+    const btn = await screen.findByRole("button", { name: /^Merge/i });
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("merge_click_forms_and_submits_then_opens_gateway_modal", async () => {
+    // spec(§11.2 + ui-064) — with prMutationsEnabled (Mock default true) + a head_sha + a live link Merge
+    // is enabled; clicking forms buildMergePrActionRequest (github.merge_pr, sha-pinned, repo resource_ref,
+    // no owner/repo) + submits + opens the GatewayModal. The container owns the gateway; PrWorkspace none.
+    const port = new MockGatewayPort();
+    const submitSpy = vi.spyOn(port, "submit_action");
+    renderMerge(port);
+    fireEvent.click(await screen.findByRole("button", { name: /^Merge/i }));
+    await waitFor(() => expect(submitSpy).toHaveBeenCalledTimes(1));
+    const req = submitSpy.mock.calls[0]![0];
+    expect(req.action_type).toBe("github.merge_pr");
+    expect((req.inputs as { sha: string }).sha).toBe("headsha123"); // the displayed head pinned
+    expect(req.resource_refs[0]).toEqual({ type: "repo", id: "repo_1" });
+    expect(req.inputs).not.toHaveProperty("owner"); // ruling A — UI never names owner/repo
+    expect(await screen.findByTestId("gateway-modal")).toBeTruthy();
+  });
+
+  it("merge_no_optimistic_done", async () => {
+    // spec([[16]]/[[17]]) — submit opens the daemon's pending approval card; the UI NEVER shows
+    // "merged"/"done" optimistically (merged only on the confirming PullRequestMerged projection fold).
+    const port = new MockGatewayPort();
+    renderMerge(port);
+    fireEvent.click(await screen.findByRole("button", { name: /^Merge/i }));
+    await screen.findByTestId("gateway-modal");
+    const modal = screen.getByTestId("gateway-modal");
+    expect(modal.textContent ?? "").not.toMatch(/\b(merged|done|succeeded|completed)\b/i);
+  });
+
+  it("merge_failure_is_honest_re_review_not_fabricated", async () => {
+    // spec(§11.7/D2/forbidden#2) — a rejected merge submit surfaces the daemon's §6.4 code VERBATIM +
+    // an honest re-review affordance, NEVER a fabricated success/card.
+    const port = new MockGatewayPort({ mutationError: { code: "fencing_conflict" } });
+    renderMerge(port);
+    fireEvent.click(await screen.findByRole("button", { name: /^Merge/i }));
+    const region = await screen.findByTestId("pr-merge-result");
+    expect(region.textContent).toMatch(/fencing_conflict/);
+    expect(region.textContent).toMatch(/re-review/i);
+    expect(screen.getByTestId("pr-merge-rereview")).toBeTruthy(); // a real re-review button, not just text
+    expect(screen.queryByText(/\bmerged\b/i)).toBeNull(); // no fabricated success
+  });
+
+  it("merge_enrich_failure_degrades_honestly", async () => {
+    // spec(§11.7/LESSON §16) — the merge submit succeeds but the post-submit ApprovalQueue re-fetch fails
+    // (malformed payload / transport fault) → the intent WAS recorded but the card can't load → an honest
+    // notice, NEVER a silent stall and NEVER a card built from un-parsed data.
+    const port = new MockGatewayPort();
+    vi.spyOn(port, "get_projection").mockRejectedValue(
+      new BoundaryValidationError("ApprovalQueue", new ZodError([])),
+    );
+    renderMerge(port);
+    fireEvent.click(await screen.findByRole("button", { name: /^Merge/i }));
+    expect(await screen.findByTestId("pr-merge-enrich-unavailable")).toBeTruthy();
+    expect(screen.queryByTestId("gateway-modal")).toBeNull(); // no card from un-enriched data
+  });
+});

@@ -4,7 +4,7 @@
 - **Phase:** Phase 7 (Integrations / PR Review Workspace) — the ui-half P7.2 cat-1 PR-mutations arc
 - **Track:** ui (`track/ui`)
 - **Predecessor:** [ui-021](ui-021-2026-06-17-quality-hardening-bundle.md)
-- **Successor:** _(none yet — track pauses post-arc, daemon-gated on head_sha/owner-repo)_
+- **Successor:** [ui-023](ui-023-2026-06-21-real-head-sha-pin.md)
 
 ## Why this session existed
 

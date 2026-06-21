@@ -17,7 +17,7 @@ use nexusops_shared::actions::{
 };
 use nexusops_shared::events::{PullRequestSynced, ReviewSynced, SessionStarted, WorktreeCreated};
 use nexusops_shared::harness::HarnessCapabilities;
-use nexusops_shared::ids::{ActionRequestId, ProjectId, SessionId, WorktreeId};
+use nexusops_shared::ids::{ActionRequestId, ExecutionProfileId, ProjectId, SessionId, WorktreeId};
 use nexusops_shared::ipc::{ProjectionDelta, ProjectionName};
 use nexusops_shared::status::{ActionRequestStatus, PullRequest, ReviewState};
 use nexusops_shared::time::Timestamp;
@@ -72,10 +72,52 @@ impl SessionLauncher for RecordingLauncher {
     }
 }
 
+/// An in-memory [`ProfileLookup`] double (P5.3a §15 #8): a known seeded default + a set of registered
+/// ids. Lets the resolve cases (found / unknown-fail-closed / none-default) run deterministically with
+/// NO real `execution_profiles` table — production injects the sqlite-backed lookup (`main.rs`).
+struct FakeProfileLookup {
+    default: ExecutionProfileId,
+    known: std::collections::HashSet<String>,
+}
+
+impl FakeProfileLookup {
+    fn new(default: ExecutionProfileId) -> Self {
+        let mut known = std::collections::HashSet::new();
+        known.insert(default.as_str().to_string());
+        Self { default, known }
+    }
+
+    fn with_known(mut self, id: &ExecutionProfileId) -> Self {
+        self.known.insert(id.as_str().to_string());
+        self
+    }
+}
+
+impl nexusopsd::profiles::ProfileLookup for FakeProfileLookup {
+    fn default_id(&self) -> Result<ExecutionProfileId, nexusopsd::profiles::ProfileError> {
+        Ok(self.default.clone())
+    }
+    fn exists(&self, id: &ExecutionProfileId) -> Result<bool, nexusopsd::profiles::ProfileError> {
+        Ok(self.known.contains(id.as_str()))
+    }
+}
+
 /// The production policy (catalog-driven) + the SessionExecutor over a recording NON-LIVE launcher +
 /// a real (unbounded) supervisor handle. Returns the gateway + the launch-counter + the
 /// shutdown/join keep-alives (drop them only at the end so the supervisor task stays up).
 fn gateway_with_session_executor() -> (
+    Gateway,
+    Arc<AtomicUsize>,
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    // a default fake with a known seeded default (the None / no-profile path resolves to it).
+    gateway_with_profile_lookup(Box::new(FakeProfileLookup::new(ExecutionProfileId::new())))
+}
+
+fn gateway_with_profile_lookup(
+    lookup: Box<dyn nexusopsd::profiles::ProfileLookup>,
+) -> (
     Gateway,
     Arc<AtomicUsize>,
     tokio::sync::watch::Sender<bool>,
@@ -93,7 +135,7 @@ fn gateway_with_session_executor() -> (
         inner: FakeLauncher::new(full_caps()),
         launches: launches.clone(),
     };
-    let executor = SessionExecutor::new(Box::new(launcher), handle);
+    let executor = SessionExecutor::new(Box::new(launcher), handle, lookup);
     let gateway = Gateway::new(
         Box::new(nexusopsd::gateway::policy::CatalogPolicy),
         Box::new(executor),
@@ -167,14 +209,15 @@ async fn test_session_create_auto_executes_and_audits() {
 }
 
 #[tokio::test]
-async fn test_session_started_records_profile() {
-    // PIN (b) — spec(§15 #8) — the executor RESOLVES the ExecutionProfile + records its id in the
-    // audited `SessionStarted` (profile recorded-at-start).
+async fn resolve_uses_registered_profile_when_known() {
+    // PIN (b) — spec(§15 #8) — a `Some(known_id)` present in the registry resolves to THAT id + is
+    // recorded in the audited `SessionStarted` (profile recorded-at-start; registry-backed resolve).
     let dir = tempfile::tempdir().unwrap();
     let mut store = open(&dir.path().join("nexusops.db"));
-    let (gw, _launches, _sd, _join) = gateway_with_session_executor();
+    let profile = ExecutionProfileId::new();
+    let lookup = FakeProfileLookup::new(ExecutionProfileId::new()).with_known(&profile);
+    let (gw, _launches, _sd, _join) = gateway_with_profile_lookup(Box::new(lookup));
 
-    let profile = nexusops_shared::ids::ExecutionProfileId::new();
     let profile_str = profile.as_str().to_string();
     gw.submit_action(&mut store, session_create_req(Some(&profile_str)))
         .expect("submit");
@@ -183,7 +226,59 @@ async fn test_session_started_records_profile() {
     assert_eq!(
         payload.execution_profile_id.as_ref().map(|p| p.as_str()),
         Some(profile_str.as_str()),
-        "PIN b — SessionStarted records the resolved execution_profile_id (§15 #8)"
+        "PIN b — a known registered profile resolves to that id, recorded in SessionStarted (§15 #8)"
+    );
+}
+
+#[tokio::test]
+async fn resolve_fails_closed_on_unknown_profile() {
+    // spec(§15 #8 — no silent account-hop; sub-decision 2) — a `Some(unknown_id)` (NOT in the registry)
+    // FAILS CLOSED: session.create → Failed, NO mint, NO SessionStarted, NO session spawned (the resolve
+    // happens BEFORE the launch, so no orphaned session-actor).
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(&dir.path().join("nexusops.db"));
+    // the fake knows ONLY its default; the requested id is unknown.
+    let lookup = FakeProfileLookup::new(ExecutionProfileId::new());
+    let (gw, launches, _sd, _join) = gateway_with_profile_lookup(Box::new(lookup));
+
+    let unknown = ExecutionProfileId::new();
+    let ack = gw
+        .submit_action(&mut store, session_create_req(Some(unknown.as_str())))
+        .expect("submit returns an ack (Failed), not an Err");
+    assert_eq!(
+        ack.status,
+        ActionRequestStatus::Failed,
+        "an unknown profile id fails the session.create closed (no silent mint)"
+    );
+    assert!(
+        session_started_payload(&store).is_none(),
+        "no SessionStarted is appended for a fail-closed profile resolution"
+    );
+    assert_eq!(
+        launches.load(Ordering::SeqCst),
+        0,
+        "no session was spawned — the resolve fails BEFORE the launch (no orphaned actor)"
+    );
+}
+
+#[tokio::test]
+async fn resolve_uses_default_when_none_given() {
+    // spec(§15 #8 — sub-decision 2) — `None` (no profile requested) resolves to the SEEDED DEFAULT id
+    // (NOT a fresh per-session mint), recorded in SessionStarted.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(&dir.path().join("nexusops.db"));
+    let default = ExecutionProfileId::new();
+    let lookup = FakeProfileLookup::new(default.clone());
+    let (gw, _launches, _sd, _join) = gateway_with_profile_lookup(Box::new(lookup));
+
+    gw.submit_action(&mut store, session_create_req(None))
+        .expect("submit");
+
+    let payload = session_started_payload(&store).expect("SessionStarted appended");
+    assert_eq!(
+        payload.execution_profile_id.as_ref().map(|p| p.as_str()),
+        Some(default.as_str()),
+        "None resolves to the seeded default profile id (not a fresh mint)"
     );
 }
 

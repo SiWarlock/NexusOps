@@ -572,3 +572,27 @@ ALTER TABLE proj_pull_request ADD COLUMN deletions INTEGER;
 ALTER TABLE proj_pull_request ADD COLUMN changed_files INTEGER;
 ALTER TABLE proj_pull_request ADD COLUMN commits INTEGER;
 ";
+
+/// Migration 16 (P5.3a) — the `execution_profiles` durable registry (DATA_MODEL §2.8, SOM §15). The daemon's
+/// FIRST canonical OBJECT registry: a **direct-write** table whose ROW is the source of truth (Option B,
+/// USER-DECIDED), written atomically with an `ExecutionProfileRegistered` audit event (the LESSON-16 dual-
+/// gate; the event is the trail, NOT a projection source). Therefore it is **NOT in `REBUILD_TABLES`** — a
+/// projection `rebuild()` must NEVER truncate/re-fold it (no projector folds `ExecutionProfileRegistered`;
+/// a refold would EMPTY it). The PK is a `prof_` ULID (LESSON 14 — `prof_` wins over the DATA_MODEL DDL's
+/// stale `exec_` comment). **§15 #4:** `keychain_ref` is a POINTER column, NEVER the secret (the keychain
+/// WRITE is 5.3b). `status` stores the frozen §5.1 ExecutionProfile wire value (config; runtime re-derivation
+/// is 5.3b, §7.2). A CREATE (a new table; `execution_profiles` didn't exist at M3).
+pub const MIGRATION_16_EXECUTION_PROFILES: &str = "\
+CREATE TABLE execution_profiles (
+  execution_profile_id TEXT PRIMARY KEY,
+  workspace_id      TEXT NOT NULL,
+  provider          TEXT NOT NULL,
+  harness           TEXT NOT NULL,
+  model             TEXT,
+  account_alias     TEXT,
+  keychain_ref      TEXT,
+  usage_policy_json TEXT,
+  status            TEXT NOT NULL DEFAULT 'available',
+  created_at        TEXT NOT NULL
+);
+";

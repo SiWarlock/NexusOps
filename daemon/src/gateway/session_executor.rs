@@ -1,14 +1,19 @@
-//! The session.create / session.kill executor (P4.0b-1 L3, CAT-1) — drives the 4.0a session
-//! [`SupervisorHandle`] (over the NON-LIVE launcher) + emits the §15 #8 `SessionStarted`, delegating
-//! every non-session action to the inner [`CatalogExecutor`].
+//! The session.create / session.kill executor (P4.0b, CAT-1) — drives the 4.0a session
+//! [`SupervisorHandle`] (over an INJECTED launcher) + emits the §15 #8 `SessionStarted`, delegating
+//! every non-session action to the inner [`CatalogExecutor`]. **Since 4.0b-2 this IS the reachable
+//! production `session.create` executor** (registered under `ExecutorKind::Session` in `main.rs`); the
+//! live INV-SEC-1 interception co-resides there (the `test_live_session_create_has_interception`
+//! structural pin).
 //!
-//! **Binding condition (4.0b-1, the lead's #1 ask, held by construction):** the launcher is NON-LIVE
-//! (FakeHarness; NO live Claude adapter is constructed here — `daemon/tests/session_executor.rs`
-//! greps this file's source to prove it, so the live-adapter identifiers must not even appear in
-//! prose here), there is no reachable IPC `session.create` method, AND this executor is NOT wired
-//! into the production Gateway (`main.rs` keeps `CatalogExecutor`). The live launch + the INV-SEC-1
-//! interception + the IPC method land TOGETHER at **4.0b-2**. This is the "mechanism built, no live
-//! caller" half (the 043 pattern), tested only via `submit_action`.
+//! **Launcher-agnostic (binding condition, test-9-enforced):** the executor constructs NO live agent
+//! launch path of its own — the launcher is INJECTED via the [`SessionLauncher`] seam (a `FakeLauncher`
+//! in tests; the real one built in `main.rs`). So no live-adapter identifiers appear in this file, and
+//! the executor cannot smuggle an un-intercepted launch (the #10 live-spawn lives at the injected
+//! launcher, not here).
+//!
+//! **P5.3a (§15 #8):** profile resolution is REGISTRY-BACKED + FAIL-CLOSED — an unknown requested
+//! profile id refuses the launch (no silent mint); `None` resolves to the seeded default. The
+//! `execution_profiles` registry write + the cold-start seed live in [`crate::profiles`].
 
 use std::sync::Mutex;
 
@@ -21,6 +26,7 @@ use nexusops_shared::time::Timestamp;
 use crate::gateway::executor::{
     ActionExecutor, CatalogExecutor, EmittedEvent, ExecError, ExecutionOutcome,
 };
+use crate::profiles::ProfileLookup;
 use crate::session::{SessionCommand, SessionLauncher, SupervisorHandle};
 use crate::terminal::TerminalSession;
 
@@ -34,6 +40,22 @@ const SESSION_KILL: &str = "session.kill";
 /// runbook's #1 0.1-HITL watch item (the `\n` fallback is documented there).
 const SUBMIT_TERMINATOR: u8 = b'\r';
 
+/// §15 #8 fail-closed profile-resolution failures (P5.3a). STRUCTURAL — the message echoes only the
+/// requester-supplied id string (no new info beyond what the requester sent); execute_create maps any
+/// variant → `ExecutionOutcome::Failed` BEFORE launching (no orphaned session-actor).
+#[derive(Debug, thiserror::Error)]
+enum ProfileResolveError {
+    /// the requested profile id is not registered — no silent mint / no account-hop (§15 #8).
+    #[error("execution profile not found: {0}")]
+    Unknown(String),
+    /// the requested profile id is not a valid `ExecutionProfileId`.
+    #[error("invalid execution profile id: {0}")]
+    Invalid(String),
+    /// the registry lookup itself failed (a read error) — fail-closed (refuse the launch).
+    #[error("execution profile lookup failed: {0}")]
+    Lookup(String),
+}
+
 /// The session.create/kill executor. Holds the NON-LIVE [`SessionLauncher`] seam (the live launcher
 /// swaps in at 4.0b-2) + the [`SupervisorHandle`] (a SYNC, non-blocking, UNBOUNDED bridge — cannot
 /// stall the write-actor, cat-1) + the inner [`CatalogExecutor`] for delegation.
@@ -43,33 +65,57 @@ pub struct SessionExecutor {
     /// executor runs on the single write-actor thread) and carries no mutation (`launch_session(&self)`).
     launcher: Mutex<Box<dyn SessionLauncher>>,
     supervisor: SupervisorHandle,
+    /// P5.3a — the §15 #8 registry read seam: resolve the requested/default `ExecutionProfile` against the
+    /// canonical `execution_profiles` registry, fail-closed on an unknown id (injected; sqlite-backed in prod).
+    profile_lookup: Box<dyn ProfileLookup>,
     inner: CatalogExecutor,
 }
 
 impl SessionExecutor {
-    pub fn new(launcher: Box<dyn SessionLauncher>, supervisor: SupervisorHandle) -> Self {
+    pub fn new(
+        launcher: Box<dyn SessionLauncher>,
+        supervisor: SupervisorHandle,
+        profile_lookup: Box<dyn ProfileLookup>,
+    ) -> Self {
         Self {
             launcher: Mutex::new(launcher),
             supervisor,
+            profile_lookup,
             inner: CatalogExecutor::new(),
         }
     }
 
-    /// §15 #8 (PIN b) — resolve the `ExecutionProfile` for the session at start. 4.0b-1 reads the
-    /// requested profile id from the action inputs (the UI passes the chosen profile); a missing /
-    /// invalid one mints a fresh placeholder (the `execution_profiles` registry is Phase 5). A profile
-    /// CHANGE is the approval-gated `session.profile_change` (PIN c) — this routine record is no hop.
-    fn resolve_profile(req: &ActionRequest) -> ExecutionProfileId {
+    /// §15 #8 (PIN b) — resolve the `ExecutionProfile` for the session at start, REGISTRY-BACKED +
+    /// FAIL-CLOSED (P5.3a). A requested id present in the registry resolves to it; a requested id NOT in
+    /// the registry (or unparseable) is REFUSED — no silent mint, no account-hop; `None` (no profile
+    /// requested) resolves to the seeded default. A profile CHANGE is the approval-gated
+    /// `session.profile_change` (PIN c) — this routine record is no hop.
+    fn resolve_profile(
+        &self,
+        req: &ActionRequest,
+    ) -> Result<ExecutionProfileId, ProfileResolveError> {
         match req
             .inputs
             .get("execution_profile_id")
             .and_then(|v| v.as_str())
-            .and_then(|s| ExecutionProfileId::parse(s).ok())
         {
-            Some(id) => id,
-            // 4.0b-1 placeholder — a session.create with no explicit profile mints a FRESH per-session
-            // id (NOT a shared default); the `execution_profiles` registry-backed resolution is Phase 5.
-            None => ExecutionProfileId::new(),
+            Some(s) => {
+                let id = ExecutionProfileId::parse(s)
+                    .map_err(|_| ProfileResolveError::Invalid(s.to_string()))?;
+                if self
+                    .profile_lookup
+                    .exists(&id)
+                    .map_err(|e| ProfileResolveError::Lookup(e.to_string()))?
+                {
+                    Ok(id)
+                } else {
+                    Err(ProfileResolveError::Unknown(s.to_string()))
+                }
+            }
+            None => self
+                .profile_lookup
+                .default_id()
+                .map_err(|e| ProfileResolveError::Lookup(e.to_string())),
         }
     }
 
@@ -80,13 +126,20 @@ impl SessionExecutor {
         if let Err(e) = self.inner.validate(req) {
             return ExecutionOutcome::Failed(e.to_string());
         }
-        // launch over the NON-LIVE launcher (FakeHarness; no live agent). The seam swaps to the real
-        // launcher at 4.0b-2 — together with the live interception (no un-intercepted live agent).
-        // `.unwrap()` (daemon no-bare-unwrap convention): the Mutex is UNCONTENDED (the executor runs
-        // on the single write-actor thread) — it can only poison if `launch_session` panics WHILE the
-        // lock is held, which would already crash the write-actor thread regardless; poison-propagation
-        // adds no new failure mode. The Mutex exists ONLY to satisfy `ActionExecutor: Sync` over the
-        // `Send`-only launcher (no mutation; see the field doc). Accepted.
+        // §15 #8 (P5.3a) — resolve the ExecutionProfile BEFORE launching: a fail-closed resolution (an
+        // unknown/invalid requested id, or a registry read error) refuses the session.create with NO
+        // launch and NO session-actor spawned (no orphan). Resolved-at-start, recorded in SessionStarted
+        // (no silent mint, no account-hop).
+        let execution_profile_id = match self.resolve_profile(req) {
+            Ok(id) => id,
+            Err(e) => return ExecutionOutcome::Failed(e.to_string()),
+        };
+        // launch over the INJECTED launcher (`FakeLauncher` in tests; the real one built in `main.rs`,
+        // co-resident with the live interception). `.unwrap()` (daemon no-bare-unwrap convention): the
+        // Mutex is UNCONTENDED (the executor runs on the single write-actor thread) — it can only poison
+        // if `launch_session` panics WHILE the lock is held, which would already crash the write-actor
+        // thread regardless; poison-propagation adds no new failure mode. The Mutex exists ONLY to satisfy
+        // `ActionExecutor: Sync` over the `Send`-only launcher (no mutation; see the field doc). Accepted.
         let mut launched = match self.launcher.lock().unwrap().launch_session() {
             Ok(l) => l,
             Err(e) => return ExecutionOutcome::Failed(format!("session launch failed: {e}")),
@@ -95,7 +148,6 @@ impl SessionExecutor {
         // Option-G dev-drive (brief 053): feed an optional `initial_prompt` to the LAUNCHED session's
         // PTY, post-launch, BEFORE the session moves into the supervisor. Best-effort — see the helper.
         let prompt_note = write_initial_prompt(&mut launched.terminal, req);
-        let execution_profile_id = Self::resolve_profile(req);
         // drive the supervisor — a SYNC, NON-BLOCKING unbounded enqueue (cannot stall the write-actor,
         // cat-1). The status observer has no consumer in 4.0b-1 (the projection feed is later) → drop
         // the rx so the actor's status sends no-op on a closed channel rather than buffer unboundedly.

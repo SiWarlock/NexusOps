@@ -283,7 +283,10 @@ impl EventStore {
     /// §15 gate + seq + in-band projection fold + outbox as [`EventStore::append`]), then commit on
     /// `Ok` / roll back on `Err` (the tx drops). This makes `{action_requests/approvals row +
     /// ActionExecution* event}` atomic per transition — fail-closed (INV-SEC-1, §15/§17). The conn
-    /// stays private; only the Action Gateway (the sole mutator, forbidden #2) drives this.
+    /// stays private; the Action Gateway (the sole mutator of GATEWAY state, forbidden #2) drives this,
+    /// AND — as the generic atomic {durable-row + audit-event} primitive — the DATA_MODEL §2.8
+    /// durable-registry register-mutators (P5.3a `profiles::register_profile`, the daemon's own substrate
+    /// writes; LESSON 16). Both are daemon-internal; neither is a proposer path (INV-SEC-1 governs intents).
     pub fn gateway_txn<T, E>(&mut self, f: impl FnOnce(&GatewayTxn) -> Result<T, E>) -> Result<T, E>
     where
         E: From<EventStoreError>,
@@ -672,7 +675,7 @@ impl GatewayTxn<'_> {
         {
             use nexusops_shared::events::{
                 ActionApproved, ActionFailed, ActionPartiallySucceeded, ActionRequested,
-                ActionSucceeded,
+                ActionSucceeded, ExecutionProfileRegistered,
             };
             let is_terminal = i.event_type == ActionSucceeded::EVENT_TYPE
                 || i.event_type == ActionFailed::EVENT_TYPE
@@ -697,6 +700,18 @@ impl GatewayTxn<'_> {
                 return Err(EventStoreError::Write(rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
                     Some("injected §14 audit-write fault (AuditEventWrite)".to_string()),
+                )));
+            }
+            // P5.3a — the durable-registry register-mutator's audit-event write (the LESSON-16 dual-gate).
+            // Event-type-scoped (parity with the gates above) so it fires ONLY on the registration event,
+            // even if a future register txn appends more than one event; a fault here rolls back the whole
+            // `gateway_txn` → no canonical `execution_profiles` row persists.
+            if i.event_type == ExecutionProfileRegistered::EVENT_TYPE
+                && crate::fault::take_if(crate::fault::FaultPoint::RegistryEventWrite)
+            {
+                return Err(EventStoreError::Write(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+                    Some("injected §14 audit-write fault (RegistryEventWrite)".to_string()),
                 )));
             }
         }

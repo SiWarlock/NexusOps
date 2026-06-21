@@ -23,6 +23,7 @@ pub mod integrations;
 pub mod integrity;
 pub mod ipc;
 pub mod locks;
+pub mod profiles;
 pub mod project;
 pub mod projections;
 pub mod runtime;

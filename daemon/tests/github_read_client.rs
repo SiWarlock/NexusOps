@@ -156,6 +156,33 @@ fn test_extract_pr_signals_captures_diff_stats() {
     assert_eq!(none.commits, None);
 }
 
+#[test]
+fn extract_pr_signals_captures_head_sha() {
+    // spec(§7.2 / P4.7 safety (a)): head_sha is captured ONLY from `pr.head.sha` on the octocrab GET PR
+    // (the authoritative, unspoofable source) → PullRequestSignals.head_sha. Conservative floor (the
+    // check-runs-guard precedent): head present AND sha non-empty → Some; absent head or empty sha → None
+    // (no fabricated SHA).
+    const PR_WITH_HEAD: &str = r#"{"locked":false,"number":7,"state":"open","mergeable_state":"clean","draft":false,"merged":false,"head":{"ref":"feature/x","sha":"9fceb02d0ae598e95dc970b74767f19372d61af8"}}"#;
+    let s = extract_pr_signals(&pr(PR_WITH_HEAD), &[], &[]);
+    assert_eq!(
+        s.head_sha.as_deref(),
+        Some("9fceb02d0ae598e95dc970b74767f19372d61af8"),
+        "head_sha captured from pr.head.sha (authoritative GitHub GET)"
+    );
+
+    // absent head (PR_OPEN_CLEAN omits it) → None (no fabrication, the conservative floor).
+    let no_head = extract_pr_signals(&pr(PR_OPEN_CLEAN), &[], &[]);
+    assert_eq!(no_head.head_sha, None, "absent head → None");
+
+    // present head but EMPTY sha (GitHub's "no commits yet" signal) → None (the §7.2 empty-sha guard).
+    const PR_EMPTY_SHA: &str = r#"{"locked":false,"number":7,"state":"open","mergeable_state":"clean","draft":false,"merged":false,"head":{"ref":"feature/x","sha":""}}"#;
+    let empty = extract_pr_signals(&pr(PR_EMPTY_SHA), &[], &[]);
+    assert_eq!(
+        empty.head_sha, None,
+        "empty head sha → None (no fabrication)"
+    );
+}
+
 // ---- the trait seam (the gated projector/executor consume this) --------------------------------
 
 #[tokio::test]

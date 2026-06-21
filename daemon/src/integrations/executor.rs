@@ -49,6 +49,8 @@ use crate::integrations::linear_write::{
     CreateIssueArgs, LinearWriteClient, LinearWriteError, LinkIssueArgs,
 };
 use crate::integrations::pull_request::derive_pull_request_status;
+use crate::integrations::repo_resolve::RepoOwnerRepoResolver;
+use nexusops_shared::actions::ResourceType;
 
 /// The action types `GithubExecutor` handles directly (`ExecutorKind::Github`); the rest delegate.
 const GITHUB_CREATE_PR: &str = "github.create_pr";
@@ -74,6 +76,9 @@ pub struct GithubExecutor {
     client: Box<dyn GithubWriteClient>,
     handle: tokio::runtime::Handle,
     clock: Box<dyn Clock>,
+    /// P4.7 — the §15 confused-deputy closure: resolve owner/repo from the AUDITED resource_ref identity
+    /// (never `inputs["owner"/"repo"]`). Injected (read-only WAL in prod; a fake in tests).
+    resolver: Box<dyn RepoOwnerRepoResolver>,
     timeout: Duration,
     inner: CatalogExecutor,
 }
@@ -84,8 +89,9 @@ impl GithubExecutor {
         client: Box<dyn GithubWriteClient>,
         handle: tokio::runtime::Handle,
         clock: Box<dyn Clock>,
+        resolver: Box<dyn RepoOwnerRepoResolver>,
     ) -> Self {
-        Self::with_timeout(client, handle, clock, NETWORK_TIMEOUT)
+        Self::with_timeout(client, handle, clock, resolver, NETWORK_TIMEOUT)
     }
 
     /// Build with an explicit network timeout (tests inject a short one to exercise the bound fast).
@@ -93,15 +99,66 @@ impl GithubExecutor {
         client: Box<dyn GithubWriteClient>,
         handle: tokio::runtime::Handle,
         clock: Box<dyn Clock>,
+        resolver: Box<dyn RepoOwnerRepoResolver>,
         timeout: Duration,
     ) -> Self {
         Self {
             client,
             handle,
             clock,
+            resolver,
             timeout,
             inner: CatalogExecutor::new(),
         }
+    }
+
+    /// P4.7 — the AUDITED repo identity: the first `Repo` resource_ref id (the catalog
+    /// `requires_resource_refs` precondition guarantees one). `None` → fail-closed (no auditable target).
+    fn repo_ref_id(req: &ActionRequest) -> Option<String> {
+        req.resource_refs
+            .iter()
+            .find(|r| r.resource_type == ResourceType::Repo)
+            .map(|r| r.id.clone())
+    }
+
+    /// P4.7 — resolve `(owner, repo)` for a PR-scoped write (merge/submit/sync) from the audited
+    /// resource_ref `repo_id` + `pr_number` (the D7 path); a structural `Failed` reason on any miss
+    /// (no raw — only the action_type), BEFORE the network call. Closes the confused deputy.
+    fn resolve_pr_target(
+        &self,
+        req: &ActionRequest,
+        action_type: &str,
+        pr_number: u64,
+    ) -> Result<(String, String), ExecutionOutcome> {
+        let Some(repo_id) = Self::repo_ref_id(req) else {
+            return Err(ExecutionOutcome::Failed(format!(
+                "{action_type}: missing the Repo resource_ref (the audited target)"
+            )));
+        };
+        self.resolver.by_pr(&repo_id, pr_number).map_err(|_| {
+            ExecutionOutcome::Failed(format!(
+                "{action_type}: could not resolve owner/repo from the audited repo_id (structural)"
+            ))
+        })
+    }
+
+    /// P4.7 — resolve `(owner, repo)` for a repo-scoped write (create_pr — no PR row yet) from the
+    /// audited envelope `project_id` → proj_repository; a structural `Failed` on any miss BEFORE the call.
+    fn resolve_repo_target(
+        &self,
+        req: &ActionRequest,
+        action_type: &str,
+    ) -> Result<(String, String), ExecutionOutcome> {
+        let Some(project_id) = req.project_id.as_ref() else {
+            return Err(ExecutionOutcome::Failed(format!(
+                "{action_type}: missing the audited project_id (the create target)"
+            )));
+        };
+        self.resolver.by_project(project_id.as_str()).map_err(|_| {
+            ExecutionOutcome::Failed(format!(
+                "{action_type}: could not resolve owner/repo from the audited project_id (structural)"
+            ))
+        })
     }
 
     fn execute_create_pr(&self, req: &ActionRequest, draft: bool) -> ExecutionOutcome {
@@ -121,15 +178,11 @@ impl GithubExecutor {
         // parsing) → the leading-`-` CLI vector does NOT apply; the analogous guard is fail-closed
         // non-empty validation of EVERY required operand BEFORE the network call (a blank operand never
         // reaches GitHub; the network call is never invoked on a malformed request).
-        let Some(owner) = string_input(req, "owner") else {
-            return ExecutionOutcome::Failed(
-                "github.create_pr requires a non-empty inputs[\"owner\"]".to_string(),
-            );
-        };
-        let Some(repo) = string_input(req, "repo") else {
-            return ExecutionOutcome::Failed(
-                "github.create_pr requires a non-empty inputs[\"repo\"]".to_string(),
-            );
+        // P4.7 — owner/repo resolved from the AUDITED envelope project_id (the repo-only path; no PR row
+        // exists yet), NOT from attacker-controllable inputs. Fail-closed BEFORE the network call.
+        let (owner, repo) = match self.resolve_repo_target(req, "github.create_pr") {
+            Ok(t) => t,
+            Err(outcome) => return outcome,
         };
         let Some(head) = string_input(req, "head") else {
             return ExecutionOutcome::Failed(
@@ -200,6 +253,9 @@ impl GithubExecutor {
             deletions: created.signals.deletions,
             changed_files: created.signals.changed_files,
             commits: created.signals.commits,
+            // P4.7 — the head SHA captured on `created.signals` by `extract_pr_signals` (the anti-race
+            // SHA-pin source the §11.2 PR Workspace reads). `None` if GitHub omitted it.
+            head_sha: created.signals.head_sha,
             pr_checked_at,
         };
         // serialize the FROZEN event struct (the Namespaced bridge, Q1=B); a serialize fault fails CLOSED.
@@ -268,21 +324,17 @@ impl GithubExecutor {
         }
         // fail-closed non-empty/typed validation of EVERY required operand BEFORE the network call (the
         // execute_create_pr param-injection-guard precedent; octocrab is a TYPED API, no shell vector).
-        let Some(owner) = string_input(req, "owner") else {
-            return ExecutionOutcome::Failed(
-                "github.sync_reviews requires a non-empty inputs[\"owner\"]".to_string(),
-            );
-        };
-        let Some(repo) = string_input(req, "repo") else {
-            return ExecutionOutcome::Failed(
-                "github.sync_reviews requires a non-empty inputs[\"repo\"]".to_string(),
-            );
-        };
         let Some(pr_number) = u64_input(req, "pr_number") else {
             return ExecutionOutcome::Failed(
                 "github.sync_reviews requires inputs[\"pr_number\"] (a positive integer)"
                     .to_string(),
             );
+        };
+        // P4.7 — owner/repo resolved from the AUDITED resource_ref repo_id (+ pr_number), NOT from inputs.
+        // Fail-closed BEFORE the network call (closes the confused deputy; the only READ in the set).
+        let (owner, repo) = match self.resolve_pr_target(req, "github.sync_reviews", pr_number) {
+            Ok(t) => t,
+            Err(outcome) => return outcome,
         };
 
         let args = SyncReviewsArgs {
@@ -357,20 +409,17 @@ impl GithubExecutor {
         if let Err(e) = self.inner.validate(req) {
             return ExecutionOutcome::Failed(e.to_string());
         }
-        let Some(owner) = string_input(req, "owner") else {
-            return ExecutionOutcome::Failed(
-                "github.merge_pr requires a non-empty inputs[\"owner\"]".to_string(),
-            );
-        };
-        let Some(repo) = string_input(req, "repo") else {
-            return ExecutionOutcome::Failed(
-                "github.merge_pr requires a non-empty inputs[\"repo\"]".to_string(),
-            );
-        };
         let Some(pr_number) = u64_input(req, "pr_number") else {
             return ExecutionOutcome::Failed(
                 "github.merge_pr requires inputs[\"pr_number\"] (a positive integer)".to_string(),
             );
+        };
+        // P4.7 — owner/repo resolved from the AUDITED resource_ref repo_id (+ pr_number), NOT from
+        // attacker-controllable inputs. Fail-closed BEFORE the network call (closes the confused deputy;
+        // audited==executed). The SHA-pin (inputs["sha"]) + merge_method stay operational inputs below.
+        let (owner, repo) = match self.resolve_pr_target(req, "github.merge_pr", pr_number) {
+            Ok(t) => t,
+            Err(outcome) => return outcome,
         };
         // the SHA-pin (F1 anti-race): the merge is bound to the head the human approved; a missing/blank
         // sha fails closed (the merge MUST be SHA-pinned — never an unpinned "merge whatever is on top").
@@ -459,21 +508,18 @@ impl GithubExecutor {
         if let Err(e) = self.inner.validate(req) {
             return ExecutionOutcome::Failed(e.to_string());
         }
-        let Some(owner) = string_input(req, "owner") else {
-            return ExecutionOutcome::Failed(
-                "github.submit_review requires a non-empty inputs[\"owner\"]".to_string(),
-            );
-        };
-        let Some(repo) = string_input(req, "repo") else {
-            return ExecutionOutcome::Failed(
-                "github.submit_review requires a non-empty inputs[\"repo\"]".to_string(),
-            );
-        };
         let Some(pr_number) = u64_input(req, "pr_number") else {
             return ExecutionOutcome::Failed(
                 "github.submit_review requires inputs[\"pr_number\"] (a positive integer)"
                     .to_string(),
             );
+        };
+        // P4.7 — owner/repo resolved from the AUDITED resource_ref repo_id (+ pr_number), NOT from inputs.
+        // Fail-closed BEFORE the network call (closes the confused deputy; the D9 mirror). The SHA-pin
+        // (inputs["commit_id"]) stays an operational input below.
+        let (owner, repo) = match self.resolve_pr_target(req, "github.submit_review", pr_number) {
+            Ok(t) => t,
+            Err(outcome) => return outcome,
         };
         // the SHA-pin (audit-integrity/anti-race): the verdict attaches to the exact reviewed head.
         let Some(commit_id) = string_input(req, "commit_id") else {

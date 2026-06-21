@@ -1171,6 +1171,64 @@
       ],
       "type": "string"
     },
+    "ExecutionProfileRegistered": {
+      "additionalProperties": false,
+      "description": "`ExecutionProfileRegistered` payload (§15 #8 / §5.3 / DATA_MODEL §2.8 / P5.3a). The System-actor\nregistration event for the FIRST durable OBJECT registry (`execution_profiles`, Option B — the\ncanonical ROW is the source of truth; this event is the audit TRAIL, NOT a projection source). Carries\nthe durable identity the row stores. **§15 rule #4 — load-bearing:** `keychain_ref` is a nullable\nNON-SECRET POINTER into the OS keychain, NEVER the token (the secret WRITE + startup self-test are\n5.3b). `status` binds to the frozen §5.1 [`ExecutionProfile`] machine (reject-unknown). `provider`/\n`harness` are open wire `String`s (the DATA_MODEL §2.8 TEXT columns; a closed enum is a 5.3b/future\ntightening when the set gates adapter dispatch — the `terminal_id` bare-String precedent).",
+      "properties": {
+        "account_alias": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "execution_profile_id": {
+          "type": "string"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "keychain_ref": {
+          "description": "**§15 rule #4:** a NON-SECRET keychain POINTER (the keychain entry name/ref), NEVER the token.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionProfile"
+        },
+        "usage_policy_json": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "execution_profile_id",
+        "workspace_id",
+        "provider",
+        "harness",
+        "status",
+        "created_at"
+      ],
+      "type": "object"
+    },
     "ExecutorKind": {
       "description": "Which executor adapter handles an action (§6.3). A NAME binding — the real per-namespace\nadapters (git CLI / octocrab / session host / …) land in 2.3. **`Adjudication` (3.2-part-2,\nbrief 043) is the ODD ONE OUT**: it marks the agent-mutation family as **adjudication-only** —\nthe `ActionRequest` TERMINATES at the policy/approval verdict and **no daemon executor runs the\ntool** (the agent executes the allowed tool itself; the daemon only adjudicates + audits, the\nINV-SEC-1 chokepoint). It is NOT a real-executor namespace and never reaches the executor seam.",
       "enum": [
@@ -1932,6 +1990,13 @@
             "null"
           ]
         },
+        "head_sha": {
+          "description": "P4.7 — the PR head commit SHA the §11.2 PR Workspace reads to FORM the cat-1 merge/review SHA-pin\n(folded from `PullRequestSynced.head_sha`). A TEXT column → JSON string → `Option<String>` direct\npassthrough (no coercion, unlike `mergeable`); `None`/NULL where GitHub omitted it or pre-P4.7 rows.\nDisplay/pin-FORMATION source only — the daemon's anti-race is the LIVE GitHub 409, not this field.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "mergeable": {
           "type": [
             "boolean",
@@ -2029,6 +2094,13 @@
           "minimum": 0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "head_sha": {
+          "description": "P4.7 — the PR's current head commit SHA (the anti-race SHA-pin SOURCE the UI reads to form a cat-1\nmerge/review `sha`/`commit_id`). Captured ONLY from `pr.head.sha` on the authoritative octocrab GET\n(`extract_pr_signals`), NEVER from a proposer/UI (§7.2 safety). `None` when GitHub omitted it / the\nhead has no commits yet. The daemon's anti-race remains the LIVE GitHub 409 on the requester-supplied\nvalue — this field is display/pin-FORMATION only (a stale value yields a fail-closed 409, never a\nwrong merge).",
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -3262,6 +3334,9 @@
     "execution_profile": {
       "$ref": "#/$defs/ExecutionProfile"
     },
+    "execution_profile_registered": {
+      "$ref": "#/$defs/ExecutionProfileRegistered"
+    },
     "executor_kind": {
       "$ref": "#/$defs/ExecutorKind"
     },
@@ -3628,9 +3703,10 @@
     "review_state",
     "review_row",
     "pull_request_merged",
-    "review_submitted"
+    "review_submitted",
+    "execution_profile_registered"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.42.0"
+  "x-contract-version": "0.44.0"
 }

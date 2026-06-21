@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use nexusops_shared::actor::ActorType;
 use nexusops_shared::event_envelope::{Sensitivity, SourceType, Visibility};
 use nexusops_shared::events::{DeviceRegistered, LocalRunnerRegistered};
-use nexusops_shared::ids::WorkspaceId;
+use nexusops_shared::ids::{ExecutionProfileId, WorkspaceId};
 use nexusops_shared::ipc::{SUPPORTED_PROTOCOL_MAX, SUPPORTED_PROTOCOL_MIN};
 use nexusops_shared::objects::{DeviceId, LocalRunnerId};
 use nexusops_shared::CONTRACT_VERSION;
@@ -76,6 +76,10 @@ pub struct DaemonContext {
     pub device_id: DeviceId,
     /// the LocalRunner id minted for THIS daemon start (§5.3 minted-per-start).
     pub local_runner_id: LocalRunnerId,
+    /// the cold-start default `ExecutionProfile` id (register-if-absent across restarts, P5.3a / §15 #8).
+    /// The §15 #8 resolve-default target — `main.rs` passes it to the `SqliteProfileLookup` the
+    /// `SessionExecutor` resolves a `None`-profile session.create against.
+    pub default_execution_profile_id: ExecutionProfileId,
 }
 
 impl DaemonContext {
@@ -170,6 +174,15 @@ pub fn cold_start(cfg: BootstrapConfig) -> Result<DaemonContext, BootstrapError>
     let device_id = register_device(&mut store, &occurred_at)?;
     let local_runner_id = register_local_runner(&mut store, &occurred_at)?;
 
+    // (5b) register the ONE default ExecutionProfile (register-if-absent, System-actor) — the §15 #8
+    // resolve-default target (P5.3a). The FIRST DATA_MODEL-§2.8 durable OBJECT registry: the canonical
+    // `execution_profiles` row + an `ExecutionProfileRegistered` audit event, atomic (the LESSON-16
+    // dual-gate); idempotent across restarts (the register_device precedent). Fail-closed → a profile-
+    // registry failure aborts the start (the daemon does not start without a resolvable default, §16).
+    let default_execution_profile_id =
+        crate::profiles::seed_default_profile(&mut store, &occurred_at)
+            .map_err(|e| BootstrapError::Registration(e.to_string()))?;
+
     // (6) emit a loud audit-integrity event for any row startup replay quarantined (§17 Option C,
     // 1.6c L2). Emitted HERE (the caller, after open) — replay itself stays append-free; idempotent
     // via the quarantine record (`audit_emitted`) + the `audit-integrity-{seq}` idempotency_key.
@@ -187,6 +200,7 @@ pub fn cold_start(cfg: BootstrapConfig) -> Result<DaemonContext, BootstrapError>
         version,
         device_id,
         local_runner_id,
+        default_execution_profile_id,
     })
 }
 

@@ -35,6 +35,11 @@ pub enum FaultPoint {
     /// written FIRST). Returns an injected write error, exercising the "audit-write BEFORE verdict,
     /// fail-closed" path: the submit/approve txn rolls back → the intercept resolves to Deny, never Allow.
     AuditEventWrite,
+    /// (P5.3a) the next event append inside a durable-registry register-mutator `gateway_txn` — models a
+    /// fail-closed audit-write fault for the {canonical row + `ExecutionProfileRegistered`} dual-gate: the
+    /// event append fails → the whole txn rolls back → NO row persists (LESSON 16; the registry row is
+    /// durable ONLY if its audit trail is). One-shot/counted.
+    RegistryEventWrite,
 }
 
 thread_local! {

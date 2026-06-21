@@ -93,6 +93,17 @@ fn raw_insert(p: &Path, seq: i64, actor_type: &str, event_version: i64, redactio
     .unwrap();
 }
 
+/// The next free `seq` after the current max — the slot a "past the projection offset" raw row takes.
+/// Computed (not hard-coded) so adding a cold-start registration event (P5.3a's seeded default profile
+/// took the count from 2 → 3) does not shift a literal seq out from under these tests.
+fn next_seq(p: &Path) -> i64 {
+    let conn = rusqlite::Connection::open(p).unwrap();
+    conn.query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM events", [], |r| {
+        r.get(0)
+    })
+    .unwrap()
+}
+
 /// The recorded quarantine seqs (daemon-internal `quarantine` table — read directly).
 fn quarantine_seqs(p: &Path) -> Vec<i64> {
     let conn = rusqlite::Connection::open(p).unwrap();
@@ -357,17 +368,18 @@ fn test_quarantine_is_not_silent() {
     drop(cold(&base).expect("cold_start #1 creates the DB + registers identity (offset advances)"));
 
     // a corrupt row past the offset → catch_up re-reads it on the next start
-    raw_insert(&db, 3, "definitely_not_an_actor", 1, "redacted");
+    let corrupt_seq = next_seq(&db);
+    raw_insert(&db, corrupt_seq, "definitely_not_an_actor", 1, "redacted");
     let ctx = cold(&base).expect("cold_start #2 quarantines the corrupt row + emits the AIV event");
 
     // recorded (the gap is not silent)
     assert_eq!(
         quarantine_seqs(&db),
-        vec![3],
+        vec![corrupt_seq],
         "the corrupt row is quarantine-recorded"
     );
     assert_eq!(
-        quarantine_audit_emitted(&db, 3),
+        quarantine_audit_emitted(&db, corrupt_seq),
         1,
         "the audit-integrity event was emitted (audit_emitted set → deduped next start)"
     );
@@ -399,7 +411,8 @@ fn test_quarantine_idempotent_across_restart() {
     let (_tmp, base) = bootstrap_base();
     let db = base.join(DB_FILENAME);
     drop(cold(&base).expect("cold_start #1"));
-    raw_insert(&db, 3, "definitely_not_an_actor", 1, "redacted");
+    let corrupt_seq = next_seq(&db);
+    raw_insert(&db, corrupt_seq, "definitely_not_an_actor", 1, "redacted");
     let mut ctx = cold(&base).expect("cold_start #2: quarantine + emit AIV");
     assert_eq!(
         audit_integrity_event_count(&ctx.store),
@@ -407,7 +420,7 @@ fn test_quarantine_idempotent_across_restart() {
         "one AIV after first emit"
     );
 
-    // genuine re-detection: rebuild re-reads seq 3 → record_quarantine ON CONFLICT DO NOTHING.
+    // genuine re-detection: rebuild re-reads the corrupt seq → record_quarantine ON CONFLICT DO NOTHING.
     ctx.store
         .rebuild_projections()
         .expect("rebuild re-detects the corrupt row (offsets reset → re-read all)");

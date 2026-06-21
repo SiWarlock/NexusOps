@@ -11,9 +11,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::harness::{ResumeMode, TelemetrySample};
-use crate::ids::{ExecutionProfileId, WorktreeId};
+use crate::ids::{ExecutionProfileId, WorkspaceId, WorktreeId};
 use crate::objects::{DeviceId, LocalRunnerId};
-use crate::status::{PullRequest, ReviewState, Session};
+use crate::status::{ExecutionProfile, PullRequest, ReviewState, Session};
 use crate::time::Timestamp;
 
 /// `SessionStarted` payload. The session's **identity** (`session_id`/`project_id`)
@@ -56,6 +56,39 @@ pub struct DeviceRegistered {
 #[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
 pub struct LocalRunnerRegistered {
     pub local_runner_id: LocalRunnerId,
+}
+
+/// `ExecutionProfileRegistered` payload (§15 #8 / §5.3 / DATA_MODEL §2.8 / P5.3a). The System-actor
+/// registration event for the FIRST durable OBJECT registry (`execution_profiles`, Option B — the
+/// canonical ROW is the source of truth; this event is the audit TRAIL, NOT a projection source). Carries
+/// the durable identity the row stores. **§15 rule #4 — load-bearing:** `keychain_ref` is a nullable
+/// NON-SECRET POINTER into the OS keychain, NEVER the token (the secret WRITE + startup self-test are
+/// 5.3b). `status` binds to the frozen §5.1 [`ExecutionProfile`] machine (reject-unknown). `provider`/
+/// `harness` are open wire `String`s (the DATA_MODEL §2.8 TEXT columns; a closed enum is a 5.3b/future
+/// tightening when the set gates adapter dispatch — the `terminal_id` bare-String precedent).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ExecutionProfileRegistered {
+    pub execution_profile_id: ExecutionProfileId,
+    pub workspace_id: WorkspaceId,
+    pub provider: String,
+    pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_alias: Option<String>,
+    /// **§15 rule #4:** a NON-SECRET keychain POINTER (the keychain entry name/ref), NEVER the token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keychain_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_policy_json: Option<String>,
+    pub status: ExecutionProfile,
+    pub created_at: Timestamp,
+}
+
+impl ExecutionProfileRegistered {
+    /// The EventTypeRegistry name — ONE home (the P5.3a profiles register-mutator + the seed).
+    pub const EVENT_TYPE: &'static str = "ExecutionProfileRegistered";
 }
 
 /// `AuditIntegrityViolation` payload (§17 Option C). Emitted when startup replay QUARANTINES a
@@ -486,6 +519,13 @@ pub struct PullRequestSynced {
     pub deletions: Option<u64>,
     pub changed_files: Option<u64>,
     pub commits: Option<u64>,
+    /// P4.7 — the PR's current head commit SHA (the anti-race SHA-pin SOURCE the UI reads to form a cat-1
+    /// merge/review `sha`/`commit_id`). Captured ONLY from `pr.head.sha` on the authoritative octocrab GET
+    /// (`extract_pr_signals`), NEVER from a proposer/UI (§7.2 safety). `None` when GitHub omitted it / the
+    /// head has no commits yet. The daemon's anti-race remains the LIVE GitHub 409 on the requester-supplied
+    /// value — this field is display/pin-FORMATION only (a stale value yields a fail-closed 409, never a
+    /// wrong merge).
+    pub head_sha: Option<String>,
     pub pr_checked_at: Timestamp,
 }
 

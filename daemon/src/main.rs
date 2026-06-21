@@ -132,6 +132,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         ctx.version.contract_version, ctx.version.db_user_version
     );
 
+    // P5.3a (§15 #8) — capture the cold-start-seeded default ExecutionProfile id BEFORE `into_parts`
+    // consumes the context; it backs the `SqliteProfileLookup` the SessionExecutor resolves a
+    // None-profile session.create against (the fail-closed resolve-default target).
+    let default_execution_profile_id = ctx.default_execution_profile_id.clone();
     // keep the PidLock bound for the daemon lifetime (single-instance); the write-actor owns the
     // writable store (the sole mutation path). The drainer/reaper loops + the UDS accept-loop run off
     // the write-actor handle.
@@ -249,9 +253,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `ExecutorKind::Session` in the production CatalogExecutor — this is the reachable session.create
     // dispatch home (the `Adjudication` INV-SEC-1 guard still runs BEFORE dispatch, R1-A).
     let mut catalog_exec = CatalogExecutor::new();
+    // P5.3a (§15 #8) — the registry-backed, fail-closed profile lookup: reads the canonical
+    // `execution_profiles` table over a read-only WAL conn; the default is the cold-start-seeded id.
+    let profile_lookup = Box::new(nexusopsd::profiles::SqliteProfileLookup::new(
+        base_dir.join(DB_FILENAME),
+        default_execution_profile_id,
+    ));
     catalog_exec.register(
         ExecutorKind::Session,
-        Arc::new(SessionExecutor::new(launcher, supervisor_handle)),
+        Arc::new(SessionExecutor::new(
+            launcher,
+            supervisor_handle,
+            profile_lookup,
+        )),
     );
     // P5.1 (edges-019) — project.rescan (ExecutorKind::Project): read-only detection emitting
     // ProjectRescanned in-txn through the §15 gate (SystemClock stamps scanned_at).
@@ -276,6 +290,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             Box::new(OctocrabGithubWriteClient::new(octocrab::Octocrab::default())),
             tokio::runtime::Handle::current(),
             Box::new(SystemClock),
+            // P4.7 — resolve owner/repo from the AUDITED resource_ref repo_id / envelope project_id over a
+            // read-only WAL conn (the confused-deputy closure; never inputs["owner"/"repo"]).
+            Box::new(nexusopsd::integrations::repo_resolve::DbRepoResolver::new(
+                base_dir.join(DB_FILENAME),
+            )),
         )),
     );
     // P7.1 (edges-024) — linear.link_issue/create_issue via the Linear GraphQL write client. Same 3a

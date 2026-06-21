@@ -16,7 +16,7 @@ use nexusops_shared::actions::{
     ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
 };
 use nexusops_shared::harness::HarnessCapabilities;
-use nexusops_shared::ids::{ActionRequestId, SessionId};
+use nexusops_shared::ids::{ActionRequestId, ExecutionProfileId, SessionId};
 use nexusops_shared::status::ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
 use nexusopsd::clock::FixedClock;
@@ -168,6 +168,20 @@ impl PtyKiller for NoopKiller {
     fn kill(&self) {}
 }
 
+/// A permissive [`ProfileLookup`](nexusopsd::profiles::ProfileLookup) for the prompt tests: every id
+/// "exists" + a fixed default — profile resolution always succeeds (these tests are about the
+/// initial_prompt feed, not §15 #8 fail-closed resolution, which `session_executor.rs` covers).
+struct AnyProfileLookup(ExecutionProfileId);
+
+impl nexusopsd::profiles::ProfileLookup for AnyProfileLookup {
+    fn default_id(&self) -> Result<ExecutionProfileId, nexusopsd::profiles::ProfileError> {
+        Ok(self.0.clone())
+    }
+    fn exists(&self, _id: &ExecutionProfileId) -> Result<bool, nexusopsd::profiles::ProfileError> {
+        Ok(true)
+    }
+}
+
 /// The production policy (catalog-driven) + a [`SessionExecutor`] over the given launcher + a real
 /// (unbounded) supervisor handle. Returns the gateway + the shutdown/join keep-alives (drop them only
 /// at the end so the supervisor task stays up). Grab the launcher's sink/attempts/launch handles
@@ -186,7 +200,10 @@ fn gateway_with(
         Box::new(nexusopsd::session::NullSessionDeathSink),
         Arc::new(nexusopsd::terminal::NoopScrollbackStore),
     );
-    let executor = SessionExecutor::new(Box::new(launcher), handle);
+    // P5.3a — a permissive profile lookup: these tests exercise the initial_prompt feed, not §15 #8
+    // resolution, so any requested id resolves + None → a fixed default (keeps the resolve fail-open here).
+    let profile_lookup = Box::new(AnyProfileLookup(ExecutionProfileId::new()));
+    let executor = SessionExecutor::new(Box::new(launcher), handle, profile_lookup);
     let gateway = Gateway::new(
         Box::new(nexusopsd::gateway::policy::CatalogPolicy),
         Box::new(executor),

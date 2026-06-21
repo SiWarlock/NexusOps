@@ -1610,6 +1610,7 @@ fn pr_payload(pr_number: u64, status: PullRequest, branch: &str, base: &str) -> 
         deletions: None,
         changed_files: None,
         commits: None,
+        head_sha: None,
         pr_checked_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
     })
     .unwrap()
@@ -1636,6 +1637,7 @@ fn pr_payload_rich(
         deletions: None,
         changed_files: None,
         commits: None,
+        head_sha: None,
         pr_checked_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
     })
     .unwrap()
@@ -1665,6 +1667,33 @@ fn pr_payload_diff_stats(
         deletions,
         changed_files,
         commits,
+        head_sha: None,
+        pr_checked_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    })
+    .unwrap()
+}
+
+/// P4.7 — like `pr_payload` but sets the `head_sha` enrichment (the anti-race SHA-pin source the §11.2 PR
+/// Workspace reads), captured from the octocrab GET PR's `pr.head.sha`.
+fn pr_payload_head_sha(
+    pr_number: u64,
+    status: PullRequest,
+    branch: &str,
+    base: &str,
+    head_sha: Option<&str>,
+) -> String {
+    serde_json::to_string(&PullRequestSynced {
+        pr_number,
+        status,
+        branch: branch.to_string(),
+        base: base.to_string(),
+        mergeable: None,
+        checks_summary: None,
+        additions: None,
+        deletions: None,
+        changed_files: None,
+        commits: None,
+        head_sha: head_sha.map(|s| s.to_string()),
         pr_checked_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
     })
     .unwrap()
@@ -1691,6 +1720,8 @@ struct PrRow {
     deletions: Option<i64>,
     changed_files: Option<i64>,
     commits: Option<i64>,
+    // P4.7 — the head_sha enrichment (TEXT column → String passthrough, no coercion).
+    head_sha: Option<String>,
     updated_at_seq: i64,
 }
 
@@ -1700,7 +1731,7 @@ fn proj_pull_request_rows(path: &std::path::Path) -> Vec<PrRow> {
         .prepare(
             "SELECT pr_id, project_id, repo_id, pr_number, title, status, head_branch, base_branch, \
              pr_checked_at, mergeable, checks_summary, additions, deletions, changed_files, commits, \
-             updated_at_seq FROM proj_pull_request \
+             head_sha, updated_at_seq FROM proj_pull_request \
              ORDER BY pr_id",
         )
         .unwrap();
@@ -1722,7 +1753,8 @@ fn proj_pull_request_rows(path: &std::path::Path) -> Vec<PrRow> {
                 deletions: r.get(12)?,
                 changed_files: r.get(13)?,
                 commits: r.get(14)?,
-                updated_at_seq: r.get(15)?,
+                head_sha: r.get(15)?,
+                updated_at_seq: r.get(16)?,
             })
         })
         .unwrap();
@@ -2138,6 +2170,151 @@ fn test_pr_diff_stats_folded() {
         before,
         proj_pull_request_rows(&path),
         "the diff-stats row is reproduced byte-identically on rebuild (LESSON §17)"
+    );
+}
+
+#[test]
+fn test_proj_pull_request_folds_head_sha() {
+    // spec(§7.2 / LESSON §53): the projector folds PullRequestSynced.head_sha → proj_pull_request.head_sha
+    // (Some → value, None → NULL); DO UPDATE re-folds on re-sync (the head moved); rebuild-equivalent
+    // (derive-from-event, LESSON §17).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid.clone()),
+            &pr_payload_head_sha(
+                42,
+                PullRequest::Open,
+                "feature",
+                "main",
+                Some("9fceb02d0ae598e95dc970b74767f19372d61af8"),
+            ),
+        ))
+        .expect("append folds in-band");
+    let arid_none = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_beta"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid_none),
+            &pr_payload_head_sha(7, PullRequest::Merged, "f", "m", None),
+        ))
+        .unwrap();
+
+    let rows = proj_pull_request_rows(&path);
+    let some = rows.iter().find(|r| r.pr_id == "repo_alpha#42").unwrap();
+    assert_eq!(
+        some.head_sha.as_deref(),
+        Some("9fceb02d0ae598e95dc970b74767f19372d61af8"),
+        "head_sha folded from the event"
+    );
+    let none = rows.iter().find(|r| r.pr_id == "repo_beta#7").unwrap();
+    assert_eq!(none.head_sha, None, "absent head_sha → NULL");
+
+    // DO UPDATE re-folds the head SHA (the head moved on re-sync).
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid),
+            &pr_payload_head_sha(
+                42,
+                PullRequest::Open,
+                "feature",
+                "main",
+                Some("1111111111111111111111111111111111111111"),
+            ),
+        ))
+        .unwrap();
+    let resynced = proj_pull_request_rows(&path);
+    let some = resynced
+        .iter()
+        .find(|r| r.pr_id == "repo_alpha#42")
+        .unwrap();
+    assert_eq!(
+        some.head_sha.as_deref(),
+        Some("1111111111111111111111111111111111111111"),
+        "DO UPDATE folds the new head_sha"
+    );
+
+    // rebuild-equivalent: head_sha survives a rebuild (derive-from-event, REBUILD_TABLES).
+    let before = proj_pull_request_rows(&path);
+    store.rebuild_projections().unwrap();
+    assert_eq!(
+        before,
+        proj_pull_request_rows(&path),
+        "the head_sha row is reproduced byte-identically on rebuild (LESSON §17)"
+    );
+}
+
+#[test]
+fn test_read_pull_request_typed_serves_head_sha() {
+    // spec(§7.2/§5.0 / LESSON §53): the fail-closed typed serve round-trips head_sha — Some AND None both
+    // deserialize STRICTLY into the frozen PullRequestRow. A TEXT column → JSON string → Option<String>
+    // direct passthrough (NO coercion, unlike D5a's mergeable bool). column+field+serve land together.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let gw = gw_with_git();
+    let pid = ProjectId::new();
+    let arid = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_alpha"));
+    store
+        .append(pr_synced_intent(
+            Some(pid.clone()),
+            Some(arid),
+            &pr_payload_head_sha(
+                42,
+                PullRequest::Open,
+                "feature",
+                "main",
+                Some("9fceb02d0ae598e95dc970b74767f19372d61af8"),
+            ),
+        ))
+        .unwrap();
+    let arid2 = seed_pr_action(&mut store, &gw, Some(pid.clone()), Some("repo_beta"));
+    store
+        .append(pr_synced_intent(
+            Some(pid),
+            Some(arid2),
+            &pr_payload_head_sha(7, PullRequest::Merged, "f", "m", None),
+        ))
+        .unwrap();
+
+    let rows = nexusopsd::ipc::read_pull_request_typed(&path).expect("typed pull-request read");
+    let some = rows.iter().find(|r| r.pr_id == "repo_alpha#42").unwrap();
+    assert_eq!(
+        some.head_sha.as_deref(),
+        Some("9fceb02d0ae598e95dc970b74767f19372d61af8"),
+        "head_sha served as a typed String (no coercion)"
+    );
+    let none = rows.iter().find(|r| r.pr_id == "repo_beta#7").unwrap();
+    assert_eq!(none.head_sha, None, "absent head_sha → None on the wire");
+}
+
+#[test]
+fn test_migration_17_floor() {
+    // spec(MIGRATION_17 floor, LESSON §50): a fresh DB opens at/above user_version 17 and proj_pull_request
+    // gained the head_sha column (ALTER-only, the MIGRATION_15 precedent; the historical CREATE untouched).
+    // FLOOR (>= 17), not exact-latest — the single exact-latest pin lives in gateway_plan.rs.
+    let (_d, path) = temp_db();
+    let store = open(&path);
+    assert!(
+        store.user_version().unwrap() >= 17,
+        "open migrates at/above MIGRATION_17"
+    );
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let cols: std::collections::BTreeSet<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('proj_pull_request')")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(
+        cols.contains("head_sha"),
+        "MIGRATION_17 adds proj_pull_request.head_sha"
     );
 }
 

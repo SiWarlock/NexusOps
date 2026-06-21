@@ -73,6 +73,14 @@ pub fn extract_pr_signals(
     signals.deletions = pr.deletions;
     signals.changed_files = pr.changed_files;
     signals.commits = pr.commits;
+    // P4.7 — capture the PR head SHA (the anti-race SHA-pin source the UI reads). Sourced ONLY here
+    // (safety (a), authoritative GET); the §7.2 check-runs-guard conservative floor: head present AND sha
+    // non-empty → Some, else None (GitHub's "no commits yet" empty-sha → None; no fabricated SHA).
+    signals.head_sha = pr
+        .head
+        .as_ref()
+        .map(|h| h.sha.clone())
+        .filter(|s| !s.is_empty());
     signals
 }
 

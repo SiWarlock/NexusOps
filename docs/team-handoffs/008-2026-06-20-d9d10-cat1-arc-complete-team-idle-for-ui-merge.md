@@ -4,7 +4,7 @@
 **Track:** daemon (single-track; critical path P2 → P3 → P4 → §4.7 ui-unblock wave)
 **Worktree:** root checkout (single-track, `main`)
 **Predecessor handoff:** `docs/team-handoffs/007-2026-06-20-d6d7-sealed-d9d10-cat1-next-tmux-restart.md`
-**Successor handoff:** _(filled in when the next /team-end runs)_
+**Successor handoff:** `docs/team-handoffs/009-2026-06-21-083-auth-bootstrap-done-golive-unblocked-pause-for-live-validation.md`
 **Round-seal commit at handoff:** `6b847d6`
 
 ## Why this handoff exists

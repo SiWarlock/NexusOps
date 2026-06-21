@@ -608,3 +608,17 @@ CREATE TABLE execution_profiles (
 pub const MIGRATION_17_PULL_REQUEST_HEAD_SHA: &str = "\
 ALTER TABLE proj_pull_request ADD COLUMN head_sha TEXT;
 ";
+
+/// Migration 18 (P4.7/083) — the auth-bootstrap live-writes toggle: surface `live_writes_enabled` on
+/// `proj_integration_connection` so the authed GitHub clients gate on it (BOTH reads + writes — Q4 one
+/// gate). Folded from the `IntegrationLiveWritesSet` event (the `integration.set_live_writes` Gateway
+/// action emits it; derive-from-event, LESSON §17). `INTEGER NOT NULL DEFAULT 0` — **default OFF** (the
+/// post-re-review live-enablement gate; a freshly-registered connection is NOT authed until a deliberate
+/// flip). SQLite stores the toggle as 0/1 (no native bool; the read layer coerces, the D5a `mergeable`
+/// precedent). `ALTER ADD COLUMN`: additive → existing connection rows default 0, and
+/// `proj_integration_connection` is in `REBUILD_TABLES` so a rebuild re-folds — no DROP+CREATE /
+/// offset-reset (the MIGRATION_17 precedent). The historical `proj_integration_connection` CREATE
+/// (MIGRATION_11) is deliberately UNCHANGED (editing it would duplicate-column-fail a fresh DB).
+pub const MIGRATION_18_INTEGRATION_LIVE_WRITES: &str = "\
+ALTER TABLE proj_integration_connection ADD COLUMN live_writes_enabled INTEGER NOT NULL DEFAULT 0;
+";

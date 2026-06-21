@@ -320,6 +320,28 @@ fn test_merge_pr_denied_for_non_ui_requester() {
 }
 
 #[test]
+fn test_set_live_writes_denied_for_non_ui_requester() {
+    // spec(§15 / 083 Q3 — the GITHUB_MUTATION gate extended) — integration.set_live_writes flips a
+    // connection's live-writes AUTHORIZATION → UI/human-initiated ONLY. An agent/Brain/pack/system
+    // requester is DENIED *before* risk resolution (no agent may self-enable live external writes).
+    let policy = CatalogPolicy;
+    for requester in [
+        RequesterType::AgentSession,
+        RequesterType::ProjectBrain,
+        RequesterType::WorkflowPack,
+        RequesterType::SystemPolicy,
+    ] {
+        assert_eq!(
+            policy
+                .decide(&request_from("integration.set_live_writes", requester))
+                .status,
+            PolicyDecisionStatus::Deny,
+            "{requester:?} integration.set_live_writes is denied (UI/IPC-only)"
+        );
+    }
+}
+
+#[test]
 fn test_merge_pr_require_approval_for_ui_requester() {
     // spec(§6.2 risk-3 / F1) — a User (the desktop UI) requester is the permitted initiator → the merge
     // routes to RequireApproval (risk-3: not auto-execute, not on the risk-0 allowlist) — NOT auto-allowed,

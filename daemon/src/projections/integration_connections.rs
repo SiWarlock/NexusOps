@@ -24,7 +24,7 @@
 use rusqlite::{params, Transaction};
 
 use nexusops_shared::event_envelope::EventEnvelope;
-use nexusops_shared::events::IntegrationConnectionRegistered;
+use nexusops_shared::events::{IntegrationConnectionRegistered, IntegrationLiveWritesSet};
 
 use super::{wire_value, ProjectionError, Projector};
 
@@ -33,16 +33,15 @@ const STATUS_CONNECTED: &str = "connected";
 
 pub struct IntegrationConnectionProjector;
 
-impl Projector for IntegrationConnectionProjector {
-    fn name(&self) -> &'static str {
-        "integration_connection"
-    }
-
-    fn apply(&self, tx: &Transaction, env: &EventEnvelope) -> Result<(), ProjectionError> {
-        if env.event_type != IntegrationConnectionRegistered::EVENT_TYPE {
-            // folds ONLY IntegrationConnectionRegistered.
-            return Ok(());
-        }
+impl IntegrationConnectionProjector {
+    /// Fold `IntegrationConnectionRegistered` → upsert the connection row (`live_writes_enabled` defaults
+    /// OFF via the column DEFAULT; a re-registration does NOT touch the toggle — the ON CONFLICT set list
+    /// deliberately omits it, so re-connecting never silently re-enables live writes).
+    fn apply_registered(
+        &self,
+        tx: &Transaction,
+        env: &EventEnvelope,
+    ) -> Result<(), ProjectionError> {
         // reject-unknown on the payload — the reason MUST NOT echo (possibly sensitive) payload bytes (§15).
         let p: IntegrationConnectionRegistered =
             serde_json::from_str(&env.payload_json).map_err(|_| {
@@ -58,7 +57,9 @@ impl Projector for IntegrationConnectionProjector {
             ));
         }
         // provider → the canonical wire value (frozen-enum contract, LESSON 2); status = the resting
-        // literal; keychain_ref written through (the already-redacted §15 #4 pointer).
+        // literal; keychain_ref written through (the already-redacted §15 #4 pointer). live_writes_enabled
+        // is NOT in the column list → the MIGRATION_18 DEFAULT 0 applies on INSERT (default OFF); the ON
+        // CONFLICT set omits it → a re-registration preserves the existing toggle (never re-enables).
         let provider = wire_value(&p.provider)?;
         tx.execute(
             "INSERT INTO proj_integration_connection \
@@ -76,6 +77,52 @@ impl Projector for IntegrationConnectionProjector {
                 env.seq,
             ],
         )?;
+        Ok(())
+    }
+
+    /// Fold `IntegrationLiveWritesSet` → derive `live_writes_enabled` from the EVENT (NOT a bare column
+    /// write; rebuild-safe, LESSON §17). An UNKNOWN `connection_id` → UPDATE matches 0 rows → a healthy
+    /// no-op (the executor's registered-connection gate prevents emitting for an unregistered connection;
+    /// the projector tolerates it idempotently — no row to flip).
+    fn apply_live_writes_set(
+        &self,
+        tx: &Transaction,
+        env: &EventEnvelope,
+    ) -> Result<(), ProjectionError> {
+        let p: IntegrationLiveWritesSet =
+            serde_json::from_str(&env.payload_json).map_err(|_| {
+                ProjectionError::Decode("IntegrationLiveWritesSet payload did not bind".into())
+            })?;
+        if p.connection_id.trim().is_empty() {
+            return Err(ProjectionError::Decode(
+                "IntegrationLiveWritesSet carried an empty connection_id".into(),
+            ));
+        }
+        // SQLite has no native bool — store the toggle as 0/1 (the read layer coerces; the D5a precedent).
+        tx.execute(
+            "UPDATE proj_integration_connection \
+             SET live_writes_enabled = ?1, updated_at_seq = ?2 \
+             WHERE connection_id = ?3",
+            params![p.enabled as i64, env.seq, p.connection_id],
+        )?;
+        Ok(())
+    }
+}
+
+impl Projector for IntegrationConnectionProjector {
+    fn name(&self) -> &'static str {
+        "integration_connection"
+    }
+
+    fn apply(&self, tx: &Transaction, env: &EventEnvelope) -> Result<(), ProjectionError> {
+        // folds the registration (upsert the row) + the live-writes flip (derive the toggle); ignores all
+        // other event types.
+        if env.event_type == IntegrationConnectionRegistered::EVENT_TYPE {
+            return self.apply_registered(tx, env);
+        }
+        if env.event_type == IntegrationLiveWritesSet::EVENT_TYPE {
+            return self.apply_live_writes_set(tx, env);
+        }
         Ok(())
     }
 }

@@ -24,26 +24,44 @@
 //! control-char validation + the keychain_ref secret-shape reject — not a literal dash-operand guard.
 
 use nexusops_shared::actions::{ActionPreview, ActionRequest};
-use nexusops_shared::events::{IntegrationConnectionRegistered, Provider};
+use nexusops_shared::events::{
+    IntegrationConnectionRegistered, IntegrationLiveWritesSet, Provider,
+};
 use nexusops_shared::time::Timestamp;
 
-use crate::eventstore::{PrefixRedactor, Redactor};
+use crate::eventstore::{EventStoreError, PrefixRedactor, Redactor};
 use crate::gateway::executor::{ActionExecutor, EmittedEvent, ExecError, ExecutionOutcome};
 use crate::idgen::IdGen;
 
-/// The action type this leaf executor handles (`ExecutorKind::Integration`).
+/// The `ExecutorKind::Integration` action types this leaf executor handles.
 const INTEGRATION_CONNECT: &str = "integration.connect";
+const INTEGRATION_SET_LIVE_WRITES: &str = "integration.set_live_writes";
 
-/// Registers integration connections (emits `IntegrationConnectionRegistered`). Holds an injected
-/// [`IdGen`] to mint the `conn_` connection id (deterministic in tests). No write-actor handle — emits
-/// only via `emitted_events` (INV-SEC-1: the executor is not a second mutator).
+/// The read seam for the registered-connection gate: whether a `connection_id` is a REGISTERED connection
+/// (a `proj_integration_connection` row exists). Injected so `integration.set_live_writes` validation is
+/// deterministically unit-testable (a fake in tests; the sqlite-backed reader in production) — the
+/// `ProfileLookup`/§15 #8 `resolve_profile`-on-unknown precedent (LESSON §62). The production impl
+/// ([`super::connections::SqliteConnectionLookup`]) lives in a SIBLING module so this executor module
+/// stays free of any DB read/write surface — the INV-SEC-1 no-second-mutator structural guard (Test 6).
+pub trait ConnectionLookup: Send + Sync {
+    /// Whether `connection_id` references a registered connection — the fail-closed-on-unknown gate (a
+    /// flip on an unregistered connection is rejected, never silently emitted).
+    fn is_registered(&self, connection_id: &str) -> Result<bool, EventStoreError>;
+}
+
+/// Registers integration connections (emits `IntegrationConnectionRegistered`) + flips the per-connection
+/// live-writes toggle (emits `IntegrationLiveWritesSet`). Holds an injected [`IdGen`] (mints the `conn_`
+/// id, deterministic in tests) + a [`ConnectionLookup`] (the registered-connection gate for the toggle).
+/// No write-actor handle — emits only via `emitted_events` (INV-SEC-1: the executor is not a second
+/// mutator).
 pub struct IntegrationExecutor {
     idgen: Box<dyn IdGen>,
+    connections: Box<dyn ConnectionLookup>,
 }
 
 impl IntegrationExecutor {
-    pub fn new(idgen: Box<dyn IdGen>) -> Self {
-        Self { idgen }
+    pub fn new(idgen: Box<dyn IdGen>, connections: Box<dyn ConnectionLookup>) -> Self {
+        Self { idgen, connections }
     }
 
     fn execute_connect(&self, req: &ActionRequest) -> ExecutionOutcome {
@@ -136,6 +154,85 @@ impl IntegrationExecutor {
             }],
         }
     }
+
+    /// `integration.set_live_writes` (P4.7/083 Q3): emit `IntegrationLiveWritesSet{connection_id, enabled}`
+    /// — the typed live-writes authorization flip. The connection identity is INPUT-CARRIED (mirroring
+    /// `integration.connect`; the recorded audited identity is in `inputs` + the emitted event). NO secret
+    /// flows through (an authorization-state flip — the keychain pointer already lives on the registration).
+    /// **Fail-closed on an UNKNOWN connection** (ADD, Step-2.5): the `connection_id` MUST reference a
+    /// REGISTERED connection (the `resolve_profile`-on-unknown precedent, LESSON §62) — else the flip is
+    /// rejected, never emitted for a phantom connection.
+    fn execute_set_live_writes(&self, req: &ActionRequest) -> ExecutionOutcome {
+        // connection_id — REQUIRED, non-empty (no phantom/empty identity into the authorization record).
+        let connection_id =
+            match req.inputs.get("connection_id").and_then(|v| v.as_str()) {
+                Some(s) if !s.trim().is_empty() => s.to_string(),
+                _ => return ExecutionOutcome::Failed(
+                    "integration.set_live_writes requires a non-empty inputs[\"connection_id\"]"
+                        .to_string(),
+                ),
+            };
+        // enabled — REQUIRED bool (no defaulting an authorization decision; a missing/non-bool fails closed).
+        let enabled = match req.inputs.get("enabled") {
+            Some(v) => match v.as_bool() {
+                Some(b) => b,
+                None => {
+                    return ExecutionOutcome::Failed(
+                        "integration.set_live_writes: inputs[\"enabled\"] must be a bool"
+                            .to_string(),
+                    )
+                }
+            },
+            None => {
+                return ExecutionOutcome::Failed(
+                    "integration.set_live_writes requires inputs[\"enabled\"]".to_string(),
+                )
+            }
+        };
+        // the registered-connection gate (fail-closed on unknown — §15 #8 no-silent-mint precedent): a flip
+        // may only target a connection that was actually registered. A lookup fault also fails closed.
+        match self.connections.is_registered(&connection_id) {
+            Ok(true) => {}
+            Ok(false) => {
+                return ExecutionOutcome::Failed(format!(
+                    "integration.set_live_writes: connection_id `{connection_id}` is not a registered connection (fail-closed)"
+                ))
+            }
+            Err(e) => {
+                return ExecutionOutcome::Failed(format!(
+                    "integration.set_live_writes: connection lookup failed: {e}"
+                ))
+            }
+        }
+
+        let detail = format!(
+            "integration.set_live_writes — connection {connection_id} live_writes_enabled={enabled}"
+        );
+        // the executor serializes its own FROZEN event struct (Q1=B — the generic Namespaced bridge); a
+        // serialize fault fails CLOSED. The event carries ONLY {connection_id, enabled} — NO secret.
+        let payload = IntegrationLiveWritesSet {
+            connection_id,
+            enabled,
+        };
+        let payload_json = match serde_json::to_string(&payload) {
+            Ok(j) => j,
+            Err(e) => {
+                return ExecutionOutcome::Failed(format!("serialize IntegrationLiveWritesSet: {e}"))
+            }
+        };
+
+        ExecutionOutcome::Succeeded {
+            changed_resources: vec![],
+            detail,
+            // an authorization flip recorded as an event; NO durable EXTERNAL side effect → a txn-B fault
+            // rolls back cleanly, never ActionPartiallySucceeded (the integration.connect precedent).
+            side_effect_applied: false,
+            emitted_events: vec![EmittedEvent::Namespaced {
+                event_type: IntegrationLiveWritesSet::EVENT_TYPE,
+                payload_json,
+            }],
+        }
+    }
 }
 
 /// An account is a non-empty, control-char-free identity string (no newline/injection into the
@@ -157,9 +254,10 @@ impl ActionExecutor for IntegrationExecutor {
     fn execute(&self, req: &ActionRequest) -> ExecutionOutcome {
         match req.action_type.as_str() {
             INTEGRATION_CONNECT => self.execute_connect(req),
-            // a non-connect action should never reach this leaf (the outer CatalogExecutor dispatches by
-            // ExecutorKind::Integration, the only Integration-kind type today) — fail CLOSED rather than
-            // silently succeed if a future Integration-kind type is catalogued before its arm lands here.
+            INTEGRATION_SET_LIVE_WRITES => self.execute_set_live_writes(req),
+            // a non-Integration action should never reach this leaf (the outer CatalogExecutor dispatches
+            // by ExecutorKind::Integration) — fail CLOSED rather than silently succeed if a future
+            // Integration-kind type is catalogued before its arm lands here.
             other => ExecutionOutcome::Failed(format!(
                 "IntegrationExecutor has no handler for action_type `{other}`"
             )),

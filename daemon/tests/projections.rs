@@ -18,8 +18,8 @@ use nexusops_shared::actor::ActorType;
 use nexusops_shared::catalog::ExecutorKind;
 use nexusops_shared::event_envelope::{RedactionStatus, Sensitivity, SourceType, Visibility};
 use nexusops_shared::events::{
-    PullRequestMerged, PullRequestSynced, ReviewSubmitted, ReviewSynced, SessionRecovered,
-    WorktreeCreated,
+    ProjectRescanned, PullRequestMerged, PullRequestSynced, ReviewSubmitted, ReviewSynced,
+    SessionRecovered, WorktreeCreated,
 };
 use nexusops_shared::harness::ResumeMode;
 use nexusops_shared::ids::{ActionRequestId, ProjectId, SessionId, WorkspaceId, WorktreeId};
@@ -84,6 +84,20 @@ fn intent(payload: &str) -> AppendIntent {
 fn session_intent(session_id: &SessionId, project_id: &ProjectId, payload: &str) -> AppendIntent {
     let mut i = intent(payload);
     i.session_id = Some(session_id.clone());
+    i.project_id = Some(project_id.clone());
+    i
+}
+
+/// a ProjectRescanned intent carrying the project identity + a minimal valid detection payload (091).
+fn rescan_intent(project_id: &ProjectId) -> AppendIntent {
+    let payload = serde_json::json!({
+        "is_git": false, "repo_root": null, "remote_url": null, "branch": null,
+        "detached": false, "is_dirty": false, "workflow_pack": false, "cc_crew": false,
+        "plan_file": null, "brain": false, "scanned_at": "2026-06-08T00:00:00Z"
+    })
+    .to_string();
+    let mut i = intent(&payload);
+    i.event_type = ProjectRescanned::EVENT_TYPE.to_string();
     i.project_id = Some(project_id.clone());
     i
 }
@@ -457,6 +471,114 @@ fn test_session_started_increments_activity_counter() {
         )
         .unwrap();
     assert_eq!(active, 2, "two SessionStarted → active_sessions counts 2");
+}
+
+// ---- 091 — the ActivityProjector ALSO folds ProjectRescanned (the add-project surfacing) ------
+
+#[test]
+fn activity_projector_folds_project_rescanned() {
+    // spec(§7 / 091) — a ProjectRescanned (envelope project_id=P) makes a proj_project_activity row EXIST
+    // for P (counters default 0), so a session-less rescanned project enters the cockpit grid.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let pid = ProjectId::new();
+    store.append(rescan_intent(&pid)).unwrap();
+
+    let active: i64 = nexusopsd::eventstore::open_read_only(&path)
+        .unwrap()
+        .query_row(
+            "SELECT active_sessions FROM proj_project_activity WHERE project_id=?1",
+            [pid.as_str()],
+            |r| r.get(0),
+        )
+        .expect("a proj_project_activity row exists for the rescanned project");
+    assert_eq!(
+        active, 0,
+        "a freshly-rescanned (session-less) project has 0 active_sessions"
+    );
+}
+
+#[test]
+fn rescan_fold_does_not_clobber_existing_counters() {
+    // spec(§7 / 091) — ON CONFLICT DO UPDATE touches ONLY updated_at_seq: a SessionStarted-then-
+    // ProjectRescanned must NOT reset active_sessions (the counters-table integrity pin) AND must BUMP
+    // updated_at_seq (the re-rescan freshness — rules out a DO NOTHING variant, the brief's design choice).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let pid = ProjectId::new();
+    let read = |p: &std::path::Path| -> (i64, i64) {
+        nexusopsd::eventstore::open_read_only(p)
+            .unwrap()
+            .query_row(
+                "SELECT active_sessions, updated_at_seq FROM proj_project_activity WHERE project_id=?1",
+                [pid.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+    store
+        .append(session_intent(
+            &SessionId::new(),
+            &pid,
+            "{\"status\":\"starting\"}",
+        ))
+        .unwrap();
+    let (active_before, seq_before) = read(&path);
+    assert_eq!(active_before, 1);
+
+    store.append(rescan_intent(&pid)).unwrap();
+    let (active_after, seq_after) = read(&path);
+    assert_eq!(
+        active_after, 1,
+        "a rescan after a session must NOT reset active_sessions"
+    );
+    assert!(
+        seq_after > seq_before,
+        "the rescan DO UPDATE bumped updated_at_seq (re-rescan freshness, not DO NOTHING)"
+    );
+}
+
+#[test]
+fn rescan_fold_rebuild_equivalent() {
+    // spec(§17/§4 / 091) — proj_project_activity ∈ REBUILD_TABLES; re-folding the same log (a
+    // ProjectRescanned) yields the same row (the ON CONFLICT DO UPDATE updated_at_seq fold is rebuild-safe).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let pid = ProjectId::new();
+    store.append(rescan_intent(&pid)).unwrap();
+    let row_count = |p: &std::path::Path| -> i64 {
+        nexusopsd::eventstore::open_read_only(p)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM proj_project_activity WHERE project_id=?1",
+                [pid.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(row_count(&path), 1, "the rescan folded a row");
+    store.rebuild_projections().unwrap();
+    assert_eq!(
+        row_count(&path),
+        1,
+        "rebuild re-folds ProjectRescanned to the same proj_project_activity row (rebuild-equivalent)"
+    );
+}
+
+#[test]
+fn rescan_without_project_id_is_noop() {
+    // spec(§7 / 091) — a ProjectRescanned with NO envelope project_id is a clean no-op (Ok), never a panic
+    // or a phantom row (the projector's project_id guard, mirroring the SessionStarted arm).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let mut i = rescan_intent(&ProjectId::new());
+    i.project_id = None;
+    store.append(i).unwrap();
+    assert_eq!(
+        count(&path, "SELECT COUNT(*) FROM proj_project_activity"),
+        0,
+        "a project_id-less ProjectRescanned folds no row"
+    );
 }
 
 // ======================= L3 — recovery (tests 10–13, 15) ====================

@@ -30,8 +30,8 @@ use serde::Serialize;
 
 use nexusops_shared::event_envelope::EventEnvelope;
 use nexusops_shared::events::{
-    PullRequestMerged, PullRequestSynced, ReviewSubmitted, ReviewSynced, SessionFailed,
-    SessionRecovered, TelemetrySampled, WorktreeCreated,
+    ProjectRescanned, PullRequestMerged, PullRequestSynced, ReviewSubmitted, ReviewSynced,
+    SessionFailed, SessionRecovered, TelemetrySampled, WorktreeCreated,
 };
 use nexusops_shared::ipc::{DeltaKind, ProjectionDelta, ProjectionName};
 
@@ -63,7 +63,8 @@ pub(crate) struct EventDeltaIds {
 /// the D4b Finding was a production event silently bypassing a path-specific delta-source). **KEEP IN
 /// SYNC with the projectors** — each arm mirrors a projector's folded event (pinned by the §51 guard
 /// tests below + `tests/runtime.rs`): `SessionProjector` folds SessionStarted/Failed/Recovered;
-/// `ActivityProjector` + `GraphProjector` fold SessionStarted; `WorktreeProjector` folds WorktreeCreated;
+/// `ActivityProjector` folds SessionStarted + ProjectRescanned (091); `GraphProjector` folds
+/// SessionStarted; `WorktreeProjector` folds WorktreeCreated;
 /// `PullRequestProjector` folds PullRequestSynced; `UsageProjector` folds TelemetrySampled;
 /// `ReviewProjector` folds ReviewSynced. **AuditTrail
 /// (blanket, every event) is path-specific** (per-append in `deltas_for_append`, per-command in
@@ -93,6 +94,14 @@ pub(crate) fn deltas_for_event(event_type: &str, ids: &EventDeltaIds) -> Vec<Pro
             out.push(upsert(ProjectionName::ProjectGraph, Some(pid.clone())));
         }
     }
+    // ProjectActivity — the ActivityProjector ALSO folds ProjectRescanned (091, the add-project surfacing),
+    // keyed by project_id, so a session-less rescanned project enters the cockpit grid + nudges a refetch
+    // (the "Scanning… forever" fix, daemon half). NOT ProjectGraph — that projector folds only SessionStarted.
+    if event_type == ProjectRescanned::EVENT_TYPE {
+        if let Some(pid) = &ids.project_id {
+            out.push(upsert(ProjectionName::ProjectActivity, Some(pid.clone())));
+        }
+    }
     // Worktree — the WorktreeProjector folds WorktreeCreated, keyed by worktree_id (payload-derived).
     if event_type == WorktreeCreated::EVENT_TYPE {
         out.push(upsert(ProjectionName::Worktree, ids.worktree_id.clone()));
@@ -119,7 +128,7 @@ pub(crate) fn deltas_for_event(event_type: &str, ids: &EventDeltaIds) -> Vec<Pro
 mod delta_mapping_tests {
     use super::{deltas_for_event, EventDeltaIds};
     use nexusops_shared::events::{
-        PullRequestSynced, ReviewSynced, TelemetrySampled, WorktreeCreated,
+        ProjectRescanned, PullRequestSynced, ReviewSynced, TelemetrySampled, WorktreeCreated,
     };
     use nexusops_shared::ipc::ProjectionName;
 
@@ -151,6 +160,16 @@ mod delta_mapping_tests {
             "SessionStarted folds into exactly Session+Activity+Graph"
         );
     }
+    #[test]
+    fn project_rescanned_maps_project_activity_by_id() {
+        // 091 — the ActivityProjector ALSO folds ProjectRescanned (the add-project surfacing): a
+        // session-less rescanned project nudges ProjectActivity keyed by project_id (LESSON 51), so the
+        // cockpit grid refetches + the project appears (the "Scanning… forever" fix, daemon half).
+        let d = deltas_for_event(ProjectRescanned::EVENT_TYPE, &ids());
+        assert_eq!(projns(&d), vec![ProjectionName::ProjectActivity]);
+        assert_eq!(d[0].id.as_deref(), Some("prj_x"));
+    }
+
     #[test]
     fn worktree_created_maps_worktree_by_id() {
         let d = deltas_for_event(WorktreeCreated::EVENT_TYPE, &ids());
@@ -190,10 +209,10 @@ mod delta_mapping_tests {
     }
     #[test]
     fn audit_only_and_no_projector_events_map_no_projection_delta() {
-        // ProjectRescanned / IntegrationConnectionRegistered / *SyncFailed → audit-blanket only;
-        // BranchCreated → no projector. The §51 sweep boundary (these get NO projection-specific nudge).
+        // IntegrationConnectionRegistered / *SyncFailed → audit-blanket only; BranchCreated → no projector.
+        // The §51 sweep boundary (these get NO projection-specific nudge). 091 REMOVED ProjectRescanned —
+        // it now nudges ProjectActivity (see project_rescanned_maps_project_activity_by_id).
         for et in [
-            "ProjectRescanned",
             "IntegrationConnectionRegistered",
             "GithubSyncFailed",
             "BranchCreated",

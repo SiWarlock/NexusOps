@@ -1256,6 +1256,93 @@ async fn test_merge_production_path_publishes_pr_nudge() {
     rt.shutdown_background();
 }
 
+// ---- 091 (P4.7) — project.rescan through the REAL gateway publishes a ProjectActivity nudge (LESSON 51/52) -
+
+/// a project.rescan ActionRequest (risk-0 → auto-executes): the scan path in `inputs`, the minted
+/// project_id on the envelope (the 089 client-mint), no resource_refs (requires_resource_refs=false).
+fn project_rescan_request(
+    project_id: &nexusops_shared::ids::ProjectId,
+    scan_path: &str,
+) -> nexusops_shared::actions::ActionRequest {
+    use nexusops_shared::actions::{ActionRequest, RequesterType, RiskLevel};
+    use nexusops_shared::ids::ActionRequestId;
+    use nexusops_shared::status::ActionRequestStatus;
+    use nexusops_shared::time::Timestamp;
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id: Some(project_id.clone()),
+        action_type: "project.rescan".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs: vec![],
+        inputs: serde_json::json!({ "path": scan_path }),
+        risk_level: RiskLevel::Level0,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse("2026-06-08T00:00:00Z").unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn test_rescan_production_path_publishes_project_activity_nudge() {
+    // spec(LESSON 51/52 / 091): a project.rescan through the REAL gateway execute (risk-0 → auto-execute →
+    // ProjectExecutor emits ProjectRescanned via emitted_events → the gateway emitted-events delta loop
+    // calls deltas_for_event) publishes a ProjectActivity Upsert keyed by the envelope project_id — the
+    // production path, NOT a direct store.append (a non-production test would mask an orphaned nudge, the
+    // D4b Finding class). This is what surfaces the session-less rescanned project in the cockpit grid.
+    use nexusops_shared::catalog::ExecutorKind;
+
+    let mut catalog = nexusopsd::gateway::executor::CatalogExecutor::new();
+    catalog.register(
+        ExecutorKind::Project,
+        Arc::new(nexusopsd::project::executor::ProjectExecutor::new(
+            Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        )),
+    );
+    let gw = nexusopsd::gateway::Gateway::new(
+        Box::new(nexusopsd::gateway::policy::CatalogPolicy),
+        Box::new(catalog),
+    );
+
+    let (_d, path) = temp_db();
+    let actor = WriteActor::spawn(
+        open_store(&path),
+        Box::new(FixedClock::new("2026-06-08T00:00:00Z")),
+        gw,
+    );
+    let handle = actor.handle();
+    let mut rx = handle.subscribe();
+
+    // a real existing dir as the scan path (non-git → detection degrades cleanly, the executor Succeeds).
+    let scan_dir = path.parent().unwrap().to_string_lossy().into_owned();
+    let pid = nexusops_shared::ids::ProjectId::new();
+    let req = project_rescan_request(&pid, &scan_dir);
+    let h = handle.clone();
+    tokio::task::spawn_blocking(move || h.submit_action_blocking(req))
+        .await
+        .unwrap()
+        .expect("write-actor reachable")
+        .expect("risk-0 project.rescan auto-executes");
+
+    let deltas = drain_deltas(&mut rx);
+    assert!(
+        has_upsert(&deltas, ProjectionName::ProjectActivity),
+        "the rescan's ProjectRescanned publishes a ProjectActivity nudge (LESSON 51/52)"
+    );
+    let pa = deltas
+        .iter()
+        .find(|d| d.projection == ProjectionName::ProjectActivity)
+        .unwrap();
+    assert_eq!(
+        pa.id.as_deref(),
+        Some(pid.as_str()),
+        "the ProjectActivity delta is keyed by the envelope project_id"
+    );
+    actor.shutdown().await;
+}
+
 // ---- D10 (P4.7) — github.submit_review through the REAL gateway publishes a Review delta (LESSON 51/52) -
 
 /// a github.submit_review ActionRequest: operational params in `inputs` + the repo identity resource_ref.

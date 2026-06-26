@@ -819,3 +819,43 @@ describe("UdsGatewayPort — session.kill guard (WAVE-1 Slice B, default-OFF hel
     expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: l2Req });
   });
 });
+
+// ─── ui-086 WAVE-1 W1-C-a — the per-action session.profile_change gate (enabledProfileChange, default-OFF) ──
+describe("UdsGatewayPort — session.profile_change guard (WAVE-1 W1-C-a, default-OFF held-flip)", () => {
+  it("uds_default_enabled_profile_change_is_off", () => {
+    // spec(default-OFF) — the production default HOLDS profile-change (defense-in-depth to the daemon's
+    // risk-2 approval; the cat-1 held-flip, the enabledSessionKill mirror). Even with mutationsEnabled on.
+    expect(new UdsGatewayPort().enabledProfileChange).toBe(false);
+    expect(new UdsGatewayPort({ mutationsEnabled: true }).enabledProfileChange).toBe(false);
+  });
+
+  it("uds_submit_action_profile_change_throws_never_invokes_when_not_enabled", async () => {
+    // spec(cat-1 [[27]] + the held-flip) — a session.profile_change submit with enabledProfileChange OFF
+    // THROWS + NEVER invokes, EVEN with mutationsEnabled:true: an approval-gated session live-write does
+    // not auto-ride the already-live L2 flag (defense-in-depth to the daemon §15 #8 approval).
+    const port = new UdsGatewayPort({ mutationsEnabled: true }); // enabledProfileChange defaults OFF
+    const req = { action_type: "session.profile_change" } as ActionRequest;
+    await expect(port.submit_action(req)).rejects.toThrow(/not enabled/i);
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("uds_submit_action_profile_change_invokes_when_enabled", async () => {
+    // spec(§6.1) — with the gate forced ON (test-only; production stays OFF until a cat-1 sign-off),
+    // a session.profile_change submit invokes gateway_submit_action verbatim.
+    mockInvoke.mockResolvedValue(validAck);
+    const port = new UdsGatewayPort({ mutationsEnabled: true, enabledProfileChange: true });
+    const req = { action_type: "session.profile_change" } as ActionRequest;
+    await port.submit_action(req);
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: req });
+  });
+
+  it("non_profile_change_submit_action_unaffected_by_gate", async () => {
+    // spec(no L2 regression) — the gate keys on action_type === "session.profile_change" ONLY: an L2
+    // non-profile-change submit (mutationsEnabled:true, gate default OFF) still invokes (scoped gate).
+    mockInvoke.mockResolvedValue(validAck);
+    const port = new UdsGatewayPort({ mutationsEnabled: true });
+    const l2Req = { action_type: "git.stage_hunk" } as ActionRequest;
+    await port.submit_action(l2Req);
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: l2Req });
+  });
+});

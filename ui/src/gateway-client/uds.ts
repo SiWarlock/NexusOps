@@ -58,6 +58,7 @@ import {
 } from "../connection/state";
 import { PR_MUTATION_ACTION_TYPES } from "../intent/pr-mutation-request";
 import { SESSION_KILL_ACTION_TYPE } from "../intent/kill-session-request";
+import { SESSION_PROFILE_CHANGE_ACTION_TYPE } from "../intent/profile-change-request";
 
 /** The serializable error the 050 bridge rejects with (`GatewayCommandError`, snake_case
  *  `kind` tag). Only `kind`/`code`/`message` are read here; the structural variants
@@ -85,6 +86,8 @@ const SESSION_LAUNCH_NOT_ENABLED =
   "UdsGatewayPort: agent-launch (session.create) is not enabled (held off until a USER cat-1 sign-off + visual gate; enabledSessionLaunch=false — it does NOT auto-ride the live mutationsEnabled flip)";
 const SESSION_KILL_NOT_ENABLED =
   "UdsGatewayPort: agent-kill (session.kill) is not enabled (held off until a USER cat-1 sign-off + visual gate; enabledSessionKill=false — a destructive write does NOT auto-ride the live mutationsEnabled flip)";
+const PROFILE_CHANGE_NOT_ENABLED =
+  "UdsGatewayPort: profile-change (session.profile_change) is not enabled (held off until a USER cat-1 sign-off + visual gate; enabledProfileChange=false — a session live-write does NOT auto-ride the live mutationsEnabled flip; defense-in-depth to the daemon risk-2 approval)";
 
 /** A frame received over the subscribe `Channel` (the TS mirror of the 050 bridge's
  *  `SubscriptionEvent`): `delta` carries a raw daemon delta (boundary-parsed before it's yielded),
@@ -177,18 +180,25 @@ export class UdsGatewayPort implements GatewayPort {
    *  a USER cat-1 sign-off flips it — a DESTRUCTIVE write does not auto-ride the already-live mutationsEnabled. */
   readonly enabledSessionKill: boolean;
 
+  /** The per-action PROFILE-CHANGE go-live gate (WAVE-1 W1-C-a; the `enabledSessionKill` mirror).
+   *  default FALSE: a session.profile_change submit_action throws-never-invokes (+ the Change-profile
+   *  control disabled) until a USER cat-1 sign-off flips it — defense-in-depth to the daemon risk-2 approval. */
+  readonly enabledProfileChange: boolean;
+
   constructor(
     opts: {
       mutationsEnabled?: boolean;
       enabledPrMutations?: ReadonlySet<string>;
       enabledSessionLaunch?: boolean;
       enabledSessionKill?: boolean;
+      enabledProfileChange?: boolean;
     } = {},
   ) {
     this.mutationsEnabled = opts.mutationsEnabled ?? false;
     this.enabledPrMutations = opts.enabledPrMutations ?? new Set();
     this.enabledSessionLaunch = opts.enabledSessionLaunch ?? false;
     this.enabledSessionKill = opts.enabledSessionKill ?? false;
+    this.enabledProfileChange = opts.enabledProfileChange ?? false;
   }
 
   // ── the §6.1 read surface (single-shot — invoke + boundary-parse) ──────────────────
@@ -399,10 +409,21 @@ export class UdsGatewayPort implements GatewayPort {
     }
   }
 
+  /** WAVE-1 W1-C-a — a `session.profile_change` submit reaches the wire ONLY when `enabledProfileChange`
+   *  is true. Action-type-SCOPED + independent of `mutationsEnabled` (an approval-gated session live-write
+   *  can't ride the live L2 flag); throws BEFORE invoke → the provably-unreachable layer ([[27]]).
+   *  Defense-in-depth to the daemon risk-2 §15 #8 approval. The `assertSessionKillEnabledFor` mirror. */
+  private assertProfileChangeEnabledFor(actionType: string): void {
+    if (actionType === SESSION_PROFILE_CHANGE_ACTION_TYPE && !this.enabledProfileChange) {
+      throw new Error(PROFILE_CHANGE_NOT_ENABLED);
+    }
+  }
+
   async submit_action(request: ActionRequest): Promise<ActionAck> {
     this.assertMutationsEnabled();
     this.assertPrMutationsEnabledFor(request.action_type);
     this.assertSessionKillEnabledFor(request.action_type);
+    this.assertProfileChangeEnabledFor(request.action_type);
     return this.invokeRead(parseAck, "gateway_submit_action", { request });
   }
   // No PR-mutation guard here by design: preview_action takes only an opaque action_request_id (no

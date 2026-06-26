@@ -124,6 +124,9 @@ export interface MockGatewayOptions {
   /** The per-action agent-kill gate (WAVE-1 Slice B). Default TRUE — the working Mock; set false to
    *  exercise the held (default-OFF in production) Kill control. */
   enabledSessionKill?: boolean;
+  /** The per-action profile-change gate (WAVE-1 W1-C-a). Default TRUE — the working Mock; set false to
+   *  exercise the held (default-OFF in production) Change-profile control. */
+  enabledProfileChange?: boolean;
 }
 
 export class MockGatewayPort implements GatewayPort {
@@ -139,6 +142,8 @@ export class MockGatewayPort implements GatewayPort {
   readonly enabledSessionLaunch: boolean;
   /** The per-action agent-kill gate (WAVE-1 Slice B) — default TRUE (the working Mock). */
   readonly enabledSessionKill: boolean;
+  /** The per-action profile-change gate (WAVE-1 W1-C-a) — default TRUE (the working Mock). */
+  readonly enabledProfileChange: boolean;
 
   constructor(options: MockGatewayOptions = {}) {
     this.connection = options.connection ?? "connected";
@@ -148,6 +153,7 @@ export class MockGatewayPort implements GatewayPort {
     this.enabledPrMutations = options.enabledPrMutations ?? PR_MUTATION_ACTION_TYPES;
     this.enabledSessionLaunch = options.enabledSessionLaunch ?? true;
     this.enabledSessionKill = options.enabledSessionKill ?? true;
+    this.enabledProfileChange = options.enabledProfileChange ?? true;
   }
 
   async get_projection<K extends ProjectionName>(
@@ -248,6 +254,17 @@ export class MockGatewayPort implements GatewayPort {
           account_alias: "work",
           status: "available",
           is_default: true,
+          has_credential: true,
+        },
+        // a 2nd CREDENTIALED, non-default profile — exercises the W1-C "change to a different profile" flow.
+        {
+          execution_profile_id: "ep_claude_haiku",
+          provider: "anthropic",
+          harness: "claude_code",
+          model: "claude-haiku",
+          account_alias: "personal",
+          status: "available",
+          is_default: false,
           has_credential: true,
         },
         {

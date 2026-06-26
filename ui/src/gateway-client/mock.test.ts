@@ -161,6 +161,22 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     expect(new MockGatewayPort().enabledSessionKill).toBe(true);
   });
 
+  it("mock_enabled_profile_change_defaults_true", () => {
+    // spec(W1-C-a) — the Mock is a fully-working dev/test port: enabledProfileChange defaults ON so
+    // Mock-driven profile-change flows exercise the enabled path (production UdsGatewayPort defaults OFF).
+    expect(new MockGatewayPort().enabledProfileChange).toBe(true);
+  });
+
+  it("mock_get_execution_profiles_includes_two_credentialed_for_the_picker", async () => {
+    // spec(W1-C-a) — the picker needs ≥2 CREDENTIALED profiles so a "change to a DIFFERENT profile" flow
+    // is exercisable (one is_default + one non-default credentialed) alongside ≥1 needs-credential row.
+    const result = await new MockGatewayPort().get_execution_profiles();
+    const credentialed = result.profiles.filter((p) => p.has_credential);
+    expect(credentialed.length).toBeGreaterThanOrEqual(2);
+    expect(credentialed.some((p) => p.is_default)).toBe(true);
+    expect(credentialed.some((p) => !p.is_default)).toBe(true);
+  });
+
   it("mock_get_execution_profiles_returns_canned", async () => {
     // spec(W1-prof) — the Mock returns ≥1 canned profile (one is_default:true for the picker's
     // default-preselect; one has_credential:false for the "needs credential" affordance), validated

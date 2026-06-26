@@ -119,6 +119,7 @@ const rejectingGateway: GatewayPort = {
   enabledPrMutations: new Set<string>(),
   enabledSessionLaunch: false,
   enabledSessionKill: false,
+  enabledProfileChange: false,
 };
 
 // A gateway whose live stream CLOSES once (→ the supervisor degrades) then stays open, with the

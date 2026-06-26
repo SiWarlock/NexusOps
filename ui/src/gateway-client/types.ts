@@ -163,4 +163,16 @@ export interface GatewayPort {
    * Read via `isSessionKillEnabled` (intent/kill-session-request.ts).
    */
   readonly enabledSessionKill: boolean;
+
+  /**
+   * The per-action PROFILE-CHANGE go-live gate (WAVE-1 W1-C-a; the `enabledSessionKill` mirror). A
+   * generic `submit_action` whose `action_type` is `session.profile_change` (a risk-2 APPROVAL-GATED
+   * session live-write — the §15 #8 no-account-hop checkpoint) reaches the wire ONLY when this is TRUE —
+   * the transport throws-never-invokes AND the Change-profile control is disabled otherwise. SEPARATE from
+   * `mutationsEnabled`, so a session live-write does NOT auto-ride that flip; it is defense-in-depth to
+   * the daemon's risk-2 approval (the operative checkpoint). `UdsGatewayPort` defaults it FALSE (HELD until
+   * a USER cat-1 sign-off); `MockGatewayPort` defaults it TRUE. NOT a §6.1 RPC method. Read via
+   * `isProfileChangeEnabled` (intent/profile-change-request.ts).
+   */
+  readonly enabledProfileChange: boolean;
 }

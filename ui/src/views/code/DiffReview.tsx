@@ -65,23 +65,22 @@ type DiffState =
   | { kind: "ready"; diff: DiffResult }
   | { kind: "error"; code?: string };
 
-/** DAEMON-READINESS hold for the destructive Discard hunk action (ui-088). `git.discard_hunk` is still a
- *  daemon STUB (W1-git-discard pending) → a submit would approve-then-Failed (a dishonest UX for a
- *  destructive control). So Discard is held disabled until the executor lands. This is NOT a user-go-live
- *  gate (git mutations' user-gate is the per-action approval modal, lead-confirmed) — it's a readiness
- *  flag MEANT to flip `true` automatically when the daemon W1-git-discard lands (the flip slice also adds a
- *  `displayed_hunk_sha256` content-hash input to buildHunkActionRequest for discard — lead-ruled). Stage +
- *  Unstage are LIVE (daemon 095) + unaffected. */
-const DISCARD_AVAILABLE = false;
-const DISCARD_HELD_TITLE =
-  "Discard is available when the daemon git.discard_hunk executor lands (W1-git-discard); Stage/Unstage are live now";
+/** DAEMON-READINESS hold for the destructive Discard hunk action — RELEASED at ui-089-B. The daemon
+ *  `git.discard_hunk` executor landed (096) → the readiness flag flips `true` (LESSON §42: a
+ *  daemon-readiness hold auto-flips when the executor lands; NOT a user-go-live gate — git mutations'
+ *  user-gate is the per-action approval modal). Discard is now a first-class live control: it submits the
+ *  `displayed_hunk_sha256` content hash (ui-089-A) the daemon re-derives + verifies before destroying
+ *  (§17 verify-before-destroy). Kept as an injectable seam (the `discardAvailable` prop) so a future
+ *  daemon regression could re-hold without a structural change. Stage/Unstage are LIVE (daemon 095). */
+const DISCARD_AVAILABLE = true;
 
 /** The per-hunk git-action bar (6.3e, cat-1). stage/unstage/discard are PURE SUBMITTERS
  *  over the seam (Q1); disabled when !canSubmitIntent (Q2 fail-safe); discard is the
  *  destructive (risk-3 daemon-side), explicitly labeled + danger-toned. Each button's
- *  accessible name carries the hunk header (unique per hunk; §11.6). `discardAvailable` is the
- *  daemon-readiness hold (default the module const = false; injectable for the flip-true unit test).
- *  Exported for that unit test — the prod ReviewTab renders it with the default. */
+ *  accessible name carries the hunk header (unique per hunk; §11.6). `discardAvailable` defaults to
+ *  the module const (now `true` — the daemon-readiness hold released at ui-089-B, LESSON §42); it
+ *  remains an injectable re-hold seam the `hunk_actions_discard_gated_by_flag` unit test exercises
+ *  with `false`. Exported for that unit test — the prod ReviewTab renders it with the default. */
 export function HunkGitActions({
   hunk,
   canSubmit,
@@ -119,21 +118,20 @@ export function HunkGitActions({
       >
         Unstage
       </Button>
-      {/* Discard is HELD until the daemon git.discard_hunk executor lands (ui-088 daemon-readiness flag);
-          the honest tooltip explains why. The wrapping span carries the title so it shows even while the
-          button is disabled (a disabled button suppresses its own tooltip in some browsers). */}
-      <span title={discardAvailable ? undefined : DISCARD_HELD_TITLE}>
-        <Button
-          size="sm"
-          variant="danger"
-          icon={<Trash2 size={13} />}
-          disabled={!canSubmit || !discardAvailable}
-          aria-label={`Discard hunk ${hunk.header}`}
-          onClick={() => onAction("git.discard_hunk", hunk)}
-        >
-          Discard
-        </Button>
-      </span>
+      {/* Discard — the destructive (risk-3 daemon-side) per-hunk control, LIVE since ui-089-B (the daemon
+          git.discard_hunk executor landed, 096). Gated only by canSubmitIntent + the daemon approval modal
+          (the per-action user-gate); the daemon verifies the displayed_hunk_sha256 (ui-089-A) before
+          destroying. The `discardAvailable` flag (default true) is the re-hold seam (LESSON §42). */}
+      <Button
+        size="sm"
+        variant="danger"
+        icon={<Trash2 size={13} />}
+        disabled={!canSubmit || !discardAvailable}
+        aria-label={`Discard hunk ${hunk.header}`}
+        onClick={() => onAction("git.discard_hunk", hunk)}
+      >
+        Discard
+      </Button>
     </div>
   );
 }

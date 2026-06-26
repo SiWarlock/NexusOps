@@ -226,4 +226,9 @@ pub mod time;
 /// `event_type` (the cockpit Audit-tile namespace-filter + per-type icons), backed by the
 /// `proj_audit_trail.event_type` column (MIGRATION_20, offset-reset). Additive (a new projection-row + the
 /// audit `event_type` column; no frozen type reshaped, §5.0).
-pub const CONTRACT_VERSION: &str = "0.49.0";
+/// 0.50.0 (W2-usage/098) — the WAVE-2 projection-honesty reconcile: the 6th frozen projection-row
+/// `UsageRow` (the `proj_usage_ledger` token/cost/context rollup, served typed/fail-closed; `metric_quality`
+/// binds the frozen MetricQuality enum). NO migration (columns exist); NO `creditPool` (honest-omit — the
+/// daemon has no real credit-pool balance source). Additive (a new projection-row only; no frozen type
+/// reshaped, §5.0).
+pub const CONTRACT_VERSION: &str = "0.50.0";

@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::actions::{PolicyDecision, RequesterType, RiskLevel};
-use crate::harness::ResumeMode;
+use crate::harness::{MetricQuality, ResumeMode};
 use crate::status::{Approval, PullRequest, ReviewState, Session};
 
 /// One open row of the `proj_approval_queue` read model (§7 / §11.5) — an approval awaiting a human
@@ -156,4 +156,34 @@ pub struct AuditEventRow {
     pub headline: String,
     pub actor_label: Option<String>,
     pub sensitivity: String,
+}
+
+/// One row of the `proj_usage_ledger` read model (§2.3/§7.2/§18) — a per-day token/cost/context usage
+/// rollup the cockpit Usage tile (§11.7 UsageMeter) renders. The 6th frozen projection-row (after
+/// ApprovalQueue/PullRequest/Session/Review/Audit, W2-usage/098). The `UsageLedgerProjector` folds
+/// `TelemetrySampled` (SUMs tokens/cost, MAXes context_pct, worst-quality-wins). `metric_quality` binds the
+/// frozen [`MetricQuality`] enum (exact|estimated|unavailable; reject-unknown) so the UsageMeter degrades
+/// HONESTLY (§11.7 — never "exact" over partially-estimated data). **NO `creditPool`** — the daemon has no
+/// real credit-pool balance source (the SDK monthly pool is not telemetry-observable: the daemon witnesses
+/// per-heartbeat token/cost DELTAS + the `credit_exhausted` hard-stop status, never a remaining balance), so
+/// the UI must not synthesize one. The internal `updated_at_seq` is NOT a wire field (the `read_usage_typed`
+/// retain-whitelist drops it). **Nullability matches the DDL:** `ledger_id` (PK) is non-Option; every data
+/// column is nullable. `tokens_in`/`tokens_out` are `i64` (the projector SUMs the per-sample deltas as i64);
+/// `context_pct_max`/`cost_estimate` are `f64` (REAL columns → JSON number → direct bind, NO coercion —
+/// unlike the §53 INTEGER-0/1→bool case). Optionals serialize as explicit `null` (no `skip_serializing_if`)
+/// so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct UsageRow {
+    pub ledger_id: String,
+    pub project_id: Option<String>,
+    pub session_id: Option<String>,
+    pub execution_profile_id: Option<String>,
+    pub model: Option<String>,
+    pub bucket_day: Option<String>,
+    pub tokens_in: Option<i64>,
+    pub tokens_out: Option<i64>,
+    pub context_pct_max: Option<f64>,
+    pub cost_estimate: Option<f64>,
+    pub metric_quality: Option<MetricQuality>,
 }

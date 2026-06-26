@@ -3305,6 +3305,92 @@ fn audit_trail_event_type_backfills_via_catch_up_on_conflict() {
 }
 
 // =============================================================================
+// W2-usage (098) — the 6th typed UsageRow serve over proj_usage_ledger (NO migration; columns exist)
+// =============================================================================
+
+#[test]
+fn read_usage_typed_round_trips() {
+    // spec(§6.1) — get_projection(UsageLedger) served TYPED via read_usage_typed (no loose JSON): a folded
+    // TelemetrySampled → one UsageRow with the typed tokens(i64)/cost(f64)/context_pct_max(f64)/
+    // metric_quality(enum); the internal updated_at_seq dropped by the whitelist.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    let s = sampled(
+        1200,
+        340,
+        Some(42.5),
+        0.5,
+        MetricQuality::Exact,
+        "claude-opus-4-8",
+        "prof_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    );
+    store
+        .append(telemetry_intent(&sid, &pid, "2026-06-08T12:00:00Z", &s))
+        .unwrap();
+    let rows = nexusopsd::ipc::read_usage_typed(&path).expect("typed usage read");
+    assert_eq!(rows.len(), 1, "one usage row served");
+    let r = &rows[0];
+    assert_eq!(r.tokens_in, Some(1200));
+    assert_eq!(r.tokens_out, Some(340));
+    assert_eq!(r.cost_estimate, Some(0.5), "REAL→f64, no coercion");
+    assert_eq!(r.context_pct_max, Some(42.5), "REAL→f64, no coercion");
+    assert_eq!(
+        r.metric_quality,
+        Some(MetricQuality::Exact),
+        "TEXT→the frozen MetricQuality enum"
+    );
+    assert_eq!(r.model.as_deref(), Some("claude-opus-4-8"));
+    assert_eq!(r.session_id.as_deref(), Some(sid.as_str()));
+    assert_eq!(r.project_id.as_deref(), Some(pid.as_str()));
+    assert_eq!(
+        r.execution_profile_id.as_deref(),
+        Some("prof_01ARZ3NDEKTSV4RRFFQ69G5FAV")
+    );
+    assert_eq!(r.bucket_day.as_deref(), Some("2026-06-08"));
+    assert!(
+        !r.ledger_id.is_empty(),
+        "the composite ledger_id PK is served"
+    );
+}
+
+#[test]
+fn read_usage_typed_fails_closed_on_corrupt_row() {
+    // spec(LESSON §37) — the typed serve FAILS CLOSED on a proj_usage_ledger row that no longer deserializes
+    // (a non-numeric cost_estimate → the Option<f64> can't bind) → InternalError, never a silent skip / loose
+    // leak. (Direct writable conn = test-only fixture corruption; the projector always writes a REAL.)
+    use nexusops_shared::ipc::IpcErrorCode;
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    let s = sampled(
+        10,
+        5,
+        None,
+        0.1,
+        MetricQuality::Estimated,
+        "m",
+        "prof_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    );
+    store
+        .append(telemetry_intent(&sid, &pid, "2026-06-08T12:00:00Z", &s))
+        .unwrap();
+    {
+        let c = rusqlite::Connection::open(&path).expect("fixture conn");
+        c.execute(
+            "UPDATE proj_usage_ledger SET cost_estimate = 'not_a_number'",
+            [],
+        )
+        .expect("corrupt cost_estimate");
+    }
+    let err = nexusopsd::ipc::read_usage_typed(&path)
+        .expect_err("a non-numeric cost_estimate fails closed");
+    assert_eq!(err, IpcErrorCode::InternalError);
+}
+
+// =============================================================================
 // D5b-1 (P4.6) — the structured-review vertical: ReviewSynced fold + proj_review + typed ReviewRow serve
 // =============================================================================
 

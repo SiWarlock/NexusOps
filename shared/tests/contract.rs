@@ -3303,6 +3303,72 @@ fn test_audit_event_row_rejects_unknown_field() {
     );
 }
 
+// =====================================================================================
+// UsageRow projection-row (the 6th frozen row) — proj_usage_ledger reconcile. CONTRACT 0.50.0.
+// =====================================================================================
+
+fn sample_usage_row() -> nexusops_shared::projections::UsageRow {
+    use nexusops_shared::harness::MetricQuality;
+    use nexusops_shared::projections::UsageRow;
+    // fully populated (all Options Some) so the field-name snapshot sees every key.
+    UsageRow {
+        ledger_id: "prj_X|sess_Y|prof_Z|2026-06-26|claude-opus-4-8".to_string(),
+        project_id: Some("prj_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        session_id: Some("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        execution_profile_id: Some("prof_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        model: Some("claude-opus-4-8".to_string()),
+        bucket_day: Some("2026-06-26".to_string()),
+        tokens_in: Some(1200),
+        tokens_out: Some(340),
+        context_pct_max: Some(42.5),
+        cost_estimate: Some(0.5),
+        metric_quality: Some(MetricQuality::Exact),
+    }
+}
+
+#[test]
+fn test_usage_row_frozen_shape() {
+    // spec(§7.2 / §2.5-seam) — the 6th frozen projection-row (after ApprovalQueue/PullRequest/Session/Review/
+    // Audit). The field-name set is frozen + round-trips; `metric_quality` binds the frozen MetricQuality enum
+    // (reject-unknown); the internal `updated_at_seq` is NOT a wire field; NO `creditPool` (honest-omit — the
+    // daemon has no real credit-pool source). deny_unknown_fields.
+    expect_fields(
+        &sample_usage_row(),
+        &[
+            "ledger_id",
+            "project_id",
+            "session_id",
+            "execution_profile_id",
+            "model",
+            "bucket_day",
+            "tokens_in",
+            "tokens_out",
+            "context_pct_max",
+            "cost_estimate",
+            "metric_quality",
+        ],
+    );
+    let json = serde_json::to_string(&sample_usage_row()).unwrap();
+    let back: nexusops_shared::projections::UsageRow =
+        serde_json::from_str(&json).expect("UsageRow round-trips");
+    assert_eq!(back, sample_usage_row(), "all 11 fields round-trip");
+}
+
+#[test]
+fn test_usage_row_rejects_unknown_field() {
+    // spec(§5.0/§15) — deny_unknown_fields on the frozen row: a valid row + an unfrozen column fails to
+    // deserialize. NB: a faked `credit_pool` is exactly such a column → the UI cannot smuggle a synthetic
+    // creditPool through the typed serve (the honest-omit is enforced by the contract).
+    let mut v = serde_json::to_value(sample_usage_row()).unwrap();
+    v.as_object_mut()
+        .unwrap()
+        .insert("credit_pool".to_string(), serde_json::json!(100));
+    assert!(
+        serde_json::from_value::<nexusops_shared::projections::UsageRow>(v).is_err(),
+        "deny_unknown_fields rejects an unfrozen column (incl. a faked creditPool)"
+    );
+}
+
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
@@ -3324,8 +3390,11 @@ fn test_contract_version_bumped_0_45_0() {
     // projection-honesty opener — the raw `event_type` surfaced on `proj_audit_trail` (MIGRATION_20) + the
     // 5th frozen projection-row `AuditEventRow` served typed/fail-closed (the cockpit Audit namespace-filter
     // + per-type icons). Additive (a new projection-row + the audit `event_type` column; no frozen type
-    // reshaped, §5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.49.0");
+    // reshaped, §5.0). **0.50.0** = the W2-usage projection-honesty reconcile — the 6th frozen
+    // projection-row `UsageRow` (the `proj_usage_ledger` rollup served typed/fail-closed; `metric_quality`
+    // binds the frozen MetricQuality enum). NO migration (columns exist); NO `creditPool` (honest-omit — no
+    // daemon source). Additive (a new projection-row only; no frozen type reshaped, §5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.50.0");
 }
 
 // =================================================================================================

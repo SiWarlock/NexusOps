@@ -23,7 +23,7 @@ use nexusops_shared::ipc::{
     ProfileRow, ProjectionName, RpcRequest, RpcResponse, SubscribeParams, WireError,
 };
 use nexusops_shared::projections::{
-    ApprovalQueueRow, AuditEventRow, PullRequestRow, ReviewRow, SessionRow,
+    ApprovalQueueRow, AuditEventRow, PullRequestRow, ReviewRow, SessionRow, UsageRow,
 };
 use nexusops_shared::status::ActionRequest as ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
@@ -581,6 +581,15 @@ fn get_projection(
             Err(code) => Err(code),
         });
     }
+    // W2-usage/098 — the UsageLedger projection served TYPED (the frozen UsageRow), not loose JSON, so the
+    // cockpit Usage tile (§11.7 UsageMeter) consumes a contract. The Audit/Review precedent; the UI's
+    // degradable Usage tile handles a read error via its honest-banner.
+    if params.name == ProjectionName::UsageLedger {
+        return Ok(match read_usage_typed(db_path) {
+            Ok(typed) => serde_json::to_value(typed).map_err(|_| IpcErrorCode::InternalError),
+            Err(code) => Err(code),
+        });
+    }
     let table = projection_table(params.name);
     // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
     let conn =
@@ -801,6 +810,57 @@ pub fn read_audit_typed(db_path: &Path) -> Result<Vec<AuditEventRow>, IpcErrorCo
         // rejects them). The STRICT deserialize then fails closed on a bad value (e.g. a NULL event_type).
         obj.retain(|k, _| AUDIT_ROW_WIRE_FIELDS.contains(&k.as_str()));
         let typed: AuditEventRow =
+            serde_json::from_value(row).map_err(|_| IpcErrorCode::InternalError)?;
+        out.push(typed);
+    }
+    Ok(out)
+}
+
+/// (W2-usage/098) The `UsageRow` wire fields — `proj_usage_ledger` carries the internal `updated_at_seq`
+/// NOT on the frozen row, so each row RETAINS only these before the STRICT deserialize (the
+/// `read_audit_typed`/`read_session_typed` whitelist precedent; a future column won't trip
+/// `deny_unknown_fields`). Kept drift-proof by `usage_row_wire_fields_match_struct` (this const must equal
+/// the `UsageRow` serialized field set).
+const USAGE_ROW_WIRE_FIELDS: &[&str] = &[
+    "ledger_id",
+    "project_id",
+    "session_id",
+    "execution_profile_id",
+    "model",
+    "bucket_day",
+    "tokens_in",
+    "tokens_out",
+    "context_pct_max",
+    "cost_estimate",
+    "metric_quality",
+];
+
+/// (W2-usage/098) Read `proj_usage_ledger` served TYPED as the frozen [`UsageRow`] — no loose JSON on the
+/// cockpit Usage-tile read path (the `read_audit_typed` precedent, LESSON §37). `proj_usage_ledger` carries
+/// the internal `updated_at_seq` NOT on the wire row, so each row is REDUCED to [`USAGE_ROW_WIRE_FIELDS`]
+/// before the STRICT deserialize. The REAL columns (`context_pct_max`/`cost_estimate`) bind directly to
+/// `Option<f64>` (SQLite-REAL → JSON number, NO coercion — unlike the §53 INTEGER→bool case); `metric_quality`
+/// binds the frozen `MetricQuality` enum (reject-unknown). A row that no longer deserializes (corrupt /
+/// contract-broken — e.g. a non-numeric `cost_estimate`) is an integrity error → `InternalError` (fail-closed,
+/// never a silent skip; the UI's degradable Usage tile handles a read error via its honest-banner).
+pub fn read_usage_typed(db_path: &Path) -> Result<Vec<UsageRow>, IpcErrorCode> {
+    // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
+    let conn =
+        crate::eventstore::open_read_only(db_path).map_err(|_| IpcErrorCode::InternalError)?;
+    let json =
+        read_table_as_json(&conn, "proj_usage_ledger").map_err(|_| IpcErrorCode::InternalError)?;
+    let serde_json::Value::Array(raw_rows) = json else {
+        return Err(IpcErrorCode::InternalError);
+    };
+    let mut out = Vec::with_capacity(raw_rows.len());
+    for mut row in raw_rows {
+        let serde_json::Value::Object(obj) = &mut row else {
+            return Err(IpcErrorCode::InternalError);
+        };
+        // RETAIN only the wire fields — drop the internal updated_at_seq (else deny_unknown_fields rejects
+        // it). The STRICT deserialize then fails closed on a bad value (e.g. a non-numeric cost_estimate).
+        obj.retain(|k, _| USAGE_ROW_WIRE_FIELDS.contains(&k.as_str()));
+        let typed: UsageRow =
             serde_json::from_value(row).map_err(|_| IpcErrorCode::InternalError)?;
         out.push(typed);
     }
@@ -1332,6 +1392,43 @@ mod tests {
         assert_eq!(
             struct_fields, whitelist,
             "read_audit_typed whitelist drifted from AuditEventRow fields"
+        );
+    }
+
+    #[test]
+    fn usage_row_wire_fields_match_struct() {
+        // drift-proof: the retain-whitelist MUST equal UsageRow's serialized field set, so a typo or a
+        // struct-field add/rename can't silently drop a wire field from the typed usage serve.
+        use nexusops_shared::harness::MetricQuality;
+        use nexusops_shared::projections::UsageRow;
+        use std::collections::BTreeSet;
+        let sample = UsageRow {
+            ledger_id: "l".into(),
+            project_id: None,
+            session_id: None,
+            execution_profile_id: None,
+            model: None,
+            bucket_day: None,
+            tokens_in: None,
+            tokens_out: None,
+            context_pct_max: None,
+            cost_estimate: None,
+            metric_quality: Some(MetricQuality::Exact),
+        };
+        let struct_fields: BTreeSet<String> = serde_json::to_value(&sample)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let whitelist: BTreeSet<String> = USAGE_ROW_WIRE_FIELDS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            struct_fields, whitelist,
+            "read_usage_typed whitelist drifted from UsageRow fields"
         );
     }
 

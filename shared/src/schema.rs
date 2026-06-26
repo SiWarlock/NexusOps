@@ -45,7 +45,9 @@ use crate::ipc::{
     VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
-use crate::projections::{ApprovalQueueRow, AuditEventRow, PullRequestRow, ReviewRow, SessionRow};
+use crate::projections::{
+    ApprovalQueueRow, AuditEventRow, PullRequestRow, ReviewRow, SessionRow, UsageRow,
+};
 use crate::status::{
     ActionRequest, AgentTeam, Approval, ExecutionProfile, ProjectBrain, PullRequest, ReviewState,
     Session, Task, WorkflowInstance, WorktreeGit, WorktreeOverlay,
@@ -288,6 +290,11 @@ struct ContractBundle {
     // raw `event_type` for the namespace-filter + per-type icons). The proj_audit_trail.event_type column
     // (MIGRATION_20) rides the daemon side; AuditTrail uses the existing ProjectionName variant. Additive.
     audit_event_row: AuditEventRow,
+    // W2-usage/098 (CONTRACT 0.50.0) — the 6th frozen projection-row UsageRow (the proj_usage_ledger
+    // token/cost/context rollup the cockpit Usage tile consumes, typed; metric_quality binds the frozen
+    // MetricQuality enum). NO migration (columns exist); NO creditPool (honest-omit — no daemon source).
+    // UsageLedger uses the existing ProjectionName variant. Additive.
+    usage_row: UsageRow,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

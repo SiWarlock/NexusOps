@@ -37,11 +37,12 @@ use crate::harness::{
 use crate::ids::IdKind;
 use crate::ipc::{
     ActionAck, Capabilities, ConnectViaGhParams, ConnectViaGhResult, ConnectViaGhStatus, DeltaKind,
-    DiffLine, DiffLineKind, DiffResult, GetDiffParams, GetPrDiffParams, GetProjectionParams,
-    HelloAck, HelloFrame, Hunk, IpcErrorCode, PlanAck, PlanStepAck, ProjectionDelta,
-    ProjectionName, ProjectionScope, RpcRequest, RpcResponse, ServerFrame, SetProfileSecretParams,
-    SetProfileSecretResult, SubscribeParams, TerminalControlFrame, TerminalControlKind,
-    TerminalInputFrame, TerminalOutputFrame, VersionSkewError, WireError,
+    DiffLine, DiffLineKind, DiffResult, GetDiffParams, GetExecutionProfilesResult, GetPrDiffParams,
+    GetProjectionParams, HelloAck, HelloFrame, Hunk, IpcErrorCode, PlanAck, PlanStepAck,
+    ProfileRow, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, RpcResponse,
+    ServerFrame, SetProfileSecretParams, SetProfileSecretResult, SubscribeParams,
+    TerminalControlFrame, TerminalControlKind, TerminalInputFrame, TerminalOutputFrame,
+    VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
 use crate::projections::{ApprovalQueueRow, PullRequestRow, ReviewRow, SessionRow};
@@ -276,6 +277,12 @@ struct ContractBundle {
     set_profile_secret_result: SetProfileSecretResult,
     profile_secret_set: ProfileSecretSet,
     session_profile_changed: SessionProfileChanged,
+    // W1-prof/093 (CONTRACT 0.48.0) — the §6.1 get_execution_profiles read RPC: the secret-free
+    // ProfileRow (§15 #4 — NO keychain_ref/secret; credential state as the derived has_credential bool;
+    // status reuses the frozen §5.1 ExecutionProfile machine) + the {profiles} result envelope. The §2.8
+    // execution_profiles registry read surface for the cockpit profile picker. Additive (shared/src/ipc.rs).
+    profile_row: ProfileRow,
+    get_execution_profiles_result: GetExecutionProfilesResult,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

@@ -41,6 +41,9 @@ pub use methods::read_session_typed;
 // D5b-1 — the typed Review serve (proj_review → frozen ReviewRow); pub for the integration test.
 // `get_projection` routes Review to it (the PullRequest/Session precedent).
 pub use methods::read_review_typed;
+// W1-prof/093 — the §2.8 execution_profiles registry read core (secret-free ProfileRow list, §15 #4);
+// pub for the integration test. The RPC dispatch routes "get_execution_profiles" to it.
+pub use methods::read_execution_profile_rows;
 // P4.0b-2-F2 — the pure intercept-wait-class decision (the testable core the live `intercept` handler
 // delegates to); pub for the unit test. `INTERCEPT_SATURATED_REASON` = the fail-closed exhaustion reason.
 pub use methods::{intercept_verdict_with_wait_class, INTERCEPT_SATURATED_REASON};

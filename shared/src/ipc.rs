@@ -12,6 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::events::Provider;
+use crate::status::ExecutionProfile;
 
 /// The wire protocol version this binary speaks (§6.4). The daemon is the authoritative source;
 /// the ui's `SUPPORTED_PROTOCOL_RANGE` must agree. SEPARATE from `CONTRACT_VERSION` (§5.0).
@@ -373,6 +374,43 @@ pub enum DiffLineKind {
     Context,
     Added,
     Removed,
+}
+
+/// One execution profile served by the `get_execution_profiles` read RPC (§6.1; W1-prof) — a typed,
+/// SECRET-FREE view of an `execution_profiles` registry row (§2.8) for the cockpit session-launch
+/// **profile picker** (and `session.profile_change`). A read-RPC RESULT row (the [`DiffResult`] precedent
+/// — NOT a projection row: no `ProjectionName`, not `get_projection`-served).
+///
+/// **§15 #4 — the keychain POINTER / secret is NEVER served.** `keychain_ref` (and any secret) is ABSENT;
+/// the credential state is exposed ONLY as the derived `has_credential` bool (= `keychain_ref.is_some()`).
+/// `is_default` flags the cold-start seeded profile (the picker pre-selects it). `status` reuses the
+/// frozen §5.1 [`ExecutionProfile`] machine (reject-unknown). Optionals serialize as explicit `null` (no
+/// `skip_serializing_if`) → a stable §2.5-seam field-name snapshot (LESSON §15 trap 3). `deny_unknown_fields`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileRow {
+    pub execution_profile_id: String,
+    pub provider: String,
+    pub harness: String,
+    pub model: Option<String>,
+    pub account_alias: Option<String>,
+    /// the frozen §5.1 ExecutionProfile runtime state (reject-unknown — a loose status string is rejected).
+    pub status: ExecutionProfile,
+    /// true for the cold-start seeded default profile (the first `ExecutionProfileRegistered`).
+    pub is_default: bool,
+    /// whether a keychain credential is bound (= `keychain_ref.is_some()`) — the ONLY credential signal
+    /// (§15 #4: the POINTER itself is never served; a boolean is not a pointer).
+    pub has_credential: bool,
+}
+
+/// The `get_execution_profiles` result (§6.1; W1-prof) — the secret-free profile list in a `{profiles: [...]}`
+/// struct envelope (the [`DiffResult`] precedent; the UI consumes it via the gateway-client directly, NOT
+/// `parseProjectionPage`, so it avoids the bare-array boundary gotcha). An empty registry → `{profiles: []}`
+/// (not an error). `deny_unknown_fields`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GetExecutionProfilesResult {
+    pub profiles: Vec<ProfileRow>,
 }
 
 /// `subscribe` params (§6.1). `filter` is provisional (a per-projection scope; widens later).

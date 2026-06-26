@@ -216,4 +216,9 @@ pub mod time;
 /// 0.47.0 (P4.7/092) adds `ProjectRescanned.name: Option<String>` — the human-readable project name (the
 /// basename of the scan path) surfaced into `proj_project_activity.name` (MIGRATION_19) for the cockpit
 /// switcher label. Additive-optional (pre-092 events replay as `None`), no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.47.0";
+/// 0.48.0 (W1-prof/093) adds the `get_execution_profiles` read RPC — the secret-free `ProfileRow`
+/// (`{execution_profile_id, provider, harness, model?, account_alias?, status, is_default, has_credential}`
+/// — §15 #4: NO keychain_ref/secret; credential state as the derived `has_credential` bool) +
+/// `GetExecutionProfilesResult` (`{profiles}`) IPC wire types — the §2.8 `execution_profiles` registry read
+/// surface the cockpit profile picker consumes. Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.48.0";

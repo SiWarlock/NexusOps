@@ -3063,6 +3063,78 @@ fn test_session_row_rejects_unknown_field() {
 }
 
 // =====================================================================================
+// W1-prof (CONTRACT 0.48.0) — the get_execution_profiles read-RPC ProfileRow: a typed, SECRET-FREE
+// view of an `execution_profiles` registry row (§2.8) the cockpit profile picker consumes. A read-RPC
+// result type (shared/src/ipc.rs, the DiffResult precedent — NOT a projection row: no ProjectionName,
+// not get_projection-served). §15 #4: NO keychain_ref/secret field — the credential state is the
+// derived `has_credential` bool; `is_default` flags the cold-start seed. deny_unknown_fields.
+// =====================================================================================
+
+fn sample_profile_row() -> nexusops_shared::ipc::ProfileRow {
+    use nexusops_shared::ipc::ProfileRow;
+    use nexusops_shared::status::ExecutionProfile;
+    // fully populated (all Options Some) so the field-name snapshot sees every key.
+    ProfileRow {
+        execution_profile_id: "prof_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        provider: "anthropic".to_string(),
+        harness: "claude_code".to_string(),
+        model: Some("claude-3.7".to_string()),
+        account_alias: Some("work".to_string()),
+        status: ExecutionProfile::Available,
+        is_default: true,
+        has_credential: true,
+    }
+}
+
+#[test]
+fn test_profile_row_frozen_shape() {
+    // spec(§6.1 / §2.5-seam) — the W1-prof read-RPC ProfileRow field-name set is frozen (LESSON §15):
+    // NO keychain_ref / secret field (§15 #4 POINTER-never-served — the credential state is the derived
+    // `has_credential` bool); `status` binds the frozen §5.1 ExecutionProfile machine; round-trips.
+    expect_fields(
+        &sample_profile_row(),
+        &[
+            "execution_profile_id",
+            "provider",
+            "harness",
+            "model",
+            "account_alias",
+            "status",
+            "is_default",
+            "has_credential",
+        ],
+    );
+    // §15 #4 — no keychain_ref / secret field appears on the frozen wire shape.
+    let json = serde_json::to_string(&sample_profile_row()).unwrap();
+    assert!(
+        !json.contains("keychain_ref") && !json.contains("secret"),
+        "ProfileRow never serves the keychain POINTER or any secret (§15 #4)"
+    );
+    let back: nexusops_shared::ipc::ProfileRow =
+        serde_json::from_str(&json).expect("ProfileRow round-trips");
+    assert_eq!(
+        back.status,
+        nexusops_shared::status::ExecutionProfile::Available,
+        "status is the typed ExecutionProfile enum (no loose status string)"
+    );
+}
+
+#[test]
+fn test_profile_row_rejects_unknown_field() {
+    // spec(§5.0/§15) — deny_unknown_fields on the frozen row: a row carrying an unfrozen column (e.g. a
+    // leaked `keychain_ref`) fails to deserialize → `read_execution_profile_rows` fails closed on it.
+    let mut v = serde_json::to_value(sample_profile_row()).unwrap();
+    v.as_object_mut().unwrap().insert(
+        "keychain_ref".to_string(),
+        serde_json::json!("nexusops/profile/leaked"),
+    );
+    assert!(
+        serde_json::from_value::<nexusops_shared::ipc::ProfileRow>(v).is_err(),
+        "deny_unknown_fields rejects an unfrozen column (incl. a leaked keychain_ref)"
+    );
+}
+
+// =====================================================================================
 // D5b-1 (P4.6) — the structured-review vertical: ReviewSynced event + ReviewState enum +
 // ReviewRow projection-row (the 4th frozen row) + ProjectionName::Review. CONTRACT 0.37.0.
 // =====================================================================================
@@ -3187,7 +3259,10 @@ fn test_contract_version_bumped_0_45_0() {
     // `SetProfileSecret{Params,Result}` IPC wire types. Additive, no frozen type reshaped (§5.0).
     // **0.47.0** = the P4.7/092 friendly project name — `ProjectRescanned.name: Option<String>` (the
     // scan-path basename) surfaced into `proj_project_activity.name` (MIGRATION_19). Additive-optional.
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.47.0");
+    // **0.48.0** = the W1-prof `get_execution_profiles` read RPC — the new secret-free `ProfileRow` +
+    // `GetExecutionProfilesResult` IPC wire types (the §2.8 registry read surface; §15 #4 keychain
+    // POINTER never served). Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.48.0");
 }
 
 // =================================================================================================

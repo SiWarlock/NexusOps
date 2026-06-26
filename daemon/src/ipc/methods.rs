@@ -19,8 +19,8 @@ use nexusops_shared::gateway_ids::ActionPlanId;
 use nexusops_shared::ids::{ActionRequestId, ProjectId};
 use nexusops_shared::ipc::{
     Capabilities, ConnectViaGhParams, ConnectViaGhResult, ConnectViaGhStatus, DiffResult,
-    GetDiffParams, GetPrDiffParams, GetProjectionParams, IpcErrorCode, ProjectionName, RpcRequest,
-    RpcResponse, SubscribeParams, WireError,
+    GetDiffParams, GetExecutionProfilesResult, GetPrDiffParams, GetProjectionParams, IpcErrorCode,
+    ProfileRow, ProjectionName, RpcRequest, RpcResponse, SubscribeParams, WireError,
 };
 use nexusops_shared::projections::{ApprovalQueueRow, PullRequestRow, ReviewRow, SessionRow};
 use nexusops_shared::status::ActionRequest as ActionRequestStatus;
@@ -86,6 +86,10 @@ pub(crate) fn dispatch(
         // layer: resolves (repo_id,pr_number)→owner/repo (read-only WAL) then fetches the PR diff via the
         // injected GithubReadClient (block_on the captured handle + a MANDATORY timeout); NO mutation.
         "get_pr_diff" => get_pr_diff(&req.params, db_path, github)?,
+        // W1-prof/093 — the §2.8 execution_profiles registry read RPC (the cockpit profile-picker source).
+        // Serves the secret-free ProfileRow list over read-only WAL; §15 #4 the keychain POINTER is NEVER
+        // served (only the derived has_credential). No-param; a corrupt row fails closed (internal_error).
+        "get_execution_profiles" => get_execution_profiles(db_path)?,
         // P4.7/083 (C3b) — the "Connect via gh" auth-bootstrap trigger: the daemon reads `gh auth token`
         // → keychain (NO token over IPC), returns the keychain_ref POINTER. NOT a Gateway mutation (it
         // writes the keychain, not the DB/event log — the §15/LESSON §49 non-Gateway secret-write
@@ -742,6 +746,109 @@ pub fn read_session_typed(db_path: &Path) -> Result<Vec<SessionRow>, IpcErrorCod
         let typed: SessionRow =
             serde_json::from_value(row).map_err(|_| IpcErrorCode::InternalError)?;
         out.push(typed);
+    }
+    Ok(out)
+}
+
+/// (W1-prof/093) `get_execution_profiles` (§6.1) — serve the §2.8 `execution_profiles` registry as the
+/// secret-free [`ProfileRow`] list the cockpit profile picker consumes. No-param (MVP single-workspace; an
+/// optional `{workspace_id}` filter is a later add). A read fault / corrupt registry row → a structured
+/// `internal_error` (never a disconnect; never a silent partial list). Pure read — NO mutation, NO write-actor.
+fn get_execution_profiles(
+    db_path: &Path,
+) -> Result<Result<serde_json::Value, IpcErrorCode>, IpcError> {
+    match read_execution_profile_rows(db_path) {
+        Ok(profiles) => {
+            let result = GetExecutionProfilesResult { profiles };
+            // infallible: ProfileRow is plain String/enum/bool → to_value cannot fail (the DiffResult precedent).
+            Ok(Ok(
+                serde_json::to_value(result).unwrap_or(serde_json::Value::Null)
+            ))
+        }
+        Err(code) => Ok(Err(code)),
+    }
+}
+
+/// (W1-prof/093) Read the §2.8 `execution_profiles` registry as the secret-free [`ProfileRow`] list — over a
+/// READ-ONLY WAL conn (no mutation, no write-actor; the `profile_exists`/`get_diff` precedent). **§15 #4: the
+/// keychain POINTER is NEVER served** — `keychain_ref` is read ONLY to derive `has_credential`
+/// (`= keychain_ref.is_some()`), it NEVER enters the row. `is_default` flags the cold-start seed = the FIRST
+/// `ExecutionProfileRegistered` event (the `SqliteProfileLookup::default_id` provenance; the read FILTERS to
+/// that event type — cold-start also emits Device/LocalRunner registration events first). A row whose `status`
+/// TEXT is not a valid §5.1 `ExecutionProfile` wire value is an integrity error → the WHOLE read fails closed
+/// (`InternalError`), never a silent partial list (the LESSON §37 typed-serve precedent).
+pub fn read_execution_profile_rows(db_path: &Path) -> Result<Vec<ProfileRow>, IpcErrorCode> {
+    use rusqlite::OptionalExtension as _;
+    // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
+    let conn =
+        crate::eventstore::open_read_only(db_path).map_err(|_| IpcErrorCode::InternalError)?;
+    // the default profile = the FIRST `ExecutionProfileRegistered` event (the cold-start seed; matches
+    // `seed_default_profile` + `SqliteProfileLookup::default_id`). FILTER to that event type — cold-start
+    // also emits DeviceRegistered/LocalRunnerRegistered first, so "the first event" would be the wrong one.
+    //
+    // INTENTIONAL SOFT-DEGRADE (LESSON §30 — distinct from the served-row `status` below, which fails
+    // CLOSED per LESSON §37): `is_default` is a non-load-bearing UI PRE-SELECT hint, NOT consumer-bound
+    // served data. No seed event (`.optional()` → None) OR a corrupt/unparseable seed payload (`.ok()` →
+    // None) yields "no row flagged default" — NEVER the WRONG default, never a fail-open. Fail-closing the
+    // WHOLE profile list over a cosmetic hint would blank the cockpit picker (a worse availability
+    // tradeoff); the §15 #4 safety invariant does not depend on this resolution succeeding.
+    let default_id: Option<String> = conn
+        .query_row(
+            "SELECT payload_json FROM events WHERE event_type = ?1 ORDER BY seq LIMIT 1",
+            [nexusops_shared::events::ExecutionProfileRegistered::EVENT_TYPE],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|_| IpcErrorCode::InternalError)?
+        .and_then(|payload| {
+            serde_json::from_str::<serde_json::Value>(&payload)
+                .ok()
+                .and_then(|v| {
+                    v.get("execution_profile_id")
+                        .and_then(|id| id.as_str())
+                        .map(str::to_string)
+                })
+        });
+    // ORDER stable (created_at, then id) so the served list is deterministic across reads.
+    let mut stmt = conn
+        .prepare(
+            "SELECT execution_profile_id, provider, harness, model, account_alias, keychain_ref, status \
+             FROM execution_profiles ORDER BY created_at, execution_profile_id",
+        )
+        .map_err(|_| IpcErrorCode::InternalError)?;
+    let raw = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,         // execution_profile_id
+                r.get::<_, String>(1)?,         // provider
+                r.get::<_, String>(2)?,         // harness
+                r.get::<_, Option<String>>(3)?, // model
+                r.get::<_, Option<String>>(4)?, // account_alias
+                r.get::<_, Option<String>>(5)?, // keychain_ref — read ONLY to derive has_credential (§15 #4)
+                r.get::<_, String>(6)?,         // status (the §5.1 wire string)
+            ))
+        })
+        .map_err(|_| IpcErrorCode::InternalError)?;
+    let mut out = Vec::new();
+    for row in raw {
+        let (id, provider, harness, model, account_alias, keychain_ref, status_wire) =
+            row.map_err(|_| IpcErrorCode::InternalError)?;
+        // bind the §5.1 ExecutionProfile enum (reject-unknown). A mis-typed status row is corrupt → the
+        // WHOLE read fails closed (never a silent partial — the LESSON §37 typed-serve precedent).
+        let status: nexusops_shared::status::ExecutionProfile =
+            serde_json::from_value(serde_json::Value::String(status_wire))
+                .map_err(|_| IpcErrorCode::InternalError)?;
+        out.push(ProfileRow {
+            is_default: default_id.as_deref() == Some(id.as_str()),
+            // §15 #4 — the POINTER is consumed ONLY to derive the bool; it NEVER enters the served row.
+            has_credential: keychain_ref.is_some(),
+            execution_profile_id: id,
+            provider,
+            harness,
+            model,
+            account_alias,
+            status,
+        });
     }
     Ok(out)
 }

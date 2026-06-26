@@ -883,6 +883,87 @@ fn test_connect_via_gh_through_dispatch() {
     );
 }
 
+/// W1-prof — seed ONE cold-start default execution profile into `path`, returning its id. Drops the
+/// writer so the IPC read-only WAL path reads a settled file (the `seed_session` precedent).
+fn seed_default_profile_at(path: &Path) -> String {
+    use nexusopsd::clock::FixedClock;
+    use nexusopsd::eventstore::{EventStore, PrefixRedactor};
+    let mut store = EventStore::open(
+        path,
+        Box::new(nexusopsd::idgen::UlidGen),
+        Box::new(FixedClock::new("2026-06-26T00:00:00Z")),
+        Box::new(PrefixRedactor),
+    )
+    .expect("open store");
+    nexusopsd::profiles::seed_default_profile(&mut store, "2026-06-26T00:00:00Z")
+        .expect("seed default profile")
+        .as_str()
+        .to_string()
+}
+
+#[test]
+fn test_get_execution_profiles_reachable_through_ipc_dispatch() {
+    // W1-prof (§6.1) — the get_execution_profiles read RPC is reachable through the REAL serve→dispatch
+    // path (the get_diff/connect_via_gh /wired precedent): seed a cold-start default → the RPC returns a
+    // {profiles:[ProfileRow]} result carrying the default (is_default true) + NO keychain_ref/secret (§15 #4).
+    let (_d, path) = temp_db();
+    let default_id = seed_default_profile_at(&path);
+    let uid = 1000u32;
+    let req = RpcRequest {
+        method: "get_execution_profiles".to_string(),
+        params: serde_json::json!({}),
+        id: 21,
+    };
+    let (server, client) = UnixStream::pair().unwrap();
+    let responses = std::thread::scope(|s| {
+        let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
+        serve_connection(
+            server,
+            uid,
+            uid,
+            &path,
+            no_deltas(),
+            &nexusopsd::runtime::WriteHandle::disconnected(),
+            &decision_registry(),
+            &wait_class(),
+            &fake_github(),
+            &fake_gh_connector(),
+            &fake_secret_store(),
+        )
+        .expect("serve get_execution_profiles");
+        h.join().unwrap()
+    });
+    let result = responses[0]
+        .result
+        .as_ref()
+        .expect("a get_execution_profiles result");
+    let profiles = result
+        .get("profiles")
+        .and_then(|v| v.as_array())
+        .expect("the result has a profiles array");
+    assert_eq!(
+        profiles.len(),
+        1,
+        "the one seeded default profile is served"
+    );
+    let row = &profiles[0];
+    assert_eq!(
+        row.get("execution_profile_id").and_then(|v| v.as_str()),
+        Some(default_id.as_str()),
+        "the seeded default id is served"
+    );
+    assert_eq!(
+        row.get("is_default").and_then(|v| v.as_bool()),
+        Some(true),
+        "the seeded default is flagged is_default"
+    );
+    let json = serde_json::to_string(result).unwrap();
+    assert!(
+        !json.contains("keychain_ref") && !json.contains("secret"),
+        "§15 #4 — no keychain POINTER / secret appears in the get_execution_profiles response"
+    );
+}
+
 // ---- Test 9 — an unfed projection returns its empty table, not an error ------
 
 #[test]

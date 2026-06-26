@@ -173,6 +173,25 @@ pub fn deny_params(approval_id: String, reason: String) -> Value {
     serde_json::json!({ "approval_id": approval_id, "reason": reason })
 }
 
+/// Marshal `session.create` params == the daemon's flat `{project_id (required), initial_prompt?,
+/// execution_profile_id?}` (methods.rs:340 build_session_create_request). Absent optionals are
+/// OMITTED (not null), matching the daemon's manual `.get()` param handling; the daemon mints the id.
+pub fn create_session_params(
+    project_id: String,
+    initial_prompt: Option<String>,
+    execution_profile_id: Option<String>,
+) -> Value {
+    let mut m = serde_json::Map::new();
+    m.insert("project_id".to_string(), Value::String(project_id));
+    if let Some(prompt) = initial_prompt {
+        m.insert("initial_prompt".to_string(), Value::String(prompt));
+    }
+    if let Some(profile) = execution_profile_id {
+        m.insert("execution_profile_id".to_string(), Value::String(profile));
+    }
+    Value::Object(m)
+}
+
 // ── the #[tauri::command] read allowlist (registered in lib.rs run()) ─────────────────────────
 
 #[tauri::command]
@@ -241,6 +260,19 @@ pub async fn gateway_deny(
     reason: String,
 ) -> Result<Value, GatewayCommandError> {
     call_daemon("deny", deny_params(approval_id, reason)).await
+}
+
+#[tauri::command]
+pub async fn gateway_create_session(
+    project_id: String,
+    initial_prompt: Option<String>,
+    execution_profile_id: Option<String>,
+) -> Result<Value, GatewayCommandError> {
+    call_daemon(
+        "session.create",
+        create_session_params(project_id, initial_prompt, execution_profile_id),
+    )
+    .await
 }
 
 /// A frame streamed to the frontend over the subscribe `Channel` (052). A tagged enum so the TS
@@ -411,6 +443,21 @@ mod tests {
         // the whole-changeset form (file=None) marshals to an explicit null field, not a missing key.
         let whole = get_pr_diff_params("repo_1".to_string(), 101, None).unwrap();
         assert_eq!(whole["file"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn create_session_params_match_daemon() {
+        // spec(§6.1) — flat session.create params {project_id (required), initial_prompt?,
+        // execution_profile_id?}; absent optionals are OMITTED (not null), matching the daemon's
+        // build_session_create_request (project_id is the catalog resource_ref; the daemon mints the id).
+        let p = create_session_params("proj_1".to_string(), Some("hi".to_string()), None);
+        assert_eq!(p["project_id"], "proj_1");
+        assert_eq!(p["initial_prompt"], "hi");
+        assert!(p.get("execution_profile_id").is_none());
+        // absent prompt → omitted (not null)
+        let bare = create_session_params("proj_2".to_string(), None, None);
+        assert_eq!(bare["project_id"], "proj_2");
+        assert!(bare.get("initial_prompt").is_none());
     }
 
     #[test]

@@ -329,6 +329,45 @@ pub fn deny<S: Read + Write>(
     Ok(serde_json::from_value(value)?)
 }
 
+/// `create_session` — the DEDICATED `session.create` method (methods.rs:118; NOT generic
+/// submit_action). The DAEMON builds the ActionRequest + MINTS the action_request_id server-side, so
+/// the empty-id bug class cannot occur. Params: {project_id (REQUIRED), initial_prompt?,
+/// execution_profile_id?} — absent optionals OMITTED (matching the daemon's manual `.get()` param
+/// handling). Risk-0 auto-execute; deserializes the typed `ActionAck` (the launched session surfaces
+/// via the Session projection nudge, so the session_id is NOT returned).
+pub fn create_session<S: Read + Write>(
+    stream: &mut S,
+    project_id: &str,
+    initial_prompt: Option<&str>,
+    execution_profile_id: Option<&str>,
+    id: u64,
+) -> Result<ActionAck, ClientError> {
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "project_id".to_string(),
+        serde_json::Value::String(project_id.to_string()),
+    );
+    if let Some(prompt) = initial_prompt {
+        params.insert(
+            "initial_prompt".to_string(),
+            serde_json::Value::String(prompt.to_string()),
+        );
+    }
+    if let Some(profile) = execution_profile_id {
+        params.insert(
+            "execution_profile_id".to_string(),
+            serde_json::Value::String(profile.to_string()),
+        );
+    }
+    let value = call(
+        stream,
+        "session.create",
+        serde_json::Value::Object(params),
+        id,
+    )?;
+    Ok(serde_json::from_value(value)?)
+}
+
 // ─── the real-socket adapter (thin; the `#[ignore]` integration test exercises it) ───────────
 
 /// Resolve the daemon's GatewayPort UDS path (the app-support dir `main.rs` binds). The path is
@@ -738,6 +777,45 @@ mod tests {
         let mut s = FakeStream::new(rpc_ok(4, serde_json::json!({ "not_a_diff": true })));
         assert!(matches!(
             get_pr_diff(&mut s, "repo_1", 101, None, 4),
+            Err(ClientError::Serde(_))
+        ));
+    }
+
+    #[test]
+    fn create_session_sends_dotted_method_with_params_and_returns_ack() {
+        // spec(§6.1) — create_session calls the DEDICATED "session.create" method (NOT submit_action)
+        // with {project_id, initial_prompt} + deserializes the typed ActionAck. The DAEMON mints the
+        // action_request_id (no client-mint bug class), so the helper just returns the ack.
+        let ack = serde_json::json!({ "action_request_id": "act_minted", "status": "submitted" });
+        let mut s = FakeStream::new(rpc_ok(9, ack));
+        let got = create_session(&mut s, "proj_1", Some("drive me"), None, 9).unwrap();
+        assert_eq!(got.action_request_id, "act_minted");
+        let req: RpcRequest = serde_json::from_slice(&s.writes[4..]).unwrap();
+        assert_eq!(req.method, "session.create");
+        assert_eq!(req.params["project_id"], "proj_1");
+        assert_eq!(req.params["initial_prompt"], "drive me");
+    }
+
+    #[test]
+    fn create_session_omits_absent_optionals() {
+        // spec(§6.1) — absent initial_prompt / execution_profile_id are OMITTED (not null), matching
+        // the daemon's optional-present handling (build_session_create_request).
+        let ack = serde_json::json!({ "action_request_id": "act_y", "status": "submitted" });
+        let mut s = FakeStream::new(rpc_ok(1, ack));
+        create_session(&mut s, "proj_2", None, None, 1).unwrap();
+        let req: RpcRequest = serde_json::from_slice(&s.writes[4..]).unwrap();
+        assert_eq!(req.params["project_id"], "proj_2");
+        assert!(req.params.get("initial_prompt").is_none());
+        assert!(req.params.get("execution_profile_id").is_none());
+    }
+
+    #[test]
+    fn create_session_malformed_ack_is_serde_error() {
+        // spec(§5.0) — a structurally valid RpcResponse whose result is NOT an ActionAck → typed Serde
+        // error (fail-closed). The verbatim §6.4 Wire(code) + Protocol paths are inherited from `call`.
+        let mut s = FakeStream::new(rpc_ok(2, serde_json::json!({ "not_an_ack": true })));
+        assert!(matches!(
+            create_session(&mut s, "proj_1", None, None, 2),
             Err(ClientError::Serde(_))
         ));
     }

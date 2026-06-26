@@ -25,6 +25,7 @@ pub fn run() {
             commands::gateway_preview_action,
             commands::gateway_approve,
             commands::gateway_deny,
+            commands::gateway_create_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

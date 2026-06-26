@@ -381,7 +381,7 @@ describe("UdsGatewayPort — single-shot reads (Layer A)", () => {
     // spec(§6.1/W1-A) — enabled, createSession invokes gateway_create_session with the active
     // project_id (camelCase→snake_case) + absent optionals as null (Tauri→Rust None), and
     // boundary-parses the typed ActionAck (the DAEMON mints the id — no client-mint).
-    const port = new UdsGatewayPort({ mutationsEnabled: true });
+    const port = new UdsGatewayPort({ mutationsEnabled: true, enabledSessionLaunch: true });
     mockInvoke.mockResolvedValueOnce(validAck);
     const ack = await port.createSession({ project_id: "proj_1" });
     expect(ack.action_request_id).toBe("act_1");
@@ -404,7 +404,7 @@ describe("UdsGatewayPort — single-shot reads (Layer A)", () => {
     // spec(LESSON 22) — a daemon WireError → the verbatim code as PLAIN {code} (not an Error); a
     // non-ActionAck result → BoundaryValidationError (parseAck fail-closed). Same classification as
     // submit_action (the shared invokeRead/handleError path).
-    const port = new UdsGatewayPort({ mutationsEnabled: true });
+    const port = new UdsGatewayPort({ mutationsEnabled: true, enabledSessionLaunch: true });
     mockInvoke.mockRejectedValueOnce({ kind: "wire", code: "precondition_stale" });
     const wireErr = await port
       .createSession({ project_id: "proj_1" })
@@ -416,6 +416,21 @@ describe("UdsGatewayPort — single-shot reads (Layer A)", () => {
     await expect(port.createSession({ project_id: "proj_1" })).rejects.toBeInstanceOf(
       BoundaryValidationError,
     );
+  });
+
+  it("create_session_held_when_session_launch_disabled_even_with_mutations_enabled", async () => {
+    // spec(W1-A go-live gate / LESSON 36/37) — the PRODUCTION config (mutationsEnabled:true since the
+    // ui-075 L2-C go-live) must NOT auto-launch agents: createSession throws-never-invokes unless
+    // enabledSessionLaunch is ALSO on (default OFF). THE held-flip pin — launch awaits a cat-1 sign-off.
+    const port = new UdsGatewayPort({ mutationsEnabled: true }); // enabledSessionLaunch defaults OFF
+    await expect(port.createSession({ project_id: "proj_1" })).rejects.toThrow(/not enabled/i);
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("uds_default_enabled_session_launch_is_off", () => {
+    // spec(default-OFF) — the production default holds agent-launch (no auto-go-live).
+    expect(new UdsGatewayPort().enabledSessionLaunch).toBe(false);
+    expect(new UdsGatewayPort({ mutationsEnabled: true }).enabledSessionLaunch).toBe(false);
   });
 });
 

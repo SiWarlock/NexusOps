@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
 afterEach(cleanup);
 import { LaunchAgentControl } from "./LaunchAgentControl";
@@ -73,6 +75,16 @@ describe("LaunchAgentControl (WAVE-1 Slice A — session.create)", () => {
     expect(launchButton().disabled).toBe(true);
   });
 
+  it("launch_control_disabled_when_session_launch_not_enabled", () => {
+    // spec(W1-A go-live gate / LESSON 36/37) — the per-action enabledSessionLaunch gate (default OFF in
+    // production) disables the control even with mutationsEnabled on — agent-launch is HELD for cat-1 sign-off.
+    renderLaunch({
+      gateway: new MockGatewayPort({ enabledSessionLaunch: false }),
+      activeProjectId: "proj_active",
+    });
+    expect(launchButton().disabled).toBe(true);
+  });
+
   it("launch_control_error_only_feedback_no_persistent_success", async () => {
     // spec(b/§11.7) — on a daemon §6.4 rejection, an honest error notice with the VERBATIM code; on
     // SUCCESS, NO persistent notice (the launched session row in the table is the success signal).
@@ -87,5 +99,27 @@ describe("LaunchAgentControl (WAVE-1 Slice A — session.create)", () => {
     fireEvent.click(launchButton());
     await waitFor(() => expect(launchButton().disabled).toBe(false)); // settled
     expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
+function walk(dir: string): string[] {
+  const out: string[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) out.push(...walk(p));
+    else if (/\.(ts|tsx)$/.test(e.name) && !/\.test\.(ts|tsx)$/.test(e.name)) out.push(p);
+  }
+  return out;
+}
+
+describe("enabledSessionLaunch — held-flip discipline (no production go-live, LESSON 36/37)", () => {
+  it("no_production_file_enables_session_launch", () => {
+    // spec(B / cat-1) — agent-launch is HELD pending the user's cat-1 sign-off + visual gate: NO
+    // production file constructs a port with `enabledSessionLaunch: true`. The Mock's default-ON is an
+    // `=` assignment (mock.ts), not a `:` construction option, so it isn't matched. When the user signs
+    // off, a SINGLE confined flip site (the Shell, the ui-075 precedent) updates this guard — not a
+    // silent ride of `mutationsEnabled`.
+    const offenders = walk("src").filter((f) => /enabledSessionLaunch\s*:\s*true/.test(readFileSync(f, "utf8")));
+    expect(offenders).toEqual([]);
   });
 });

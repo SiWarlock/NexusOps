@@ -13,7 +13,9 @@ import { useCanSubmitIntent } from "../../connection/read-only";
  *
  * Gated fail-safe + defense-in-depth (the daemon Gateway is the INV-SEC-1 chokepoint): disabled unless
  * `canSubmitIntent` (read-only/degraded gate, forbidden #6) AND `gateway.mutationsEnabled` (the live L2
- * seam) AND an active project exists (the required project_id). NON-optimistic: a §6.4 rejection shows
+ * seam) AND `gateway.enabledSessionLaunch` (the default-OFF agent-launch gate — HELD until a USER cat-1
+ * sign-off, the enabledPrMutations mirror) AND an active project exists (the required project_id).
+ * NON-optimistic: a §6.4 rejection shows
  * the VERBATIM code; a transport fault degrades honestly (LESSON §16/§22 — classify by `instanceof Error`).
  */
 export function LaunchAgentControl({
@@ -32,7 +34,11 @@ export function LaunchAgentControl({
   const inFlight = useRef(false);
 
   const canLaunch =
-    canSubmit && gateway.mutationsEnabled && activeProjectId != null && !launching;
+    canSubmit &&
+    gateway.mutationsEnabled &&
+    gateway.enabledSessionLaunch && // the default-OFF agent-launch gate (HELD until cat-1 sign-off)
+    activeProjectId != null &&
+    !launching;
 
   async function onLaunch() {
     // belt-and-suspenders: the button is disabled when these don't hold; never form an intent without them.

@@ -146,4 +146,10 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     expect(ack.action_request_id).toBeTruthy();
     expect(ack.status).toBeTruthy();
   });
+
+  it("mock_enabled_session_launch_defaults_true", () => {
+    // spec(W1-A) — the Mock is a fully-working dev/test port: enabledSessionLaunch defaults ON so
+    // Mock-driven Launch flows exercise the enabled path (production UdsGatewayPort defaults OFF — held).
+    expect(new MockGatewayPort().enabledSessionLaunch).toBe(true);
+  });
 });

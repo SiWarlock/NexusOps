@@ -133,4 +133,14 @@ export interface GatewayPort {
    * §6.1 RPC method. Read via `isPrMutationEnabled` (pr-mutation-request.ts).
    */
   readonly enabledPrMutations: ReadonlySet<string>;
+
+  /**
+   * The per-action AGENT-LAUNCH go-live gate (WAVE-1 Slice A; the `enabledPrMutations` mirror, LESSON
+   * 36/37). `createSession` (spawning a live agent) reaches the wire ONLY when this is TRUE — the
+   * transport throws-never-invokes AND the Launch control is disabled otherwise. SEPARATE from
+   * `mutationsEnabled` (already TRUE in production since the ui-075 L2-C go-live), so a new
+   * high-consequence capability does NOT auto-ride that flip. `UdsGatewayPort` defaults it FALSE (HELD
+   * until a USER cat-1 sign-off + visual gate); `MockGatewayPort` defaults it TRUE. NOT a §6.1 RPC method.
+   */
+  readonly enabledSessionLaunch: boolean;
 }

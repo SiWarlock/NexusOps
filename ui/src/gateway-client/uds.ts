@@ -14,11 +14,13 @@
 //   • a TRANSPORT/host fault (io / protocol / serde / version_skew / internal) → an
 //     Error instance (an honest degrade, §11.7) — never faked as a wire code.
 //
-// L2-B: the mutation methods (submit_action/approve/deny/preview_action) are NOW WIRED — each
-// invokes its typed Tauri mutation command + boundary-parses the result — but GATED behind
-// `mutationsEnabled` (default false): when false they throw + never invoke, so NO production path
-// reaches a live mutation until the USER-gated L2-C flips it. The streaming subscribe is wired (052);
-// subscribe_terminal stays a P4 not-wired surface. INV-SEC-1 stays daemon-side regardless.
+// L2-B: the mutation methods (submit_action/approve/deny/preview_action) are WIRED + GATED behind
+// `mutationsEnabled` — which is LIVE in production since the USER-gated L2-C go-live (ui-075). PR
+// mutations + createSession (WAVE-1 agent-launch) therefore carry their OWN default-OFF per-action
+// gates (`enabledPrMutations` / `enabledSessionLaunch`) so a new high-consequence capability does NOT
+// auto-ride the now-true `mutationsEnabled` flip — it stays throw-never-invoke until its own USER cat-1
+// sign-off. The streaming subscribe is wired (052); subscribe_terminal stays a P4 not-wired surface.
+// INV-SEC-1 stays daemon-side regardless.
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
   CreateSessionParams,
@@ -76,6 +78,8 @@ const MUTATIONS_NOT_ENABLED =
   "UdsGatewayPort: L2 mutation submit is not enabled (the wire is built but gated off until the USER-gated L2-C go-live; mutationsEnabled=false)";
 const PR_MUTATION_NOT_ENABLED = (actionType: string) =>
   `UdsGatewayPort: the PR mutation '${actionType}' is not enabled (guarded off until a future USER-signed-off go-live + the daemon auth-bootstrap re-review; not in enabledPrMutations)`;
+const SESSION_LAUNCH_NOT_ENABLED =
+  "UdsGatewayPort: agent-launch (session.create) is not enabled (held off until a USER cat-1 sign-off + visual gate; enabledSessionLaunch=false — it does NOT auto-ride the live mutationsEnabled flip)";
 
 /** A frame received over the subscribe `Channel` (the TS mirror of the 050 bridge's
  *  `SubscriptionEvent`): `delta` carries a raw daemon delta (boundary-parsed before it's yielded),
@@ -158,9 +162,21 @@ export class UdsGatewayPort implements GatewayPort {
    *  + auth-bootstrap re-review) — never populated in production today. */
   readonly enabledPrMutations: ReadonlySet<string>;
 
-  constructor(opts: { mutationsEnabled?: boolean; enabledPrMutations?: ReadonlySet<string> } = {}) {
+  /** The per-action AGENT-LAUNCH go-live gate (WAVE-1 Slice A; the `enabledPrMutations` mirror).
+   *  default FALSE: createSession throws-never-invokes (+ the Launch control disabled) until a USER
+   *  cat-1 sign-off flips it — SEPARATE from `mutationsEnabled` (already TRUE in prod since ui-075). */
+  readonly enabledSessionLaunch: boolean;
+
+  constructor(
+    opts: {
+      mutationsEnabled?: boolean;
+      enabledPrMutations?: ReadonlySet<string>;
+      enabledSessionLaunch?: boolean;
+    } = {},
+  ) {
     this.mutationsEnabled = opts.mutationsEnabled ?? false;
     this.enabledPrMutations = opts.enabledPrMutations ?? new Set();
+    this.enabledSessionLaunch = opts.enabledSessionLaunch ?? false;
   }
 
   // ── the §6.1 read surface (single-shot — invoke + boundary-parse) ──────────────────
@@ -325,15 +341,22 @@ export class UdsGatewayPort implements GatewayPort {
   }
 
   // ── the §6.1 mutation-intent surface (L2-B) — invoke the typed command + boundary-parse, GATED ──
-  // The cat-1 crux: when `mutationsEnabled` is false (the production default) each method THROWS +
-  // NEVER `invoke`s → no production path reaches a live mutation (the enable is the USER-gated L2-C).
+  // `mutationsEnabled` is LIVE in production (the USER-gated L2-C go-live, ui-075), so it is no longer
+  // the sole guard: each method THROWS + NEVER `invoke`s when its applicable gate is off — the general
+  // `mutationsEnabled` for the L2 set, the per-action `enabledPrMutations` for PR writes, and
+  // `enabledSessionLaunch` for agent-launch (each default-OFF capability HELD until its own USER cat-1
+  // sign-off, so a new high-consequence write never auto-rides the live `mutationsEnabled` flip).
   // When enabled, each reuses the read-command invoke path (`invokeRead` — invoke + markConnected
   // [054-suppressed] + boundary-parse), so the wire-rejection (plain {code}) vs transport-fault (Error)
   // classification is inherited identically (LESSON 22). The UI still never mutates: a submit SENDS a
   // typed intent; the daemon Gateway is the INV-SEC-1 chokepoint (defense-in-depth: the control is
-  // disabled + the seam returns readOnly + this throws — three layers when not enabled).
+  // disabled + the seam/gate + this throws — layered when not enabled).
   private assertMutationsEnabled(): void {
     if (!this.mutationsEnabled) throw new Error(MUTATIONS_NOT_ENABLED);
+  }
+
+  private assertSessionLaunchEnabled(): void {
+    if (!this.enabledSessionLaunch) throw new Error(SESSION_LAUNCH_NOT_ENABLED);
   }
 
   /** cat-1 (ui-070/071 fork-1b) — a PR-mutation action_type (github.merge_pr / github.submit_review)
@@ -376,6 +399,7 @@ export class UdsGatewayPort implements GatewayPort {
   // None, omitted). Boundary-parses the typed ActionAck (the daemon mints the id — no client-mint).
   async createSession(params: CreateSessionParams): Promise<ActionAck> {
     this.assertMutationsEnabled();
+    this.assertSessionLaunchEnabled(); // the default-OFF per-action gate (agent-launch HELD)
     return this.invokeRead(parseAck, "gateway_create_session", {
       projectId: params.project_id,
       initialPrompt: params.initial_prompt ?? null,

@@ -117,6 +117,9 @@ export interface MockGatewayOptions {
    *  — the Mock is a fully-working dev/test port (its mutations resolve), so Mock-driven UI-flow tests can
    *  exercise the enabled merge + review paths. */
   enabledPrMutations?: ReadonlySet<string>;
+  /** The per-action agent-launch gate (WAVE-1 Slice A). Default TRUE — the working Mock; set false to
+   *  exercise the held (default-OFF in production) Launch control. */
+  enabledSessionLaunch?: boolean;
 }
 
 export class MockGatewayPort implements GatewayPort {
@@ -128,6 +131,8 @@ export class MockGatewayPort implements GatewayPort {
   readonly mutationsEnabled: boolean;
   /** The per-action PR-mutation gate (cat-1, ui-070/071) — default = the full set (the working Mock). */
   readonly enabledPrMutations: ReadonlySet<string>;
+  /** The per-action agent-launch gate (WAVE-1 Slice A) — default TRUE (the working Mock). */
+  readonly enabledSessionLaunch: boolean;
 
   constructor(options: MockGatewayOptions = {}) {
     this.connection = options.connection ?? "connected";
@@ -135,6 +140,7 @@ export class MockGatewayPort implements GatewayPort {
     this.mutationError = options.mutationError;
     this.mutationsEnabled = options.mutationsEnabled ?? true;
     this.enabledPrMutations = options.enabledPrMutations ?? PR_MUTATION_ACTION_TYPES;
+    this.enabledSessionLaunch = options.enabledSessionLaunch ?? true;
   }
 
   async get_projection<K extends ProjectionName>(

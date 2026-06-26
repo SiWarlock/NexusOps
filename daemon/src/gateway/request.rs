@@ -432,6 +432,25 @@ pub(crate) fn emitted_event_intent(
             occurred_at,
             None,
         )),
+        // P5.3b/085 — the pointer-record audit event (the WRITE counterpart of the keychain trigger).
+        // Gateway-emitted (the requester actor rides the envelope, like PullRequestMerged), NOT System-actor
+        // (contrast the 5.3a cold-start ExecutionProfileRegistered) — it is this audited Action's terminal
+        // event. The canonical-row UPDATE rides alongside it in txn-B (the pipeline calls apply_secret_set).
+        EmittedEvent::ProfileSecretSet {
+            execution_profile_id,
+        } => {
+            let payload = serde_json::to_string(&nexusops_shared::events::ProfileSecretSet {
+                execution_profile_id: execution_profile_id.clone(),
+            })
+            .map_err(|e| GatewayError::Serialize(e.to_string()))?;
+            Ok(gateway_event_intent(
+                ar,
+                nexusops_shared::events::ProfileSecretSet::EVENT_TYPE,
+                payload,
+                occurred_at,
+                None,
+            ))
+        }
     }
 }
 

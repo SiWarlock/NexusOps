@@ -43,10 +43,12 @@ describe("LaunchAgentControl (WAVE-1 Slice A — session.create)", () => {
     expect(spy).toHaveBeenCalledWith({ project_id: "proj_active", initial_prompt: "drive me" });
   });
 
-  it("launch_control_omits_blank_initial_prompt", async () => {
-    // spec(W1-A) — an empty/whitespace prompt is omitted (→ daemon uses no dev-drive prompt).
+  it("launch_control_omits_whitespace_only_initial_prompt", async () => {
+    // spec(W1-A / LESSON §33) — a WHITESPACE-only prompt is trimmed to "" → omitted (the daemon uses
+    // no dev-drive prompt), never sent as a blank string.
     const { gateway } = renderLaunch({ activeProjectId: "proj_active" });
     const spy = vi.spyOn(gateway, "createSession");
+    fireEvent.change(screen.getByPlaceholderText(/initial prompt/i), { target: { value: "   " } });
     fireEvent.click(launchButton());
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
     expect(spy).toHaveBeenCalledWith({ project_id: "proj_active", initial_prompt: undefined });

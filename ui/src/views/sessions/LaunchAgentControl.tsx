@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import { Button } from "../../design-system/kit";
 import type { GatewayPort } from "../../gateway-client/types";
@@ -27,13 +27,17 @@ export function LaunchAgentControl({
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
+  // Synchronous in-flight guard: `launching` only disables the button AFTER the next render, so a
+  // rapid double-fire could otherwise spawn TWO live agents before the disable commits.
+  const inFlight = useRef(false);
 
   const canLaunch =
     canSubmit && gateway.mutationsEnabled && activeProjectId != null && !launching;
 
   async function onLaunch() {
     // belt-and-suspenders: the button is disabled when these don't hold; never form an intent without them.
-    if (!canLaunch || activeProjectId == null) return;
+    if (!canLaunch || activeProjectId == null || inFlight.current) return;
+    inFlight.current = true;
     setError(null);
     setLaunching(true);
     try {
@@ -55,6 +59,7 @@ export function LaunchAgentControl({
       }
     } finally {
       setLaunching(false);
+      inFlight.current = false;
     }
   }
 

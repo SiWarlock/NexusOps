@@ -15,6 +15,7 @@
     "test:run": "vitest run",
     "bench": "vitest bench --run",
     "bench:guard": "vitest run --config vitest.bench.config.ts",
+    "check:bundle": "vite build && node scripts/check-prod-bundle.mjs",
     "oxlint": "oxlint",
     "lint": "oxlint",
     "tauri": "tauri"

@@ -1,4 +1,4 @@
-import { ChevronRight, GitPullRequest, Pause } from "lucide-react";
+import { ChevronRight, GitPullRequest } from "lucide-react";
 import type { ProjectActivityRow, SessionRow, UsageRow } from "../../contracts/index";
 import { Button, HarnessBadge, MetaChip, ProfileBadge } from "../../design-system/kit";
 import { StatusPill } from "../../status/StatusPill";
@@ -9,6 +9,7 @@ import { SessionsTable } from "../sessions/SessionsTable";
 import { LaunchAgentControl } from "../sessions/LaunchAgentControl";
 import { KillSessionControl } from "../sessions/KillSessionControl";
 import { ProfileChangeControl } from "../sessions/ProfileChangeControl";
+import { SessionDriveControls } from "../sessions/SessionDriveControls";
 import { Eyebrow } from "../cockpit";
 import type { GatewayPort } from "../../gateway-client/types";
 import { TerminalDisplay } from "./TerminalDisplay";
@@ -116,12 +117,16 @@ export function SessionTerminal({
                 Open PR
               </Button>
             </span>
-            <span title="Pause is a session mutation (intent seam — daemon-gated)">
-              <Button variant="secondary" size="sm" icon={<Pause size={14} />} disabled>
-                Pause
-              </Button>
-            </span>
           </div>
+        </div>
+        {/* WAVE-1 W1-C-b — the live session-DRIVE controls (Send message / Pause monitoring / Resume
+            monitoring); each submits an approval-gated intent. Replaces the old disabled Pause placeholder. */}
+        <div style={{ marginTop: 9 }}>
+          <SessionDriveControls
+            gateway={gateway}
+            sessionId={session.session_id}
+            status={session.status}
+          />
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 9, flexWrap: "wrap" }}>
           {display?.harness ? <HarnessBadge harness={display.harness} /> : null}

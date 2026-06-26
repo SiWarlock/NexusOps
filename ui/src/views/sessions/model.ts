@@ -25,6 +25,8 @@ export interface SessionRowVM {
   projectName: string;
   /** O-2 survival: how the session came back after a restart (undefined if N/A). */
   resumeMode?: ResumeMode;
+  /** The session's CURRENT execution profile (W1-C-a — the Change-profile control's "from"; undefined if N/A). */
+  executionProfileId?: string;
 }
 
 export interface SessionsSort {
@@ -74,6 +76,8 @@ export function buildSessionRows(
       // coerce the frozen SessionRow's explicit `null` (absent resume_mode) to undefined — the VM's
       // optional resumeMode is "present-or-absent", and the indicator renders only when present (ui-062).
       resumeMode: session?.resume_mode ?? undefined,
+      // the CURRENT execution profile (W1-C-a) — coerce the frozen row's null/absent to undefined.
+      executionProfileId: session?.execution_profile_id ?? undefined,
     };
   });
 }

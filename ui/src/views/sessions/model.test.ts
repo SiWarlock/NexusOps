@@ -37,6 +37,18 @@ describe("sessions table model", () => {
     );
   });
 
+  it("builds_rows_with_execution_profile_id", () => {
+    // spec(W1-C-a) — the VM carries the session's execution_profile_id (the CURRENT profile the
+    // Change-profile control shows + offers a change from). A null/absent id coerces to undefined.
+    const custom: SessionRow[] = [
+      { session_id: "s_p", project_id: "proj_1", status: "active", execution_profile_id: "ep_current" },
+      { session_id: "s_n", project_id: "proj_1", status: "idle" }, // no profile → undefined
+    ];
+    const rows = buildSessionRows(custom, projects);
+    expect(rows.find((r) => r.id === "s_p")?.executionProfileId).toBe("ep_current");
+    expect(rows.find((r) => r.id === "s_n")?.executionProfileId).toBeUndefined();
+  });
+
   it("unknown_project_id_falls_back_visibly", () => {
     const custom: SessionRow[] = [
       { session_id: "s_x", status: "idle", display_name: "X", project_id: "nope_404" },

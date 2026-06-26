@@ -8,6 +8,7 @@ import { sessionDisplayFixture } from "../../shell/display-meta";
 import { SessionsTable } from "../sessions/SessionsTable";
 import { LaunchAgentControl } from "../sessions/LaunchAgentControl";
 import { KillSessionControl } from "../sessions/KillSessionControl";
+import { ProfileChangeControl } from "../sessions/ProfileChangeControl";
 import { Eyebrow } from "../cockpit";
 import type { GatewayPort } from "../../gateway-client/types";
 import { TerminalDisplay } from "./TerminalDisplay";
@@ -56,9 +57,17 @@ export function SessionTerminal({
             <LaunchAgentControl gateway={gateway} activeProjectId={activeProjectId} />
           }
           rowActions={
-            // eslint-disable-next-line react/no-unstable-nested-components -- a render-prop slot, not a defined-in-render component: KillSessionControl is a stable top-level import (no remount); the arrow keeps SessionsTable presentational (forbidden #2).
+            // eslint-disable-next-line react/no-unstable-nested-components -- a render-prop slot, not a defined-in-render component: the controls are stable top-level imports (no remount); the arrow keeps SessionsTable presentational (forbidden #2).
             (row) => (
-              <KillSessionControl gateway={gateway} sessionId={row.id} status={row.status} />
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <KillSessionControl gateway={gateway} sessionId={row.id} status={row.status} />
+                <ProfileChangeControl
+                  gateway={gateway}
+                  sessionId={row.id}
+                  status={row.status}
+                  currentProfileId={row.executionProfileId}
+                />
+              </span>
             )
           }
         />

@@ -3,7 +3,7 @@
 - **Date:** 2026-06-26
 - **Phase:** Phase 4.7 (live-validation CLI tooling) — post the ui projection-boundary merge
 - **Predecessor:** [037-2026-06-26-p5.3b-profile-secrets-086-smoke-cli-084-parked.md](037-2026-06-26-p5.3b-profile-secrets-086-smoke-cli-084-parked.md)
-- **Successor:** _(next session — the rescan project_id-mint fix + resume parked 084)_
+- **Successor:** [039-2026-06-26-add-project-arc-089-090-091-092.md](039-2026-06-26-add-project-arc-089-090-091-092.md)
 
 ## Why this session existed
 

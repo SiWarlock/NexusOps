@@ -29,6 +29,9 @@ const GIT_CREATE_BRANCH: &str = "git.create_branch";
 /// W1-git-stage/095 — the per-hunk INDEX mutations (risk-2, recoverable). `git apply --cached [-R]`.
 const GIT_STAGE_HUNK: &str = "git.stage_hunk";
 const GIT_UNSTAGE_HUNK: &str = "git.unstage_hunk";
+/// W1-git-discard/096 — the per-hunk DESTRUCTIVE WORKING-TREE mutation (risk-3, IRREVERSIBLE). `git apply
+/// -R` (NO --cached) + the (A) content-hash verify-before-destroy guard.
+const GIT_DISCARD_HUNK: &str = "git.discard_hunk";
 
 /// The §6.3 frozen hunk resource-ref separator (4.0b-ui1) — the `\x1f` unit separator.
 const HUNK_REF_SEPARATOR: char = '\u{1f}';
@@ -393,6 +396,150 @@ impl GitExecutor {
             emitted_events: vec![],
         }
     }
+
+    /// (W1-git-discard/096) The `git.discard_hunk` body — risk-3 **DESTRUCTIVE / IRREVERSIBLE**. Its OWN
+    /// body (NOT a `reverse` flag on [`Self::execute_apply_hunk`] — discard targets the WORKING TREE not the
+    /// index, adds the content-hash guard, and is irreversible; conflating it with the recoverable index path
+    /// is a safety smell). Order: validate → decode the position-only ref → reject-dash → resolve → require
+    /// the hash present → §17 GUARD #1 (position, re-derive the patch from the LIVE workdir diff) → §17 GUARD
+    /// #2 (the LEAD-ruled (A) content-hash verify-before-destroy) → §17 GUARD #3 (`apply -R --check`) → the
+    /// destructive `git apply -R` (NO `--cached`). NO domain event (LESSON 47 live-read cache). Contract-neutral
+    /// (the hash rides `inputs`; the catalog + the resource-ref froze at 4.0b-ui1). The position-only accepted
+    /// limitation that stage/unstage carry (LESSON 72) does NOT carry here — the content-hash closes the
+    /// same-position content-drift race for the irreversible op.
+    fn execute_discard_hunk(&self, req: &ActionRequest) -> ExecutionOutcome {
+        let label = GIT_DISCARD_HUNK;
+        // validate the catalog `requires_resource_refs` precondition FIRST (the create_worktree precedent).
+        if let Err(e) = self.inner.validate(req) {
+            return ExecutionOutcome::Failed(e.to_string());
+        }
+        // decode the frozen position-only hunk resource-ref (LESSON 63 — resolve the TARGET from the AUDITED
+        // ref, never `inputs`; the hash is a verification TOKEN, not a target). Malformed → Failed BEFORE any git call.
+        let Some(rref) = req.resource_refs.first() else {
+            return ExecutionOutcome::Failed(format!(
+                "{label} requires the target hunk resource_ref"
+            ));
+        };
+        let Some(hunk_ref) = decode_hunk_ref(&rref.id) else {
+            return ExecutionOutcome::Failed(format!("{label}: malformed hunk resource-ref"));
+        };
+        // the `file` is a git operand (`git diff -- <file>`) → reject a leading-`-` fail-closed (LESSON 45).
+        if let Err(failed) = reject_dash_operands(&[hunk_ref.file.as_str()]) {
+            return failed;
+        }
+        // resolve `worktree_id → path` over read-only WAL (the get_diff resolution). Unknown → NotFound-class.
+        let Some(repo_path) = self.resolver.resolve(&hunk_ref.worktree_id) else {
+            return ExecutionOutcome::Failed(format!("{label}: unknown worktree (not found)"));
+        };
+
+        // Early hash-presence gate (a pre-GUARD #1 fail-fast — NOT the GUARD #2 comparison, which is below
+        // after the hunk is re-derived): a discard with NO `displayed_hunk_sha256` is REFUSED before any git
+        // call → never falls through to a position-only destructive apply (the (A) ruling).
+        let Some(displayed_hash) = string_input(req, "displayed_hunk_sha256") else {
+            return ExecutionOutcome::Failed(format!(
+                "{label}: discard requires the displayed-hunk hash"
+            ));
+        };
+
+        // §17 GUARD #1 (position): read the LIVE WORKDIR diff (workdir-vs-index `git diff`, NO `--cached` — the
+        // change the UI displays by default) + re-derive the byte-faithful one-hunk patch (095's proven path).
+        // No match → the displayed hunk is gone / the file changed → fail-closed, NO mutation.
+        let diff_args = vec!["diff".to_string(), "--".to_string(), hunk_ref.file.clone()];
+        let diff_text = match self.cli.run(&diff_args, &repo_path) {
+            Ok(out) if out.success => out.stdout,
+            // a non-zero git exit / spawn failure → STRUCTURAL reason ONLY (raw git stderr can carry paths, §15).
+            Ok(_) => {
+                return ExecutionOutcome::Failed(format!(
+                    "{label}: git diff failed (non-zero exit)"
+                ))
+            }
+            Err(e) => return ExecutionOutcome::Failed(format!("{label}: git diff: {e}")),
+        };
+        let Some(patch) = crate::git::find_hunk_patch(
+            &diff_text,
+            hunk_ref.old_start,
+            hunk_ref.old_lines,
+            hunk_ref.new_start,
+            hunk_ref.new_lines,
+        ) else {
+            return ExecutionOutcome::Failed(format!(
+                "{label}: the hunk no longer applies (re-examine)"
+            ));
+        };
+
+        // §17 GUARD #2 (the content-hash — the LEAD-ruled (A) verify-before-destroy, the load-bearing
+        // destructive guard): hash EXACTLY the bytes about to be reverse-applied (the one-hunk `patch` from
+        // GUARD #1, parsed back to a structured Hunk) + require the FROZEN canonical sha256 to equal the
+        // UI-supplied `displayed_hunk_sha256`. Hashing the APPLIED hunk (NOT a second `read_diff`) makes
+        // verified-bytes == destroyed-bytes BY CONSTRUCTION (audited == executed, §17). On a PARTIALLY-STAGED
+        // file the applied workdir-vs-index hunk diverges from the UI's HEAD→workdir `get_diff` hunk even when
+        // the position quad coincides → the hashes differ → fail-closed (a staged-hunk discard is OUT of MVP —
+        // the user unstages first). In the unstaged-only case the two bases coincide → the hash matches the
+        // UI's. Mismatch → Failed, NO mutation: irreversible loss must never touch un-reviewed bytes (LESSON
+        // 72's position-only accepted limitation does NOT carry to the destructive op). `parse_unified_diff`
+        // strips only the 1-byte origin marker + retains content verbatim (same shape as `read_diff` — the
+        // canonical form is diff-source-agnostic).
+        let Some(applied_hunk) = crate::git::parse_unified_diff(&patch, None)
+            .hunks
+            .into_iter()
+            .next()
+        else {
+            // defensive — `patch` is a valid one-hunk patch from find_hunk_patch (unreachable in practice).
+            return ExecutionOutcome::Failed(format!(
+                "{label}: could not re-derive the hunk to verify"
+            ));
+        };
+        // case-insensitive (hex case carries no meaning) — defensive against a non-lowercase UI send.
+        if !crate::git::canonical_hunk_sha256(&applied_hunk).eq_ignore_ascii_case(&displayed_hash) {
+            return ExecutionOutcome::Failed(format!(
+                "{label}: hunk changed since you reviewed it, re-examine"
+            ));
+        }
+
+        // write the one-hunk patch to a 0600 temp file (auto-cleaned via Drop on EVERY return path).
+        let patch_file = match TempPatch::write(req, &patch) {
+            Ok(p) => p,
+            Err(e) => return ExecutionOutcome::Failed(format!("{label}: write the patch: {e}")),
+        };
+
+        // §17 GUARD #3 + the destructive apply: REVERSE-apply to the WORKING TREE (`git apply -R`, NO
+        // `--cached`). `--check` FIRST (a concurrent workdir change between the read and the apply → Failed, NO
+        // apply); then the real reverse-apply discards exactly that one hunk (other hunks / the index untouched).
+        let base = vec!["apply".to_string(), "-R".to_string()];
+        let mut check_args = base.clone();
+        check_args.push("--check".to_string());
+        check_args.push(patch_file.path_string());
+        match self.cli.run(&check_args, &repo_path) {
+            Ok(out) if out.success => {}
+            Ok(_) => {
+                return ExecutionOutcome::Failed(format!(
+                    "{label}: the hunk no longer applies cleanly (re-examine)"
+                ))
+            }
+            Err(e) => return ExecutionOutcome::Failed(format!("{label}: git apply --check: {e}")),
+        }
+        let mut apply_args = base;
+        apply_args.push(patch_file.path_string());
+        match self.cli.run(&apply_args, &repo_path) {
+            Ok(out) if out.success => {}
+            Ok(_) => {
+                return ExecutionOutcome::Failed(format!(
+                    "{label}: git apply failed (non-zero exit)"
+                ))
+            }
+            Err(e) => return ExecutionOutcome::Failed(format!("{label}: git apply: {e}")),
+        }
+
+        // success — NO domain event (the worktree git-axis is a live-read cache, LESSON 47; the UI re-reads
+        // get_diff). `side_effect_applied: true` (a real WORKING-TREE change → a txn-B fault yields the honest
+        // ActionPartiallySucceeded, LESSON 21; discard is IRREVERSIBLE — there is no clean rollback).
+        ExecutionOutcome::Succeeded {
+            changed_resources: req.resource_refs.clone(),
+            detail: format!("{label} — discarded the hunk from the working tree via the git CLI"),
+            side_effect_applied: true,
+            emitted_events: vec![],
+        }
+    }
 }
 
 impl ActionExecutor for GitExecutor {
@@ -407,6 +554,9 @@ impl ActionExecutor for GitExecutor {
             // W1-git-stage/095 — the per-hunk INDEX mutations (stage/unstage differ only by `-R`).
             GIT_STAGE_HUNK => self.execute_apply_hunk(req, false),
             GIT_UNSTAGE_HUNK => self.execute_apply_hunk(req, true),
+            // W1-git-discard/096 — the per-hunk DESTRUCTIVE WORKING-TREE mutation (its OWN body, NOT a
+            // `reverse` flag on execute_apply_hunk — working-tree not index, adds the hash guard, IRREVERSIBLE).
+            GIT_DISCARD_HUNK => self.execute_discard_hunk(req),
             // git.status/git.diff (also ExecutorKind::Git) are not handled → the inner side-effect-free
             // stub (no-op success, no event); served via the read path (get_projection(Worktree) + the
             // diff backend).

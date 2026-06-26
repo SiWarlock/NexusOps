@@ -18,6 +18,7 @@ pub mod reads;
 use std::path::Path;
 
 use nexusops_shared::ipc::{DiffLine, DiffLineKind, DiffResult, Hunk};
+use sha2::{Digest, Sha256};
 
 /// A read-only git introspection failure (the diff couldn't be read). Never a mutation error — this
 /// module only reads.
@@ -252,4 +253,38 @@ pub fn find_hunk_patch(
         }
     }
     None
+}
+
+/// (W1-git-discard/096) The FROZEN canonical content hash of a hunk — the cross-language daemon↔UI
+/// **verify-before-destroy** token (the LEAD-ruled (A) guard for the irreversible `git.discard_hunk`).
+/// Hashes the hunk BODY only (the `@@` header is EXCLUDED — positions are already verified by the
+/// position guard; the header's optional section-heading is a fidelity hazard). For each [`DiffLine`] in
+/// order: ONE origin byte (`' '` Context / `'+'` Added / `'-'` Removed) immediately followed by the line
+/// `content` **VERBATIM** (origin-stripped + the trailing `\n` retained — exactly the bytes
+/// `read_diff`/`get_diff` served the UI; using them verbatim means NO newline normalization → byte-identical
+/// on both sides regardless of the no-newline-at-eof edge). SHA-256 → lowercase hex (64 chars).
+///
+/// **FROZEN convention (a 4.0b-ui1 sibling of the `\x1f` hunk-ref encoding).** The UI computes the SAME
+/// bytes over the `get_diff` `Hunk` it renders + sends the hex as `inputs["displayed_hunk_sha256"]`; the
+/// daemon re-derives + compares BEFORE the discard. A 1-byte disagreement fails EVERY discard closed →
+/// pinned by `canonical_hunk_sha256_is_stable` as the anchor the UI mirrors.
+pub fn canonical_hunk_sha256(hunk: &Hunk) -> String {
+    use std::fmt::Write as _;
+    let mut hasher = Sha256::new();
+    for line in &hunk.lines {
+        let origin: u8 = match line.kind {
+            DiffLineKind::Context => b' ',
+            DiffLineKind::Added => b'+',
+            DiffLineKind::Removed => b'-',
+        };
+        hasher.update([origin]);
+        hasher.update(line.content.as_bytes());
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        // `write!` to a String is infallible (the idempotency-key hex idiom, LESSON 20).
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }

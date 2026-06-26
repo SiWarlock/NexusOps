@@ -1105,3 +1105,436 @@ fn git_stage_hunk_apply_check_failure_fails_closed_no_apply() {
         "the REAL `git apply` is NEVER invoked after a failed --check (no index mutation)"
     );
 }
+
+// ============================================================================
+// W1-git-discard (096) — the git.discard_hunk executor body (risk-3 DESTRUCTIVE / irreversible).
+// The DESTRUCTIVE sibling of stage/unstage: re-derive the hunk from the live WORKDIR diff (GUARD #1),
+// verify a UI-supplied `displayed_hunk_sha256` content-hash against the re-derived hunk's canonical
+// content BEFORE any mutation (GUARD #2 — the LEAD-ruled (A) verify-before-destroy), `git apply -R
+// --check` (GUARD #3), then reverse-apply to the WORKING TREE (`git apply -R`, NO --cached). The
+// position-only accepted limitation that stage/unstage carry (LESSON 72) does NOT carry here — discard
+// adds the content-hash guard. Contract-neutral; no domain event (LESSON 47 live-read cache).
+// ============================================================================
+
+/// A `git.discard_hunk` ActionRequest (risk-3 DESTRUCTIVE): the position-only hunk resource_ref + an
+/// optional `displayed_hunk_sha256` in inputs (the content-hash verify-before-destroy token, (A) ruling).
+fn discard_req(ref_id: &str, displayed_sha256: Option<&str>) -> ActionRequest {
+    let inputs = match displayed_sha256 {
+        Some(h) => serde_json::json!({ "displayed_hunk_sha256": h }),
+        None => serde_json::json!({}),
+    };
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id: None,
+        action_type: "git.discard_hunk".to_string(),
+        requester_type: RequesterType::User,
+        requester_id: "u_local".to_string(),
+        resource_refs: vec![ResourceRef {
+            resource_type: ResourceType::File,
+            id: ref_id.to_string(),
+            uri: None,
+        }],
+        inputs,
+        risk_level: RiskLevel::Level3,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse(FIXED_TS).unwrap(),
+    }
+}
+
+fn discard_executor(repo: &std::path::Path) -> GitExecutor {
+    GitExecutor::new(Box::new(SystemGitCli))
+        .with_worktree_resolver(Box::new(FixedResolver(Some(repo.to_path_buf()))))
+}
+
+/// a real repo with `g.txt` committed (12 lines) then modified at line 2 AND line 11 → TWO separate
+/// unstaged hunks. Returns the dir + repo path + both live hunks (positions via the get_diff backend
+/// `read_diff`, mirroring what the UI sends + hashes).
+fn repo_with_two_unstaged_hunks() -> (TempDir, std::path::PathBuf, Hunk, Hunk) {
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_file(
+        &repo,
+        "g.txt",
+        "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n",
+    );
+    fs::write(
+        dir.path().join("g.txt"),
+        "l1\nX2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nY11\nl12\n",
+    )
+    .expect("modify g.txt");
+    let path = dir.path().to_path_buf();
+    let diff = nexusopsd::git::read_diff(&path, "g.txt").expect("read the live diff");
+    let mut it = diff.hunks.into_iter();
+    let h1 = it.next().expect("first unstaged hunk (line 2)");
+    let h2 = it.next().expect("second unstaged hunk (line 11)");
+    (dir, path, h1, h2)
+}
+
+#[test]
+fn git_discard_hunk_removes_workdir_change() {
+    // spec(§6.3) — discard re-derives the hunk + (CORRECT hash) reverse-applies it to the WORKING TREE
+    // (`git apply -R`, NO --cached): that hunk's change is gone from the working file; the OTHER hunk +
+    // the INDEX are untouched.
+    let (_dir, path, h1, _h2) = repo_with_two_unstaged_hunks();
+    let hash = nexusopsd::git::canonical_hunk_sha256(&h1);
+    let exec = discard_executor(&path);
+    let outcome = exec.execute(&discard_req(
+        &hunk_ref_id("wt_abc", "g.txt", &h1),
+        Some(&hash),
+    ));
+    assert!(
+        matches!(
+            outcome,
+            ExecutionOutcome::Succeeded {
+                side_effect_applied: true,
+                ..
+            }
+        ),
+        "the hunk discarded (a real working-tree change)"
+    );
+    let now = fs::read_to_string(path.join("g.txt")).expect("read g.txt");
+    assert!(
+        now.contains("\nl2\n"),
+        "the discarded hunk reverted to the committed line (l2)"
+    );
+    assert!(
+        !now.contains("X2"),
+        "the discarded change (X2) is gone from the working tree"
+    );
+    assert!(
+        now.contains("Y11"),
+        "the OTHER hunk's change (Y11) is untouched (hunk-precise discard)"
+    );
+    assert!(
+        git_stdout(&path, &["diff", "--cached", "--name-only"])
+            .trim()
+            .is_empty(),
+        "the INDEX is untouched (discard is working-tree only, NO --cached)"
+    );
+}
+
+#[test]
+fn git_discard_hunk_hash_mismatch_fails_closed() {
+    // spec((A) ruling — THE load-bearing safety pin) — the live hunk content DRIFTED (SAME position,
+    // DIFFERENT bytes) so the re-derived canonical hash ≠ displayed_hunk_sha256 → Failed, the working
+    // tree UNCHANGED. Irreversible loss must never touch un-reviewed content.
+    let (_dir, path, hunk) = repo_with_unstaged_hunk(); // hunk over "CHANGED" at 1,3,1,3
+    let stale_hash = nexusopsd::git::canonical_hunk_sha256(&hunk); // captured at "review time"
+                                                                   // the file drifts at the SAME position (1,3,1,3) to DIFFERENT content:
+    fs::write(path.join("f.txt"), "line1\nDRIFTED\nline3\n").expect("drift f.txt");
+    let exec = discard_executor(&path);
+    let outcome = exec.execute(&discard_req(
+        &hunk_ref_id("wt_abc", "f.txt", &hunk), // SAME positions
+        Some(&stale_hash),                      // the hash of the OLD (reviewed) content
+    ));
+    assert!(
+        matches!(outcome, ExecutionOutcome::Failed(_)),
+        "the re-derived hash ≠ the displayed hash → fail-closed"
+    );
+    assert!(
+        fs::read_to_string(path.join("f.txt"))
+            .unwrap()
+            .contains("DRIFTED"),
+        "the working tree is UNCHANGED — no discard touched the drifted (un-reviewed) bytes"
+    );
+}
+
+#[test]
+fn git_discard_hunk_missing_hash_fails_closed() {
+    // spec(GUARD #2 fail-closed) — inputs has NO / empty / non-string displayed_hunk_sha256 → Failed
+    // before any apply, the working tree unchanged. A discard with no hash is REFUSED, never falls
+    // through to position-only.
+    let (_dir, path, hunk) = repo_with_unstaged_hunk();
+    let ref_id = hunk_ref_id("wt_abc", "f.txt", &hunk);
+    let exec = discard_executor(&path);
+    // (a) absent.
+    assert!(matches!(
+        exec.execute(&discard_req(&ref_id, None)),
+        ExecutionOutcome::Failed(_)
+    ));
+    // (b) empty.
+    assert!(matches!(
+        exec.execute(&discard_req(&ref_id, Some("   "))),
+        ExecutionOutcome::Failed(_)
+    ));
+    // (c) non-string (a JSON number).
+    let mut non_string = discard_req(&ref_id, None);
+    non_string.inputs = serde_json::json!({ "displayed_hunk_sha256": 1234 });
+    assert!(matches!(
+        exec.execute(&non_string),
+        ExecutionOutcome::Failed(_)
+    ));
+    assert!(
+        fs::read_to_string(path.join("f.txt"))
+            .unwrap()
+            .contains("CHANGED"),
+        "the working tree is unchanged across every missing-hash variant (no apply)"
+    );
+}
+
+#[test]
+fn git_discard_hunk_no_matching_position_fails() {
+    // spec(§17 GUARD #1) — the resource-ref positions match no live hunk → Failed, no apply (even with a
+    // valid-shaped hash present).
+    let (_dir, path, hunk) = repo_with_unstaged_hunk();
+    let hash = nexusopsd::git::canonical_hunk_sha256(&hunk);
+    let exec = discard_executor(&path);
+    let ref_id = format!("wt_abc{US}f.txt{US}999,1,999,1");
+    assert!(
+        matches!(
+            exec.execute(&discard_req(&ref_id, Some(&hash))),
+            ExecutionOutcome::Failed(_)
+        ),
+        "no live hunk at those positions → fail-closed"
+    );
+    assert!(
+        fs::read_to_string(path.join("f.txt"))
+            .unwrap()
+            .contains("CHANGED"),
+        "no apply on a position-miss"
+    );
+}
+
+#[test]
+fn git_discard_hunk_check_race_fails_closed() {
+    // spec(§17 GUARD #3) — positions MATCH + hash MATCHES, but `git apply -R --check` FAILS (a concurrent
+    // working-tree change between the read and the apply) → Failed, the REAL `git apply -R` is NEVER
+    // invoked (no mutation), and the reason is STRUCTURAL — not raw git stderr.
+    let (_dir, path, hunk) = repo_with_unstaged_hunk();
+    let hash = nexusopsd::git::canonical_hunk_sha256(&hunk); // GUARD #2 reads the REAL repo via read_diff
+                                                             // a canned diff with the matching positions so find_hunk_patch (GUARD #1) matches; apply --check fails.
+    let diff_out = "diff --git a/f.txt b/f.txt\n\
+        index 1111111..2222222 100644\n\
+        --- a/f.txt\n\
+        +++ b/f.txt\n\
+        @@ -1,3 +1,3 @@\n \
+        line1\n\
+        -line2\n\
+        +CHANGED\n \
+        line3\n"
+        .to_string();
+    let real_apply_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let exec = GitExecutor::new(Box::new(CheckFailsGitCli {
+        diff_out,
+        real_apply_called: real_apply_called.clone(),
+    }))
+    .with_worktree_resolver(Box::new(FixedResolver(Some(path.clone()))));
+    let ref_id = hunk_ref_id("wt_abc", "f.txt", &hunk);
+    match exec.execute(&discard_req(&ref_id, Some(&hash))) {
+        ExecutionOutcome::Failed(reason) => assert!(
+            !reason.contains("patch does not apply"),
+            "the §15 reason is structural, NOT raw git stderr: {reason}"
+        ),
+        _ => panic!("a failed -R --check must fail closed"),
+    }
+    assert!(
+        !real_apply_called.load(std::sync::atomic::Ordering::SeqCst),
+        "the REAL `git apply -R` is NEVER invoked after a failed --check (no destructive mutation)"
+    );
+}
+
+#[test]
+fn git_discard_hunk_malformed_ref_or_missing_target_fails() {
+    // spec(§6.3 precondition + LESSON 63) — no resource_ref / a malformed `\x1f` id / non-numeric
+    // positions → Failed BEFORE any git call (decode precedes the hash + the diff), even WITH a valid
+    // hash present (the CLI is never invoked).
+    let fake = FakeGitCli::succeeding();
+    let inv = fake.invocations();
+    let exec = GitExecutor::new(Box::new(fake)).with_worktree_resolver(Box::new(FixedResolver(
+        Some(std::path::PathBuf::from("/repo")),
+    )));
+    let valid_hash = "0".repeat(64);
+    // (a) no resource_ref → requires_resource_refs fails.
+    let mut no_ref = discard_req("", Some(&valid_hash));
+    no_ref.resource_refs = vec![];
+    assert!(matches!(exec.execute(&no_ref), ExecutionOutcome::Failed(_)));
+    // (b) a malformed id (no `\x1f` separators).
+    assert!(matches!(
+        exec.execute(&discard_req("not-a-hunk-ref", Some(&valid_hash))),
+        ExecutionOutcome::Failed(_)
+    ));
+    // (c) non-numeric positions.
+    let bad = format!("wt_abc{US}f.txt{US}a,b,c,d");
+    assert!(matches!(
+        exec.execute(&discard_req(&bad, Some(&valid_hash))),
+        ExecutionOutcome::Failed(_)
+    ));
+    assert_eq!(
+        inv.lock().unwrap().len(),
+        0,
+        "the CLI is NEVER invoked on a malformed ref / missing target"
+    );
+}
+
+#[test]
+fn git_discard_hunk_rejects_dash_file_operand() {
+    // spec(LESSON 45) — a leading-`-` file operand is rejected fail-closed (defense-in-depth; the CLI is
+    // never invoked) — the standing external-mutator guard.
+    let fake = FakeGitCli::succeeding();
+    let inv = fake.invocations();
+    let exec = GitExecutor::new(Box::new(fake)).with_worktree_resolver(Box::new(FixedResolver(
+        Some(std::path::PathBuf::from("/repo")),
+    )));
+    let valid_hash = "0".repeat(64);
+    let ref_id = format!("wt_abc{US}-rf{US}1,3,1,3");
+    assert!(matches!(
+        exec.execute(&discard_req(&ref_id, Some(&valid_hash))),
+        ExecutionOutcome::Failed(_)
+    ));
+    assert_eq!(
+        inv.lock().unwrap().len(),
+        0,
+        "the CLI is NEVER invoked on a rejected dash file operand"
+    );
+}
+
+#[test]
+fn git_discard_hunk_structural_reason_no_stderr() {
+    // spec(§15) — a forced git failure → the persisted `ActionFailed` reason is a STRUCTURAL class,
+    // NEVER raw git stderr (a path/diff can carry secrets).
+    let exec = GitExecutor::new(Box::new(FakeGitCli::failing())).with_worktree_resolver(Box::new(
+        FixedResolver(Some(std::path::PathBuf::from("/repo"))),
+    ));
+    let valid_hash = "0".repeat(64);
+    let ref_id = format!("wt_abc{US}f.txt{US}1,3,1,3");
+    match exec.execute(&discard_req(&ref_id, Some(&valid_hash))) {
+        ExecutionOutcome::Failed(reason) => assert!(
+            !reason.contains("simulated git failure"),
+            "the reason is structural, NOT raw git stderr (§15): {reason}"
+        ),
+        _ => panic!("expected Failed on a git CLI failure"),
+    }
+}
+
+#[test]
+fn git_discard_hunk_emits_no_event() {
+    // spec(LESSON 47) — a successful discard emits NO domain event (the worktree git-axis is a live-read
+    // cache; the UI re-reads get_diff); side_effect_applied=true (a real working-tree change).
+    let (_dir, path, hunk) = repo_with_unstaged_hunk();
+    let hash = nexusopsd::git::canonical_hunk_sha256(&hunk);
+    let exec = discard_executor(&path);
+    match exec.execute(&discard_req(
+        &hunk_ref_id("wt_abc", "f.txt", &hunk),
+        Some(&hash),
+    )) {
+        ExecutionOutcome::Succeeded {
+            side_effect_applied,
+            emitted_events,
+            ..
+        } => {
+            assert!(side_effect_applied, "a real working-tree change");
+            assert!(
+                emitted_events.is_empty(),
+                "no domain event — the worktree git-axis is a live-read cache (LESSON 47)"
+            );
+        }
+        _ => panic!("expected Succeeded"),
+    }
+}
+
+#[test]
+fn canonical_hunk_sha256_is_stable() {
+    // the FROZEN cross-language anchor — the UI mirrors this byte-for-byte (a 1-byte disagreement fails
+    // EVERY discard closed). The canonical form hashes the BODY only (the `@@` header is EXCLUDED): per
+    // line, one origin byte (' ' Context / '+' Added / '-' Removed) then the line content VERBATIM.
+    use nexusops_shared::ipc::{DiffLine, DiffLineKind};
+    let hunk = Hunk {
+        header: "@@ -1,2 +1,2 @@ ignored".to_string(),
+        old_start: 1,
+        old_lines: 2,
+        new_start: 1,
+        new_lines: 2,
+        lines: vec![
+            DiffLine {
+                kind: DiffLineKind::Context,
+                content: "a\n".to_string(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Removed,
+                content: "b\n".to_string(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Added,
+                content: "c\n".to_string(),
+            },
+        ],
+    };
+    // sha256(" a\n-b\n+c\n") — computed independently (shasum -a 256), the frozen daemon↔UI vector.
+    assert_eq!(
+        nexusopsd::git::canonical_hunk_sha256(&hunk),
+        "2980a502c1e0d3a04db1ff7021ede674af4f53fa3b352e485ac67e0b15c39ee6"
+    );
+    // the `@@` header is EXCLUDED — a DIFFERENT header yields the SAME hash.
+    let mut other = hunk.clone();
+    other.header = "@@ -1,2 +1,2 @@ DIFFERENT section heading".to_string();
+    assert_eq!(
+        nexusopsd::git::canonical_hunk_sha256(&other),
+        nexusopsd::git::canonical_hunk_sha256(&hunk),
+        "the @@ header is excluded from the canonical hash"
+    );
+    // the no-newline-at-eof edge — a final DiffLine whose content has NO trailing `\n` is hashed VERBATIM
+    // (no normalization), so both sides agree byte-for-byte. sha256(" x\n+y").
+    let no_eol = Hunk {
+        header: "@@ -1,1 +1,2 @@".to_string(),
+        old_start: 1,
+        old_lines: 1,
+        new_start: 1,
+        new_lines: 2,
+        lines: vec![
+            DiffLine {
+                kind: DiffLineKind::Context,
+                content: "x\n".to_string(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Added,
+                content: "y".to_string(), // NO trailing newline (the eof edge)
+            },
+        ],
+    };
+    assert_eq!(
+        nexusopsd::git::canonical_hunk_sha256(&no_eol),
+        "0588d8e84d0b72bccd190e4c72927e98c122c7c186b6c593fa8157d0d567e4a5"
+    );
+}
+
+#[test]
+fn git_discard_hunk_partial_staging_divergence_fails_closed() {
+    // spec(§17 read↔mutate + (A) verify==apply) — the security-review Finding pin. A line STAGED then
+    // RE-EDITED in the workdir: the UI's `get_diff` (HEAD→workdir, `-L/+W`) hunk and the daemon's applied
+    // workdir-vs-index (`-S/+W`) hunk DIVERGE while the position quad coincides (@@ -1,3 +1,3 @@). The daemon
+    // hashes the bytes it will APPLY → ≠ the UI's reviewed hash → fail-closed, NO mutation. Verified-bytes
+    // MUST equal destroyed-bytes; a staged-hunk discard is OUT of MVP (the user unstages first).
+    let dir = tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    commit_file(&repo, "f.txt", "line1\nL\nline3\n");
+    let path = dir.path().to_path_buf();
+    // stage L→S, then re-edit the SAME line S→W in the workdir (unstaged-on-top-of-staged):
+    fs::write(path.join("f.txt"), "line1\nS\nline3\n").expect("stage edit");
+    git_stdout(&path, &["add", "f.txt"]);
+    fs::write(path.join("f.txt"), "line1\nW\nline3\n").expect("re-edit the workdir");
+    // the UI hashes get_diff = read_diff (HEAD→workdir = `-L/+W`) — the hunk + hash the user reviewed.
+    let ui_hunk = nexusopsd::git::read_diff(&path, "f.txt")
+        .unwrap()
+        .hunks
+        .into_iter()
+        .next()
+        .expect("the HEAD→workdir hunk");
+    let ui_hash = nexusopsd::git::canonical_hunk_sha256(&ui_hunk);
+    let exec = discard_executor(&path);
+    let outcome = exec.execute(&discard_req(
+        &hunk_ref_id("wt_abc", "f.txt", &ui_hunk),
+        Some(&ui_hash),
+    ));
+    assert!(
+        matches!(outcome, ExecutionOutcome::Failed(_)),
+        "the applied (workdir-vs-index) hunk ≠ the reviewed (HEAD→workdir) hunk → fail-closed"
+    );
+    assert_eq!(
+        fs::read_to_string(path.join("f.txt")).unwrap(),
+        "line1\nW\nline3\n",
+        "the working tree is UNCHANGED — discard never restored the un-reviewed staged content (S)"
+    );
+}

@@ -23,17 +23,37 @@ import "./a11y/focus.css";
 // the other CSS above — keeps TerminalDisplay import-free of CSS (test-clean).
 import "@xterm/xterm/css/xterm.css";
 import { Shell } from "./shell/Shell";
+import { MockGatewayPort } from "./gateway-client/mock";
+import type { GatewayPort } from "./gateway-client/types";
+
+/**
+ * ui-075 — the dev-shell visual-gate seam. A BUILD-TIME env-gated Mock-injection branch: when
+ * `VITE_NEXUSOPS_MOCK` is EXACTLY `"1"` the entry injects a `MockGatewayPort` (a daemon-free shell whose
+ * PR-mutation controls render ENABLED — the visual gate's pixel-check surface, no live daemon needed);
+ * any other value / unset (the default / every production build) returns `undefined` → the Shell falls
+ * back to the production `UdsGatewayPort`. The guard is an EXPLICIT ALLOWLIST (`=== "1"`), not a
+ * truthiness check: a string env value like `"0"`/`"false"` is JS-truthy, so a truthiness guard would
+ * INVERT a "disable" attempt into a Mock-in-prod leak — the allowlist fails CLOSED to the production port.
+ * `import.meta.env.VITE_*` is a build-time LITERAL (Vite inlines it), so a clean production build (env
+ * unset) statically evaluates this to `return undefined` and dead-code-eliminates the Mock branch; the
+ * load-bearing guarantee is this fail-safe default + the allowlist (a bundle-grep gate is a Step-9
+ * hardening follow-on). Exported so it's unit-testable without mounting the app.
+ */
+export function resolveEntryGateway(): GatewayPort | undefined {
+  return import.meta.env.VITE_NEXUSOPS_MOCK === "1" ? new MockGatewayPort() : undefined;
+}
 
 // 6.1b: mount the shell as the production entry point. <Shell/> instantiates the
 // gateway-client and reads projections through the boundary validator. As of the L1
 // read-swap (051) the production default is the real UdsGatewayPort — the initial
 // load reads REAL daemon data over the 050 invoke bridge (the MockGatewayPort is now
 // the injectable test/dev seam). The live subscribe stream + recovery land in 052.
+// ui-075: the gateway prop is the env-gated dev seam (undefined in production → UdsGatewayPort).
 const rootEl = document.getElementById("root");
 if (rootEl) {
   createRoot(rootEl).render(
     <StrictMode>
-      <Shell />
+      <Shell gateway={resolveEntryGateway()} />
     </StrictMode>,
   );
 }

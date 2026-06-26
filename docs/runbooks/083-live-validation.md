@@ -20,6 +20,13 @@ cargo build --release -p nexusopsd --features dev-client
 DAEMON=./target/release/nexusopsd
 ```
 
+## Step 0 — add a project (rescan)
+Before the GitHub chain, register the repo as a project (so `create`/the cockpit can target it):
+```bash
+$DAEMON smoke rescan --path <repo>        # risk-0 → auto-executes (no approve) → ProjectRescanned → proj_project
+```
+> **⚠️ Pending follow-on — reading the `project_id`.** As of 088 the `rescan` action carries `project_id:None`, so the `proj_project` projector healthy-skips it: **the project is not yet registered and no id is printed** → you can't yet chain into `smoke create --project <id>`. The fix (the rescan `project_id` mint+print follow-on, the #1 daemon next-slice) makes `rescan` **mint + print `project_id=<minted>`**. **Once that lands**, the full add→use chain is: `smoke rescan --path <repo>` (prints `project_id=<minted>`) → `smoke create --project <minted> --prompt "..."` → `smoke queue` → `smoke approve`.
+
 ## The validation chain (each `submit`-style step → approve it)
 The connect/toggle/create/merge/review steps SUBMIT an audited action and print an **approval id**; approve each with the existing `smoke approve <id>` (the per-action human approval is the gate you're validating). `connect-gh` is the one exception (a peer-authed IPC trigger, no approval).
 

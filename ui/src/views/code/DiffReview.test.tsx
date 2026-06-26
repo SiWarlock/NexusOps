@@ -184,7 +184,7 @@ describe("DiffReview L2 — per-hunk intent submission (cat-1)", () => {
   });
 
   it("per_hunk_modal_shows_real_row_policy_on_match", async () => {
-    // spec(§11.5/044) — 053b: on submit, enrichHunkAction re-fetches the ApprovalQueue, matches
+    // spec(§11.5/044) — 053b: on submit, enrichActionApproval re-fetches the ApprovalQueue, matches
     // the minted action_request_id, and the modal renders the daemon ROW's REAL policy (not a
     // UI-invented per-hunk reason). The mock mints ar_mock_0001 → serve a row with that id.
     const port = new MockGatewayPort();

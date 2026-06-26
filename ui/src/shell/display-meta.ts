@@ -241,7 +241,7 @@ export function enrichApproval(row: ApprovalQueueRow): GatewayApprovalEnrichment
 // decision (forbidden #2). Parse-don't-trust is intrinsic: get_projection boundary-validates the page
 // (a malformed payload → BoundaryValidationError, never a fabricated row — LESSON 22). The handle is
 // typed `Pick<…,"get_projection">` → compile-time NO mutation reach; the per-hunk submit stays L2-HELD.
-export async function enrichHunkAction(
+export async function enrichActionApproval(
   gateway: Pick<GatewayPort, "get_projection">,
   ack: ActionAck,
 ): Promise<GatewayApprovalEnrichment> {

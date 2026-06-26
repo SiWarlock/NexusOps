@@ -51,6 +51,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import { Shell } from "./Shell";
+import { CONTRACT_VERSION } from "../contracts/index";
 import { projectActivityFixture } from "../projections/fixtures/proj_project_activity";
 import { sessionPageFixture } from "../projections/fixtures/proj_session";
 import { pullRequestFixture } from "../projections/fixtures/proj_pull_request";
@@ -75,6 +76,47 @@ afterEach(cleanup);
 beforeEach(() => {
   mockInvoke.mockReset();
 });
+
+// A minimal valid diff served for get_diff / get_pr_diff (the Code view + PR workspace fetch on mount).
+const STUB_DIFF = {
+  hunks: [
+    {
+      header: "@@ -1,1 +1,1 @@",
+      old_start: 1,
+      old_lines: 1,
+      new_start: 1,
+      new_lines: 1,
+      lines: [{ kind: "context", content: "x\n" }],
+    },
+  ],
+};
+
+// ui-080 — the SHARED production-Shell invoke mock (unifies the productionShellAt{CodeView,PrWorkspace}
+// boilerplate). A connected + version-compatible daemon (the live CONTRACT_VERSION, not a hardcoded
+// string — checkVersionCompat keys on protocol_version, so this is cleanliness) serving the projection
+// fixtures, a stub diff for get_diff/get_pr_diff, a fake submit_action ack, and a NEVER-settling subscribe
+// (the live stream stays OPEN → the supervisor never degrades → connection stays `connected`,
+// canSubmitIntent true — required for the go-live pins).
+function installProductionShellInvoke(): void {
+  mockInvoke.mockImplementation((cmd: string, args?: unknown) => {
+    if (cmd === "gateway_get_capabilities") {
+      return Promise.resolve({ protocol_version: 1, contract_version: CONTRACT_VERSION });
+    }
+    if (cmd === "gateway_get_projection") {
+      return Promise.resolve(PROJECTION_FIXTURES[(args as { name: string }).name]);
+    }
+    if (cmd === "gateway_get_diff" || cmd === "gateway_get_pr_diff") {
+      return Promise.resolve(STUB_DIFF);
+    }
+    if (cmd === "gateway_submit_action") {
+      return Promise.resolve({ action_request_id: "ar_live", status: "submitted" });
+    }
+    if (cmd === "gateway_subscribe") {
+      return new Promise(() => {});
+    }
+    return Promise.reject(new Error(`unexpected command ${cmd}`));
+  });
+}
 
 describe("Shell read-swap (Layer C-single-shot — UdsGatewayPort default)", () => {
   it("shell_defaults_to_uds_and_renders_real_daemon_data", async () => {
@@ -123,37 +165,7 @@ describe("Shell read-swap (Layer C-single-shot — UdsGatewayPort default)", () 
   // a live click resolves. This is the production go-live surface (the real daemon is the deferred
   // operator walkthrough).
   async function productionShellAtCodeView(): Promise<HTMLElement> {
-    mockInvoke.mockImplementation((cmd: string, args?: unknown) => {
-      if (cmd === "gateway_get_capabilities") {
-        return Promise.resolve({ protocol_version: 1, contract_version: "0.31.0" });
-      }
-      if (cmd === "gateway_get_projection") {
-        return Promise.resolve(PROJECTION_FIXTURES[(args as { name: string }).name]);
-      }
-      if (cmd === "gateway_get_diff") {
-        return Promise.resolve({
-          hunks: [
-            {
-              header: "@@ -1,1 +1,1 @@",
-              old_start: 1,
-              old_lines: 1,
-              new_start: 1,
-              new_lines: 1,
-              lines: [{ kind: "context", content: "x\n" }],
-            },
-          ],
-        });
-      }
-      if (cmd === "gateway_submit_action") {
-        return Promise.resolve({ action_request_id: "ar_live", status: "submitted" });
-      }
-      if (cmd === "gateway_subscribe") {
-        // a never-settling subscribe (no message, no lag-close) → the live stream stays OPEN, so the
-        // supervisor never degrades: the connection stays `connected` (canSubmitIntent true) for the pins.
-        return new Promise(() => {});
-      }
-      return Promise.reject(new Error(`unexpected command ${cmd}`));
-    });
+    installProductionShellInvoke();
     render(<Shell />); // no gateway prop → the production UdsGatewayPort, mutations-enabled (L2-C)
     await screen.findAllByText(projectActivityFixture.rows[0]!.name); // loaded → connected + compatible
     const sidebar = screen.getByRole("navigation", { name: "Sidebar" });
@@ -202,52 +214,7 @@ describe("Shell PR-mutations go-live (cat-1 ui-075)", () => {
   // returns a fake ack so a live click resolves; gateway_subscribe never settles so the stream stays
   // connected (canSubmitIntent true) for the pins.
   async function productionShellAtPrWorkspace(): Promise<void> {
-    mockInvoke.mockImplementation((cmd: string, args?: unknown) => {
-      if (cmd === "gateway_get_capabilities") {
-        return Promise.resolve({ protocol_version: 1, contract_version: "0.31.0" });
-      }
-      if (cmd === "gateway_get_projection") {
-        return Promise.resolve(PROJECTION_FIXTURES[(args as { name: string }).name]);
-      }
-      if (cmd === "gateway_get_diff") {
-        // the Code view's default Review tab fetches the worktree diff on mount (before we tab to
-        // "Pull requests") — resolve it so the navigation is noise-free (the PR-mutation enablement
-        // keys off get_PR_diff + head_sha, not this worktree get_diff).
-        return Promise.resolve({
-          hunks: [
-            {
-              header: "@@ -1,1 +1,1 @@",
-              old_start: 1,
-              old_lines: 1,
-              new_start: 1,
-              new_lines: 1,
-              lines: [{ kind: "context", content: "x\n" }],
-            },
-          ],
-        });
-      }
-      if (cmd === "gateway_get_pr_diff") {
-        return Promise.resolve({
-          hunks: [
-            {
-              header: "@@ -1,1 +1,1 @@",
-              old_start: 1,
-              old_lines: 1,
-              new_start: 1,
-              new_lines: 1,
-              lines: [{ kind: "context", content: "x\n" }],
-            },
-          ],
-        });
-      }
-      if (cmd === "gateway_submit_action") {
-        return Promise.resolve({ action_request_id: "ar_live", status: "submitted" });
-      }
-      if (cmd === "gateway_subscribe") {
-        return new Promise(() => {});
-      }
-      return Promise.reject(new Error(`unexpected command ${cmd}`));
-    });
+    installProductionShellInvoke();
     render(<Shell />); // no gateway prop → the production UdsGatewayPort (PR-mutations enabled at commit 2)
     await screen.findAllByText(projectActivityFixture.rows[0]!.name); // loaded → connected + compatible
     const sidebar = screen.getByRole("navigation", { name: "Sidebar" });

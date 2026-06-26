@@ -48,7 +48,7 @@ import {
   type ReviewEvent,
 } from "../../intent/pr-mutation-request";
 import {
-  enrichHunkAction,
+  enrichActionApproval,
   type GatewayApprovalEnrichment,
 } from "../../shell/display-meta";
 import { GatewayModal, ResultNotice } from "../../overlays/GatewayModal";
@@ -190,14 +190,14 @@ function ReviewTab({ gateway }: { gateway: GatewayPort }) {
       try {
         // 053b: source the daemon's REAL risk/policy by re-fetching the ApprovalQueue + matching the
         // minted action_request_id (no UI-derived fixture); absent → an honest awaiting placeholder.
-        setPendingApproval(await enrichHunkAction(gateway, r.ok));
+        setPendingApproval(await enrichActionApproval(gateway, r.ok));
       } catch (e) {
         // The intent WAS recorded (the daemon acked); only the approval-card enrichment re-fetch
         // failed — a malformed ApprovalQueue payload (BoundaryValidationError) or a transport fault.
         // Degrade HONESTLY (the get_diff read-degrade pattern above, §11.7): log + an honest notice,
         // NEVER a silent stall and NEVER a card built from un-parsed data (forbidden #2). The approval
         // is still in the global queue; a read failure must not crash the cockpit (no re-throw).
-        console.error("enrichHunkAction (ApprovalQueue re-fetch) failed", e);
+        console.error("enrichActionApproval (ApprovalQueue re-fetch) failed", e);
         setEnrichFailed(true);
       }
     } else {
@@ -632,7 +632,7 @@ function PrWorkspaceContainer({
       setMutationResult(null);
       setMutationEnrichFailed(false);
       try {
-        setPendingApproval(await enrichHunkAction(gateway, r.ok));
+        setPendingApproval(await enrichActionApproval(gateway, r.ok));
       } catch (e) {
         console.error("approval enrich (ApprovalQueue re-fetch) failed", e);
         setMutationEnrichFailed(true);

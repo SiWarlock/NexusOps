@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { enrichApproval, enrichHunkAction } from "./display-meta";
+import { enrichApproval, enrichActionApproval } from "./display-meta";
 import { makeApprovalRow } from "../projections/fixtures/proj_approval_queue";
 import {
   BoundaryValidationError,
@@ -57,12 +57,12 @@ describe("enrichApproval — real-row risk/policy swap (053 Layer C)", () => {
 });
 
 // ── 053b — the per-hunk half completes the 044 [med] ─────────────────────────
-// enrichHunkAction (the DiffReview stage/unstage/discard path) has NO row in hand — the ack carries
+// enrichActionApproval (the DiffReview stage/unstage/discard path) has NO row in hand — the ack carries
 // an action_request_id, not an approval_id. It sources the daemon's AUTHORITATIVE risk/policy by a
 // get_projection("ApprovalQueue") re-fetch + EXACT action_request_id match (reusing enrichApproval on
 // a hit); an absent row → an honest awaiting placeholder, never a fabricated/UI-derived risk
 // (LESSON 17, forbidden #2). parse-don't-trust on the re-fetch (LESSON 22). The per-hunk submit stays
-// L2-HELD — enrichHunkAction reaches ONLY get_projection (Pick<…,"get_projection"> = no mutation).
+// L2-HELD — enrichActionApproval reaches ONLY get_projection (Pick<…,"get_projection"> = no mutation).
 
 const A_REAL_POLICY: PolicyDecision = {
   status: "deny",
@@ -73,7 +73,7 @@ const A_REAL_POLICY: PolicyDecision = {
 };
 
 /** A read-only gateway slice serving `raw` THROUGH the real boundary (parse-don't-trust, symmetric
- *  with MockGatewayPort.get_projection). Exposes ONLY get_projection — passing it to enrichHunkAction
+ *  with MockGatewayPort.get_projection). Exposes ONLY get_projection — passing it to enrichActionApproval
  *  proves at compile time there is no mutation reach. */
 function readGateway(raw: unknown) {
   const get_projection = vi.fn(async (name: ProjectionName) =>
@@ -90,7 +90,7 @@ const approvalQueuePage = (rows: unknown[]) => ({
   cursor: null,
 });
 
-describe("enrichHunkAction — per-hunk real-row risk/policy swap (053b)", () => {
+describe("enrichActionApproval — per-hunk real-row risk/policy swap (053b)", () => {
   it("enrich_hunk_action_sources_real_risk_by_action_request_id", async () => {
     // spec(§11.5/LESSON 17) — matches the queue row by the ack's action_request_id and reads the
     // ROW's real risk + policy (reusing enrichApproval), NOT the old UI-derived fixture risk.
@@ -103,7 +103,7 @@ describe("enrichHunkAction — per-hunk real-row risk/policy swap (053b)", () =>
     });
     const gw = readGateway(approvalQueuePage([row]));
 
-    const { approval, policyDecision } = await enrichHunkAction(gw, ack);
+    const { approval, policyDecision } = await enrichActionApproval(gw, ack);
 
     expect(gw.get_projection).toHaveBeenCalledWith("ApprovalQueue");
     expect(approval.risk_level).toBe(4); // the ROW's real risk (was the fixture 2/3)
@@ -120,7 +120,7 @@ describe("enrichHunkAction — per-hunk real-row risk/policy swap (053b)", () =>
     const ack: ActionAck = { action_request_id: "ar_not_in_queue", status: "submitted" };
     const gw = readGateway(approvalQueuePage([]));
 
-    const { approval, policyDecision } = await enrichHunkAction(gw, ack);
+    const { approval, policyDecision } = await enrichActionApproval(gw, ack);
 
     expect(approval.status).toBe("awaiting_approval");
     expect(approval.action_request_id).toBe("ar_not_in_queue"); // the ack's id, preserved
@@ -145,7 +145,7 @@ describe("enrichHunkAction — per-hunk real-row risk/policy swap (053b)", () =>
     });
     const gw = readGateway(approvalQueuePage([wrongRow]));
 
-    const { approval, policyDecision } = await enrichHunkAction(gw, ack);
+    const { approval, policyDecision } = await enrichActionApproval(gw, ack);
 
     expect(approval.approval_id).not.toBe("appr_wrong"); // never the wrong row's identity
     expect(policyDecision).not.toEqual(A_REAL_POLICY); // never the wrong row's policy
@@ -166,7 +166,7 @@ describe("enrichHunkAction — per-hunk real-row risk/policy swap (053b)", () =>
     });
     const gw = readGateway(approvalQueuePage([nullRow]));
 
-    const { approval, policyDecision } = await enrichHunkAction(gw, ack);
+    const { approval, policyDecision } = await enrichActionApproval(gw, ack);
 
     expect(approval.approval_id).not.toBe("appr_nullar"); // the null-id row never surfaces
     expect(policyDecision).not.toEqual(A_REAL_POLICY); // never the null-id row's policy
@@ -175,26 +175,26 @@ describe("enrichHunkAction — per-hunk real-row risk/policy swap (053b)", () =>
 
   it("enrich_hunk_re_fetch_parses_at_boundary", async () => {
     // spec(LESSON 22) — a malformed ApprovalQueue payload fails CLOSED at the boundary
-    // (BoundaryValidationError); enrichHunkAction propagates it, never fabricating a row.
+    // (BoundaryValidationError); enrichActionApproval propagates it, never fabricating a row.
     const ack: ActionAck = { action_request_id: "ar_x", status: "submitted" };
     const gw = readGateway(
       approvalQueuePage([{ approval_id: "x" /* missing the 13 required fields */ }]),
     );
 
-    await expect(enrichHunkAction(gw, ack)).rejects.toBeInstanceOf(
+    await expect(enrichActionApproval(gw, ack)).rejects.toBeInstanceOf(
       BoundaryValidationError,
     );
   });
 
   it("enrich_hunk_action_no_mutation_reach_l2_held", async () => {
-    // spec(INV-SEC-1) — enrichHunkAction reaches ONLY get_projection (a wired L1 read); it never
+    // spec(INV-SEC-1) — enrichActionApproval reaches ONLY get_projection (a wired L1 read); it never
     // touches a mutation method. A read-only Pick<…,"get_projection"> handle (no submit/approve/
     // deny) suffices → the per-hunk submit stays L2-HELD; the swap adds zero mutation reach.
     const ack: ActionAck = { action_request_id: "ar_live_7", status: "submitted" };
     const row = makeApprovalRow({ action_request_id: "ar_live_7", risk_level: 1 });
     const gw = readGateway(approvalQueuePage([row]));
 
-    const result = await enrichHunkAction(gw, ack);
+    const result = await enrichActionApproval(gw, ack);
 
     expect(result.approval.risk_level).toBe(1); // completed using get_projection alone
     expect(gw.get_projection).toHaveBeenCalledTimes(1);

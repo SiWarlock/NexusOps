@@ -15,6 +15,7 @@ use rusqlite::Connection;
 use nexusops_shared::actions::{
     ActionPlan, ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
 };
+use nexusops_shared::gateway_ids::ActionPlanId;
 use nexusops_shared::ids::{ActionRequestId, ProjectId};
 use nexusops_shared::ipc::{
     Capabilities, ConnectViaGhParams, ConnectViaGhResult, ConnectViaGhStatus, DiffResult,
@@ -193,7 +194,22 @@ fn gateway_error_to_code(e: &GatewayError) -> IpcErrorCode {
     }
 }
 
-/// `submit_action` — parse the §6.2 `ActionRequest`, run the pipeline → `ActionAck`.
+/// Parse-don't-trust the client-supplied minted ids on an inbound `ActionRequest` at the §6.1 IPC
+/// boundary. `#[serde(transparent)]` newtypes do NOT validate on the wire — an empty/malformed id
+/// deserializes fine → an empty/garbage audit-row PK (a 2nd empty-PK insert COLLIDES → `AuditWriteFailed`
+/// masquerading as `precondition_stale`, the cockpit Add-project blocker root cause). Reject fail-closed
+/// with `protocol_error` BEFORE any row insert / pipeline run (§15 audit-integrity, INV-SEC-1-adjacent).
+/// Resource-ref ids stay executor-validated (out of scope here).
+fn validate_request_ids(req: &ActionRequest) -> Result<(), IpcErrorCode> {
+    ActionRequestId::parse(req.action_request_id.as_str())
+        .map_err(|_| IpcErrorCode::ProtocolError)?;
+    if let Some(pid) = req.project_id.as_ref() {
+        ProjectId::parse(pid.as_str()).map_err(|_| IpcErrorCode::ProtocolError)?;
+    }
+    Ok(())
+}
+
+/// `submit_action` — parse the §6.2 `ActionRequest`, validate its client-supplied ids, run the pipeline → `ActionAck`.
 fn submit_action(
     params: &serde_json::Value,
     write: &WriteHandle,
@@ -202,10 +218,14 @@ fn submit_action(
         Ok(r) => r,
         Err(_) => return Ok(Err(IpcErrorCode::ProtocolError)),
     };
+    if let Err(c) = validate_request_ids(&req) {
+        return Ok(Err(c));
+    }
     gateway_result(write.submit_action_blocking(req))
 }
 
-/// `submit_action_plan` — parse the §6.2 `ActionPlan`, run the plan pipeline → `PlanAck` (O-3).
+/// `submit_action_plan` — parse the §6.2 `ActionPlan`, validate the plan envelope + EVERY step's request
+/// ids, run the plan pipeline → `PlanAck` (O-3).
 fn submit_action_plan(
     params: &serde_json::Value,
     write: &WriteHandle,
@@ -214,6 +234,15 @@ fn submit_action_plan(
         Ok(p) => p,
         Err(_) => return Ok(Err(IpcErrorCode::ProtocolError)),
     };
+    // parse-don't-trust the plan envelope + each step's request ids before any persist (§15 audit-integrity).
+    if ActionPlanId::parse(plan.plan_id.as_str()).is_err() {
+        return Ok(Err(IpcErrorCode::ProtocolError));
+    }
+    for step in &plan.steps {
+        if let Err(c) = validate_request_ids(&step.action_request) {
+            return Ok(Err(c));
+        }
+    }
     gateway_result(write.submit_action_plan_blocking(plan))
 }
 

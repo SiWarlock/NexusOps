@@ -586,6 +586,190 @@ fn test_submit_action_reachable_through_ipc_dispatch() {
     assert_eq!(n, 1, "the action persisted via the REAL IPC dispatch path");
 }
 
+// ---- 090 — submit id hardening (parse-don't-trust at the §6.1 boundary) ------------------------
+
+/// Serve ONE dispatch request through the REAL `serve_connection` path against a live write-actor, then
+/// return `(responses, action_requests count, action_plans count)` — the audit-integrity pin: a rejected
+/// submit must insert NO row in EITHER table (a plan reject must also leave `action_requests` clean).
+/// Mirrors `test_submit_action_reachable_through_ipc_dispatch`'s setup.
+fn serve_one(method: &str, params: serde_json::Value) -> (Vec<RpcResponse>, i64, i64) {
+    use nexusopsd::clock::FixedClock;
+    use nexusopsd::eventstore::{EventStore, PrefixRedactor};
+    use nexusopsd::gateway::{executor::StubExecutor, policy::StubPolicy, Gateway};
+    use nexusopsd::runtime::WriteActor;
+
+    let (_d, path) = temp_db();
+    let store = EventStore::open(
+        &path,
+        Box::new(nexusopsd::idgen::UlidGen),
+        Box::new(FixedClock::new("2026-06-11T00:00:00Z")),
+        Box::new(PrefixRedactor),
+    )
+    .unwrap();
+    let gateway = Gateway::new(Box::new(StubPolicy), Box::new(StubExecutor));
+    let actor = WriteActor::spawn(
+        store,
+        Box::new(FixedClock::new("2026-06-11T00:00:00Z")),
+        gateway,
+    );
+    let handle = actor.handle();
+
+    let (server, client) = UnixStream::pair().unwrap();
+    let uid = 1000u32;
+    let req = RpcRequest {
+        method: method.to_string(),
+        params,
+        id: 7,
+    };
+    let responses = std::thread::scope(|s| {
+        let h = s.spawn(|| client_session(&client, std::slice::from_ref(&req)));
+        serve_connection(
+            server,
+            uid,
+            uid,
+            &path,
+            no_deltas(),
+            &handle,
+            &decision_registry(),
+            &wait_class(),
+            &fake_github(),
+            &fake_gh_connector(),
+            &fake_secret_store(),
+        )
+        .expect("serve");
+        h.join().unwrap()
+    });
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    let count = |t: &str| -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    (responses, count("action_requests"), count("action_plans"))
+}
+
+/// a minimal valid §6.2 ActionPlan with one well-formed step (for the submit_action_plan id-guard test).
+fn sample_action_plan() -> nexusops_shared::actions::ActionPlan {
+    use nexusops_shared::actions::{ActionPlan, ActionPlanStep, ApprovalMode, RiskLevel};
+    use nexusops_shared::gateway_ids::ActionPlanId;
+    use nexusops_shared::status::ActionRequestStatus;
+    ActionPlan {
+        plan_id: ActionPlanId::new(),
+        title: "feature setup".to_string(),
+        steps: vec![ActionPlanStep {
+            step_id: "s1".to_string(),
+            label: "step s1".to_string(),
+            action_request: sample_action_request(),
+            required: true,
+            can_skip: false,
+            rollback_action_type: None,
+            status: ActionRequestStatus::Submitted,
+        }],
+        dependencies: vec![],
+        overall_risk: RiskLevel::Level2,
+        approval_mode: ApprovalMode::StepByStep,
+    }
+}
+
+#[test]
+fn submit_empty_action_request_id_is_protocol_error() {
+    // spec(§15 audit-integrity / 090) — an empty action_request_id deserializes fine (#[serde(transparent)]
+    // newtypes don't validate on the wire) → an empty-PK audit row (a 2nd insert COLLIDES → AuditWriteFailed
+    // masquerading as precondition_stale, the cockpit blocker root cause). The IPC boundary must reject it
+    // fail-closed with protocol_error BEFORE any row insert.
+    let mut v = serde_json::to_value(sample_action_request()).unwrap();
+    v["action_request_id"] = serde_json::json!("");
+    let (responses, n_requests, _) = serve_one("submit_action", v);
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        responses[0].error.as_ref().map(|e| &e.code),
+        Some(&IpcErrorCode::ProtocolError),
+        "empty action_request_id → protocol_error"
+    );
+    assert!(responses[0].result.is_none(), "no ack on a rejected submit");
+    assert_eq!(
+        n_requests, 0,
+        "no empty-PK action_requests row inserted (the audit-integrity hole is closed)"
+    );
+}
+
+#[test]
+fn submit_malformed_action_request_id_is_protocol_error() {
+    // spec(parse-don't-trust / 090) — a non-act_ / bad-ULID id is rejected at the boundary (ActionRequestId::parse).
+    let mut v = serde_json::to_value(sample_action_request()).unwrap();
+    v["action_request_id"] = serde_json::json!("not-an-act-id");
+    let (responses, n_requests, _) = serve_one("submit_action", v);
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        responses[0].error.as_ref().map(|e| &e.code),
+        Some(&IpcErrorCode::ProtocolError)
+    );
+    assert_eq!(n_requests, 0, "no row for a malformed id");
+}
+
+#[test]
+fn submit_malformed_project_id_is_protocol_error() {
+    // spec(parse-don't-trust / 090 Mod-2) — a present-but-malformed project_id is also a clean boundary
+    // protocol_error (not a confusing executor-time error; the build_create_pr_request CLI-parse precedent).
+    let mut v = serde_json::to_value(sample_action_request()).unwrap();
+    v["project_id"] = serde_json::json!("not-a-proj-id");
+    let (responses, n_requests, _) = serve_one("submit_action", v);
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        responses[0].error.as_ref().map(|e| &e.code),
+        Some(&IpcErrorCode::ProtocolError)
+    );
+    assert_eq!(n_requests, 0, "no row for a malformed project_id");
+}
+
+#[test]
+fn submit_plan_malformed_plan_id_is_protocol_error() {
+    // spec(§15 audit-integrity / 090) — the parallel guard on submit_action_plan: a malformed plan_id is
+    // rejected fail-closed BEFORE the plan persists (no action_plans row).
+    let mut v = serde_json::to_value(sample_action_plan()).unwrap();
+    v["plan_id"] = serde_json::json!("");
+    let (responses, n_requests, n_plans) = serve_one("submit_action_plan", v);
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        responses[0].error.as_ref().map(|e| &e.code),
+        Some(&IpcErrorCode::ProtocolError),
+        "empty plan_id → protocol_error"
+    );
+    assert_eq!(n_plans, 0, "no action_plans row for a malformed plan_id");
+    assert_eq!(
+        n_requests, 0,
+        "and no action_requests row (rejected before ANY insert, §15 audit-integrity)"
+    );
+}
+
+#[test]
+fn submit_plan_malformed_step_action_request_id_is_protocol_error() {
+    // spec(§15 audit-integrity / 090) — the per-STEP validate_request_ids LOOP: a plan with a VALID plan_id
+    // + a valid first step + a MALFORMED action_request_id on a LATER step → protocol_error + no rows. Pins
+    // that the guard iterates ALL steps (a validate-only-first-step / skipped-iteration bug would slip the
+    // bad id past plan_id + the single-request submit_action tests).
+    let mut v = serde_json::to_value(sample_action_plan()).unwrap();
+    let good = v["steps"][0].clone();
+    let mut bad = good.clone();
+    bad["step_id"] = serde_json::json!("s2");
+    bad["action_request"]["action_request_id"] = serde_json::json!("not-an-act-id");
+    v["steps"] = serde_json::json!([good, bad]);
+    let (responses, n_requests, n_plans) = serve_one("submit_action_plan", v);
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        responses[0].error.as_ref().map(|e| &e.code),
+        Some(&IpcErrorCode::ProtocolError),
+        "a malformed per-step action_request_id → protocol_error"
+    );
+    assert_eq!(
+        n_plans, 0,
+        "no action_plans row when a later step's id is malformed"
+    );
+    assert_eq!(
+        n_requests, 0,
+        "and no action_requests row (rejected before ANY insert, §15 audit-integrity)"
+    );
+}
+
 #[test]
 fn test_connect_via_gh_through_dispatch() {
     // P4.7/083 (C3b) — the "Connect via gh" trigger is reachable through the REAL serve→dispatch path

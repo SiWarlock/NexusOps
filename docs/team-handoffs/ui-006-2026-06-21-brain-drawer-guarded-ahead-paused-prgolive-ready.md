@@ -4,7 +4,7 @@
 **Track:** ui
 **Worktree:** `NexusOps-ui` (branch `track/ui`) — **LEFT IN PLACE** (resumes here; not torn down).
 **Predecessor handoff:** `docs/team-handoffs/ui-005-2026-06-21-pr-mutations-built-realpinned-paused-authbootstrap-gated.md`
-**Successor handoff:** _(filled in when the next /team-end runs)_
+**Successor handoff:** `docs/team-handoffs/ui-007-2026-06-26-buildable-run-complete-merged-to-main-paused.md`
 **Round-seal commit at handoff:** `664a893` (the Phase-8 Brain-drawer round terminal). **LOCAL — push HELD.**
 
 ## Why this handoff exists

@@ -69,7 +69,17 @@ export function parseProjectionPage(
       `parseProjectionPage: no boundary schema registered for projection "${name}"`,
     );
   }
-  const result = schema.safeParse(payload);
+  // The daemon serves each projection as a BARE JSON array of rows — the response
+  // envelope ({projection, rows, cursor}) was never frozen in the contract, so the
+  // ui adapts at this single boundary: a bare-array reply is normalized into the page
+  // the UI schemas expect (`cursor` stays absent → optional). An already-enveloped
+  // payload (the Mock fixtures / pre-enveloped callers) passes through unchanged, so
+  // both the real-daemon and Mock shapes parse through one helper (kills the
+  // Mock-vs-real gap). Row-level validation below is unchanged — still fail-closed.
+  const enveloped = Array.isArray(payload)
+    ? { projection: name, rows: payload }
+    : payload;
+  const result = schema.safeParse(enveloped);
   if (!result.success) {
     throw new BoundaryValidationError(name, result.error);
   }

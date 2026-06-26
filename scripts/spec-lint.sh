@@ -95,7 +95,7 @@ cmd_brief() {
   local task_line task_ids wave_ids tid
   task_line=$(grep -E '^\- \*\*Task ID:?\*\*' "$brief" || true)
   task_ids=$(printf '%s\n' "$task_line" | grep -oE '[A-Za-z]+[0-9]*\.[0-9]+' | sort -u || true)
-  wave_ids=$(printf '%s\n' "$task_line" | grep -oE 'W[0-9]+-[A-Za-z0-9]+' | sort -u || true)
+  wave_ids=$(printf '%s\n' "$task_line" | grep -oE 'W[0-9]+-[A-Za-z0-9-]+' | sort -u || true)   # hyphen in the class is literal (trailing) → matches multi-segment ids like W1-git-stage
   [ -n "$task_ids" ] || [ -n "$wave_ids" ] || bad "no Task ID line found (## Use case + traceability)"
   for tid in $task_ids; do
     # Tracker task headings are numeric (### 2.1); brief Task IDs are alpha-prefixed (P2.1) per the

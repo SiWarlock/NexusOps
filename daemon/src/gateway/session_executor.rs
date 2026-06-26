@@ -18,7 +18,7 @@
 use std::sync::Mutex;
 
 use nexusops_shared::actions::{ActionPreview, ActionRequest};
-use nexusops_shared::events::SessionStarted;
+use nexusops_shared::events::{SessionProfileChanged, SessionStarted};
 use nexusops_shared::ids::{ExecutionProfileId, SessionId};
 use nexusops_shared::status::Session;
 use nexusops_shared::time::Timestamp;
@@ -33,6 +33,8 @@ use crate::terminal::TerminalSession;
 /// The session-lifecycle action types this executor handles specially (else it delegates).
 const SESSION_CREATE: &str = "session.create";
 const SESSION_KILL: &str = "session.kill";
+/// P5.3b/085 — the §15 #8 no-silent-account-hop profile rebind (the approval-gated CHANGE, PIN c).
+const SESSION_PROFILE_CHANGE: &str = "session.profile_change";
 
 /// The byte appended after an `initial_prompt` to SUBMIT it in claude's TUI (P4.0b-2-smoke, brief 053
 /// Q2). `\r` (CR) — claude's TUI submits on Enter, which is CR in PTY raw mode. The deterministic test
@@ -181,6 +183,94 @@ impl SessionExecutor {
         }
     }
 
+    /// P5.3b/085 (PIN c, §15 #8) — the `session.profile_change` arm: rebind a live session's ExecutionProfile
+    /// to a REGISTERED target (the no-silent-account-hop CHANGE — risk-2, approval-gated by the catalog; the
+    /// policy gate denies any non-UI requester before risk). The target SESSION is the audited resource_ref;
+    /// the NEW profile is `inputs.execution_profile_id` and is **REQUIRED** (unlike session.create, a change has
+    /// no default fallback — an absent/unparseable/unregistered target → Failed BEFORE any swap: no mint, no
+    /// hop). On success, emit the audited `SessionProfileChanged` (the swap is RECORDED, never silently
+    /// switched). No external side effect — the live re-bind/restart of the running agent is a deferred
+    /// follow-on; the event is the §15 #8 record.
+    fn execute_profile_change(&self, req: &ActionRequest) -> ExecutionOutcome {
+        // validate the catalog `requires_resource_refs` precondition FIRST (the target session ref).
+        if let Err(e) = self.inner.validate(req) {
+            return ExecutionOutcome::Failed(e.to_string());
+        }
+        // the target session is the audited resource_ref (the session.kill keying precedent).
+        let Some(rref) = req.resource_refs.first() else {
+            return ExecutionOutcome::Failed(
+                "session.profile_change requires the target session resource_ref".to_string(),
+            );
+        };
+        let session_id = match SessionId::parse(&rref.id) {
+            Ok(id) => id,
+            Err(_) => {
+                return ExecutionOutcome::Failed(format!(
+                    "session.profile_change: invalid session id '{}'",
+                    rref.id
+                ))
+            }
+        };
+        // the NEW profile is REQUIRED (a change must name its target — no default fallback) + must be
+        // REGISTERED (fail-closed-on-unknown, §15 #8 no-account-hop; NO mint).
+        let new_profile = match req
+            .inputs
+            .get("execution_profile_id")
+            .and_then(|v| v.as_str())
+        {
+            Some(s) => match ExecutionProfileId::parse(s) {
+                Ok(id) => id,
+                Err(_) => {
+                    return ExecutionOutcome::Failed(format!(
+                        "session.profile_change: invalid execution profile id '{s}'"
+                    ))
+                }
+            },
+            None => {
+                return ExecutionOutcome::Failed(
+                    "session.profile_change requires inputs.execution_profile_id (no default)"
+                        .to_string(),
+                )
+            }
+        };
+        match self.profile_lookup.exists(&new_profile) {
+            Ok(true) => {}
+            Ok(false) => {
+                return ExecutionOutcome::Failed(format!(
+                    "execution profile not found: {} (§15 #8 no-account-hop — no mint)",
+                    new_profile.as_str()
+                ))
+            }
+            Err(e) => {
+                return ExecutionOutcome::Failed(format!("execution profile lookup failed: {e}"))
+            }
+        }
+        // emit the audited swap record (the §15 #8 recorded-not-silent event). Serialize the frozen struct
+        // here (the Namespaced emit precedent — the executor owns the payload + handles the serde fault).
+        let payload = match serde_json::to_string(&SessionProfileChanged {
+            session_id,
+            execution_profile_id: new_profile,
+        }) {
+            Ok(p) => p,
+            Err(e) => {
+                return ExecutionOutcome::Failed(format!(
+                    "session.profile_change: failed to encode the swap event: {e}"
+                ))
+            }
+        };
+        ExecutionOutcome::Succeeded {
+            changed_resources: req.resource_refs.clone(),
+            detail: "session.profile_change — recorded the approved profile rebind".to_string(),
+            // no external side effect — the SessionProfileChanged event IS the durable record (the live
+            // agent re-bind/restart is the deferred follow-on). A lost terminal event rolls back cleanly.
+            side_effect_applied: false,
+            emitted_events: vec![EmittedEvent::Namespaced {
+                event_type: SessionProfileChanged::EVENT_TYPE,
+                payload_json: payload,
+            }],
+        }
+    }
+
     fn execute_kill(&self, req: &ActionRequest) -> ExecutionOutcome {
         // validate the catalog precondition FIRST (this path never reaches `inner.execute`).
         if let Err(e) = self.inner.validate(req) {
@@ -225,6 +315,7 @@ impl ActionExecutor for SessionExecutor {
             // precondition themselves (they never reach `inner.execute`).
             SESSION_CREATE => self.execute_create(req),
             SESSION_KILL => self.execute_kill(req),
+            SESSION_PROFILE_CHANGE => self.execute_profile_change(req),
             // every non-session action delegates to the catalog executor, which validates internally
             // (`resolve`) — no double-check here.
             _ => self.inner.execute(req),

@@ -17,6 +17,7 @@ import {
   AuditTrailPage,
   Capabilities,
   DiffResult,
+  GetExecutionProfilesResult,
   ProjectActivityPage,
   ProjectionDelta,
   PullRequestProjectionPage,
@@ -112,6 +113,19 @@ export function parseCapabilities(payload: unknown): Capabilities {
   const result = Capabilities.safeParse(payload);
   if (!result.success) {
     throw new BoundaryValidationError("capabilities", result.error);
+  }
+  return result.data;
+}
+
+/** Validate a `get_execution_profiles` result (W1-prof) at the boundary (same fail-closed posture).
+ *  A read-RESULT struct, consumed DIRECTLY (NOT parseProjectionPage — not a projection page). §15 #4:
+ *  the `.strict()` ProfileRow shadow REJECTS a leaked keychain_ref — a secret can never reach view code. */
+export function parseExecutionProfilesResult(
+  payload: unknown,
+): GetExecutionProfilesResult {
+  const result = GetExecutionProfilesResult.safeParse(payload);
+  if (!result.success) {
+    throw new BoundaryValidationError("GetExecutionProfilesResult", result.error);
   }
   return result.data;
 }

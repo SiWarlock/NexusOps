@@ -103,6 +103,8 @@ const rejectingGateway: GatewayPort = {
   // §6.1 get_diff / get_pr_diff (unused in this read-path test — Code/Diff has its own suite).
   get_diff: notExercised,
   get_pr_diff: notExercised,
+  // §6.1 get_execution_profiles (W1-prof; unused here — the profile-picker has its own suite).
+  get_execution_profiles: notExercised,
   // §6.1 mutation surface (unused in this read-path test — the seam has its own suite).
   submit_action: notExercised,
   preview_action: notExercised,

@@ -35,6 +35,7 @@ import type {
   ActionRequest,
   Capabilities,
   DiffResult,
+  GetExecutionProfilesResult,
   ProjectionDelta,
   ProjectionName,
   ProjectionPageByName,
@@ -45,6 +46,7 @@ import {
   parseCapabilities,
   parseDelta,
   parseDiff,
+  parseExecutionProfilesResult,
   parsePreview,
   parseProjectionPage,
 } from "./boundary";
@@ -227,6 +229,14 @@ export class UdsGatewayPort implements GatewayPort {
 
   async get_capabilities(): Promise<Capabilities> {
     return this.invokeRead(parseCapabilities, "gateway_get_capabilities");
+  }
+
+  // §6.1 get_execution_profiles (W1-prof) — the no-param read RPC; invoke + boundary-parse the typed
+  // secret-free result. A READ → NOT gated on `mutationsEnabled` (the get_diff/get_pr_diff precedent;
+  // the profile list is read-only display data). A `WireError` routes VERBATIM via the shared
+  // invokeRead/handleError path (LESSON §16); a malformed payload → BoundaryValidationError (fail-closed).
+  async get_execution_profiles(): Promise<GetExecutionProfilesResult> {
+    return this.invokeRead(parseExecutionProfilesResult, "gateway_get_execution_profiles");
   }
 
   /** Invoke a read command, mark the connection live on a daemon response, then

@@ -25,9 +25,9 @@ use std::time::Duration;
 
 use nexusops_shared::actions::{ActionPreview, ActionRequest};
 use nexusops_shared::ipc::{
-    ActionAck, Capabilities, DiffResult, GetDiffParams, GetPrDiffParams, GetProjectionParams,
-    HelloAck, HelloFrame, IpcErrorCode, ProjectionDelta, ProjectionName, ProjectionScope,
-    RpcRequest, ServerFrame, SubscribeParams, VersionSkewError, PROTOCOL_VERSION,
+    ActionAck, Capabilities, DiffResult, GetDiffParams, GetExecutionProfilesResult, GetPrDiffParams,
+    GetProjectionParams, HelloAck, HelloFrame, IpcErrorCode, ProjectionDelta, ProjectionName,
+    ProjectionScope, RpcRequest, ServerFrame, SubscribeParams, VersionSkewError, PROTOCOL_VERSION,
 };
 use serde_json::Value;
 
@@ -265,6 +265,19 @@ pub fn get_capabilities<S: Read + Write>(
     id: u64,
 ) -> Result<Capabilities, ClientError> {
     let value = call(stream, "get_capabilities", serde_json::json!({}), id)?;
+    Ok(serde_json::from_value(value)?)
+}
+
+/// `get_execution_profiles` — the no-param read RPC (W1-prof); deserializes the typed, SECRET-FREE
+/// `GetExecutionProfilesResult{profiles}` (the cockpit profile-picker read surface; §2.8 registry).
+/// Mirrors `get_capabilities` (no params). §15 #4: the result carries NO keychain_ref — only the
+/// derived `has_credential` bool. A malformed result → `Serde` (fail-closed); a `WireError{code}` →
+/// `Wire(code)` VERBATIM (inherited from `call`/`demux_rpc_response`).
+pub fn get_execution_profiles<S: Read + Write>(
+    stream: &mut S,
+    id: u64,
+) -> Result<GetExecutionProfilesResult, ClientError> {
+    let value = call(stream, "get_execution_profiles", serde_json::json!({}), id)?;
     Ok(serde_json::from_value(value)?)
 }
 
@@ -816,6 +829,37 @@ mod tests {
         let mut s = FakeStream::new(rpc_ok(2, serde_json::json!({ "not_an_ack": true })));
         assert!(matches!(
             create_session(&mut s, "proj_1", None, None, 2),
+            Err(ClientError::Serde(_))
+        ));
+    }
+
+    #[test]
+    fn get_execution_profiles_returns_typed_result() {
+        // spec(§6.1 W1-prof) — get_execution_profiles (no-param read RPC) deserializes the typed,
+        // SECRET-FREE GetExecutionProfilesResult{profiles}; mirrors get_capabilities (no params).
+        let result = serde_json::json!({ "profiles": [{
+            "execution_profile_id": "ep_1", "provider": "anthropic", "harness": "claude_code",
+            "model": null, "account_alias": null, "status": "available",
+            "is_default": true, "has_credential": false
+        }]});
+        let mut s = FakeStream::new(rpc_ok(7, result));
+        let got = get_execution_profiles(&mut s, 7).unwrap();
+        assert_eq!(got.profiles.len(), 1);
+        assert_eq!(got.profiles[0].execution_profile_id, "ep_1");
+        assert!(got.profiles[0].is_default);
+        // the request carried the get_execution_profiles method (no params object).
+        let req: RpcRequest = serde_json::from_slice(&s.writes[4..]).unwrap();
+        assert_eq!(req.method, "get_execution_profiles");
+    }
+
+    #[test]
+    fn get_execution_profiles_malformed_result_is_serde_error() {
+        // spec(§5.0) — a structurally valid RpcResponse whose result is NOT a GetExecutionProfilesResult
+        // → a typed Serde error (fail-closed), never a bad partial. The verbatim §6.4 Wire(code) +
+        // Protocol paths are inherited from `call` (the get_diff/get_pr_diff precedent).
+        let mut s = FakeStream::new(rpc_ok(7, serde_json::json!({ "not_profiles": true })));
+        assert!(matches!(
+            get_execution_profiles(&mut s, 7),
             Err(ClientError::Serde(_))
         ));
     }

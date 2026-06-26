@@ -125,7 +125,9 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     //           / set_keychain_ref + keychain self-test + session.profile_change — NO new flat enum [42 held]).
     // → 0.47.0 (092 friendly-project-name: ProjectRescanned+name [daemon event] + proj_project_activity.name —
     //           consumed by the already-optional ProjectActivityRow.name [ui-082], NO new flat enum [42 held]).
-    expect(caps.contract_version).toBe("0.47.0");
+    // → 0.48.0 (W1-prof get_execution_profiles read RPC: ProfileRow + GetExecutionProfilesResult read-RESULT
+    //           types in shared/src/ipc.rs [secret-free, §15 #4] — status reuses ExecutionProfile, NO new flat enum [42 held]).
+    expect(caps.contract_version).toBe("0.48.0");
     expect(caps.protocol_version).toBe(1);
   });
 
@@ -157,5 +159,18 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     // spec(Slice B) — the Mock is a fully-working dev/test port: enabledSessionKill defaults ON so
     // Mock-driven Kill flows exercise the enabled path (production UdsGatewayPort defaults OFF — held).
     expect(new MockGatewayPort().enabledSessionKill).toBe(true);
+  });
+
+  it("mock_get_execution_profiles_returns_canned", async () => {
+    // spec(W1-prof) — the Mock returns ≥1 canned profile (one is_default:true for the picker's
+    // default-preselect; one has_credential:false for the "needs credential" affordance), validated
+    // THROUGH the frozen ProfileRow shadow so it can never emit a profile the real boundary would reject.
+    // The Mock validates its canned data THROUGH GetExecutionProfilesResult.parse internally (z.array(
+    // ProfileRow)), so every returned row is boundary-valid by construction — assert the picker-relevant
+    // shape (default-preselect + needs-credential), not a redundant per-row re-parse.
+    const result = await new MockGatewayPort().get_execution_profiles();
+    expect(result.profiles.length).toBeGreaterThanOrEqual(1);
+    expect(result.profiles.some((p) => p.is_default)).toBe(true);
+    expect(result.profiles.some((p) => !p.has_credential)).toBe(true);
   });
 });

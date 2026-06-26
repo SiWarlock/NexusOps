@@ -432,6 +432,41 @@ describe("UdsGatewayPort — single-shot reads (Layer A)", () => {
     expect(new UdsGatewayPort().enabledSessionLaunch).toBe(false);
     expect(new UdsGatewayPort({ mutationsEnabled: true }).enabledSessionLaunch).toBe(false);
   });
+
+  it("uds_get_execution_profiles_invokes_and_parses_without_mutations_enabled", async () => {
+    // spec(§6.1 W1-prof) — get_execution_profiles is a READ (the get_diff/get_pr_diff precedent): it
+    // invokes gateway_get_execution_profiles + boundary-parses the typed result, and works WITHOUT
+    // mutationsEnabled (unlike submit_action). The DEFAULT port (mutationsEnabled:false) still reads.
+    const port = new UdsGatewayPort(); // mutationsEnabled defaults false
+    mockInvoke.mockResolvedValueOnce({
+      profiles: [
+        {
+          execution_profile_id: "ep_1",
+          provider: "anthropic",
+          harness: "claude_code",
+          model: null,
+          account_alias: null,
+          status: "available",
+          is_default: true,
+          has_credential: true,
+        },
+      ],
+    });
+    const result = await port.get_execution_profiles();
+    expect(result.profiles).toHaveLength(1);
+    expect(result.profiles[0]!.is_default).toBe(true);
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_get_execution_profiles");
+  });
+
+  it("uds_get_execution_profiles_malformed_is_boundary_error", async () => {
+    // spec(§5.0) — a non-GetExecutionProfilesResult payload → BoundaryValidationError (parse-don't-trust),
+    // never a fabricated profile list reaching the picker.
+    const port = new UdsGatewayPort();
+    mockInvoke.mockResolvedValueOnce({ not_profiles: true });
+    await expect(port.get_execution_profiles()).rejects.toBeInstanceOf(
+      BoundaryValidationError,
+    );
+  });
 });
 
 describe("UdsGatewayPort — subscribe streaming (Layer B-TS)", () => {

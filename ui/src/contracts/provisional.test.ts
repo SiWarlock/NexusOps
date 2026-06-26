@@ -6,7 +6,9 @@ import {
   DiffLine,
   DiffResult,
   GetDiffParams,
+  GetExecutionProfilesResult,
   Hunk,
+  ProfileRow,
   ProjectActivityRow,
   PullRequestRow,
   ReviewRow,
@@ -176,6 +178,106 @@ describe("provisional diff shapes (§6.1 — the 6.3e get_diff read surface)", (
         `${field} is a uint32 (minimum 0) — a negative offset must be rejected`,
       ).toBe(false);
     }
+  });
+
+  it("profile_row_field_sets_match_frozen_schema", () => {
+    // spec(§6.1/§2.5-seam W1-prof) — ProfileRow + GetExecutionProfilesResult are hand-modeled provisional
+    // shadows of the frozen read-RPC RESULT $defs (objects aren't generated — Lesson §2; the DiffResult
+    // precedent). The shadow field-sets must equal the frozen schema $defs' property sets (drift loudly
+    // on a daemon ProfileRow change).
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
+      $defs: Record<string, { properties?: Record<string, unknown> }>;
+    };
+    const cases: [string, { shape: Record<string, unknown> }][] = [
+      ["ProfileRow", ProfileRow],
+      ["GetExecutionProfilesResult", GetExecutionProfilesResult],
+    ];
+    for (const [name, shadow] of cases) {
+      const frozen = Object.keys(schema.$defs[name]!.properties!).toSorted();
+      expect(
+        Object.keys(shadow.shape).toSorted(),
+        `field drift in ${name}`,
+      ).toEqual(frozen);
+    }
+  });
+
+  it("profile_row_status_delegates_to_generated_executionprofile_enum", () => {
+    // spec(§6.1/§5.1) — ProfileRow.status delegates to the GENERATED ExecutionProfile enum (never a
+    // re-literal'd union, Lesson §1/§2): a canonical state parses, an unknown state is rejected.
+    const base = {
+      execution_profile_id: "ep_1",
+      provider: "anthropic",
+      harness: "claude_code",
+      model: null,
+      account_alias: null,
+      status: "available",
+      is_default: true,
+      has_credential: false,
+    };
+    expect(ProfileRow.safeParse(base).success).toBe(true);
+    expect(ProfileRow.safeParse({ ...base, status: "credit_exhausted" }).success).toBe(true);
+    expect(ProfileRow.safeParse({ ...base, status: "bogus_state" }).success).toBe(false);
+  });
+
+  it("profile_row_is_secret_free_rejects_keychain_ref_and_unknown_fields", () => {
+    // spec(§15 #4) — the keychain POINTER / secret is NEVER served: ProfileRow has NO keychain_ref field;
+    // the .strict() shadow REJECTS a leaked keychain_ref (or any extra field) — the secret-free pin
+    // mirrored UI-side (the daemon's deny_unknown_fields adversarial pin, W1-prof seal).
+    const base = {
+      execution_profile_id: "ep_1",
+      provider: "anthropic",
+      harness: "claude_code",
+      model: null,
+      account_alias: null,
+      status: "available",
+      is_default: true,
+      has_credential: false,
+    };
+    expect(ProfileRow.safeParse({ ...base, keychain_ref: "kc://leak" }).success).toBe(false);
+    expect(ProfileRow.safeParse({ ...base, extra: 1 }).success).toBe(false);
+    expect(GetExecutionProfilesResult.safeParse({ profiles: [], extra: 1 }).success).toBe(false);
+  });
+
+  it("profile_row_field_types_reject_wrong_primitives", () => {
+    // spec(LESSON §14) — a field-TYPE pin in the NEGATIVE direction (the hunk_offsets_are_uint32
+    // precedent): a wrong-typed value must be REJECTED, not just the right one accepted. A shadow that
+    // accidentally declared z.string()/z.number() for the booleans (or vice-versa) would pass the
+    // field-name drift test + the positive tests yet reject real daemon frames.
+    const base = {
+      execution_profile_id: "ep_1",
+      provider: "anthropic",
+      harness: "claude_code",
+      model: null,
+      account_alias: null,
+      status: "available",
+      is_default: true,
+      has_credential: false,
+    };
+    expect(ProfileRow.safeParse(base).success).toBe(true);
+    // booleans are STRICT booleans (no string/number coercion)
+    expect(ProfileRow.safeParse({ ...base, is_default: "true" }).success).toBe(false);
+    expect(ProfileRow.safeParse({ ...base, is_default: 1 }).success).toBe(false);
+    expect(ProfileRow.safeParse({ ...base, has_credential: "false" }).success).toBe(false);
+    expect(ProfileRow.safeParse({ ...base, has_credential: 0 }).success).toBe(false);
+    // string fields reject a non-string
+    expect(ProfileRow.safeParse({ ...base, execution_profile_id: 123 }).success).toBe(false);
+  });
+
+  it("profile_row_optionals_accept_null_or_string", () => {
+    // spec(LESSON §15 trap 3) — model/account_alias serialize as explicit null (no skip_serializing_if);
+    // the shadow accepts null AND a string (and tolerates omission — they're not in `required`).
+    const base = {
+      execution_profile_id: "ep_1",
+      provider: "anthropic",
+      harness: "claude_code",
+      status: "available",
+      is_default: false,
+      has_credential: true,
+    };
+    expect(ProfileRow.safeParse({ ...base, model: null, account_alias: null }).success).toBe(true);
+    expect(
+      ProfileRow.safeParse({ ...base, model: "claude-x", account_alias: "work" }).success,
+    ).toBe(true);
   });
 
   it("diff_line_kind_delegates_to_generated_enum", () => {

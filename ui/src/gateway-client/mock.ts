@@ -30,6 +30,7 @@ import type {
 import {
   CONTRACT_VERSION,
   DiffResult,
+  GetExecutionProfilesResult,
   TerminalOutputFrame,
 } from "../contracts/index";
 import { terminalOutputFixture } from "./terminal-fixture";
@@ -229,6 +230,38 @@ export class MockGatewayPort implements GatewayPort {
     _file: string | null,
   ): Promise<DiffResult> {
     return DiffResult.parse(diffFixture);
+  }
+
+  // §6.1 get_execution_profiles (W1-prof) — a secret-free canned profile list, served THROUGH the frozen
+  // GetExecutionProfilesResult shadow (parse-don't-trust, symmetric with get_diff — the Mock can never
+  // emit a profile the real boundary would reject). Two profiles exercise the W1-C picker: one
+  // is_default:true+has_credential:true (the default-preselect) + one is_default:false+has_credential:false
+  // (the "needs credential" affordance). §15 #4: NO keychain_ref — has_credential bool only.
+  async get_execution_profiles(): Promise<GetExecutionProfilesResult> {
+    return GetExecutionProfilesResult.parse({
+      profiles: [
+        {
+          execution_profile_id: "ep_claude_default",
+          provider: "anthropic",
+          harness: "claude_code",
+          model: "claude-sonnet",
+          account_alias: "work",
+          status: "available",
+          is_default: true,
+          has_credential: true,
+        },
+        {
+          execution_profile_id: "ep_codex_unconfigured",
+          provider: "openai",
+          harness: "codex",
+          model: null,
+          account_alias: null,
+          status: "misconfigured",
+          is_default: false,
+          has_credential: false,
+        },
+      ],
+    });
   }
 
   // §6.1 mutation-intent surface — deterministic fixtures. The daemon mints the

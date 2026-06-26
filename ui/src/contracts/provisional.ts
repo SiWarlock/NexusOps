@@ -507,3 +507,40 @@ export const Capabilities = z.object({
   contract_version: z.string(),
 });
 export type Capabilities = z.infer<typeof Capabilities>;
+
+// ─── §6.1 execution-profile read surface (PROVISIONAL — W1-prof get_execution_profiles result) ──────
+// The `get_execution_profiles` RPC's secret-free RESULT (the cockpit profile-picker read surface),
+// adopted AHEAD of its consumer (the W1-C `session.profile_change` picker). Hand-modeled provisional
+// shadows of the frozen read-RPC RESULT $defs (objects aren't generated — Lesson §2; the DiffResult
+// precedent — a read-RESULT type, NOT a projection row, so consumed directly, no `parseProjectionPage`).
+// The enum field (ProfileRow.status) delegates to the GENERATED ExecutionProfile (never re-declared,
+// Lesson §1/§2). Both are `.strict()` (the frozen $defs are `additionalProperties:false`) + field-set
+// drift-pinned (provisional.test). §15 #4: NO keychain_ref / secret field — the credential state is the
+// derived `has_credential` bool ONLY; `.strict()` REJECTS a leaked keychain_ref (the secret-free pin).
+
+/** One execution profile served by `get_execution_profiles` (§6.1; W1-prof) — a typed, SECRET-FREE view
+ *  of an `execution_profiles` registry row (§2.8). `status` delegates to the frozen ExecutionProfile
+ *  machine; `model`/`account_alias` serialize as explicit null (no skip_serializing_if). PROVISIONAL. */
+export const ProfileRow = z
+  .object({
+    execution_profile_id: z.string(),
+    provider: z.string(),
+    harness: z.string(),
+    model: z.string().nullable().optional(),
+    account_alias: z.string().nullable().optional(),
+    status: bundle.shape.ExecutionProfile,
+    is_default: z.boolean(),
+    has_credential: z.boolean(),
+  })
+  .strict();
+export type ProfileRow = z.infer<typeof ProfileRow>;
+
+/** `get_execution_profiles` result (§6.1; W1-prof) — the secret-free profile list in a `{profiles:[...]}`
+ *  struct envelope (an empty registry → `{profiles: []}`, not an error). Consumed DIRECTLY via the
+ *  gateway-client (NOT `parseProjectionPage` — a read-RESULT, not a projection page). PROVISIONAL. */
+export const GetExecutionProfilesResult = z
+  .object({
+    profiles: z.array(ProfileRow),
+  })
+  .strict();
+export type GetExecutionProfilesResult = z.infer<typeof GetExecutionProfilesResult>;

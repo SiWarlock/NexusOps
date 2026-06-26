@@ -20,6 +20,7 @@ pub fn run() {
             commands::gateway_get_diff,
             commands::gateway_get_pr_diff,
             commands::gateway_get_capabilities,
+            commands::gateway_get_execution_profiles,
             commands::gateway_subscribe,
             commands::gateway_submit_action,
             commands::gateway_preview_action,

@@ -12,6 +12,7 @@ import type {
   ActionRequest,
   Capabilities,
   DiffResult,
+  GetExecutionProfilesResult,
   ProjectionDelta,
   ProjectionName,
   ProjectionPageByName,
@@ -81,6 +82,14 @@ export interface GatewayPort {
   // file-tree is a post-D7 follow-on). Returns the SAME frozen `DiffResult` as get_diff
   // (REUSED). Errors surface a `WireError` (e.g. `not_found`) like the other reads.
   get_pr_diff(repo_id: string, pr_number: number, file: string | null): Promise<DiffResult>;
+
+  // §6.1 get_execution_profiles (W1-prof) — the cockpit profile-picker read surface: a typed,
+  // SECRET-FREE list of execution-profile rows (§2.8 registry) for the W1-C `session.profile_change`
+  // picker. A READ (NOT gated on `mutationsEnabled` — the get_diff/get_pr_diff precedent). §15 #4: the
+  // result carries NO keychain_ref — credential state is the derived `has_credential` bool only. Errors
+  // surface a `WireError` (e.g. `not_found`/`internal_error`) VERBATIM like the other reads. Exposed-ahead
+  // of its consumer (the picker lands in W1-C, gated on W1-exec/094).
+  get_execution_profiles(): Promise<GetExecutionProfilesResult>;
 
   // §6.1 mutation-intent surface (daemon/src/ipc/methods.rs:169-211). INV-SEC-1 /
   // §4.2 law 1: the UI SUBMITS intents only — the daemon's Action Gateway is the

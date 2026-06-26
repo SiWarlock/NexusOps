@@ -227,6 +227,14 @@ pub async fn gateway_get_capabilities() -> Result<Value, GatewayCommandError> {
     call_daemon("get_capabilities", serde_json::json!({})).await
 }
 
+/// `get_execution_profiles` (W1-prof) — the no-param read RPC serving the secret-free profile list.
+/// Returns the raw `Value` (the TS UdsGatewayPort Zod-validates via parseExecutionProfilesResult);
+/// verbatim §6.4 `Wire{code}` via the SAME `call_daemon`. Mirrors `gateway_get_capabilities` (no params).
+#[tauri::command]
+pub async fn gateway_get_execution_profiles() -> Result<Value, GatewayCommandError> {
+    call_daemon("get_execution_profiles", serde_json::json!({})).await
+}
+
 // ── the #[tauri::command] L2 MUTATION allowlist (registered in lib.rs; STILL no gateway_call) ──
 // One typed command per §6.1 mutation method (L2-D2). Each marshals + calls the SAME call_daemon —
 // so the verbatim §6.4 Wire{code} rides through map_client_error identically to the reads (L2-D6). The

@@ -26,9 +26,8 @@ use std::time::Duration;
 use nexusops_shared::actions::{ActionPreview, ActionRequest};
 use nexusops_shared::ipc::{
     ActionAck, Capabilities, DiffResult, GetDiffParams, GetPrDiffParams, GetProjectionParams,
-    HelloAck, HelloFrame,
-    IpcErrorCode, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, ServerFrame,
-    SubscribeParams, VersionSkewError, PROTOCOL_VERSION,
+    HelloAck, HelloFrame, IpcErrorCode, ProjectionDelta, ProjectionName, ProjectionScope,
+    RpcRequest, ServerFrame, SubscribeParams, VersionSkewError, PROTOCOL_VERSION,
 };
 use serde_json::Value;
 
@@ -843,7 +842,9 @@ mod tests {
             },
         ));
         let mut s = FakeStream::new(ack);
-        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| ControlFlow::Continue(()));
+        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| {
+            ControlFlow::Continue(())
+        });
         assert!(matches!(
             r,
             Err(ClientError::Wire(IpcErrorCode::ProtocolError))
@@ -856,7 +857,9 @@ mod tests {
         let mut reads = subscribe_ack(1, "Session");
         reads.extend_from_slice(&((MAX_FRAME_SIZE + 1) as u32).to_be_bytes()); // oversized prefix, no body
         let mut s = FakeStream::new(reads);
-        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| ControlFlow::Continue(()));
+        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| {
+            ControlFlow::Continue(())
+        });
         assert!(matches!(r, Err(ClientError::FrameTooLarge { .. })));
     }
 
@@ -866,7 +869,9 @@ mod tests {
         let mut reads = subscribe_ack(1, "Session");
         reads.extend(rpc_ok(2, serde_json::json!({ "x": 1 }))); // an RpcResponse mid-stream
         let mut s = FakeStream::new(reads);
-        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| ControlFlow::Continue(()));
+        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| {
+            ControlFlow::Continue(())
+        });
         assert!(matches!(r, Err(ClientError::Protocol(_))));
     }
 
@@ -972,7 +977,7 @@ mod tests {
         assert_eq!(sent.params["action_type"], "git.stage_hunk");
         assert_eq!(sent.params["idempotency_key"], "idem-abc"); // rides opaquely (L2-O4)
         assert_eq!(sent.params["fencing_token"], 42); // rides opaquely (L2-O4)
-        // and round-trips back to the SAME ActionRequest (no field dropped/reshaped by the crate).
+                                                      // and round-trips back to the SAME ActionRequest (no field dropped/reshaped by the crate).
         let echoed: ActionRequest = serde_json::from_value(sent.params).unwrap();
         assert_eq!(echoed, req);
     }
@@ -1035,11 +1040,13 @@ mod tests {
         // (so L2-C routes fencing_conflict→hard-conflict / precondition_stale→re-approvable). Pinned
         // on submit_action (fencing_conflict) + approve (precondition_stale): two methods, two codes.
         let wire = |code| {
-            frame_json(&ServerFrame::RpcResponse(nexusops_shared::ipc::RpcResponse {
-                id: 7,
-                result: None,
-                error: Some(nexusops_shared::ipc::WireError { code }),
-            }))
+            frame_json(&ServerFrame::RpcResponse(
+                nexusops_shared::ipc::RpcResponse {
+                    id: 7,
+                    result: None,
+                    error: Some(nexusops_shared::ipc::WireError { code }),
+                },
+            ))
         };
         let mut s1 = FakeStream::new(wire(IpcErrorCode::FencingConflict));
         assert!(matches!(
@@ -1079,11 +1086,13 @@ mod tests {
             Err(ClientError::Protocol(_))
         ));
         // an id-mismatch is also Protocol (a stale/uncorrelated response, even carrying a valid ack).
-        let mismatch = frame_json(&ServerFrame::RpcResponse(nexusops_shared::ipc::RpcResponse {
-            id: 99,
-            result: Some(serde_json::to_value(sample_ack()).unwrap()),
-            error: None,
-        }));
+        let mismatch = frame_json(&ServerFrame::RpcResponse(
+            nexusops_shared::ipc::RpcResponse {
+                id: 99,
+                result: Some(serde_json::to_value(sample_ack()).unwrap()),
+                error: None,
+            },
+        ));
         let mut s2 = FakeStream::new(mismatch);
         assert!(matches!(
             submit_action(&mut s2, &sample_action_request(), 7),

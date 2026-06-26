@@ -49,6 +49,9 @@ pub fn serve_connection(
     // the deferred follow-on (constructed unauthenticated → a private-repo fetch returns a typed error
     // until auth lands); the live fetch is test-seamed via `FakeGithubReadClient`.
     github: &dyn crate::integrations::github::GithubReadClient,
+    // P4.7/083 (C3b) — the "Connect via gh" connector for the `connect_via_gh` trigger (daemon-sourced
+    // token → keychain). Reachable ONLY post-auth (the rule-#7 gate below runs first).
+    gh_connector: &dyn crate::integrations::auth::GhConnector,
 ) -> Result<(), IpcError> {
     // Rule #7 (§15 / ADR-004): peer-auth before anything else — before any frame is read.
     authorize_peer(peer_uid, daemon_uid)?;
@@ -130,7 +133,15 @@ pub fn serve_connection(
         if req.method == "subscribe" {
             if let Ok(params) = serde_json::from_value::<SubscribeParams>(req.params.clone()) {
                 let rx = deltas.subscribe();
-                let ack = methods::dispatch(&req, db_path, write, registry, wait_class, github)?;
+                let ack = methods::dispatch(
+                    &req,
+                    db_path,
+                    write,
+                    registry,
+                    wait_class,
+                    github,
+                    gh_connector,
+                )?;
                 let accepted = ack.error.is_none();
                 let buf = serde_json::to_vec(&ServerFrame::RpcResponse(ack))
                     .map_err(|e| IpcError::Protocol(e.to_string()))?;
@@ -161,7 +172,13 @@ pub fn serve_connection(
         // wrap the response in the frame-type-tagged ServerFrame envelope (§6.4 multiplexing) so
         // the client demuxes rpc-responses from subscription-push frames on one connection.
         let frame = ServerFrame::RpcResponse(methods::dispatch(
-            &req, db_path, write, registry, wait_class, github,
+            &req,
+            db_path,
+            write,
+            registry,
+            wait_class,
+            github,
+            gh_connector,
         )?);
         let buf = serde_json::to_vec(&frame).map_err(|e| IpcError::Protocol(e.to_string()))?;
         write_frame(&mut stream, &buf)?;

@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use nexusops_shared::status::ReviewState;
 use nexusops_shared::time::Timestamp;
 
+use super::auth::GithubAuthResolver;
 use super::classifier::IntegrationOutcomeClass;
 use super::github::{classify_octocrab_error, extract_pr_signals};
 use super::pull_request::PullRequestSignals;
@@ -213,17 +214,20 @@ pub trait GithubWriteClient: Send + Sync {
     ) -> Result<SubmittedReview, GithubWriteError>;
 }
 
-/// The live client over an **injected** `octocrab::Octocrab` (auth bootstrap deferred — never builds the
-/// handle / reads the keychain). Creates the PR, then derives signals from the create response. The HTTP
-/// round-trip is the fake-covered non-deterministic edge — no unit test (Step 7.5: only the test module +
-/// `FakeGithubWriteClient` reference the trait; the real client is reachable from `main.rs`).
+/// The live client over a [`GithubAuthResolver`] (P4.7/083 — the C3 live-auth wiring). Each call builds a
+/// PER-OWNER `octocrab` handle: AUTHED with the repo owner's keychain token when the connection's
+/// live-writes toggle is ON + a token is present; else UNAUTHENTICATED (fail-closed — the existing
+/// 401→AuthFailed path). The per-`owner` token selection is the confused-deputy-safe axis (a write to
+/// repo X uses X's owner's token, never another account's). The HTTP round-trip is the fake-covered
+/// non-deterministic edge — no unit test (only the deterministic `resolve_token_for` decision is pinned;
+/// `FakeGithubWriteClient` covers the executor path).
 pub struct OctocrabGithubWriteClient {
-    octocrab: octocrab::Octocrab,
+    auth: GithubAuthResolver,
 }
 
 impl OctocrabGithubWriteClient {
-    pub fn new(octocrab: octocrab::Octocrab) -> Self {
-        Self { octocrab }
+    pub fn new(auth: GithubAuthResolver) -> Self {
+        Self { auth }
     }
 }
 
@@ -233,7 +237,9 @@ impl GithubWriteClient for OctocrabGithubWriteClient {
         &self,
         args: &CreatePrArgs,
     ) -> Result<CreatedPr, GithubWriteError> {
-        let handler = self.octocrab.pulls(&args.owner, &args.repo);
+        // per-owner authed-or-unauth handle (the C3 live-auth wiring; toggle-gated, fail-closed unauth).
+        let octocrab = self.auth.octocrab_for(&args.owner);
+        let handler = octocrab.pulls(&args.owner, &args.repo);
         let mut builder = handler.create(&args.title, &args.head, &args.base);
         if let Some(body) = &args.body {
             builder = builder.body(body.as_str());
@@ -268,8 +274,8 @@ impl GithubWriteClient for OctocrabGithubWriteClient {
         // first page (per_page=100) — pagination of >100 reviews on one PR is a rare follow-on. The live
         // HTTP round-trip is the fake-covered edge (no unit test); the per-review NORMALIZATION (the state
         // map) is the unit-tested pure `map_review_state`.
-        let page = self
-            .octocrab
+        let octocrab = self.auth.octocrab_for(&args.owner);
+        let page = octocrab
             .pulls(&args.owner, &args.repo)
             .list_reviews(args.pr_number)
             .per_page(100)
@@ -298,8 +304,8 @@ impl GithubWriteClient for OctocrabGithubWriteClient {
     }
 
     async fn merge_pull_request(&self, args: &MergePrArgs) -> Result<MergedPr, GithubWriteError> {
-        let merge = self
-            .octocrab
+        let octocrab = self.auth.octocrab_for(&args.owner);
+        let merge = octocrab
             .pulls(&args.owner, &args.repo)
             .merge(args.pr_number)
             // SHA-pin: GitHub refuses (409) if the head moved off this SHA — the anti-race guard so the
@@ -350,8 +356,8 @@ impl GithubWriteClient for OctocrabGithubWriteClient {
             "event": args.event,
             "comments": [],
         });
-        let review: octocrab::models::pulls::Review = self
-            .octocrab
+        let octocrab = self.auth.octocrab_for(&args.owner);
+        let review: octocrab::models::pulls::Review = octocrab
             .post(route, Some(&request_body))
             .await
             .map_err(|e| GithubWriteError {

@@ -12,7 +12,9 @@
 
 use nexusops_shared::actor::ActorType;
 use nexusops_shared::event_envelope::{Sensitivity, SourceType};
-use nexusops_shared::events::{IntegrationConnectionRegistered, Provider};
+use nexusops_shared::events::{
+    IntegrationConnectionRegistered, IntegrationLiveWritesSet, Provider,
+};
 use nexusops_shared::ids::WorkspaceId;
 use nexusopsd::clock::FixedClock;
 use nexusopsd::eventstore::{open_read_only, AppendIntent, EventStore, PrefixRedactor};
@@ -302,16 +304,223 @@ fn test_migration_11_applies() {
     // const SUPPORTED_USER_VERSION is pinned at the exact latest by gateway_plan's runtime assertion.)
 }
 
-// ---- Test 8 — the projector folds ONLY IntegrationConnectionRegistered ------
+// ---- Test 8 — the projector folds ONLY its two events ----------------------
 
 #[test]
 fn test_ignores_other_event_types() {
-    // spec(§7.2): the projector folds ONLY IntegrationConnectionRegistered — a different event writes
-    // no proj_integration_connection row.
+    // spec(§7.2): the projector folds ONLY IntegrationConnectionRegistered (upsert the row) +
+    // IntegrationLiveWritesSet (flip the toggle) — an UNRELATED event writes no row.
     let (_d, path) = temp_db();
     let mut store = open(&path);
     let mut i = intent("{\"status\":\"active\"}");
     i.event_type = "SessionStarted".to_string();
     store.append(i).unwrap();
     assert_eq!(conn_rows(&path).len(), 0);
+
+    // an IntegrationLiveWritesSet for a connection that was NEVER registered → UPDATE matches 0 rows →
+    // a healthy no-op (no row materialized; the executor's registered-gate prevents emitting this in
+    // prod, but the projector must tolerate it idempotently — derive-from-event, never an INSERT).
+    append_live_writes_set(&mut store, "conn_never_registered", true);
+    assert_eq!(
+        conn_rows(&path).len(),
+        0,
+        "IntegrationLiveWritesSet on an unknown connection materializes no row (UPDATE-0-rows no-op)"
+    );
+}
+
+// ---- P4.7 (083 Q3) — the live-writes toggle fold (derive-from-event, default OFF, rebuild-safe) ----
+
+/// append an `IntegrationLiveWritesSet{connection_id, enabled}` (the integration.set_live_writes emit).
+fn append_live_writes_set(store: &mut EventStore, connection_id: &str, enabled: bool) {
+    let payload = IntegrationLiveWritesSet {
+        connection_id: connection_id.to_string(),
+        enabled,
+    };
+    let mut i = intent(&serde_json::to_string(&payload).unwrap());
+    i.event_type = IntegrationLiveWritesSet::EVENT_TYPE.to_string();
+    store.append(i).unwrap();
+}
+
+/// read just `live_writes_enabled` for a connection (rusqlite INTEGER 0/1 → bool).
+fn live_writes_enabled(path: &std::path::Path, connection_id: &str) -> bool {
+    open_read_only(path)
+        .unwrap()
+        .query_row(
+            "SELECT live_writes_enabled FROM proj_integration_connection WHERE connection_id = ?1",
+            [connection_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+        != 0
+}
+
+#[test]
+fn test_live_writes_set_folds_to_proj() {
+    // spec(§7.2 / 083 Q3 / LESSON 17): a registered connection defaults live_writes_enabled=OFF; an
+    // IntegrationLiveWritesSet{enabled:true} folds it ON (derive-from-event, NOT a bare column write);
+    // enabled:false folds it back OFF; rebuild-equivalent (the flag survives a projection rebuild).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    append_connection(
+        &mut store,
+        &conn_payload("conn_X", Provider::Github, Some("me")),
+    );
+    assert!(
+        !live_writes_enabled(&path, "conn_X"),
+        "a freshly-registered connection defaults live_writes_enabled=OFF (the post-re-review gate)"
+    );
+
+    append_live_writes_set(&mut store, "conn_X", true);
+    assert!(
+        live_writes_enabled(&path, "conn_X"),
+        "IntegrationLiveWritesSet{{enabled:true}} folds live_writes_enabled ON"
+    );
+
+    append_live_writes_set(&mut store, "conn_X", false);
+    assert!(
+        !live_writes_enabled(&path, "conn_X"),
+        "enabled:false folds it back OFF (derive-from-event)"
+    );
+
+    // rebuild-equivalent: the toggle is reproduced from the event stream (not a lost column write).
+    append_live_writes_set(&mut store, "conn_X", true);
+    let before = live_writes_enabled(&path, "conn_X");
+    store.rebuild_projections().unwrap();
+    assert_eq!(
+        before,
+        live_writes_enabled(&path, "conn_X"),
+        "the live_writes_enabled flag is reproduced byte-identically on rebuild (LESSON 17)"
+    );
+}
+
+#[test]
+fn test_reregister_preserves_live_writes_toggle() {
+    // spec(083 Q3): a re-registration (IntegrationConnectionRegistered for an existing connection) MUST
+    // NOT reset live_writes_enabled — the apply_registered ON CONFLICT set list deliberately omits the
+    // toggle, so re-connecting never silently RE-ENABLES *or* disables a deliberately-set authorization
+    // (the brief's "re-connecting never silently re-enables live writes"). A regression that added
+    // `live_writes_enabled=excluded.live_writes_enabled` to the conflict set would flip this back to OFF.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    append_connection(
+        &mut store,
+        &conn_payload("conn_X", Provider::Github, Some("me")),
+    );
+    append_live_writes_set(&mut store, "conn_X", true);
+    assert!(live_writes_enabled(&path, "conn_X"), "toggle set ON");
+
+    // re-register the SAME connection (e.g. a re-connect with a changed account) — the toggle survives.
+    append_connection(
+        &mut store,
+        &conn_payload("conn_X", Provider::Github, Some("you")),
+    );
+    assert!(
+        live_writes_enabled(&path, "conn_X"),
+        "re-registration preserves the ON toggle (the ON CONFLICT set omits live_writes_enabled)"
+    );
+}
+
+// ---- Test — MIGRATION_18 adds the live_writes_enabled column (LESSON §50 floor) ----
+
+#[test]
+fn test_migration_18_live_writes_column() {
+    // spec(LESSON §50 forward-only migration floor): once MIGRATION_18 is applied the
+    // proj_integration_connection table carries the live_writes_enabled column. Asserted as a FLOOR
+    // (>= 18) + column existence, NOT the exact latest (a later migration would raise the version while
+    // this column persists); gateway_plan.rs pins the exact latest for the double-bump guard.
+    let (_d, path) = temp_db();
+    let store = open(&path);
+    assert!(
+        store.user_version().unwrap() >= 18,
+        "MIGRATION_18 applied (v18+)"
+    );
+
+    let conn = open_read_only(&path).unwrap();
+    let has_col: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('proj_integration_connection') WHERE name=?1",
+            ["live_writes_enabled"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        has_col, 1,
+        "MIGRATION_18 must add the live_writes_enabled column to proj_integration_connection"
+    );
+}
+
+// ---- P4.7 (083 C3) — the SqliteLiveWritesGate live read (the per-owner toggle the github clients consult)
+
+#[test]
+fn test_sqlite_live_writes_gate_reads_per_account_toggle() {
+    use nexusopsd::integrations::auth::LiveWritesGate;
+    use nexusopsd::integrations::connections::SqliteLiveWritesGate;
+
+    // spec(C3 / fail-closed): the gate reads live_writes_enabled keyed by (provider, account). Default OFF
+    // on registration; flips ON via IntegrationLiveWritesSet; a DIFFERENT/unknown account → false
+    // (fail-closed — never default-ON, so the authed client stays unauth for an un-toggled owner).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    append_connection(
+        &mut store,
+        &conn_payload("conn_octo", Provider::Github, Some("octocat")),
+    );
+    let gate = SqliteLiveWritesGate::new(path.clone());
+
+    // freshly registered → OFF (the default-OFF gate).
+    assert!(
+        !gate.is_enabled_for_account(Provider::Github, "octocat"),
+        "a freshly-registered connection defaults to live-writes OFF"
+    );
+    // an UNKNOWN account → false (no row → fail-closed).
+    assert!(
+        !gate.is_enabled_for_account(Provider::Github, "nobody"),
+        "an unknown account → false (fail-closed, never default-ON)"
+    );
+
+    // flip ON for conn_octo (account=octocat).
+    append_live_writes_set(&mut store, "conn_octo", true);
+    assert!(
+        gate.is_enabled_for_account(Provider::Github, "octocat"),
+        "toggle ON for octocat's connection → the gate reads enabled"
+    );
+    // a divergent account is STILL false (per-account; octocat's ON doesn't enable another owner).
+    assert!(
+        !gate.is_enabled_for_account(Provider::Github, "other-corp"),
+        "octocat's ON does NOT enable a divergent owner (per-account toggle)"
+    );
+
+    // flip OFF → the gate reads disabled again (derive-from-event).
+    append_live_writes_set(&mut store, "conn_octo", false);
+    assert!(
+        !gate.is_enabled_for_account(Provider::Github, "octocat"),
+        "toggle OFF → the gate reads disabled"
+    );
+}
+
+#[test]
+fn test_sqlite_live_writes_gate_null_account_never_matches() {
+    use nexusopsd::integrations::auth::LiveWritesGate;
+    use nexusopsd::integrations::connections::SqliteLiveWritesGate;
+
+    // spec(C3 / fail-closed): a connection registered WITHOUT an account (account=NULL) can NEVER match the
+    // gate (`WHERE account = ?2` with a NULL column is never TRUE) — even with its toggle flipped ON. So an
+    // account-less connection is permanently fail-closed (unauth). Documents/pins the intentional posture.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    append_connection(
+        &mut store,
+        &conn_payload("conn_noacct", Provider::Github, None),
+    );
+    append_live_writes_set(&mut store, "conn_noacct", true); // toggle ON, but account is NULL
+
+    let gate = SqliteLiveWritesGate::new(path.clone());
+    assert!(
+        !gate.is_enabled_for_account(Provider::Github, "octocat"),
+        "an account-less connection never matches the per-account gate (fail-closed, even toggled ON)"
+    );
+    assert!(
+        !gate.is_enabled_for_account(Provider::Github, ""),
+        "an empty account string also never matches (no NULL=NULL match)"
+    );
 }

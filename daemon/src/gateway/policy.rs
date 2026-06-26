@@ -18,6 +18,13 @@ const SESSION_LIFECYCLE_TYPES: &[&str] = &["session.create", "session.kill"];
 /// `github.submit_review` (a review verdict is a human attestation; an `approve` carries merge-gate power).
 const GITHUB_MUTATION_TYPES: &[&str] = &["github.merge_pr", "github.submit_review"];
 
+/// P4.7/083 (Q3) — the integration AUTHORIZATION action types that are **UI/human-initiated ONLY**: an
+/// agent / Brain / pack / system requester is DENIED before risk resolution. `integration.set_live_writes`
+/// flips a connection's live-writes AUTHORIZATION (enabling the authed GitHub clients) — no agent may
+/// self-enable live external writes on the user's behalf (the credential/live-enablement floor, §15 #8;
+/// the GITHUB_MUTATION gate generalized to the integration-authorization flip).
+const INTEGRATION_AUTHORIZATION_TYPES: &[&str] = &["integration.set_live_writes"];
+
 /// The risk-0 action types PERMITTED to auto-execute (PIN d — the lead-ruled EXPLICIT allowlist,
 /// belt-and-suspenders over the catalog + the LESSON 19 re-gate). A risk-0 type NOT here fails CLOSED
 /// (`RequireApproval`) at [`CatalogPolicy`], so a future risk-0 MUTATION can never silently
@@ -150,6 +157,21 @@ impl PolicyEngine for CatalogPolicy {
                 PolicyDecisionStatus::Deny,
                 format!(
                     "github-mutation '{}' is UI/IPC-initiated only — a {:?} requester is denied (F2, §15 #8)",
+                    req.action_type, req.requester_type
+                ),
+            );
+        }
+        // P4.7/083 (Q3) — an integration-authorization flip (integration.set_live_writes) is UI/human-
+        // initiated ONLY: an agent / Brain / pack / system requester is DENIED before any risk resolution
+        // (no agent may self-enable a connection's live external writes — the credential/live-enablement
+        // floor, §15 #8; the GITHUB_MUTATION gate generalized).
+        if INTEGRATION_AUTHORIZATION_TYPES.contains(&req.action_type.as_str())
+            && !is_ui_ipc_requester(req.requester_type)
+        {
+            return decision(
+                PolicyDecisionStatus::Deny,
+                format!(
+                    "integration-authorization '{}' is UI/IPC-initiated only — a {:?} requester is denied (§15 #8)",
                     req.action_type, req.requester_type
                 ),
             );

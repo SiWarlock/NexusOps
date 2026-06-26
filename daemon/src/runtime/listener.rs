@@ -62,6 +62,10 @@ pub fn spawn_accept_loop(
     // connection into its serve task. The production client's per-repo keychain auth is the deferred
     // follow-on (constructed unauthenticated in main.rs).
     github: Arc<dyn crate::integrations::github::GithubReadClient>,
+    // P4.7/083 (C3b) — the "Connect via gh" connector for the `connect_via_gh` IPC trigger (the daemon
+    // sources the `gh` token → keychain; NO token over IPC); cloned (Arc) per connection. Peer-authed by
+    // the rule-#7 gate that runs first in `serve_connection`.
+    gh_connector: Arc<dyn crate::integrations::auth::GhConnector>,
     mut shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     let permits = Arc::new(Semaphore::new(max_connections));
@@ -103,6 +107,8 @@ pub fn spawn_accept_loop(
                     let wait_class = wait_class.clone();
                     // a per-connection clone of the D7 GitHub read client (Arc, cheap).
                     let github = Arc::clone(&github);
+                    // a per-connection clone of the P4.7/083 "Connect via gh" connector (Arc, cheap).
+                    let gh_connector = Arc::clone(&gh_connector);
                     tokio::task::spawn_blocking(move || {
                         // the permit is held for the connection's lifetime; it RELEASES when this
                         // closure ends (connection closed) — no leak / self-DoS.
@@ -140,6 +146,7 @@ pub fn spawn_accept_loop(
                             &registry,
                             &wait_class,
                             github.as_ref(),
+                            gh_connector.as_ref(),
                         ) {
                             eprintln!("nexusopsd: connection closed: {e}");
                         }

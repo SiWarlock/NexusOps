@@ -279,15 +279,30 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         ExecutorKind::Git,
         Arc::new(GitExecutor::new(Box::new(SystemGitCli))),
     );
+    // P4.7/083 (C3) — the LIVE GitHub auth: a keychain secret store + the per-connection live-writes gate,
+    // SHARED by the read + write clients. Each client builds a PER-OWNER octocrab via GithubAuthResolver —
+    // AUTHED with the owner's keychain token IFF the connection's live-writes toggle is ON AND a token is
+    // present (the confused-deputy-safe per-owner selection); else UNAUTHENTICATED (default OFF →
+    // fail-closed → the existing 401→AuthFailed path). The token enters the keychain DAEMON-side via the
+    // "Connect via gh" IPC trigger (the daemon reads `gh auth token`; NO token over IPC).
+    let github_secret_store: Arc<dyn nexusopsd::integrations::keychain::SecretStore> =
+        Arc::new(nexusopsd::integrations::keychain::KeyringSecretStore::new());
+    let github_live_writes_gate: Arc<dyn nexusopsd::integrations::auth::LiveWritesGate> = Arc::new(
+        nexusopsd::integrations::connections::SqliteLiveWritesGate::new(base_dir.join(DB_FILENAME)),
+    );
     // P7.1 (edges-023) — github.create_pr/_draft via octocrab. 3a: the SYNC executor drives the async
     // write-client via the CAPTURED tokio Handle (`Handle::current()` is valid HERE — `run()` is async;
     // `execute()` later `block_on`s it on the write-actor's dedicated std::thread, where it would
-    // panic). Auth bootstrap (gh-token/Device Flow) deferred → a default unauthenticated handle (a real
-    // create → 401→AuthFailed→Failed, fail-closed-correct).
+    // panic). P4.7/083: the client is now keychain-backed per-owner (toggle-gated, fail-closed unauth).
     catalog_exec.register(
         ExecutorKind::Github,
         Arc::new(GithubExecutor::new(
-            Box::new(OctocrabGithubWriteClient::new(octocrab::Octocrab::default())),
+            Box::new(OctocrabGithubWriteClient::new(
+                nexusopsd::integrations::auth::GithubAuthResolver::new(
+                    github_secret_store.clone(),
+                    github_live_writes_gate.clone(),
+                ),
+            )),
             tokio::runtime::Handle::current(),
             Box::new(SystemClock),
             // P4.7 — resolve owner/repo from the AUDITED resource_ref repo_id / envelope project_id over a
@@ -315,9 +330,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // P7.1 Wave-C (edges-029) — integration.connect (ExecutorKind::Integration): registration-only
     // (§15 #4 — inputs carry the keychain_ref POINTER, never a token; the token→keychain write is a
     // deferred non-Gateway mechanism). risk-2 (approval-gated); emits IntegrationConnectionRegistered.
+    // P4.7/083 — the IntegrationExecutor also handles integration.set_live_writes (the live-writes toggle
+    // flip), which validates the input-carried connection_id against the REGISTERED connections over a
+    // read-only WAL conn (fail-closed on unknown — the resolve_profile precedent, LESSON §62).
     catalog_exec.register(
         ExecutorKind::Integration,
-        Arc::new(IntegrationExecutor::new(Box::new(UlidGen))),
+        Arc::new(IntegrationExecutor::new(
+            Box::new(UlidGen),
+            Box::new(
+                nexusopsd::integrations::connections::SqliteConnectionLookup::new(
+                    base_dir.join(DB_FILENAME),
+                ),
+            ),
+        )),
     );
 
     // the production policy is now `AgentMutationPolicy` (the catalog-authoritative risk engine + the
@@ -425,16 +450,27 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = bind(&base_dir.join(SOCKET_FILE))?;
     eprintln!("nexusopsd: GatewayPort listening at {SOCKET_FILE}");
-    // D7 — the GitHub read client for the `get_pr_diff` §6.1 network read. Constructed UNAUTHENTICATED
-    // (`Octocrab::default()`, the write-client precedent): a public-repo PR diff fetch works; the per-repo
-    // keychain auth bootstrap is the named deferred follow-on (LESSON 43/49) → a private-repo fetch returns
-    // a typed error until it lands. The interception/handler are live + test-seamed (FakeGithubReadClient).
+    // D7 — the GitHub read client for the `get_pr_diff` §6.1 network read. P4.7/083 (C3): now
+    // keychain-backed per-owner via the SAME GithubAuthResolver as the write client (Q4 — BOTH reads +
+    // writes gate on the connection's live-writes toggle). A public-repo read works unauth; a private read
+    // authes only when the owner's toggle is ON + a token is present (else fail-closed unauth → typed
+    // error). The token enters the keychain via the "Connect via gh" IPC trigger.
     let github_read: std::sync::Arc<dyn nexusopsd::integrations::github::GithubReadClient> =
         std::sync::Arc::new(
             nexusopsd::integrations::github::OctocrabGithubReadClient::new(
-                octocrab::Octocrab::default(),
+                nexusopsd::integrations::auth::GithubAuthResolver::new(
+                    github_secret_store.clone(),
+                    github_live_writes_gate.clone(),
+                ),
             ),
         );
+    // P4.7/083 (C3b) — the "Connect via gh" connector: reuses the SAME keychain store as the github
+    // clients (so the token the trigger writes is the one the clients read), + GhCliTokenSource (shells
+    // `gh auth token`). NO token over IPC — the daemon sources it. Peer-authed by the rule-#7 gate.
+    let gh_connector: std::sync::Arc<dyn nexusopsd::integrations::auth::GhConnector> =
+        std::sync::Arc::new(nexusopsd::integrations::auth::GhCliConnector::new(
+            github_secret_store.clone(),
+        ));
     let accept = spawn_accept_loop(
         listener,
         db_path,
@@ -444,6 +480,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         handle, // the §6.1 mutation path → the Gateway pipeline on the write-actor
         registry.clone(),
         github_read,
+        gh_connector,
         shutdown_rx,
     );
 

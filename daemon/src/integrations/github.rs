@@ -30,6 +30,7 @@ use octocrab::models::pulls::{MergeableState, PullRequest, Review, ReviewState};
 use octocrab::models::IssueState;
 use serde::Deserialize;
 
+use super::auth::GithubAuthResolver;
 use super::classifier::{classify, IntegrationOutcomeClass};
 use super::pull_request::{signals_from_github_response, PullRequestSignals, ReviewDecision};
 
@@ -235,17 +236,19 @@ impl GithubReadClient for FakeGithubReadClient {
     }
 }
 
-/// The live client over an **injected** `octocrab::Octocrab` (auth bootstrap deferred — never builds
-/// the handle/reads the keychain). Fetches the PR + its reviews + its head-ref check-runs, then runs
-/// the deterministic `extract_pr_signals`. The HTTP round-trip is the fake-covered non-deterministic
-/// edge — no unit test (Step 7.5: only the test module + `FakeGithubReadClient` reference the trait).
+/// The live client over a [`GithubAuthResolver`] (P4.7/083 — the C3 live-auth wiring). Each call builds a
+/// PER-OWNER `octocrab` handle: AUTHED with the repo owner's keychain token when the connection's
+/// live-writes toggle is ON + a token is present; else UNAUTHENTICATED (fail-closed; public-repo reads
+/// keep working unauth). BOTH the read + write paths gate on the SAME toggle (Q4 single gate). Fetches the
+/// PR + its reviews + head-ref check-runs, then runs the deterministic `extract_pr_signals`. The HTTP
+/// round-trip is the fake-covered non-deterministic edge — no unit test.
 pub struct OctocrabGithubReadClient {
-    octocrab: octocrab::Octocrab,
+    auth: GithubAuthResolver,
 }
 
 impl OctocrabGithubReadClient {
-    pub fn new(octocrab: octocrab::Octocrab) -> Self {
-        Self { octocrab }
+    pub fn new(auth: GithubAuthResolver) -> Self {
+        Self { auth }
     }
 }
 
@@ -257,14 +260,14 @@ impl GithubReadClient for OctocrabGithubReadClient {
         repo: &str,
         pr_number: u64,
     ) -> Result<PullRequestSignals, GithubReadError> {
-        let pr = self
-            .octocrab
+        // per-owner authed-or-unauth handle (the C3 live-auth wiring; toggle-gated, fail-closed unauth).
+        let octocrab = self.auth.octocrab_for(owner);
+        let pr = octocrab
             .pulls(owner, repo)
             .get(pr_number)
             .await
             .map_err(|e| to_read_error(&e))?;
-        let reviews = self
-            .octocrab
+        let reviews = octocrab
             .pulls(owner, repo)
             .list_reviews(pr_number)
             .send()
@@ -274,7 +277,7 @@ impl GithubReadClient for OctocrabGithubReadClient {
         // SHA (GitHub's "no commits yet" signal — an empty ref would 422/404) → no checks.
         let check_runs = match pr.head.as_ref() {
             Some(head) if !head.sha.is_empty() => {
-                self.octocrab
+                octocrab
                     .checks(owner, repo)
                     .list_check_runs_for_git_ref(head.sha.clone().into())
                     .send()
@@ -287,7 +290,7 @@ impl GithubReadClient for OctocrabGithubReadClient {
         let signals = extract_pr_signals(&pr, &reviews.items, &check_runs);
         // Best-effort GraphQL enrichment: overlay reviewDecision (the only source of ReviewRequired).
         // Any GraphQL failure degrades to None → the REST aggregate stands (never fails the read).
-        let decision = fetch_review_decision(&self.octocrab, owner, repo, pr_number).await;
+        let decision = fetch_review_decision(&octocrab, owner, repo, pr_number).await;
         Ok(layer_review_decision(signals, decision))
     }
 
@@ -298,8 +301,10 @@ impl GithubReadClient for OctocrabGithubReadClient {
         pr_number: u64,
     ) -> Result<String, GithubReadError> {
         // the `application/vnd.github.diff` media type → a unified-diff string (octocrab 0.53.1
-        // `pulls().get_diff(pr)`). The daemon parses it via `git::parse_unified_diff`.
-        self.octocrab
+        // `pulls().get_diff(pr)`). The daemon parses it via `git::parse_unified_diff`. Per-owner authed
+        // handle (toggle-gated, fail-closed unauth — public-repo reads still work).
+        let octocrab = self.auth.octocrab_for(owner);
+        octocrab
             .pulls(owner, repo)
             .get_diff(pr_number)
             .await

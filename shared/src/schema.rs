@@ -22,11 +22,11 @@ use crate::events::{
     ActionApprovalRequested, ActionApproved, ActionDenied, ActionExpired, ActionFailed,
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
     AuditIntegrityViolation, BranchCreated, DeviceRegistered, ExecutionProfileRegistered,
-    GithubSyncFailed, IntegrationConnectionRegistered, LinearSyncFailed, LocalRunnerRegistered,
-    ProjectRescanned, Provider, PullRequestMerged, PullRequestSynced, ReviewSubmitted,
-    ReviewSynced, SensitiveOutputRedacted, SessionFailed, SessionRecovered, SessionStarted,
-    TelemetrySampled, TerminalProcessExited, WorktreeCreated, WorktreeDeleted, WorktreeLocked,
-    WorktreeMerged, WorktreePrunable,
+    GithubSyncFailed, IntegrationConnectionRegistered, IntegrationLiveWritesSet, LinearSyncFailed,
+    LocalRunnerRegistered, ProjectRescanned, Provider, PullRequestMerged, PullRequestSynced,
+    ReviewSubmitted, ReviewSynced, SensitiveOutputRedacted, SessionFailed, SessionRecovered,
+    SessionStarted, TelemetrySampled, TerminalProcessExited, WorktreeCreated, WorktreeDeleted,
+    WorktreeLocked, WorktreeMerged, WorktreePrunable,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::harness::{
@@ -35,11 +35,12 @@ use crate::harness::{
 };
 use crate::ids::IdKind;
 use crate::ipc::{
-    ActionAck, Capabilities, DeltaKind, DiffLine, DiffLineKind, DiffResult, GetDiffParams,
-    GetPrDiffParams, GetProjectionParams, HelloAck, HelloFrame, Hunk, IpcErrorCode, PlanAck,
-    PlanStepAck, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, RpcResponse,
-    ServerFrame, SubscribeParams, TerminalControlFrame, TerminalControlKind, TerminalInputFrame,
-    TerminalOutputFrame, VersionSkewError, WireError,
+    ActionAck, Capabilities, ConnectViaGhParams, ConnectViaGhResult, ConnectViaGhStatus, DeltaKind,
+    DiffLine, DiffLineKind, DiffResult, GetDiffParams, GetPrDiffParams, GetProjectionParams,
+    HelloAck, HelloFrame, Hunk, IpcErrorCode, PlanAck, PlanStepAck, ProjectionDelta,
+    ProjectionName, ProjectionScope, RpcRequest, RpcResponse, ServerFrame, SubscribeParams,
+    TerminalControlFrame, TerminalControlKind, TerminalInputFrame, TerminalOutputFrame,
+    VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
 use crate::projections::{ApprovalQueueRow, PullRequestRow, ReviewRow, SessionRow};
@@ -109,6 +110,12 @@ struct ContractBundle {
     hunk: Hunk,
     diff_line: DiffLine,
     diff_line_kind: DiffLineKind,
+    // P4.7/083 (C3b) — the §6.1 connect_via_gh RPC wire types (the "Connect via gh" auth-bootstrap
+    // trigger). NO token field — params carry {provider, account}; the result carries the keychain_ref
+    // POINTER (never the token) + a connected|gh_unavailable status. Additive (shared/src/ipc.rs).
+    connect_via_gh_params: ConnectViaGhParams,
+    connect_via_gh_result: ConnectViaGhResult,
+    connect_via_gh_status: ConnectViaGhStatus,
     // 1.5 L4 — frame-type multiplexing envelope + subscribe streaming (§6.4/§6.1)
     server_frame: ServerFrame,
     projection_delta: ProjectionDelta,
@@ -251,6 +258,12 @@ struct ContractBundle {
     // truth; this event is the audit trail). `keychain_ref` is a §15 #4 POINTER (no token; secret WRITE =
     // 5.3b); `status` reuses the frozen §5.1 ExecutionProfile machine. Additive (shared/src/events.rs).
     execution_profile_registered: ExecutionProfileRegistered,
+    // P4.7/083 (CONTRACT 0.45.0) — the auth-bootstrap live-writes toggle vertical: the
+    // IntegrationLiveWritesSet event the integration.set_live_writes Gateway action emits (the
+    // IntegrationConnection projector folds it → proj_integration_connection.live_writes_enabled, default
+    // OFF; NO secret — an authorization flip carries only {connection_id, enabled}). The catalog entry
+    // rides the existing ActionTypeCatalogEntry registration. Additive (shared/src/events.rs).
+    integration_live_writes_set: IntegrationLiveWritesSet,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

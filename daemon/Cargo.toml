@@ -72,6 +72,21 @@ portable-pty = "0.9"
 # read-pump feeds (075c). DISPLAY-ONLY (#9 — never a status source, structurally grep-pinned). Dep
 # beyond the brief's named list — flag at Step-9; pure-Rust, no C deps, `cargo audit` runs at /phase-exit.
 vt100 = "0.16"
+# keyring (P4.7/083 — the auth-bootstrap keychain-write primitive; ARCH §9/§15 #4). Backs the REAL
+# `KeyringSecretStore` (integrations/keychain.rs) over the OS keychain — store/read the GitHub token by
+# its per-account `keychain_ref` POINTER; the secret lives ONLY in the keychain, never in an event/row/
+# log (§15 #3/#4). Default features (the `v1` meta-feature) pull the platform store — on macOS the
+# Apple Keychain via `apple-native-keyring-store/keychain` (security-framework). The deterministic
+# `SecretStore` core is unit-tested via the in-memory `FakeSecretStore`; the live OS-keychain round-trip
+# is the non-deterministic edge (no unit test — the OctocrabGithubReadClient precedent). `cargo audit`
+# runs at the P4.7 /phase-exit. macOS-only MVP (ARCH §0.1) → the Apple store is the only live backend.
+keyring = "4"
+# zeroize (P4.7/083) — best-effort scrub of the transient gh token's heap allocation after it is copied
+# to the keychain (the brief's "zeroized after the keychain write" property, §15). `Zeroizing<String>`
+# wraps the token from acquisition (`GhTokenSource::token`) through the keychain write so the plaintext
+# bytes are overwritten on drop, not left in freed heap. Defense-in-depth on the local-trust-boundary
+# posture; `cargo audit` at /phase-exit.
+zeroize = "1"
 # NOTE (R8 merge): main's P4.0b-ui1 get_diff added a second `git2 = "0.21"` here; deduped at the
 # main→edges merge — the edges `git2` entry above (default-features=false + vendored-libgit2, the
 # forbidden-#6 read-only/OQ-INT-SPIKE-6 posture) is the single source. main's get_diff read_diff uses

@@ -14,21 +14,63 @@
 
 use nexusops_shared::actions::{ActionRequest, RequesterType, RiskLevel};
 use nexusops_shared::catalog::{lookup, ExecutorKind};
-use nexusops_shared::events::{IntegrationConnectionRegistered, Provider};
+use nexusops_shared::events::{
+    IntegrationConnectionRegistered, IntegrationLiveWritesSet, Provider,
+};
 use nexusops_shared::ids::ActionRequestId;
 use nexusops_shared::status::ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
+use nexusopsd::eventstore::EventStoreError;
 use nexusopsd::gateway::executor::{ActionExecutor, EmittedEvent, ExecutionOutcome};
 use nexusopsd::idgen::FixedIdGen;
-use nexusopsd::integrations::connect::IntegrationExecutor;
+use nexusopsd::integrations::connect::{ConnectionLookup, IntegrationExecutor};
 
 const FIXED_TS: &str = "2026-06-11T00:00:00Z";
 
 // ---- harness helpers -------------------------------------------------------
 
-/// A fresh `IntegrationExecutor` with a deterministic IdGen (conn_ ids derived from a counter).
+/// A fake [`ConnectionLookup`] — `Ok(registered)` reports the verdict; `Err(())` simulates a lookup
+/// BACKEND FAULT (the read-only WAL query failing). The deterministic seam for the
+/// `integration.set_live_writes` registered-connection gate (the SqliteConnectionLookup is the live
+/// read-only-WAL edge, not unit-tested here).
+struct FakeConnectionLookup {
+    result: Result<bool, ()>,
+}
+
+impl ConnectionLookup for FakeConnectionLookup {
+    fn is_registered(&self, _connection_id: &str) -> Result<bool, EventStoreError> {
+        self.result
+            .map_err(|()| EventStoreError::Migration("simulated connection lookup fault".into()))
+    }
+}
+
+/// A fresh `IntegrationExecutor` with a deterministic IdGen (conn_ ids from a counter) + a connection
+/// lookup that reports every connection REGISTERED (so the connect tests + the emit-path toggle test
+/// exercise the happy path; the fail-closed paths use [`executor_unknown_connection`] /
+/// [`executor_lookup_fault`]).
 fn executor() -> IntegrationExecutor {
-    IntegrationExecutor::new(Box::new(FixedIdGen::new()))
+    IntegrationExecutor::new(
+        Box::new(FixedIdGen::new()),
+        Box::new(FakeConnectionLookup { result: Ok(true) }),
+    )
+}
+
+/// An `IntegrationExecutor` whose connection lookup reports EVERY connection UNREGISTERED — the
+/// fail-closed gate for `integration.set_live_writes` on an unknown connection.
+fn executor_unknown_connection() -> IntegrationExecutor {
+    IntegrationExecutor::new(
+        Box::new(FixedIdGen::new()),
+        Box::new(FakeConnectionLookup { result: Ok(false) }),
+    )
+}
+
+/// An `IntegrationExecutor` whose connection lookup itself FAULTS — the fail-closed gate when the
+/// registered-connection check cannot be completed (a backend error must never default-open).
+fn executor_lookup_fault() -> IntegrationExecutor {
+    IntegrationExecutor::new(
+        Box::new(FixedIdGen::new()),
+        Box::new(FakeConnectionLookup { result: Err(()) }),
+    )
 }
 
 /// An `integration.connect` ActionRequest carrying `inputs` verbatim (raw — the direct-execute path).
@@ -255,4 +297,121 @@ fn test_inv_sec_1_executor_holds_no_writehandle() {
              (INV-SEC-1: no second mutator; no DB write)"
         );
     }
+}
+
+// ---- P4.7 (083 Q3) — integration.set_live_writes emits IntegrationLiveWritesSet ----
+
+/// an `integration.set_live_writes` ActionRequest: {connection_id, enabled} in inputs (the connection
+/// identity is carried as a validated input — the integration.connect input-carried-id precedent).
+fn set_live_writes_req(connection_id: &str, enabled: bool) -> ActionRequest {
+    set_live_writes_req_raw(
+        serde_json::json!({ "connection_id": connection_id, "enabled": enabled }),
+    )
+}
+
+/// `integration.set_live_writes` carrying `inputs` verbatim (raw — to exercise the fail-closed input
+/// validation: missing/non-bool `enabled`, empty `connection_id`).
+fn set_live_writes_req_raw(inputs: serde_json::Value) -> ActionRequest {
+    ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id: None,
+        action_type: "integration.set_live_writes".to_string(),
+        requester_type: RequesterType::User, // UI/IPC
+        requester_id: "u_local".to_string(),
+        resource_refs: vec![],
+        inputs,
+        risk_level: RiskLevel::Level2,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        preview: None,
+        created_at: Timestamp::parse(FIXED_TS).unwrap(),
+    }
+}
+
+#[test]
+fn test_set_live_writes_emits_event() {
+    // spec(§7.1 / 083 Q3): execute() with {connection_id, enabled} emits exactly one
+    // IntegrationLiveWritesSet carrying the connection_id + the enabled bool (the typed authorization
+    // flip; NO secret). The projector folds it → proj_integration_connection.live_writes_enabled.
+    let outcome = executor().execute(&set_live_writes_req("conn_gh_octocat", true));
+    let ev = match &outcome {
+        ExecutionOutcome::Succeeded {
+            emitted_events,
+            side_effect_applied,
+            changed_resources,
+            ..
+        } => {
+            // an authorization flip recorded as an event — NO durable EXTERNAL side effect (so a txn-B
+            // fault rolls back cleanly, never a false ActionPartiallySucceeded — the connect precedent).
+            assert!(
+                !side_effect_applied,
+                "the toggle flip applies no external side effect"
+            );
+            assert!(changed_resources.is_empty(), "no changed resources");
+            assert_eq!(emitted_events.len(), 1, "exactly one event emitted");
+            match &emitted_events[0] {
+                EmittedEvent::Namespaced {
+                    event_type,
+                    payload_json,
+                } => {
+                    assert_eq!(*event_type, IntegrationLiveWritesSet::EVENT_TYPE);
+                    serde_json::from_str::<IntegrationLiveWritesSet>(payload_json)
+                        .expect("IntegrationLiveWritesSet payload parses")
+                }
+                _ => panic!("expected a Namespaced event"),
+            }
+        }
+        _ => panic!("expected Succeeded"),
+    };
+    assert_eq!(ev.connection_id, "conn_gh_octocat");
+    assert!(ev.enabled, "the enabled bool is carried through");
+
+    // enabled:false also emits (the off-flip is a real authorization mutation, audited).
+    let off = executor().execute(&set_live_writes_req("conn_gh_octocat", false));
+    assert!(matches!(off, ExecutionOutcome::Succeeded { .. }));
+}
+
+#[test]
+fn set_live_writes_fails_closed_on_unknown_connection() {
+    // spec(§15 #8 / 083 Q3 ADD): integration.set_live_writes validates the input-carried connection_id
+    // references a REGISTERED connection (the resolve_profile-on-unknown precedent, LESSON §62). An
+    // unknown connection → fail-closed (no event emitted for a phantom connection), never a silent flip.
+    let outcome =
+        executor_unknown_connection().execute(&set_live_writes_req("conn_does_not_exist", true));
+    assert!(
+        is_failed(&outcome),
+        "a flip targeting an unregistered connection fails closed (no event for a phantom connection)"
+    );
+}
+
+#[test]
+fn set_live_writes_fails_closed_on_lookup_fault() {
+    // spec(§15 fail-closed): when the registered-connection lookup itself FAULTS (a read-only WAL error),
+    // the flip MUST fail closed — a backend fault never default-OPENs into a silent authorization flip.
+    let outcome = executor_lookup_fault().execute(&set_live_writes_req("conn_gh_octocat", true));
+    assert!(
+        is_failed(&outcome),
+        "a connection-lookup backend fault fails closed (never a silent flip on an unverifiable connection)"
+    );
+}
+
+#[test]
+fn set_live_writes_fails_closed_on_missing_or_nonbool_enabled() {
+    // spec(§15 fail-closed): the authorization decision is never DEFAULTED — a missing or non-bool
+    // `enabled`, or an empty connection_id, fails closed (no event emitted), even on a registered conn.
+    let missing = executor().execute(&set_live_writes_req_raw(serde_json::json!({
+        "connection_id": "conn_gh_octocat"
+    })));
+    assert!(is_failed(&missing), "missing enabled → fail-closed");
+
+    let nonbool = executor().execute(&set_live_writes_req_raw(serde_json::json!({
+        "connection_id": "conn_gh_octocat", "enabled": "yes"
+    })));
+    assert!(is_failed(&nonbool), "non-bool enabled → fail-closed");
+
+    let empty_id = executor().execute(&set_live_writes_req_raw(serde_json::json!({
+        "connection_id": "", "enabled": true
+    })));
+    assert!(is_failed(&empty_id), "empty connection_id → fail-closed");
 }

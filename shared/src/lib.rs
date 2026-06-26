@@ -195,4 +195,13 @@ pub mod time;
 /// 0.44.0 (P4.7) adds `head_sha: Option<String>` to `PullRequestSynced` + `PullRequestRow` (the anti-race
 /// SHA-pin SOURCE the UI reads — captured only from `pr.head.sha`, never a proposer). Additive LOCKSTEP
 /// row enrichment (the D6 diff-stats precedent), no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.44.0";
+/// 0.45.0 (P4.7/083) adds the auth-bootstrap surface: (a) the live-writes toggle vertical — the §6.3
+/// catalog entry `integration.set_live_writes` (risk-2, `ExecutorKind::Integration`, FromInputs,
+/// requires_resource_refs=false, **NON-standing-grantable** — the §6.2 credential/live-enablement floor;
+/// MVP set 31→32) + the §7.1 `IntegrationLiveWritesSet` event (`{connection_id, enabled}` — NO secret; the
+/// `IntegrationConnection` projector folds it → `proj_integration_connection.live_writes_enabled`, default
+/// OFF); and (b) the §6.1 `connect_via_gh` "Connect via gh" trigger wire types — `ConnectViaGhParams`
+/// (`{provider, account}`, NO token — the daemon sources it), `ConnectViaGhResult` (`{status, keychain_ref?}`
+/// — the keychain POINTER only), `ConnectViaGhStatus` (`connected|gh_unavailable`). The F2 UI/IPC-only
+/// requester gate is a daemon policy concern (no `shared/` surface). Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.45.0";

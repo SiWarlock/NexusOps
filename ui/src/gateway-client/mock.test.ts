@@ -119,7 +119,9 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     //           D9 github.merge_pr 0.41 / D10 github.submit_review 0.42).
     // → 0.44.0 (head_sha boundary merge: 0.43 ExecutionProfileRegistered/5.3a · 0.44 PullRequestRow.head_sha
     //           exposure [the cat-1 merge/review pin source] + the ruling-A owner/repo daemon resolution).
-    expect(caps.contract_version).toBe("0.44.0");
+    // → 0.45.0 (auth-bootstrap boundary merge / 083: keychain SecretStore + integration.set_live_writes
+    //           [MIGRATION_18] + connect_via_gh [+ConnectViaGhStatus enum] — the PR-mutations go-live unblock).
+    expect(caps.contract_version).toBe("0.45.0");
     expect(caps.protocol_version).toBe(1);
   });
 

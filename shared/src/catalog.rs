@@ -113,6 +113,7 @@ pub const MVP_ACTION_TYPES: &[&str] = &[
     "linear.link_issue",
     "linear.create_issue",
     "integration.connect",
+    "integration.set_live_writes",
     "code.open_file",
     "review.request_agent_fix",
 ];
@@ -289,6 +290,24 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
         // IntegrationExecutor (X::Integration) registers on the live CatalogExecutor; the token→keychain
         // WRITE is a separate deferred non-Gateway mechanism.
         "integration.connect" => entry_no_standing_grant(
+            R::Level2,
+            P::Api,
+            I::FromInputs,
+            X::Integration,
+            false,
+            true,
+        ),
+        // P4.7/083 Q3 — integration.set_live_writes: the typed Gateway action that FLIPS a connection's
+        // live-writes AUTHORIZATION (the post-re-review enablement of the authed GitHub clients). risk-2
+        // (approval-gated, the integration.connect tier) + **NON-standing-grantable**
+        // (`entry_no_standing_grant`, §6.2 credential/live-enablement floor): enabling live external
+        // writes is an authorization decision that ALWAYS gets a per-action human approval, NEVER folded
+        // into an approve-all (the integration.connect precedent, LESSON §49/§32). requires_resource_refs
+        // =false — the connection identity is input-carried ({connection_id, enabled}, the
+        // integration.connect input-carried-id precedent; the executor validates it references a
+        // REGISTERED connection → else fail-closed). FromInputs idempotency (an identical re-flip dedups).
+        // The F2 UI/IPC-only requester gate lives in the policy engine (the GITHUB_MUTATION gate sibling).
+        "integration.set_live_writes" => entry_no_standing_grant(
             R::Level2,
             P::Api,
             I::FromInputs,

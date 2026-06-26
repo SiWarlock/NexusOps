@@ -859,6 +859,51 @@
       ],
       "type": "object"
     },
+    "ConnectViaGhParams": {
+      "additionalProperties": false,
+      "description": "`connect_via_gh` params (§6.1; P4.7/083) — the \"Connect via gh\" auth-bootstrap trigger. NO token in the\nrequest: the daemon SOURCES the token itself (reads `gh auth token`) → the OS keychain. `account` = the\nGitHub login the token belongs to (the per-account `keychain_ref` key + the connection account used for\nper-owner token selection). Peer-authed (getpeereid §15 #7 — the gateway-trusted local UI is the only\ncaller); `provider` is the closed `Provider` enum (reject-unknown).",
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        }
+      },
+      "required": [
+        "provider",
+        "account"
+      ],
+      "type": "object"
+    },
+    "ConnectViaGhResult": {
+      "additionalProperties": false,
+      "description": "`connect_via_gh` result (§6.1; P4.7/083). The token NEVER appears — on `connected`, `keychain_ref` is the\n§15 #4 POINTER only; on `gh_unavailable`, `keychain_ref` is `None`. A keychain backend FAULT is an\n`internal_error` wire error (not this result).",
+      "properties": {
+        "keychain_ref": {
+          "description": "the §15 #4 keychain POINTER (NEVER the token); `Some` only when `status=connected`. Serialized as\nexplicit `null` (no `skip_serializing_if`) → a stable §2.5-seam field-name snapshot.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/ConnectViaGhStatus"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "ConnectViaGhStatus": {
+      "description": "`connect_via_gh` outcome status (§6.1; P4.7/083). `connected` = the `gh` token was copied to the\nkeychain; `gh_unavailable` = the user has no usable `gh` login → the device-flow (084) is the path.",
+      "enum": [
+        "connected",
+        "gh_unavailable"
+      ],
+      "type": "string"
+    },
     "DeltaKind": {
       "description": "The kind of projection change in a [`ProjectionDelta`] (§6.1). snake_case wire values.",
       "enum": [
@@ -1546,6 +1591,24 @@
         "connection_id",
         "provider",
         "keychain_ref"
+      ],
+      "type": "object"
+    },
+    "IntegrationLiveWritesSet": {
+      "additionalProperties": false,
+      "description": "`IntegrationLiveWritesSet` payload (§7.1; P4.7/083 Q3) — the per-connection live-writes AUTHORIZATION\nflip the `integration.set_live_writes` Gateway action emits. The `IntegrationConnection` projector\nfolds it → `proj_integration_connection.live_writes_enabled` (derive-from-event, default OFF,\nrebuild-safe — LESSON §17), gating whether the authed GitHub clients go live. **§15 — load-bearing:**\nan authorization-state flip carries NO secret — the payload is `{connection_id, enabled}` only, never\na token (the keychain pointer already lives on the connection's registration; this event never touches\nit). The `off`-flip is a real authorization mutation → it is audited too (both directions emit).",
+      "properties": {
+        "connection_id": {
+          "type": "string"
+        },
+        "enabled": {
+          "description": "the live-writes authorization state this flip sets (true = ON / authed writes permitted).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "connection_id",
+        "enabled"
       ],
       "type": "object"
     },
@@ -3298,6 +3361,15 @@
     "capabilities": {
       "$ref": "#/$defs/Capabilities"
     },
+    "connect_via_gh_params": {
+      "$ref": "#/$defs/ConnectViaGhParams"
+    },
+    "connect_via_gh_result": {
+      "$ref": "#/$defs/ConnectViaGhResult"
+    },
+    "connect_via_gh_status": {
+      "$ref": "#/$defs/ConnectViaGhStatus"
+    },
     "delta_kind": {
       "$ref": "#/$defs/DeltaKind"
     },
@@ -3375,6 +3447,9 @@
     },
     "integration_connection_registered": {
       "$ref": "#/$defs/IntegrationConnectionRegistered"
+    },
+    "integration_live_writes_set": {
+      "$ref": "#/$defs/IntegrationLiveWritesSet"
     },
     "ipc_error_code": {
       "$ref": "#/$defs/IpcErrorCode"
@@ -3622,6 +3697,9 @@
     "hunk",
     "diff_line",
     "diff_line_kind",
+    "connect_via_gh_params",
+    "connect_via_gh_result",
+    "connect_via_gh_status",
     "server_frame",
     "projection_delta",
     "delta_kind",
@@ -3704,9 +3782,10 @@
     "review_row",
     "pull_request_merged",
     "review_submitted",
-    "execution_profile_registered"
+    "execution_profile_registered",
+    "integration_live_writes_set"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.44.0"
+  "x-contract-version": "0.45.0"
 }

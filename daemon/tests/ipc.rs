@@ -133,6 +133,7 @@ fn test_unauthorized_peer_disconnects_unserved() {
         &wait_class(),
         &fake_github(),
         &fake_gh_connector(),
+        &fake_secret_store(),
     );
     assert!(
         matches!(outcome, Err(IpcError::UnauthorizedPeer { .. })),
@@ -201,6 +202,13 @@ fn fake_gh_connector() -> nexusopsd::integrations::auth::FakeGhConnector {
     nexusopsd::integrations::auth::FakeGhConnector::connected("nexusops/github/test")
 }
 
+/// P5.3b/085 — a placeholder keychain store for the serve-connection tests (none here exercise
+/// `profile.set_secret`; it only satisfies the serve/dispatch signature). The dedicated peer-auth +
+/// profile.set_secret behavior is pinned in `tests/profile_secret.rs`.
+fn fake_secret_store() -> nexusopsd::integrations::keychain::FakeSecretStore {
+    nexusopsd::integrations::keychain::FakeSecretStore::new()
+}
+
 // ---- Test 5 — handshake: in-range HelloFrame → HelloAck (§6.4) ---------------
 
 #[test]
@@ -230,6 +238,7 @@ fn test_handshake_hello_ack() {
         &wait_class(),
         &fake_github(),
         &fake_gh_connector(),
+        &fake_secret_store(),
     )
     .expect("authorized in-range handshake succeeds");
 
@@ -274,6 +283,7 @@ fn test_version_skew_disconnects() {
         &wait_class(),
         &fake_github(),
         &fake_gh_connector(),
+        &fake_secret_store(),
     );
     assert!(
         matches!(outcome, Err(IpcError::VersionSkew { .. })),
@@ -322,6 +332,7 @@ fn test_method_before_handshake_rejected() {
         &wait_class(),
         &fake_github(),
         &fake_gh_connector(),
+        &fake_secret_store(),
     );
     assert!(
         matches!(outcome, Err(IpcError::Protocol(_))),
@@ -462,6 +473,7 @@ fn test_get_projection_returns_rows() {
             &wait_class(),
             &fake_github(),
             &fake_gh_connector(),
+            &fake_secret_store(),
         )
         .expect("serve get_projection");
         h.join().unwrap()
@@ -551,6 +563,7 @@ fn test_submit_action_reachable_through_ipc_dispatch() {
             &wait_class(),
             &fake_github(),
             &fake_gh_connector(),
+            &fake_secret_store(),
         )
         .expect("serve submit");
         h.join().unwrap()
@@ -602,6 +615,7 @@ fn test_connect_via_gh_through_dispatch() {
             &wait_class(),
             &fake_github(),
             &fake_gh_connector(),
+            &fake_secret_store(),
         )
         .expect("serve connect_via_gh");
         h.join().unwrap()
@@ -637,6 +651,7 @@ fn test_connect_via_gh_through_dispatch() {
             &wait_class(),
             &fake_github(),
             &nexusopsd::integrations::auth::FakeGhConnector::gh_unavailable(),
+            &fake_secret_store(),
         )
         .expect("serve gh-unavailable");
         h.join().unwrap()
@@ -668,6 +683,7 @@ fn test_connect_via_gh_through_dispatch() {
             &wait_class(),
             &fake_github(),
             &nexusopsd::integrations::auth::FakeGhConnector::keychain_fault(),
+            &fake_secret_store(),
         )
         .expect("serve keychain-fault");
         h.join().unwrap()
@@ -714,6 +730,7 @@ fn test_get_projection_unfed_is_empty_not_error() {
             &wait_class(),
             &fake_github(),
             &fake_gh_connector(),
+            &fake_secret_store(),
         )
         .expect("serve unfed projection");
         h.join().unwrap()
@@ -763,6 +780,7 @@ fn test_unknown_method_and_get_capabilities() {
             &wait_class(),
             &fake_github(),
             &fake_gh_connector(),
+            &fake_secret_store(),
         )
         .expect("serve capabilities + unknown");
         h.join().unwrap()
@@ -815,6 +833,7 @@ fn test_get_projection_scope_not_yet_enforced() {
             &wait_class(),
             &fake_github(),
             &fake_gh_connector(),
+            &fake_secret_store(),
         )
         .expect("serve scoped projection");
         h.join().unwrap()
@@ -939,6 +958,7 @@ fn test_subscribe_method_recognized() {
             &wait_class(),
             &fake_github(),
             &fake_gh_connector(),
+            &fake_secret_store(),
         )
         .expect("serve subscribe ack");
         h.join().unwrap()
@@ -1038,6 +1058,7 @@ fn test_subscriber_receives_delta_frame() {
                 &wait_class(),
                 &fake_github(),
                 &fake_gh_connector(),
+                &fake_secret_store(),
             );
         });
         let client_h = s.spawn(move || {
@@ -1126,6 +1147,7 @@ fn test_subscribe_connection_is_dedicated() {
                 &wait_class(),
                 &fake_github(),
                 &fake_gh_connector(),
+                &fake_secret_store(),
             );
         });
         let client_h = s.spawn(move || {

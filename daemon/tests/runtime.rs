@@ -60,6 +60,12 @@ fn fake_gh_connector() -> std::sync::Arc<dyn nexusopsd::integrations::auth::GhCo
     ))
 }
 
+/// P5.3b/085 — a placeholder keychain store for the accept-loop tests (none exercise `profile.set_secret`;
+/// it only satisfies the spawn_accept_loop signature).
+fn fake_secret_store() -> std::sync::Arc<dyn nexusopsd::integrations::keychain::SecretStore> {
+    std::sync::Arc::new(nexusopsd::integrations::keychain::FakeSecretStore::new())
+}
+
 fn temp_db() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nexusops.db");
@@ -519,6 +525,7 @@ async fn test_foreign_peer_rejected_in_accept_path() {
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         fake_github(),
         fake_gh_connector(),
+        fake_secret_store(),
         sd_rx,
     );
 
@@ -556,6 +563,7 @@ async fn test_connection_cap_enforced() {
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         fake_github(),
         fake_gh_connector(),
+        fake_secret_store(),
         sd_rx,
     ); // cap = 1
 
@@ -601,6 +609,7 @@ async fn test_connection_permit_released_on_close() {
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         fake_github(),
         fake_gh_connector(),
+        fake_secret_store(),
         sd_rx,
     ); // cap = 1
 
@@ -647,6 +656,7 @@ async fn test_read_projection_over_real_socket() {
         std::sync::Arc::new(nexusopsd::decisions::DecisionRegistry::new()),
         fake_github(),
         fake_gh_connector(),
+        fake_secret_store(),
         sd_rx,
     );
 

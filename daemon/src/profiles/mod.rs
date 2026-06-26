@@ -21,6 +21,9 @@ use nexusops_shared::time::Timestamp;
 
 use crate::eventstore::{open_read_only, AppendIntent, EventStore, EventStoreError};
 
+/// P5.3b — the execution-profile SECRET surface + the binding-hardening classifiers (§15 #4/#7/#8).
+pub mod secret;
+
 /// The seeded default profile's provider/harness (Q2: claude-first — the MVP cat-4 PTY-primary Claude).
 const DEFAULT_PROVIDER: &str = "anthropic";
 const DEFAULT_HARNESS: &str = "claude_code";
@@ -200,6 +203,25 @@ fn registered_intent(
     }
 }
 
+/// Whether `id` is a REGISTERED profile (the §15 #8 / LESSON §62 fail-closed-on-unknown gate) — a
+/// read-only WAL count over the canonical `execution_profiles` table. Shared by [`SqliteProfileLookup::exists`]
+/// AND the P5.3b `profile.set_secret` trigger (which must NOT write a keychain entry for an unregistered
+/// profile) so both read the registry the same way. No default-id needed (vs the full [`ProfileLookup`]).
+pub fn profile_exists(
+    db_path: &std::path::Path,
+    id: &ExecutionProfileId,
+) -> Result<bool, ProfileError> {
+    let conn = open_read_only(db_path)?;
+    let n: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM execution_profiles WHERE execution_profile_id = ?1",
+            rusqlite::params![id.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(EventStoreError::Write)?;
+    Ok(n > 0)
+}
+
 /// The registry read seam the `SessionExecutor` resolves an `ExecutionProfile` against at session.create
 /// (§15 #8). Injected so resolution is deterministically unit-testable (a fake in tests; the sqlite-backed
 /// reader in production).
@@ -234,14 +256,8 @@ impl ProfileLookup for SqliteProfileLookup {
     }
 
     fn exists(&self, id: &ExecutionProfileId) -> Result<bool, ProfileError> {
-        let conn = open_read_only(&self.db_path)?;
-        let n: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM execution_profiles WHERE execution_profile_id = ?1",
-                rusqlite::params![id.as_str()],
-                |r| r.get(0),
-            )
-            .map_err(EventStoreError::Write)?;
-        Ok(n > 0)
+        // delegate to the shared read helper (DRY — the `profile.set_secret` trigger reads the registry
+        // the same way; one query, one fail-closed semantic).
+        profile_exists(&self.db_path, id)
     }
 }

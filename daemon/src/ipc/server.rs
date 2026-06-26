@@ -52,6 +52,10 @@ pub fn serve_connection(
     // P4.7/083 (C3b) — the "Connect via gh" connector for the `connect_via_gh` trigger (daemon-sourced
     // token → keychain). Reachable ONLY post-auth (the rule-#7 gate below runs first).
     gh_connector: &dyn crate::integrations::auth::GhConnector,
+    // P5.3b/085 (C2, CAT-1) — the keychain store for the `profile.set_secret` inbound-secret trigger.
+    // Reachable ONLY post-auth (the rule-#7 gate below runs FIRST → the secret is behind getpeereid by
+    // construction; the test_set_secret_rejects_non_daemon_peer pin).
+    secret_store: &dyn crate::integrations::keychain::SecretStore,
 ) -> Result<(), IpcError> {
     // Rule #7 (§15 / ADR-004): peer-auth before anything else — before any frame is read.
     authorize_peer(peer_uid, daemon_uid)?;
@@ -141,6 +145,7 @@ pub fn serve_connection(
                     wait_class,
                     github,
                     gh_connector,
+                    secret_store,
                 )?;
                 let accepted = ack.error.is_none();
                 let buf = serde_json::to_vec(&ServerFrame::RpcResponse(ack))
@@ -179,6 +184,7 @@ pub fn serve_connection(
             wait_class,
             github,
             gh_connector,
+            secret_store,
         )?);
         let buf = serde_json::to_vec(&frame).map_err(|e| IpcError::Protocol(e.to_string()))?;
         write_frame(&mut stream, &buf)?;

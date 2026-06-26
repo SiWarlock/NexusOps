@@ -3,7 +3,7 @@
 - **Date:** 2026-06-21
 - **Phase:** Phase 4 / **P4.7** (the auth-bootstrap arc — the live-mutation go-live prerequisite)
 - **Predecessor:** [035 — 083 auth-bootstrap held pre-GREEN at the HARD-STOP boundary](035-2026-06-21-083-auth-bootstrap-held-pre-green.md)
-- **Successor:** _(next implementer — 084 device-flow is HELD pending the user's next-slice pick; do NOT start 084)_
+- **Successor:** [037-2026-06-26-p5.3b-profile-secrets-086-smoke-cli-084-parked.md](037-2026-06-26-p5.3b-profile-secrets-086-smoke-cli-084-parked.md)
 
 ## Why this session existed
 

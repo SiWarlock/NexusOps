@@ -166,6 +166,11 @@ fn gateway_result<T: serde::Serialize>(
 }
 
 /// Map a daemon-internal [`GatewayError`] → the closed §6.4 `IpcErrorCode` set.
+///
+/// 090 de-collapse: the prior mapping collapsed FIVE distinct faults → one `precondition_stale`, so the
+/// cockpit rendered a re-approvable "stale card" for non-re-approvable faults (not-found / fail-closed
+/// audit write / out-of-state transition). Each fault now surfaces its honest existing code (no closed-set
+/// bump). The §17/rule-#6 `fencing_conflict` distinction is PRESERVED (LESSON 21).
 fn gateway_error_to_code(e: &GatewayError) -> IpcErrorCode {
     match e {
         GatewayError::PolicyDenied
@@ -174,23 +179,24 @@ fn gateway_error_to_code(e: &GatewayError) -> IpcErrorCode {
         // outcome, not a submittable mode) — the request parses fine, so it is policy_denied, not
         // a protocol_error.
         | GatewayError::UnsupportedApprovalMode(_) => IpcErrorCode::PolicyDenied,
-        // out-of-state action / missing-or-lapsed approval / fail-closed audit write / a stale live
-        // source (2.4 L4) — the mutation's precondition no longer holds (§6.4 precondition_stale, the
-        // re-approvable stale card). (Q7 carry-forward: the AuditWriteFailed→internal_error correction
-        // lands with L5's UnknownOutcome→internal_error.)
-        GatewayError::IllegalTransition { .. }
-        | GatewayError::ApprovalExpired
-        | GatewayError::NotFound(_)
-        | GatewayError::AuditWriteFailed(_)
-        | GatewayError::StalePrecondition => IpcErrorCode::PreconditionStale,
+        // genuinely re-approvable faults — a fresh approval cycle / re-submit fixes them (§6.4 the
+        // re-approvable stale card): the live source changed since approval (2.4 L4), or the approval lapsed.
+        GatewayError::StalePrecondition | GatewayError::ApprovalExpired => {
+            IpcErrorCode::PreconditionStale
+        }
+        // a missing target is its own honest code — no longer masquerading as a re-approvable stale card.
+        GatewayError::NotFound(_) => IpcErrorCode::NotFound,
+        // daemon-internal faults — NOT user-re-approvable: a fail-closed audit write (Q7 carry-forward
+        // correction), an out-of-state transition (a daemon-side fault on the submit/auto-execute path),
+        // or the latched systemic audit-backbone breaker (P4.0b-2c) → §6.4 `internal_error` (the honest
+        // "the daemon failed" signal; the breaker's loud signal is the durable systemic alarm + latched state).
+        GatewayError::AuditWriteFailed(_)
+        | GatewayError::IllegalTransition { .. }
+        | GatewayError::AuditBackboneDown => IpcErrorCode::InternalError,
         // 2.4 L3 — a stale fencing token: the NEVER-auto-resolved hard-conflict card (rule #6),
-        // distinct from the re-approvable precondition_stale (the Q7/§11.5 safety-card distinction).
+        // distinct from the re-approvable precondition_stale (the §17/§11.5 safety-card distinction).
         GatewayError::FencingConflict => IpcErrorCode::FencingConflict,
         GatewayError::Serialize(_) => IpcErrorCode::ProtocolError,
-        // P4.0b-2c — the audit-backbone breaker is latched (systemic audit failure). The mutation is
-        // refused before any audit-write; surfaced as the §6.4 fail-closed `internal_error` (the loud
-        // distinguishable signal is the durable systemic alarm + the latched breaker state).
-        GatewayError::AuditBackboneDown => IpcErrorCode::InternalError,
     }
 }
 
@@ -1020,6 +1026,81 @@ fn read_err(e: rusqlite::Error) -> IpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gateway_error_de_collapse_maps_each_variant_to_an_honest_code() {
+        // spec(§6.4) — the 5-distinct-GatewayError → 1-precondition_stale overload is de-collapsed so the
+        // cockpit no longer renders a re-approvable "stale card" for non-re-approvable faults. Each fault
+        // maps to its honest existing IpcErrorCode (no closed-set bump).
+        use crate::gateway::GatewayError;
+        // genuinely re-approvable (re-submit / fresh approval cycle) → precondition_stale.
+        assert_eq!(
+            gateway_error_to_code(&GatewayError::StalePrecondition),
+            IpcErrorCode::PreconditionStale
+        );
+        assert_eq!(
+            gateway_error_to_code(&GatewayError::ApprovalExpired),
+            IpcErrorCode::PreconditionStale
+        );
+        // not-found is its own honest code (no longer masquerading as stale).
+        assert_eq!(
+            gateway_error_to_code(&GatewayError::NotFound("x".into())),
+            IpcErrorCode::NotFound
+        );
+        // daemon-internal faults (fail-closed audit write / out-of-state transition / systemic breaker) are
+        // NOT user-re-approvable → internal_error.
+        assert_eq!(
+            gateway_error_to_code(&crate::gateway::db_err(
+                rusqlite::Error::QueryReturnedNoRows
+            )),
+            IpcErrorCode::InternalError,
+            "AuditWriteFailed → internal_error (the Q7 carry-forward correction)"
+        );
+        assert_eq!(
+            gateway_error_to_code(&GatewayError::IllegalTransition {
+                machine: "session",
+                from: "a".into(),
+                to: "b".into(),
+            }),
+            IpcErrorCode::InternalError
+        );
+        assert_eq!(
+            gateway_error_to_code(&GatewayError::AuditBackboneDown),
+            IpcErrorCode::InternalError
+        );
+        // unchanged buckets (regression).
+        assert_eq!(
+            gateway_error_to_code(&GatewayError::PolicyDenied),
+            IpcErrorCode::PolicyDenied
+        );
+        assert_eq!(
+            gateway_error_to_code(&GatewayError::UnsupportedApprovalMode("Blocked".into())),
+            IpcErrorCode::PolicyDenied
+        );
+        assert_eq!(
+            gateway_error_to_code(&GatewayError::UnsupportedPolicyDecision("x".into())),
+            IpcErrorCode::PolicyDenied
+        );
+        assert_eq!(
+            gateway_error_to_code(&GatewayError::Serialize("x".into())),
+            IpcErrorCode::ProtocolError
+        );
+    }
+
+    #[test]
+    fn gateway_error_fencing_conflict_stays_distinct() {
+        // spec(§17 / safety rule #6) — the NEVER-auto-resolved hard-conflict card MUST stay its own code,
+        // never collapsed into the re-approvable precondition_stale bucket (the safety pin; the de-collapse
+        // touches only the precondition_stale overload, never the fencing distinction — LESSON 21).
+        use crate::gateway::GatewayError;
+        let code = gateway_error_to_code(&GatewayError::FencingConflict);
+        assert_eq!(code, IpcErrorCode::FencingConflict);
+        assert_ne!(
+            code,
+            IpcErrorCode::PreconditionStale,
+            "fencing_conflict must never be the re-approvable precondition_stale"
+        );
+    }
 
     #[test]
     fn session_row_wire_fields_match_struct() {

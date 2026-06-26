@@ -23,10 +23,11 @@ use crate::events::{
     ActionPartiallySucceeded, ActionRequested, ActionStarted, ActionSucceeded,
     AuditIntegrityViolation, BranchCreated, DeviceRegistered, ExecutionProfileRegistered,
     GithubSyncFailed, IntegrationConnectionRegistered, IntegrationLiveWritesSet, LinearSyncFailed,
-    LocalRunnerRegistered, ProjectRescanned, Provider, PullRequestMerged, PullRequestSynced,
-    ReviewSubmitted, ReviewSynced, SensitiveOutputRedacted, SessionFailed, SessionRecovered,
-    SessionStarted, TelemetrySampled, TerminalProcessExited, WorktreeCreated, WorktreeDeleted,
-    WorktreeLocked, WorktreeMerged, WorktreePrunable,
+    LocalRunnerRegistered, ProfileSecretSet, ProjectRescanned, Provider, PullRequestMerged,
+    PullRequestSynced, ReviewSubmitted, ReviewSynced, SensitiveOutputRedacted, SessionFailed,
+    SessionProfileChanged, SessionRecovered, SessionStarted, TelemetrySampled,
+    TerminalProcessExited, WorktreeCreated, WorktreeDeleted, WorktreeLocked, WorktreeMerged,
+    WorktreePrunable,
 };
 use crate::gateway_ids::{ActionPlanId, ApprovalId, GatewayObjectKind};
 use crate::harness::{
@@ -38,9 +39,9 @@ use crate::ipc::{
     ActionAck, Capabilities, ConnectViaGhParams, ConnectViaGhResult, ConnectViaGhStatus, DeltaKind,
     DiffLine, DiffLineKind, DiffResult, GetDiffParams, GetPrDiffParams, GetProjectionParams,
     HelloAck, HelloFrame, Hunk, IpcErrorCode, PlanAck, PlanStepAck, ProjectionDelta,
-    ProjectionName, ProjectionScope, RpcRequest, RpcResponse, ServerFrame, SubscribeParams,
-    TerminalControlFrame, TerminalControlKind, TerminalInputFrame, TerminalOutputFrame,
-    VersionSkewError, WireError,
+    ProjectionName, ProjectionScope, RpcRequest, RpcResponse, ServerFrame, SetProfileSecretParams,
+    SetProfileSecretResult, SubscribeParams, TerminalControlFrame, TerminalControlKind,
+    TerminalInputFrame, TerminalOutputFrame, VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
 use crate::projections::{ApprovalQueueRow, PullRequestRow, ReviewRow, SessionRow};
@@ -264,6 +265,17 @@ struct ContractBundle {
     // OFF; NO secret — an authorization flip carries only {connection_id, enabled}). The catalog entry
     // rides the existing ActionTypeCatalogEntry registration. Additive (shared/src/events.rs).
     integration_live_writes_set: IntegrationLiveWritesSet,
+    // P5.3b/085 (CONTRACT 0.46.0) — the execution-profile SECRET vertical. The profile.set_secret inbound
+    // IPC trigger wire types (SetProfileSecret{Params,Result} — the FIRST inbound `secret`; the result is the
+    // POINTER only, no echo) + the ProfileSecretSet pointer-record event (the gateway emits it; profiles::
+    // apply_secret_set UPDATEs the canonical execution_profiles.keychain_ref in txn-B) + SessionProfileChanged
+    // (the §15 #8 no-account-hop rebind). The profile.set_keychain_ref catalog entry + the new
+    // ExecutorKind::Profile variant ride the existing ActionTypeCatalogEntry/ExecutorKind registrations.
+    // Additive (§5.0).
+    set_profile_secret_params: SetProfileSecretParams,
+    set_profile_secret_result: SetProfileSecretResult,
+    profile_secret_set: ProfileSecretSet,
+    session_profile_changed: SessionProfileChanged,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

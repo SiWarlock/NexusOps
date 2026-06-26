@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type {
   ProjectActivityRow,
   ResumeMode,
@@ -35,6 +35,8 @@ function ResumeModeBadge({ mode }: { mode: ResumeMode }) {
 interface SessionsTableProps {
   sessions: SessionRow[];
   projects: ProjectActivityRow[];
+  /** Optional toolbar slot (e.g. the WAVE-1 "Launch agent" control) rendered in the filters header. */
+  headerActions?: ReactNode;
 }
 
 const COLUMNS: { key: SessionsSortKey; label: string }[] = [
@@ -63,7 +65,7 @@ function ariaSortFor(
  * (no invented rows — forbidden #2); reads its data through props (the Shell's
  * gateway boundary). Board / filtering / model+team columns are deferred.
  */
-export function SessionsTable({ sessions, projects }: SessionsTableProps) {
+export function SessionsTable({ sessions, projects, headerActions }: SessionsTableProps) {
   const [sort, setSort] = useState<SessionsSort>(DEFAULT_SORT);
   const [filter, setFilter] = useState<SessionsFilter>(NO_FILTER);
 
@@ -112,6 +114,11 @@ export function SessionsTable({ sessions, projects }: SessionsTableProps) {
             onChange={(e) => setFilter((f) => ({ ...f, text: e.target.value }))}
           />
         </label>
+        {headerActions ? (
+          <div className="sessions__header-actions" style={{ marginLeft: "auto" }}>
+            {headerActions}
+          </div>
+        ) : null}
       </div>
       <table className="sessions__table" data-testid="sessions-table">
         <thead>

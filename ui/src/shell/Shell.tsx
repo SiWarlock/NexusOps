@@ -789,6 +789,7 @@ export function Shell({
               projects={data.projects}
               usage={data.usage}
               gateway={client}
+              activeProjectId={activeProjectId}
             />
           ) : contentView === "settings" ? (
             // Settings folds the Usage dashboard into its Usage tab (§11.2).

@@ -6,6 +6,7 @@ import { describeStatus } from "../../status/descriptors";
 import { RiskBadge } from "../../design-system/kit";
 import { sessionDisplayFixture } from "../../shell/display-meta";
 import { SessionsTable } from "../sessions/SessionsTable";
+import { LaunchAgentControl } from "../sessions/LaunchAgentControl";
 import { Eyebrow } from "../cockpit";
 import type { GatewayPort } from "../../gateway-client/types";
 import { TerminalDisplay } from "./TerminalDisplay";
@@ -27,12 +28,15 @@ export function SessionTerminal({
   sessions,
   projects,
   gateway,
+  activeProjectId = null,
 }: {
   session: SessionRow | null;
   sessions: SessionRow[];
   projects: ProjectActivityRow[];
   usage?: UsageRow[];
   gateway: GatewayPort;
+  /** The active project (the launch target for the WAVE-1 "Launch agent" control). */
+  activeProjectId?: string | null;
 }) {
   if (!session) {
     return (
@@ -44,7 +48,13 @@ export function SessionTerminal({
             below is the structured session list (filter + sort).
           </p>
         </div>
-        <SessionsTable sessions={sessions} projects={projects} />
+        <SessionsTable
+          sessions={sessions}
+          projects={projects}
+          headerActions={
+            <LaunchAgentControl gateway={gateway} activeProjectId={activeProjectId} />
+          }
+        />
       </section>
     );
   }

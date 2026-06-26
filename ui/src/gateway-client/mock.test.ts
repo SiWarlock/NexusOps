@@ -135,4 +135,13 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     expect(enabled.has("github.merge_pr")).toBe(true);
     expect(enabled.has("github.submit_review")).toBe(true);
   });
+
+  it("mock_create_session_returns_a_canned_ack", async () => {
+    // spec(W1-A) — the Mock createSession returns a contract-valid ActionAck so dev/test UI flows
+    // exercise the Launch path without a daemon (the daemon mints the id; the Mock cans one).
+    const mock = new MockGatewayPort();
+    const ack = await mock.createSession({ project_id: "proj_1", initial_prompt: "go" });
+    expect(ack.action_request_id).toBeTruthy();
+    expect(ack.status).toBeTruthy();
+  });
 });

@@ -9,6 +9,7 @@
 // can be exercised. The real UdsGatewayPort (§6.4) is a later per-slice
 // integration gated on daemon Phase 1.5.
 import type {
+  CreateSessionParams,
   GatewayPort,
   ProjectionPageParams,
   ProjectionScope,
@@ -250,6 +251,13 @@ export class MockGatewayPort implements GatewayPort {
   async deny(_approval_id: string, _reason: string): Promise<ActionAck> {
     if (this.mutationError) throw this.mutationError;
     return { action_request_id: "ar_mock_0001", status: "denied" };
+  }
+
+  // §6.1 session.create (W1-A) — the daemon mints the id + drives the SessionExecutor; the Mock cans
+  // a non-terminal `submitted` ack (the launched session would surface via the Session projection).
+  async createSession(_params: CreateSessionParams): Promise<ActionAck> {
+    if (this.mutationError) throw this.mutationError;
+    return { action_request_id: "ar_mock_session_0001", status: "submitted" };
   }
 
   getConnectionState(): ConnectionState {

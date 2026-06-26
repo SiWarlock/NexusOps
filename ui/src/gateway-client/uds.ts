@@ -21,6 +21,7 @@
 // subscribe_terminal stays a P4 not-wired surface. INV-SEC-1 stays daemon-side regardless.
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
+  CreateSessionParams,
   GatewayPort,
   ProjectionPageParams,
   ProjectionScope,
@@ -369,6 +370,17 @@ export class UdsGatewayPort implements GatewayPort {
   async deny(approval_id: string, reason: string): Promise<ActionAck> {
     this.assertMutationsEnabled();
     return this.invokeRead(parseAck, "gateway_deny", { approvalId: approval_id, reason });
+  }
+  // §6.1 session.create (W1-A) — gated like submit_action (throws-never-invokes when disabled).
+  // camelCase args → the Tauri command's snake_case Rust params; absent optionals → null (→ Rust
+  // None, omitted). Boundary-parses the typed ActionAck (the daemon mints the id — no client-mint).
+  async createSession(params: CreateSessionParams): Promise<ActionAck> {
+    this.assertMutationsEnabled();
+    return this.invokeRead(parseAck, "gateway_create_session", {
+      projectId: params.project_id,
+      initialPrompt: params.initial_prompt ?? null,
+      executionProfileId: params.execution_profile_id ?? null,
+    });
   }
 
   // The streaming subscribe (§6.1 ProjectionDelta) — WIRED at 052. Opens a dedicated persistent

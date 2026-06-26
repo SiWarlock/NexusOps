@@ -108,6 +108,7 @@ const rejectingGateway: GatewayPort = {
   preview_action: notExercised,
   approve: notExercised,
   deny: notExercised,
+  createSession: notExercised,
   getConnectionState: () => "connected",
   onConnectionChange: () => () => {},
   reconnect: () => {},

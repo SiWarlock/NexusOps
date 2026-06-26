@@ -37,6 +37,16 @@ export interface SubscribeParams {
 }
 
 /** The read surface of the §6.1 GatewayPort contract. */
+/** §6.1 `session.create` params — the cockpit's agent-launch (WAVE-1 Slice A). `project_id` is the
+ *  ALREADY-REGISTERED active project (required; the daemon validates it). `initial_prompt` is the
+ *  optional dev-drive prompt fed to the Claude TUI; `execution_profile_id` omitted → the seeded
+ *  default. The DAEMON mints the action_request_id (dedicated `session.create` method) → no client-mint. */
+export interface CreateSessionParams {
+  project_id: string;
+  initial_prompt?: string;
+  execution_profile_id?: string;
+}
+
 export interface GatewayPort {
   get_projection<K extends ProjectionName>(
     name: K,
@@ -83,6 +93,9 @@ export interface GatewayPort {
   preview_action(action_request_id: string): Promise<ActionPreview>;
   approve(approval_id: string, step_id?: string): Promise<ActionAck>;
   deny(approval_id: string, reason: string): Promise<ActionAck>;
+  // §6.1 session.create (W1-A) — the agent-launch path. A mutation (spawns a live agent) → gated
+  // on `mutationsEnabled` like submit_action; the daemon mints the id + drives the SessionExecutor.
+  createSession(params: CreateSessionParams): Promise<ActionAck>;
 
   // Connection management (transport liveness; §11.4). These are UI-client
   // transport concerns, NOT part of the frozen §6.1 RPC method surface.

@@ -292,6 +292,8 @@ describe("UdsGatewayPort — single-shot reads (Layer A)", () => {
     await expect(port.preview_action("act_1")).rejects.toThrow(/not enabled/i);
     await expect(port.approve("appr_1")).rejects.toThrow(/not enabled/i);
     await expect(port.deny("appr_1", "no")).rejects.toThrow(/not enabled/i);
+    // createSession (W1-A) is a mutation (launches an agent) → same gate, throws-never-invokes.
+    await expect(port.createSession({ project_id: "proj_1" })).rejects.toThrow(/not enabled/i);
 
     // THE cat-1 crux: NOT ONE invoke happened — the guard short-circuits BEFORE any transport reach.
     expect(mockInvoke).not.toHaveBeenCalled();
@@ -371,6 +373,47 @@ describe("UdsGatewayPort — single-shot reads (Layer A)", () => {
     const port = new UdsGatewayPort({ mutationsEnabled: true });
     mockInvoke.mockResolvedValueOnce({ not_a_preview: true });
     await expect(port.preview_action("act_1")).rejects.toBeInstanceOf(
+      BoundaryValidationError,
+    );
+  });
+
+  it("create_session_invokes_omitting_absent_optionals_when_enabled", async () => {
+    // spec(§6.1/W1-A) — enabled, createSession invokes gateway_create_session with the active
+    // project_id (camelCase→snake_case) + absent optionals as null (Tauri→Rust None), and
+    // boundary-parses the typed ActionAck (the DAEMON mints the id — no client-mint).
+    const port = new UdsGatewayPort({ mutationsEnabled: true });
+    mockInvoke.mockResolvedValueOnce(validAck);
+    const ack = await port.createSession({ project_id: "proj_1" });
+    expect(ack.action_request_id).toBe("act_1");
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_create_session", {
+      projectId: "proj_1",
+      initialPrompt: null,
+      executionProfileId: null,
+    });
+    // an initial_prompt threads through as initialPrompt (the dev-drive prompt).
+    mockInvoke.mockResolvedValueOnce(validAck);
+    await port.createSession({ project_id: "proj_2", initial_prompt: "drive me" });
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_create_session", {
+      projectId: "proj_2",
+      initialPrompt: "drive me",
+      executionProfileId: null,
+    });
+  });
+
+  it("create_session_wire_rejection_plain_and_malformed_is_boundary_error", async () => {
+    // spec(LESSON 22) — a daemon WireError → the verbatim code as PLAIN {code} (not an Error); a
+    // non-ActionAck result → BoundaryValidationError (parseAck fail-closed). Same classification as
+    // submit_action (the shared invokeRead/handleError path).
+    const port = new UdsGatewayPort({ mutationsEnabled: true });
+    mockInvoke.mockRejectedValueOnce({ kind: "wire", code: "precondition_stale" });
+    const wireErr = await port
+      .createSession({ project_id: "proj_1" })
+      .then(() => null, (e: unknown) => e);
+    expect(wireErr).not.toBeInstanceOf(Error);
+    expect((wireErr as { code: string }).code).toBe("precondition_stale");
+
+    mockInvoke.mockResolvedValueOnce({ not_an_ack: true });
+    await expect(port.createSession({ project_id: "proj_1" })).rejects.toBeInstanceOf(
       BoundaryValidationError,
     );
   });

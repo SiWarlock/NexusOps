@@ -152,4 +152,10 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     // Mock-driven Launch flows exercise the enabled path (production UdsGatewayPort defaults OFF — held).
     expect(new MockGatewayPort().enabledSessionLaunch).toBe(true);
   });
+
+  it("mock_enabled_session_kill_defaults_true", () => {
+    // spec(Slice B) — the Mock is a fully-working dev/test port: enabledSessionKill defaults ON so
+    // Mock-driven Kill flows exercise the enabled path (production UdsGatewayPort defaults OFF — held).
+    expect(new MockGatewayPort().enabledSessionKill).toBe(true);
+  });
 });

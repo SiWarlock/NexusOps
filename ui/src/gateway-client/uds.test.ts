@@ -743,3 +743,44 @@ describe("UdsGatewayPort — PR-mutation guard (cat-1 ui-070/071, per-action gat
     expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: l2Req });
   });
 });
+
+// ─── ui-084 WAVE-1 Slice B — the per-action session.kill port gate (enabledSessionKill, default-OFF) ──
+describe("UdsGatewayPort — session.kill guard (WAVE-1 Slice B, default-OFF held-flip)", () => {
+  it("uds_default_enabled_session_kill_is_off", () => {
+    // spec(default-OFF) — the production default HOLDS agent-kill (no auto-go-live; the cat-1 held-flip,
+    // the enabledSessionLaunch mirror). Even with mutationsEnabled forced on, kill stays held.
+    expect(new UdsGatewayPort().enabledSessionKill).toBe(false);
+    expect(new UdsGatewayPort({ mutationsEnabled: true }).enabledSessionKill).toBe(false);
+  });
+
+  it("uds_submit_action_session_kill_throws_never_invokes_when_not_enabled", async () => {
+    // spec(cat-1 [[27]] + the held-flip) — a session.kill submit with enabledSessionKill OFF THROWS +
+    // NEVER invokes, EVEN with mutationsEnabled:true (the production config since the ui-075 L2-C go-live):
+    // a destructive live-write does not auto-ride the already-live L2 flag.
+    const port = new UdsGatewayPort({ mutationsEnabled: true }); // enabledSessionKill defaults OFF
+    const killReq = { action_type: "session.kill" } as ActionRequest;
+    await expect(port.submit_action(killReq)).rejects.toThrow(/not enabled/i);
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("uds_submit_action_session_kill_invokes_when_enabled", async () => {
+    // spec(§6.1) — with the gate forced ON (test-only; production stays OFF until a cat-1 sign-off),
+    // a session.kill submit invokes gateway_submit_action with the verbatim request (the shared
+    // invokeRead path → the wire-vs-transport classification is inherited identically).
+    mockInvoke.mockResolvedValue(validAck);
+    const port = new UdsGatewayPort({ mutationsEnabled: true, enabledSessionKill: true });
+    const killReq = { action_type: "session.kill" } as ActionRequest;
+    await port.submit_action(killReq);
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: killReq });
+  });
+
+  it("non_kill_submit_action_unaffected_by_kill_gate", async () => {
+    // spec(no L2 regression) — the kill gate keys on action_type === "session.kill" ONLY: an L2 non-kill
+    // submit (mutationsEnabled:true, enabledSessionKill default OFF) still invokes (the gate is scoped).
+    mockInvoke.mockResolvedValue(validAck);
+    const port = new UdsGatewayPort({ mutationsEnabled: true });
+    const l2Req = { action_type: "git.stage_hunk" } as ActionRequest;
+    await port.submit_action(l2Req);
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: l2Req });
+  });
+});

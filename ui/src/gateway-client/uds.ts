@@ -55,6 +55,7 @@ import {
   type ConnectionState,
 } from "../connection/state";
 import { PR_MUTATION_ACTION_TYPES } from "../intent/pr-mutation-request";
+import { SESSION_KILL_ACTION_TYPE } from "../intent/kill-session-request";
 
 /** The serializable error the 050 bridge rejects with (`GatewayCommandError`, snake_case
  *  `kind` tag). Only `kind`/`code`/`message` are read here; the structural variants
@@ -80,6 +81,8 @@ const PR_MUTATION_NOT_ENABLED = (actionType: string) =>
   `UdsGatewayPort: the PR mutation '${actionType}' is not enabled (guarded off until a future USER-signed-off go-live + the daemon auth-bootstrap re-review; not in enabledPrMutations)`;
 const SESSION_LAUNCH_NOT_ENABLED =
   "UdsGatewayPort: agent-launch (session.create) is not enabled (held off until a USER cat-1 sign-off + visual gate; enabledSessionLaunch=false — it does NOT auto-ride the live mutationsEnabled flip)";
+const SESSION_KILL_NOT_ENABLED =
+  "UdsGatewayPort: agent-kill (session.kill) is not enabled (held off until a USER cat-1 sign-off + visual gate; enabledSessionKill=false — a destructive write does NOT auto-ride the live mutationsEnabled flip)";
 
 /** A frame received over the subscribe `Channel` (the TS mirror of the 050 bridge's
  *  `SubscriptionEvent`): `delta` carries a raw daemon delta (boundary-parsed before it's yielded),
@@ -167,16 +170,23 @@ export class UdsGatewayPort implements GatewayPort {
    *  cat-1 sign-off flips it — SEPARATE from `mutationsEnabled` (already TRUE in prod since ui-075). */
   readonly enabledSessionLaunch: boolean;
 
+  /** The per-action AGENT-KILL go-live gate (WAVE-1 Slice B; the `enabledSessionLaunch` mirror).
+   *  default FALSE: a session.kill submit_action throws-never-invokes (+ the Kill control disabled) until
+   *  a USER cat-1 sign-off flips it — a DESTRUCTIVE write does not auto-ride the already-live mutationsEnabled. */
+  readonly enabledSessionKill: boolean;
+
   constructor(
     opts: {
       mutationsEnabled?: boolean;
       enabledPrMutations?: ReadonlySet<string>;
       enabledSessionLaunch?: boolean;
+      enabledSessionKill?: boolean;
     } = {},
   ) {
     this.mutationsEnabled = opts.mutationsEnabled ?? false;
     this.enabledPrMutations = opts.enabledPrMutations ?? new Set();
     this.enabledSessionLaunch = opts.enabledSessionLaunch ?? false;
+    this.enabledSessionKill = opts.enabledSessionKill ?? false;
   }
 
   // ── the §6.1 read surface (single-shot — invoke + boundary-parse) ──────────────────
@@ -369,9 +379,20 @@ export class UdsGatewayPort implements GatewayPort {
     }
   }
 
+  /** WAVE-1 Slice B — a `session.kill` submit reaches the wire ONLY when `enabledSessionKill` is true.
+   *  Action-type-SCOPED (keyed on `session.kill`) + independent of `mutationsEnabled` (a destructive
+   *  write can't ride the already-live L2 flag); throws BEFORE invoke → the provably-unreachable layer
+   *  ([[27]]). Other action types are unaffected (no L2 regression). The `assertPrMutationsEnabledFor` mirror. */
+  private assertSessionKillEnabledFor(actionType: string): void {
+    if (actionType === SESSION_KILL_ACTION_TYPE && !this.enabledSessionKill) {
+      throw new Error(SESSION_KILL_NOT_ENABLED);
+    }
+  }
+
   async submit_action(request: ActionRequest): Promise<ActionAck> {
     this.assertMutationsEnabled();
     this.assertPrMutationsEnabledFor(request.action_type);
+    this.assertSessionKillEnabledFor(request.action_type);
     return this.invokeRead(parseAck, "gateway_submit_action", { request });
   }
   // No PR-mutation guard here by design: preview_action takes only an opaque action_request_id (no

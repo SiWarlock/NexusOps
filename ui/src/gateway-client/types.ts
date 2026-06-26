@@ -143,4 +143,15 @@ export interface GatewayPort {
    * until a USER cat-1 sign-off + visual gate); `MockGatewayPort` defaults it TRUE. NOT a §6.1 RPC method.
    */
   readonly enabledSessionLaunch: boolean;
+
+  /**
+   * The per-action AGENT-KILL go-live gate (WAVE-1 Slice B; the `enabledSessionLaunch` mirror). A
+   * generic `submit_action` whose `action_type` is `session.kill` (a DESTRUCTIVE live-write — stops a
+   * running agent) reaches the wire ONLY when this is TRUE — the transport throws-never-invokes AND the
+   * Kill control is disabled otherwise. SEPARATE from `mutationsEnabled` (already TRUE in production), so
+   * a destructive capability does NOT auto-ride that flip. `UdsGatewayPort` defaults it FALSE (HELD until
+   * a USER cat-1 sign-off + visual gate); `MockGatewayPort` defaults it TRUE. NOT a §6.1 RPC method.
+   * Read via `isSessionKillEnabled` (intent/kill-session-request.ts).
+   */
+  readonly enabledSessionKill: boolean;
 }

@@ -120,6 +120,9 @@ export interface MockGatewayOptions {
   /** The per-action agent-launch gate (WAVE-1 Slice A). Default TRUE — the working Mock; set false to
    *  exercise the held (default-OFF in production) Launch control. */
   enabledSessionLaunch?: boolean;
+  /** The per-action agent-kill gate (WAVE-1 Slice B). Default TRUE — the working Mock; set false to
+   *  exercise the held (default-OFF in production) Kill control. */
+  enabledSessionKill?: boolean;
 }
 
 export class MockGatewayPort implements GatewayPort {
@@ -133,6 +136,8 @@ export class MockGatewayPort implements GatewayPort {
   readonly enabledPrMutations: ReadonlySet<string>;
   /** The per-action agent-launch gate (WAVE-1 Slice A) — default TRUE (the working Mock). */
   readonly enabledSessionLaunch: boolean;
+  /** The per-action agent-kill gate (WAVE-1 Slice B) — default TRUE (the working Mock). */
+  readonly enabledSessionKill: boolean;
 
   constructor(options: MockGatewayOptions = {}) {
     this.connection = options.connection ?? "connected";
@@ -141,6 +146,7 @@ export class MockGatewayPort implements GatewayPort {
     this.mutationsEnabled = options.mutationsEnabled ?? true;
     this.enabledPrMutations = options.enabledPrMutations ?? PR_MUTATION_ACTION_TYPES;
     this.enabledSessionLaunch = options.enabledSessionLaunch ?? true;
+    this.enabledSessionKill = options.enabledSessionKill ?? true;
   }
 
   async get_projection<K extends ProjectionName>(

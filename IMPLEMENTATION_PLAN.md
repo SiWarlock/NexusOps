@@ -77,14 +77,15 @@ _(LOCKED-text corrections + planning-doc reconciles are tracked in "Architecture
 
 ## WAVE work — wire daemon features into the cockpit (autonomous-mode goal)
 
-> The goal-driven task home (origin: 2026-06-26 lead directive — every daemon user-facing feature WIRED + functional + smoke-testable). Authoritative gap-map: `docs/planning/daemon-ui-gap-map.md` (+ ui-side `docs/planning/ui-wiring-gap-map-ui-side.md`). Each WAVE = a slice cluster; the ui + daemon lanes run disjoint. **Spec anchors:** `§9.1` (harness/session lifecycle), `§6.1` (IPC methods + projections), `§2.8` (execution-profile registry), `§7` (projections), `§11` (cockpit), `§15` (safety gates).
+> The goal-driven task home (origin: 2026-06-26 lead directive — every daemon user-facing feature WIRED + functional + smoke-testable). Authoritative gap-map: `docs/planning/daemon-ui-gap-map.md` (+ ui-side `docs/planning/ui-wiring-gap-map-ui-side.md`). Each WAVE = a slice cluster; the ui + daemon lanes run disjoint. **Spec anchors:** `§9.1` (harness/session lifecycle), `§6.1` (IPC methods), `§6.2`/`§6.3` (Gateway pipeline + action catalog), `§6.4` (terminal channel), `§2.8` (execution-profile registry), `§5.0`/`§2.5` (contract SoT + the §2.5 seam), `§5.1` (status machines), `§7` (projections), `§11` (cockpit), `§15` (safety gates), `§17` (failure modes). _(Broad by design — the WAVE umbrella spans the whole system; a per-slice brief cites the subset it implements.)_
 
 ### WAVE-1 — session-lifecycle control (the cockpit can VIEW but not DRIVE agents — the #1 gap)
 - [ ] **W1-A** — `session.create` "Launch agent" UI wiring (the dedicated IPC method, daemon-mints the id; a multi-layer GatewayPort/Tauri transport add) — _ui (task #13, in flight)_
 - [ ] **W1-B** — `session.kill` "Kill" control UI wiring (`submit_action` + client-mint + session resource_ref; risk-0, no modal) — _ui, next_
-- [ ] **W1-prof** — daemon `get_execution_profiles` read RPC (+ a `ProfileRow`) — unblocks the profile-picker for `session.profile_change` — _daemon (post-arc-seal)_
-- [ ] **W1-exec** — daemon `session.send_message`/`pause`/`resume`/`attach_terminal` executor bodies (currently `_ => inner.execute` stubs) — unblocks those UI controls — _daemon (post-arc-seal)_
-- [ ] **W1-C** — `session.profile_change` / `send_message` / `pause` / `resume` / `attach_terminal` UI controls — _ui, gated on W1-prof + W1-exec_
+- [ ] **W1-prof** — daemon `get_execution_profiles` read RPC (+ typed secret-free `ProfileRow`; §15 #4 keychain-ref NEVER served; CONTRACT → 0.48, pairs a ui regen) — unblocks the profile-picker for `session.profile_change` — _daemon (brief 093)_
+- [ ] **W1-exec** — daemon `session.send_message`/`pause`/`resume` executor bodies (route typed `SessionCommand`s to the supervisor; today fall through `_ => inner.execute` → side-effect-free stub; contract-neutral) — _daemon (brief 094)_
+- [ ] **W1-exec-term** — daemon `session.attach_terminal` executor body (§6.4 terminal-channel attach — a distinct surface from the 3 supervisor-command bodies; pairs w/ the ui xterm.js host) — _daemon, follow-on (split out of W1-exec)_
+- [ ] **W1-C** — `session.profile_change` / `send_message` / `pause` / `resume` / `attach_terminal` UI controls — _ui, gated on W1-prof + W1-exec (+ W1-exec-term for attach)_
 
 ### WAVE-2 — projection honesty (read surfaces that mismatch or are unbuilt)
 - [ ] **W2-usage** — daemon UsageLedger `UsageRow` serve-reconcile (`subject_id`/`tokens`/`cost`/`harness` vs the UI shadow) + `creditPool` + the UI reconcile — _both_

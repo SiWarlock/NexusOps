@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type { AuditEventRow } from "../../contracts/index";
 import { Badge, Button } from "../../design-system/kit";
+import { humanizeActorLabel } from "./actor-label";
 
 // Filter chips over the REAL event_type namespace (the prototype's
 // auditFilters, keyed to this repo's audit vocabulary).
@@ -47,16 +48,21 @@ function eventIcon(eventType: string): ReactNode {
   }
 }
 
-const ACTOR_LABEL: Record<string, string> = {
-  user: "You",
-  action_gateway: "Gateway",
-  session_adapter: "Adapter",
-  project_brain: "Brain",
-  system: "System",
-};
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** Format the daemon `occurred_at` (RFC3339 UTC) as a deterministic, locale/TZ-independent
+ *  `YYYY-MM-DD HH:MM` (UTC) — honest + testable (locale formatting is jsdom/TZ-flaky). An
+ *  unparseable value falls back to the raw string (tolerant; never throws / never "Invalid Date"). */
+function formatAuditTime(occurredAt: string): string {
+  const d = new Date(occurredAt);
+  if (Number.isNaN(d.getTime())) return occurredAt;
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+}
 
 function AuditRow({ e, last }: { e: AuditEventRow; last: boolean }) {
-  const actor = ACTOR_LABEL[e.actor_type] ?? e.actor_type;
+  // actor_label is Option<String>: null → "—"; known wire value → humanized; unknown → RAW
+  // (forward-compat, [[32]]). Centralized in actor-label.ts (one actor vocabulary, the FINDING).
+  const actor = humanizeActorLabel(e.actor_label);
   return (
     <div style={{ display: "flex", gap: 12, position: "relative" }} data-item-id={`AuditEvent:${e.event_id}`}>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: "none", width: 26 }}>
@@ -68,7 +74,7 @@ function AuditRow({ e, last }: { e: AuditEventRow; last: boolean }) {
             borderRadius: 999,
             background: "var(--surface-card)",
             border: "1px solid var(--border-default)",
-            color: e.actor_type === "project_brain" ? "var(--brain-ink)" : "var(--text-muted)",
+            color: e.actor_label === "project_brain" ? "var(--brain-ink)" : "var(--text-muted)",
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
@@ -84,7 +90,7 @@ function AuditRow({ e, last }: { e: AuditEventRow; last: boolean }) {
       <div style={{ flex: 1, minWidth: 0, paddingBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span style={{ font: "var(--fw-medium) var(--fs-body) var(--font-sans)", color: "var(--text-primary)" }}>
-            {e.summary ?? e.event_type}
+            {e.headline}
           </span>
           <Badge mono style={{ color: "var(--text-faint)" }}>
             {e.event_type}
@@ -100,9 +106,9 @@ function AuditRow({ e, last }: { e: AuditEventRow; last: boolean }) {
             color: "var(--text-faint)",
           }}
         >
-          <span title="event sequence (timestamps land with the daemon enrichment)">#{e.seq}</span>
+          <span title={e.occurred_at}>{formatAuditTime(e.occurred_at)}</span>
           <span>·</span>
-          <span style={{ color: e.actor_type === "user" ? "var(--accent-ink)" : "var(--text-muted)" }}>
+          <span style={{ color: e.actor_label === "user" ? "var(--accent-ink)" : "var(--text-muted)" }}>
             {actor}
           </span>
         </div>

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   ApprovalQueueRow,
+  AuditEventRow,
   DiffLine,
   DiffResult,
   GetDiffParams,
@@ -338,6 +339,66 @@ describe("provisional terminal shadow (§6.4 — the 6.3d well consumes this)", 
     )!;
     expect(Object.keys(TerminalOutputFrame.shape).toSorted()).toEqual(
       Object.keys(frozenVariant.properties).toSorted(),
+    );
+  });
+});
+
+describe("provisional AuditEventRow (§7.2 — the W2-audit frozen row, 0.49.0)", () => {
+  // A valid 8-field row matching the frozen daemon shape (shared/src/projections.rs AuditEventRow).
+  const auditBase = {
+    event_id: "event_1",
+    seq: 10,
+    project_id: "project_1",
+    occurred_at: "2026-06-26T17:47:05Z",
+    event_type: "session.started",
+    headline: "Started session on auth-service",
+    actor_label: "user",
+    sensitivity: "internal",
+  };
+
+  it("audit_event_row_frozen_8_field_strict_shadow", () => {
+    // spec([[24]] frozen-shadow + the daemon deny_unknown_fields / plain-string notes) — the
+    // reconciled shadow is EXACTLY the 8 frozen fields, `.strict()`, with the rename/nullability:
+    expect(AuditEventRow.safeParse(auditBase).success).toBe(true);
+    // `.strict()` rejects an unknown key — e.g. the always-NULL `scope_json` the daemon's
+    // AUDIT_ROW_WIRE_FIELDS retain-whitelist DROPS (must NOT appear in the shadow).
+    expect(
+      AuditEventRow.safeParse({ ...auditBase, scope_json: null }).success,
+      "AuditEventRow must reject an unknown field (.strict)",
+    ).toBe(false);
+    // project_id + actor_label are nullable (Option<String> → present-but-null, no skip_serializing).
+    expect(
+      AuditEventRow.safeParse({ ...auditBase, project_id: null, actor_label: null }).success,
+    ).toBe(true);
+    // actor_label + sensitivity are PLAIN strings — NOT bound to ActorType/Sensitivity Zod enums
+    // (the daemon serves wire-string renders; forward-compat for the degradable tile).
+    expect(
+      AuditEventRow.safeParse({
+        ...auditBase,
+        actor_label: "a_future_actor",
+        sensitivity: "a_future_level",
+      }).success,
+      "actor_label/sensitivity accept arbitrary strings (not enum-validated)",
+    ).toBe(true);
+    // headline is REQUIRED (the rename from the optional `summary` → now non-Option).
+    const { headline: _omit, ...noHeadline } = auditBase;
+    expect(
+      AuditEventRow.safeParse(noHeadline).success,
+      "headline is required (the summary→headline rename made it non-optional)",
+    ).toBe(false);
+  });
+
+  it("audit_event_row_field_set_matches_frozen_projections_schema", () => {
+    // spec(§5.0 / [[24]]) — §2.5-seam: the shadow's field-set must equal the frozen daemon
+    // source. `AuditEventRow` is a `shared/src/projections.rs` row carried into the schema $defs
+    // (the `profile_row_field_sets_match_frozen_schema` precedent); pin both directions so a
+    // daemon add/remove/rename fails loudly.
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
+      $defs: Record<string, { properties?: Record<string, unknown> }>;
+    };
+    const frozen = Object.keys(schema.$defs.AuditEventRow!.properties!).toSorted();
+    expect(Object.keys(AuditEventRow.shape).toSorted(), "field drift in AuditEventRow").toEqual(
+      frozen,
     );
   });
 });

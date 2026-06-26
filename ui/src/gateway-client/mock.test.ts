@@ -127,7 +127,9 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     //           consumed by the already-optional ProjectActivityRow.name [ui-082], NO new flat enum [42 held]).
     // → 0.48.0 (W1-prof get_execution_profiles read RPC: ProfileRow + GetExecutionProfilesResult read-RESULT
     //           types in shared/src/ipc.rs [secret-free, §15 #4] — status reuses ExecutionProfile, NO new flat enum [42 held]).
-    expect(caps.contract_version).toBe("0.48.0");
+    // → 0.49.0 (W2-audit: proj_audit_trail+event_type [MIGRATION_20] + the frozen AuditEventRow [5th projection-row]
+    //           — actor_label/sensitivity/event_type are struct fields / plain strings, NO new flat enum [42 held]).
+    expect(caps.contract_version).toBe("0.49.0");
     expect(caps.protocol_version).toBe(1);
   });
 

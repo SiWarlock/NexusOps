@@ -76,6 +76,30 @@ describe("gateway-client boundary validator (parse, don't trust)", () => {
     expect(page.rows).toHaveLength(1);
     expect((page.rows[0] as { project_id: string }).project_id).toBe("proj_x");
   });
+
+  it("audit_trail_page_accepts_frozen_row_rejects_unknown", () => {
+    // spec(§7.2/§5.0 — W2-audit un-degrade) — the daemon serves AuditTrail as a bare array of the
+    // frozen 8-field AuditEventRow. The boundary must ACCEPT that real shape (so the tile stops
+    // degrading) and REJECT an unknown key (parse-don't-trust [[22]] + the `.strict()` shadow).
+    const row = {
+      event_id: "event_1",
+      seq: 10,
+      project_id: "project_1",
+      occurred_at: "2026-06-26T17:47:05Z",
+      event_type: "session.started",
+      headline: "Started session on auth-service",
+      actor_label: "action_gateway",
+      sensitivity: "internal",
+    };
+    const page = parseProjectionPage("AuditTrail", [row]);
+    expect(page.projection).toBe("AuditTrail");
+    expect(page.rows).toHaveLength(1);
+    expect((page.rows[0] as { event_id: string }).event_id).toBe("event_1");
+    // an unknown row key (e.g. the always-NULL scope_json the daemon drops) → fail closed.
+    expect(() => parseProjectionPage("AuditTrail", [{ ...row, scope_json: null }])).toThrow(
+      BoundaryValidationError,
+    );
+  });
 });
 
 describe("parseExecutionProfilesResult (§6.1 W1-prof — read-RPC result boundary)", () => {

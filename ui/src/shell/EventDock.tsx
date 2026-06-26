@@ -16,6 +16,7 @@ import type { AuditEventRow } from "../contracts/index";
 import type { ConnectionState } from "../connection/state";
 import { ConnectionIndicator } from "../connection/ConnectionIndicator";
 import { deriveActivityFeed } from "./derive";
+import { humanizeActorLabel } from "../views/audit/actor-label";
 
 // event_type prefix → dock icon (the prototype's DOCK_ICON, keyed off the real
 // audit event-type namespace).
@@ -42,15 +43,6 @@ function eventIcon(eventType: string): ReactNode {
       return <Dot size={13} />;
   }
 }
-
-// actor_type → display name ("user" reads as You — the accent actor).
-const ACTOR_LABEL: Record<string, string> = {
-  user: "You",
-  action_gateway: "Gateway",
-  session_adapter: "Adapter",
-  project_brain: "Brain",
-  system: "System",
-};
 
 /**
  * Bottom event/activity dock (ported from kit-shell.jsx EventDock): a status
@@ -138,7 +130,7 @@ export function EventDock({
                 color: "var(--text-secondary)",
               }}
             >
-              {latest.summary ?? latest.event_type}
+              {latest.headline}
             </span>
           </span>
         ) : null}
@@ -204,7 +196,7 @@ export function EventDock({
                     style={{
                       display: "inline-flex",
                       color:
-                        e.actor_type === "project_brain"
+                        e.actor_label === "project_brain"
                           ? "var(--brain-ink)"
                           : "var(--text-faint)",
                     }}
@@ -223,18 +215,18 @@ export function EventDock({
                     }}
                   >
                     <span data-event-type={e.event_type}>{e.event_type}</span>
-                    {e.summary ? <> — {e.summary}</> : null}
+                    {e.headline ? <> — {e.headline}</> : null}
                   </span>
                   <span
                     style={{
                       font: "var(--fs-micro) var(--font-mono)",
-                      color: e.actor_type === "user" ? "var(--accent-ink)" : "var(--text-faint)",
+                      color: e.actor_label === "user" ? "var(--accent-ink)" : "var(--text-faint)",
                     }}
                   >
-                    {ACTOR_LABEL[e.actor_type] ?? e.actor_type}
+                    {humanizeActorLabel(e.actor_label)}
                   </span>
                   <span
-                    title="event sequence (timestamps land with the daemon enrichment)"
+                    title={e.occurred_at}
                     style={{
                       font: "var(--fs-micro) var(--font-mono)",
                       color: "var(--text-faint)",

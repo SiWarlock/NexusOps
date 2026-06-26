@@ -17,6 +17,7 @@ import {
 import { Badge, Button, HarnessBadge, RiskBadge, UsageMeter } from "../../design-system/kit";
 import { StatusPill } from "../../status/StatusPill";
 import { describeStatus } from "../../status/descriptors";
+import { humanizeActorLabel } from "../audit/actor-label";
 import type {
   ApprovalQueueRow,
   AuditEventRow,
@@ -228,17 +229,9 @@ function eventIcon(eventType: string): ReactNode {
   }
 }
 
-const ACTOR_LABEL: Record<string, string> = {
-  user: "You",
-  action_gateway: "Gateway",
-  session_adapter: "Adapter",
-  project_brain: "Brain",
-  system: "System",
-};
-
 function EventLine({ e }: { e: AuditEventRow }) {
   const tone =
-    e.actor_type === "project_brain"
+    e.actor_label === "project_brain"
       ? "var(--brain-ink)"
       : e.event_type.startsWith("action") || e.event_type.startsWith("approval")
         ? "var(--attention-ink)"
@@ -250,10 +243,10 @@ function EventLine({ e }: { e: AuditEventRow }) {
       </span>
       <div style={{ minWidth: 0 }}>
         <div style={{ font: "var(--fs-meta)/1.4 var(--font-sans)", color: "var(--text-secondary)" }}>
-          {e.summary ?? e.event_type}
+          {e.headline}
         </div>
         <div style={{ font: "var(--fs-micro) var(--font-mono)", color: "var(--text-faint)", marginTop: 1 }}>
-          #{e.seq} · {ACTOR_LABEL[e.actor_type] ?? e.actor_type}
+          #{e.seq} · {humanizeActorLabel(e.actor_label)}
         </div>
       </div>
     </div>

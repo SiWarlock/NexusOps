@@ -18,7 +18,6 @@ const Session = bundle.shape.Session;
 const PullRequest = bundle.shape.PullRequest;
 const ReviewState = bundle.shape.ReviewState;
 const ApprovalStatus = bundle.shape.ApprovalStatus;
-const ActorType = bundle.shape.ActorType;
 const ActionRequestStatus = bundle.shape.ActionRequestStatus;
 const RequesterType = bundle.shape.RequesterType;
 
@@ -282,15 +281,25 @@ export const ApprovalQueuePage = z.object({
 });
 export type ApprovalQueuePage = z.infer<typeof ApprovalQueuePage>;
 
-/** A row of the AuditTrail projection — one event (provisional; actor delegates to the frozen enum). */
-export const AuditEventRow = z.object({
-  event_id: z.string(),
-  seq: z.number(),
-  project_id: z.string().optional(),
-  actor_type: ActorType,
-  event_type: z.string(),
-  summary: z.string().optional(),
-});
+// The 5th frozen projection-row (W2-audit, CONTRACT 0.49.0) — reconciled provisional→frozen,
+// field-set drift-pinned to `shared/src/projections.rs` AuditEventRow ([[24]]). `.strict()` mirrors
+// the daemon `deny_unknown_fields` (the always-NULL `scope_json`/`outcome` are retain-whitelisted out,
+// so they must NOT appear here). `actor_label`/`sensitivity` are PLAIN strings — NOT bound to the
+// ActorType/Sensitivity Zod enums (the daemon serves `wire_value()` renders; keeping them plain is the
+// forward-compat that lets the degradable tile survive a daemon-added actor/value). `project_id`/
+// `actor_label` serialize as explicit null (Option<String>, no skip_serializing_if).
+export const AuditEventRow = z
+  .object({
+    event_id: z.string(),
+    seq: z.number(),
+    project_id: z.string().nullable(),
+    occurred_at: z.string(),
+    event_type: z.string(),
+    headline: z.string(),
+    actor_label: z.string().nullable(),
+    sensitivity: z.string(),
+  })
+  .strict();
 export type AuditEventRow = z.infer<typeof AuditEventRow>;
 
 export const AuditTrailPage = z.object({

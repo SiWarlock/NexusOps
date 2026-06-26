@@ -9,6 +9,7 @@
 #![cfg(feature = "dev-client")]
 
 use nexusops_shared::actions::ResourceType;
+use nexusops_shared::ids::ProjectId;
 use nexusopsd::smoke::{
     build_create_pr_request, build_integration_connect_request, build_merge_pr_request,
     build_rescan_request, build_set_live_writes_request, build_submit_review_request,
@@ -36,6 +37,12 @@ fn build_rescan_request_shape() {
         req.resource_refs.is_empty(),
         "no resource_refs (path is input-carried)"
     );
+    // 089: the envelope project_id is a load-bearing shape property — the proj_project projector keys 1:1
+    // on it (None is healthy-skipped). Full pins in _mints_envelope_project_id / _mints_distinct_ids.
+    assert!(
+        req.project_id.is_some(),
+        "a minted envelope project_id (the projector keys on it)"
+    );
 }
 
 #[test]
@@ -52,6 +59,35 @@ fn build_rescan_request_missing_path_errors() {
     assert!(
         build_rescan_request(&args(&["--path", "   "])).is_err(),
         "whitespace-only --path → Err (the trim guard fires)"
+    );
+}
+
+#[test]
+fn build_rescan_request_mints_envelope_project_id() {
+    // spec(§7.2 / 089) — the proj_project projector keys 1:1 on the envelope project_id (LESSON 48); a
+    // None is HEALTHY-SKIPPED → the project NEVER registers (the session-038 root cause). The builder must
+    // mint a fresh proj_<ULID> onto the envelope so the ProjectRescanned event inherits it. Load-bearing pin.
+    let req = build_rescan_request(&args(&["--path", "/Users/x/myrepo"])).expect("builds");
+    let id = req
+        .project_id
+        .as_ref()
+        .expect("an envelope project_id is minted (not None)");
+    assert!(
+        ProjectId::parse(id.as_str()).is_ok(),
+        "the minted id is a well-formed proj_<ULID> (correct prefix + ULID)"
+    );
+}
+
+#[test]
+fn build_rescan_request_mints_distinct_ids() {
+    // spec(client-mint freshness / 089) — each call mints its OWN id, so a re-add gets its own row; the
+    // §2.8 register-by-path dedup (a re-add UPDATES) is the deferred daemon-side model (LESSON 48/62).
+    let a = build_rescan_request(&args(&["--path", "/repo"])).expect("builds");
+    let b = build_rescan_request(&args(&["--path", "/repo"])).expect("builds");
+    assert_ne!(
+        a.project_id.as_ref().map(|p| p.as_str()),
+        b.project_id.as_ref().map(|p| p.as_str()),
+        "two builds → distinct minted project_ids"
     );
 }
 

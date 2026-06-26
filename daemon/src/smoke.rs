@@ -60,7 +60,7 @@ const USAGE: &str = "usage: nexusopsd smoke <sub> [args]\n  \
     deny <approval_id> <reason...>\n  \
     kill <session_id>\n  \
     audit\n  \
-    rescan --path <repo>   (add a project — risk-0, auto-executes, no approve)\n  \
+    rescan --path <repo>   (add a project — risk-0, auto-executes; prints project_id=<id> for create --project)\n  \
     --- 083 live-validation chain (each SUBMITS; then `smoke approve <id>`) ---\n  \
     connect-gh --provider github --account <acct>\n  \
     connect --provider github --keychain-ref <ref> --account <acct>\n  \
@@ -82,8 +82,9 @@ pub fn run(args: &[String]) -> ExitCode {
         "deny" => cmd_deny(rest),
         "kill" => cmd_kill(rest),
         "audit" => cmd_get_projection("AuditTrail", "audit trail"),
-        // 088 — add a project: submit the EXISTING risk-0 project.rescan (auto-executes, no approve).
-        "rescan" => build_rescan_request(rest).and_then(|r| submit("project.rescan", r)),
+        // 088/089 — add a project: mint the envelope project_id, submit the EXISTING risk-0 project.rescan
+        // (auto-executes, no approve), and PRINT the minted id for the `create --project` chain.
+        "rescan" => cmd_rescan(rest),
         // 086 — the 083 live-validation chain (each a THIN wrapper over an EXISTING audited action).
         "connect-gh" => cmd_connect_gh(rest),
         "connect" => {
@@ -347,6 +348,12 @@ pub fn build_submit_review_request(rest: &[String]) -> Result<ActionRequest, Str
 /// `ProjectExecutor` detects + emits `ProjectRescanned` → `proj_project`/`proj_repository`. The path is
 /// passed VERBATIM (the daemon owns detection/validation + the LESSON §44 userinfo-strip); the CLI
 /// fail-closes only on a missing/EMPTY `--path` (never a blank-path rescan).
+///
+/// 089: mints a fresh `proj_<ULID>` onto the envelope `project_id`. The `proj_project` projector keys 1:1
+/// on `env.project_id` (LESSON 48), so a `None` (the 088 behavior) is HEALTHY-SKIPPED → the project never
+/// registers (the session-038 root cause). Client-mint is the MVP pattern (the daemon-side `register_project`
+/// dedup-by-path mutator is the deferred §2.8 model); `build_create_pr_request` carries its envelope id the
+/// same way. `cmd_rescan` reads the id back off the request and prints it for the `create --project` chain.
 pub fn build_rescan_request(rest: &[String]) -> Result<ActionRequest, String> {
     let path = required(rest, "--path")?;
     if path.trim().is_empty() {
@@ -354,13 +361,30 @@ pub fn build_rescan_request(rest: &[String]) -> Result<ActionRequest, String> {
     }
     smoke_request(
         "project.rescan",
-        None,
+        Some(ProjectId::new()),
         vec![],
         serde_json::json!({ "path": path }),
     )
 }
 
-// ---- 086: the subcommand arms (THIN — build → submit the EXISTING action) -----------------------
+// ---- 086/089: the subcommand arms (THIN — build → submit the EXISTING action) -------------------
+
+/// `rescan --path <repo>` — build the request (now carrying a client-minted envelope `project_id`), read
+/// the minted id back for the print, submit via the existing `submit`/`call` GatewayPort path, and return
+/// `project_id=<minted>\n<submitted>` so the id lands on its own greppable line (the user pastes it into
+/// `create --project <id>`). The id is read off `req.project_id` BEFORE `submit` consumes the request.
+fn cmd_rescan(rest: &[String]) -> Result<String, String> {
+    let req = build_rescan_request(rest)?;
+    // build_rescan_request always mints `Some(ProjectId::new())`; the `None` arm is defensive-only (keeps
+    // the read-back total over the `Result` path — no unwrap/expect, per the daemon no-panic convention).
+    let project_id = req
+        .project_id
+        .as_ref()
+        .map(|p| p.as_str().to_string())
+        .ok_or_else(|| "internal: build_rescan_request did not mint a project_id".to_string())?;
+    let submitted = submit("project.rescan", req)?;
+    Ok(format!("project_id={project_id}\n{submitted}"))
+}
 
 /// `connect-gh --provider github --account <acct>` → the EXISTING `connect_via_gh` IPC trigger (the
 /// daemon sources the `gh` token → keychain; NO token printed). Prints the keychain_ref / gh_unavailable.

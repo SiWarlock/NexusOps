@@ -622,3 +622,15 @@ ALTER TABLE proj_pull_request ADD COLUMN head_sha TEXT;
 pub const MIGRATION_18_INTEGRATION_LIVE_WRITES: &str = "\
 ALTER TABLE proj_integration_connection ADD COLUMN live_writes_enabled INTEGER NOT NULL DEFAULT 0;
 ";
+
+/// Migration 19 (P4.7/092) — the friendly project NAME: surface `name` on `proj_project_activity` so the
+/// cockpit switcher shows a human-readable label (the basename of the scan path) instead of the `proj_`
+/// ULID. Folded from `ProjectRescanned.name` (the `ProjectExecutor` emits `Some(basename)`; derive-from-
+/// event, LESSON §17). `TEXT` nullable — a `SessionStarted`-created row (or a pre-092 name-less
+/// `ProjectRescanned`) stays NULL until a rescan names it. `ALTER ADD COLUMN`: additive → existing rows
+/// default NULL, and `proj_project_activity` is in `REBUILD_TABLES` so a rebuild re-folds — no DROP+CREATE /
+/// offset-reset (the MIGRATION_18 precedent). The historical `proj_project_activity` CREATE (MIGRATION_3) is
+/// deliberately UNCHANGED (editing it would duplicate-column-fail a fresh DB).
+pub const MIGRATION_19_PROJECT_ACTIVITY_NAME: &str = "\
+ALTER TABLE proj_project_activity ADD COLUMN name TEXT;
+";

@@ -66,6 +66,19 @@ pub fn strip_userinfo(url: &str) -> String {
     )
 }
 
+/// The human-readable project name = the basename of the scan path (092, the lead's ruling). The last
+/// non-empty path component, trailing-slash-tolerant (`/a/b/` → `"b"`); a degenerate path (root `/`, empty,
+/// `.`, or `..`) → `None`, never a panic (no `"."`/`".."` marker leaks into the switcher label). Used over
+/// `repo_root` because a non-git project (the project-brain sidecar) has no `repo_root` — the scan path
+/// (`req.inputs["path"]`) is always present.
+pub fn project_name_from_path(path: &str) -> Option<String> {
+    Path::new(path)
+        .file_name() // None for `/`, ``, `..`
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty() && s != ".") // `.` (cwd marker) is not a real name
+}
+
 /// Runs project detection + emits `ProjectRescanned`. Holds an injected [`Clock`] for the
 /// deterministic `scanned_at` stamp (golden-log replay, LESSON §3).
 pub struct ProjectExecutor {
@@ -124,6 +137,9 @@ impl ProjectExecutor {
             plan_file: wf.plan_file.map(|p| p.to_string_lossy().into_owned()),
             brain: wf.brain,
             scanned_at,
+            // 092 — the friendly name = the scan-path basename (NOT repo_root, which is None for a non-git
+            // project). The path is non-empty here (the fail-closed guard above); a degenerate basename → None.
+            name: project_name_from_path(path),
         };
 
         // the executor serializes its own FROZEN event struct (Q1=B — the generic Namespaced bridge);

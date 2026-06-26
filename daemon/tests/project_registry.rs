@@ -81,6 +81,7 @@ fn rescan_payload(is_dirty: bool) -> ProjectRescanned {
         plan_file: Some("IMPLEMENTATION_PLAN.md".to_string()),
         brain: true,
         scanned_at: Timestamp::parse(FIXED_TS).unwrap(),
+        name: Some("acme".to_string()),
     }
 }
 
@@ -258,6 +259,7 @@ fn test_non_git_project_folds_nulls() {
         plan_file: None,
         brain: false,
         scanned_at: Timestamp::parse(FIXED_TS).unwrap(),
+        name: None,
     };
     append_rescan(&mut store, Some(&pid), &payload);
 

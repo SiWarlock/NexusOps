@@ -125,14 +125,14 @@ fn columns(path: &std::path::Path, table: &str) -> std::collections::BTreeMap<St
 fn test_migration_8_action_plans_and_plan_dimension() {
     // spec(§6.2 / DATA_MODEL §2.9) — MIGRATION_8 adds the action_plans table + action_requests.plan_id
     // + generalizes approvals (action_request_id NULLABLE, + plan_id) + the proj_approval_queue
-    // plan dimension. (The store opens at the LATEST version — now 18 after MIGRATION_18, the P4.7/083
-    // proj_integration_connection live_writes_enabled toggle.)
+    // plan dimension. (The store opens at the LATEST version — now 19 after MIGRATION_19, the P4.7/092
+    // proj_project_activity.name friendly-name column.)
     let (_d, path) = temp_db();
     let store = open(&path);
     assert_eq!(
         store.user_version().unwrap(),
-        18,
-        "the store opens at the latest SUPPORTED_USER_VERSION (18 after MIGRATION_18, P4.7/083 live_writes)"
+        19,
+        "the store opens at the latest SUPPORTED_USER_VERSION (19 after MIGRATION_19, P4.7/092 project name)"
     );
 
     // action_plans — the thin grouping table + the plan-submit immutable context (Flag 2)

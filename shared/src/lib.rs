@@ -213,4 +213,7 @@ pub mod time;
 /// `profile.set_secret` inbound-secret IPC trigger wire types — `SetProfileSecretParams` (`{execution_profile_id,
 /// secret}` — the FIRST inbound `secret`, getpeereid-authed, Zeroizing daemon-side), `SetProfileSecretResult`
 /// (`{keychain_ref}` — the POINTER only, no echo). Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.46.0";
+/// 0.47.0 (P4.7/092) adds `ProjectRescanned.name: Option<String>` — the human-readable project name (the
+/// basename of the scan path) surfaced into `proj_project_activity.name` (MIGRATION_19) for the cockpit
+/// switcher label. Additive-optional (pre-092 events replay as `None`), no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.47.0";

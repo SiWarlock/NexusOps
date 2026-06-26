@@ -3185,7 +3185,9 @@ fn test_contract_version_bumped_0_45_0() {
     // execution-profile SECRET vertical — the `profile.set_keychain_ref` catalog action +
     // `ExecutorKind::Profile` + the `ProfileSecretSet`/`SessionProfileChanged` events + the
     // `SetProfileSecret{Params,Result}` IPC wire types. Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.46.0");
+    // **0.47.0** = the P4.7/092 friendly project name — `ProjectRescanned.name: Option<String>` (the
+    // scan-path basename) surfaced into `proj_project_activity.name` (MIGRATION_19). Additive-optional.
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.47.0");
 }
 
 // =================================================================================================
@@ -3223,6 +3225,7 @@ fn sample_project_rescanned() -> nexusops_shared::events::ProjectRescanned {
         plan_file: Some("IMPLEMENTATION_PLAN.md".to_string()),
         brain: false,
         scanned_at: Timestamp::parse("2026-06-13T00:00:00Z").unwrap(),
+        name: Some("repo".to_string()),
     }
 }
 
@@ -3506,6 +3509,7 @@ fn test_projectrescanned_snapshot() {
             "plan_file",
             "brain",
             "scanned_at",
+            "name",
         ],
     );
     assert_eq!(ProjectRescanned::EVENT_TYPE, "ProjectRescanned");

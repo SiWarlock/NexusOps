@@ -1868,6 +1868,13 @@
         "is_git": {
           "type": "boolean"
         },
+        "name": {
+          "description": "the human-readable project name — the basename of the scan path (092). **Option** (additive): an\nexisting logged `ProjectRescanned` (pre-092) replays as `None` (rebuild-safe; the `head_sha`/\n`mergeable` precedent, LESSON §53). The emit source is the scan path (`req.inputs[\"path\"]`), NOT\n`repo_root` (which is `None` for a non-git project — the project-brain sidecar case).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "plan_file": {
           "type": [
             "string",
@@ -3866,5 +3873,5 @@
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.46.0"
+  "x-contract-version": "0.47.0"
 }

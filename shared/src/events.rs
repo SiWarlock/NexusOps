@@ -446,6 +446,11 @@ pub struct ProjectRescanned {
     pub plan_file: Option<String>,
     pub brain: bool,
     pub scanned_at: Timestamp,
+    /// the human-readable project name — the basename of the scan path (092). **Option** (additive): an
+    /// existing logged `ProjectRescanned` (pre-092) replays as `None` (rebuild-safe; the `head_sha`/
+    /// `mergeable` precedent, LESSON §53). The emit source is the scan path (`req.inputs["path"]`), NOT
+    /// `repo_root` (which is `None` for a non-git project — the project-brain sidecar case).
+    pub name: Option<String>,
 }
 
 impl ProjectRescanned {

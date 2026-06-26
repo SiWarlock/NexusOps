@@ -34,7 +34,7 @@ use nexusopsd::gateway::executor::{
 use nexusopsd::gateway::policy::CatalogPolicy;
 use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
-use nexusopsd::project::executor::{strip_userinfo, ProjectExecutor};
+use nexusopsd::project::executor::{project_name_from_path, strip_userinfo, ProjectExecutor};
 
 const FIXED_TS: &str = "2026-06-11T00:00:00Z";
 
@@ -188,6 +188,51 @@ fn test_strip_userinfo_bare_token_in_username_slot() {
     assert_eq!(
         strip_userinfo("https://ghp_SECRETTOKEN@github.com/o/r"),
         "https://github.com/o/r"
+    );
+}
+
+// ---- 092 — friendly project name (basename of the scan path) --------------
+
+#[test]
+fn project_name_from_path_basename() {
+    // spec(092) — name = the last non-empty path component (the lead's basename ruling), trailing-slash-
+    // tolerant; a degenerate/empty basename → None (never a panic).
+    assert_eq!(project_name_from_path("/a/b/c"), Some("c".to_string()));
+    assert_eq!(project_name_from_path("/a/b/"), Some("b".to_string()));
+    assert_eq!(project_name_from_path("/a/b///"), Some("b".to_string()));
+    assert_eq!(project_name_from_path("repo"), Some("repo".to_string()));
+    assert_eq!(project_name_from_path(""), None);
+    assert_eq!(project_name_from_path("/"), None);
+    assert_eq!(
+        project_name_from_path("."),
+        None,
+        ". (cwd marker) is not a real name"
+    );
+    assert_eq!(project_name_from_path(".."), None);
+}
+
+#[test]
+fn rescan_emits_name_from_scan_path() {
+    // spec(§7.1 / 092) — the ProjectExecutor emits name = Some(basename(inputs.path)). The non-git path
+    // (the project-brain sidecar, repo_root=None) STILL gets a name — the exact user case. Inspect the raw
+    // persisted payload via JSON (name is the field under test → RED-before-the-field, no struct coupling).
+    let store_dir = tempdir().unwrap();
+    let mut store = open(&store_dir.path().join("nexusops.db"));
+    let gw = gateway_with_project_executor();
+    gw.submit_action(&mut store, project_rescan_req("/x/project-brain"))
+        .expect("submit");
+    let payload = store
+        .read_all()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.event_type == "ProjectRescanned")
+        .expect("a ProjectRescanned event")
+        .payload_json;
+    let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(
+        v["name"],
+        serde_json::json!("project-brain"),
+        "name = the scan-path basename (non-git path still named)"
     );
 }
 

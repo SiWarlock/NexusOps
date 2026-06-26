@@ -102,6 +102,20 @@ fn rescan_intent(project_id: &ProjectId) -> AppendIntent {
     i
 }
 
+/// a ProjectRescanned intent carrying a friendly `name` in the payload (092 — the scan-path basename).
+fn rescan_intent_named(project_id: &ProjectId, name: &str) -> AppendIntent {
+    let payload = serde_json::json!({
+        "is_git": false, "repo_root": null, "remote_url": null, "branch": null,
+        "detached": false, "is_dirty": false, "workflow_pack": false, "cc_crew": false,
+        "plan_file": null, "brain": false, "scanned_at": "2026-06-08T00:00:00Z", "name": name
+    })
+    .to_string();
+    let mut i = intent(&payload);
+    i.event_type = ProjectRescanned::EVENT_TYPE.to_string();
+    i.project_id = Some(project_id.clone());
+    i
+}
+
 /// count rows in `table` via a read-only connection.
 fn count(path: &std::path::Path, sql: &str) -> i64 {
     nexusopsd::eventstore::open_read_only(path)
@@ -578,6 +592,99 @@ fn rescan_without_project_id_is_noop() {
         count(&path, "SELECT COUNT(*) FROM proj_project_activity"),
         0,
         "a project_id-less ProjectRescanned folds no row"
+    );
+}
+
+// ---- 092 — friendly project name (proj_project_activity.name from ProjectRescanned.name) ------
+
+#[test]
+fn migration_19_adds_name_column() {
+    // spec(LESSON 50 / 092) — MIGRATION_19 floor: user_version >= 19 + proj_project_activity.name exists.
+    let (_d, path) = temp_db();
+    let store = open(&path);
+    assert!(
+        store.user_version().unwrap() >= 19,
+        "MIGRATION_19 raises the floor to >= 19"
+    );
+    let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+    assert!(
+        conn.prepare("SELECT name FROM proj_project_activity LIMIT 0")
+            .is_ok(),
+        "proj_project_activity.name column exists"
+    );
+}
+
+#[test]
+fn activity_fold_sets_name() {
+    // spec(§7 / 092) — the ActivityProjector ProjectRescanned arm sets `name` from the event payload; a
+    // re-rescan with a NEW name UPDATEs it; AND the name INSERT/UPDATE PRESERVES counters (ON CONFLICT DO
+    // UPDATE touches only name + updated_at_seq → a SessionStarted-then-rescan keeps active_sessions).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let pid = ProjectId::new();
+    let read = |p: &std::path::Path| -> (Option<String>, i64) {
+        nexusopsd::eventstore::open_read_only(p)
+            .unwrap()
+            .query_row(
+                "SELECT name, active_sessions FROM proj_project_activity WHERE project_id=?1",
+                [pid.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+    // a session first → active_sessions = 1 (the counter to preserve across the named rescans).
+    store
+        .append(session_intent(
+            &SessionId::new(),
+            &pid,
+            "{\"status\":\"starting\"}",
+        ))
+        .unwrap();
+    store
+        .append(rescan_intent_named(&pid, "project-brain"))
+        .unwrap();
+    let (name1, active1) = read(&path);
+    assert_eq!(name1.as_deref(), Some("project-brain"));
+    assert_eq!(
+        active1, 1,
+        "the name INSERT/UPDATE preserves active_sessions"
+    );
+    store.append(rescan_intent_named(&pid, "renamed")).unwrap();
+    let (name2, active2) = read(&path);
+    assert_eq!(
+        name2.as_deref(),
+        Some("renamed"),
+        "a re-rescan refreshes the name"
+    );
+    assert_eq!(active2, 1, "a re-rescan still preserves active_sessions");
+}
+
+#[test]
+fn rescan_name_rebuild_equivalent() {
+    // spec(§17/§4 / 092) — an old ProjectRescanned (no name) → name NULL; a new one → the basename; rebuild
+    // yields the same name values (proj_project_activity ∈ REBUILD_TABLES; the name fold is rebuild-safe).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let p_unnamed = ProjectId::new();
+    let p_named = ProjectId::new();
+    store.append(rescan_intent(&p_unnamed)).unwrap(); // 091 helper — no name in payload → NULL
+    store.append(rescan_intent_named(&p_named, "foo")).unwrap();
+    let names = |path: &std::path::Path| -> Vec<(String, Option<String>)> {
+        let conn = nexusopsd::eventstore::open_read_only(path).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT project_id, name FROM proj_project_activity ORDER BY project_id")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    let before = names(&path);
+    store.rebuild_projections().unwrap();
+    assert_eq!(
+        before,
+        names(&path),
+        "rebuild yields the same name values (incl. NULL for the unnamed project)"
     );
 }
 

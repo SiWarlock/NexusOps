@@ -12,6 +12,10 @@ import {
 // ui-070/071 cat-1 — the PR-mutation family: the shared action-type set + the per-action enablement gate
 // (ui-071 fork-1b) + the merge_pr (ui-070) and submit_review (ui-071) intent builders + the held-flip pin.
 
+// The daemon `minted_id!` ULID shape the client-minted action_request_id must satisfy
+// (uppercase Crockford, no I/L/O/U, 26-char body, first char 0-7 — the `Ulid::from_string` range).
+const ACT_ULID = /^act_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+
 describe("PR_MUTATION_ACTION_TYPES (ui-070/071)", () => {
   it("pr_mutation_action_types_contains_both", () => {
     // spec(§6.2/ui-071) — the gate set covers BOTH github writes (merge_pr + submit_review); the
@@ -40,13 +44,13 @@ describe("buildMergePrActionRequest (cat-1 ui-070, ruling A)", () => {
   it("build_merge_pr_action_request_shape", () => {
     // spec(§6.2 / ruling A) — a typed ActionRequest: action_type github.merge_pr,
     // resource_refs:[{type:"repo",id}], inputs:{pr_number,sha,merge_method:"merge"}, requester
-    // user/current_user, daemon-minted (empty) id. The UI NEVER names owner/repo (daemon resolves from repo_id).
+    // user/current_user, CLIENT-minted id. The UI NEVER names owner/repo (daemon resolves from repo_id).
     const req = buildMergePrActionRequest(
       { repo_id: "repo_1", pr_number: 101, head_sha: "abc123", merge_method: "merge" },
       "2026-06-21T00:00:00Z",
     );
     expect(req.action_type).toBe("github.merge_pr");
-    expect(req.action_request_id).toBe(""); // daemon mints
+    expect(req.action_request_id).toMatch(ACT_ULID); // client-minted (was the empty-PK bug)
     expect(req.requester_type).toBe("user");
     expect(req.requester_id).toBe("current_user");
     expect(req.resource_refs).toEqual([{ type: "repo", id: "repo_1" }]);
@@ -56,6 +60,22 @@ describe("buildMergePrActionRequest (cat-1 ui-070, ruling A)", () => {
     expect(req.created_at).toBe("2026-06-21T00:00:00Z");
     // risk_level is a NON-AUTHORITATIVE hint (daemon-reconciled to catalog risk-3, never displayed).
     expect(req.risk_level).toBe(0);
+  });
+
+  it("merge_pr_mints_distinct_prefixed_action_request_id_across_calls", () => {
+    // spec(§6.2) — each merge submit carries a distinct client-minted act_<ULID>, never "". A reused/
+    // empty PK collides on the daemon action_requests TEXT PK → AuditWriteFailed → precondition_stale.
+    const args = {
+      repo_id: "repo_1",
+      pr_number: 101,
+      head_sha: "abc123",
+      merge_method: "merge" as const,
+    };
+    const a = buildMergePrActionRequest(args, "2026-06-21T00:00:00Z");
+    const b = buildMergePrActionRequest(args, "2026-06-21T00:00:00Z");
+    expect(a.action_request_id).toMatch(ACT_ULID);
+    expect(b.action_request_id).toMatch(ACT_ULID);
+    expect(a.action_request_id).not.toBe(b.action_request_id);
   });
 
   it("merge_pr_intent_pins_displayed_head_sha", () => {
@@ -89,7 +109,7 @@ describe("buildSubmitReviewActionRequest (cat-1 ui-071, ruling A / fork-2b)", ()
   it("build_submit_review_action_request_shape", () => {
     // spec(§6.2 / ruling A / daemon LESSON 61) — action_type github.submit_review,
     // resource_refs:[{type:"repo",id}], inputs:{pr_number, commit_id, event, body}, requester
-    // user/current_user, daemon-minted id; the UI NEVER names owner/repo (daemon resolves from repo_id).
+    // user/current_user, CLIENT-minted id; the UI NEVER names owner/repo (daemon resolves from repo_id).
     const req = buildSubmitReviewActionRequest(
       {
         repo_id: "repo_1",
@@ -101,7 +121,7 @@ describe("buildSubmitReviewActionRequest (cat-1 ui-071, ruling A / fork-2b)", ()
       "2026-06-21T00:00:00Z",
     );
     expect(req.action_type).toBe("github.submit_review");
-    expect(req.action_request_id).toBe("");
+    expect(req.action_request_id).toMatch(ACT_ULID); // client-minted (was the empty-PK bug)
     expect(req.requester_type).toBe("user");
     expect(req.requester_id).toBe("current_user");
     expect(req.resource_refs).toEqual([{ type: "repo", id: "repo_1" }]);
@@ -115,6 +135,23 @@ describe("buildSubmitReviewActionRequest (cat-1 ui-071, ruling A / fork-2b)", ()
     expect(req.inputs).not.toHaveProperty("repo");
     expect(req.risk_level).toBe(0); // non-authoritative hint (daemon catalog risk-3)
     expect(req.created_at).toBe("2026-06-21T00:00:00Z");
+  });
+
+  it("submit_review_mints_distinct_prefixed_action_request_id_across_calls", () => {
+    // spec(§6.2) — each review submit carries a distinct client-minted act_<ULID>, never "". A reused/
+    // empty PK collides on the daemon action_requests TEXT PK → AuditWriteFailed → precondition_stale.
+    const args = {
+      repo_id: "repo_1",
+      pr_number: 101,
+      head_sha: "abc123",
+      event: "approve" as const,
+      body: "",
+    };
+    const a = buildSubmitReviewActionRequest(args, "2026-06-21T00:00:00Z");
+    const b = buildSubmitReviewActionRequest(args, "2026-06-21T00:00:00Z");
+    expect(a.action_request_id).toMatch(ACT_ULID);
+    expect(b.action_request_id).toMatch(ACT_ULID);
+    expect(a.action_request_id).not.toBe(b.action_request_id);
   });
 
   it("submit_review_pins_displayed_head_sha_as_commit_id", () => {

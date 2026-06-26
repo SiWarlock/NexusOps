@@ -9,6 +9,10 @@ import { ActionRequest, ResourceRef, type Hunk } from "../contracts/index";
 // The U+001F unit separator, via escape (a literal control char is fragile in source).
 const SEP = "\u001f";
 
+// The daemon `minted_id!` ULID shape the client-minted action_request_id must satisfy
+// (uppercase Crockford, no I/L/O/U, 26-char body, first char 0-7 — the `Ulid::from_string` range).
+const ACT_ULID = /^act_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+
 const hunk: Hunk = {
   header: "@@ -10,4 +10,6 @@",
   old_start: 10,
@@ -66,10 +70,11 @@ describe("hunk resource_ref encoder (§6.3 — THE security-critical conformance
 });
 
 describe("buildHunkActionRequest (§6.1/§6.2 — the submitted intent assembler)", () => {
-  it("assembles_a_contract_valid_request_with_daemon_owned_placeholders", () => {
+  it("assembles_a_contract_valid_request_with_client_minted_id", () => {
     // spec(§6.2/Q1/Q4) — the UI submits a typed, contract-valid ActionRequest: the
     // action_type is the per-hunk id, resource_refs targets the exact displayed hunk,
-    // action_request_id is "" (daemon mints), risk_level is a non-authoritative hint (0).
+    // action_request_id is CLIENT-MINTED (the daemon trusts the wire id as the PK; only
+    // session.create mints daemon-side), risk_level is a non-authoritative hint (0).
     const req = buildHunkActionRequest(
       "git.discard_hunk",
       "wt_demo_0001",
@@ -79,11 +84,22 @@ describe("buildHunkActionRequest (§6.1/§6.2 — the submitted intent assembler
     );
     expect(() => ActionRequest.parse(req)).not.toThrow();
     expect(req.action_type).toBe("git.discard_hunk");
-    expect(req.action_request_id).toBe(""); // daemon mints
+    expect(req.action_request_id).toMatch(ACT_ULID); // client-minted (was the empty-PK bug)
     expect(req.risk_level).toBe(0); // non-authoritative hint — daemon reconciles, never displayed
     expect(req.resource_refs).toHaveLength(1);
     expect(req.resource_refs[0]!.id).toBe(
       hunkResourceRef("wt_demo_0001", "src/gateway/review.ts", hunk).id,
     );
+  });
+
+  it("mints_distinct_prefixed_action_request_id_across_calls", () => {
+    // spec(§6.2) — each per-hunk submit carries a distinct client-minted act_<ULID>, never "".
+    // A reused/empty PK collides on the daemon action_requests TEXT PK → AuditWriteFailed →
+    // overloaded precondition_stale (the 2nd-mutation bug ui-080 fixed for rescan).
+    const a = buildHunkActionRequest("git.stage_hunk", "wt_1", "a.ts", hunk, "2026-06-13T00:00:00Z");
+    const b = buildHunkActionRequest("git.stage_hunk", "wt_1", "a.ts", hunk, "2026-06-13T00:00:00Z");
+    expect(a.action_request_id).toMatch(ACT_ULID);
+    expect(b.action_request_id).toMatch(ACT_ULID);
+    expect(a.action_request_id).not.toBe(b.action_request_id);
   });
 });

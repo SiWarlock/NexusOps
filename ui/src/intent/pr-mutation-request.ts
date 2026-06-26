@@ -6,6 +6,7 @@
 // `enabledPrMutations` set + `isPrMutationEnabled`; both writes default DISABLED in production.
 
 import type { ActionRequest } from "../contracts/index";
+import { mintActionRequestId } from "./mint-id";
 
 /** The PR-mutation action types gated behind the per-action `enabledPrMutations` set (cat-1) — SEPARATE
  *  from the already-live L2 `mutationsEnabled`. The `UdsGatewayPort` throw-never-invoke guard + the
@@ -48,7 +49,9 @@ export type ReviewEvent = "approve" | "request_changes" | "comment";
 /**
  * Assemble the typed `ActionRequest` the UI SUBMITS to merge a PR (cat-1; the UI submits an intent,
  * NEVER executes — INV-SEC-1 / §4.2 law 1: the daemon Gateway is the single executor + DB writer).
- * Mirrors `buildHunkActionRequest`: the daemon mints `action_request_id` (empty here); `risk_level` is a
+ * Mirrors `buildHunkActionRequest`: the CLIENT mints `action_request_id` (the daemon trusts the wire id
+ * as the `action_requests` PK — only `session.create` mints daemon-side; an empty id collided on a 2nd
+ * same-session mutation → AuditWriteFailed → precondition_stale, ui-080 LESSON §39); `risk_level` is a
  * NON-AUTHORITATIVE hint (catalog-authoritative [risk-3] + daemon-reconciled, NEVER displayed).
  *
  * Ruling A: `inputs` carries ONLY `{pr_number, sha, merge_method}` + a Repo `resource_ref` — the UI
@@ -66,7 +69,7 @@ export function buildMergePrActionRequest(
   createdAt: string,
 ): ActionRequest {
   return {
-    action_request_id: "", // daemon mints
+    action_request_id: mintActionRequestId(),
     action_type: "github.merge_pr",
     requester_type: "user",
     requester_id: "current_user",
@@ -103,7 +106,7 @@ export function buildSubmitReviewActionRequest(
   createdAt: string,
 ): ActionRequest {
   return {
-    action_request_id: "", // daemon mints
+    action_request_id: mintActionRequestId(),
     action_type: "github.submit_review",
     requester_type: "user",
     requester_id: "current_user",

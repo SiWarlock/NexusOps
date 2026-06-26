@@ -16,6 +16,7 @@ import type {
   PerHunkGitActionType,
   ResourceRef,
 } from "../contracts/index";
+import { mintActionRequestId } from "./mint-id";
 
 /** The U+001F unit-separator delimiting worktree_id / file / positions (frozen §6.3). */
 export const HUNK_ID_SEP = "\u001f";
@@ -40,9 +41,11 @@ export function hunkResourceRef(
 
 /**
  * Assemble the typed `ActionRequest` the UI SUBMITS for a per-hunk git action (Q1 — the
- * UI submits an intent, never executes). The daemon owns the lifecycle: `action_request_id`
- * is minted daemon-side (empty here), and `risk_level` is a NON-AUTHORITATIVE hint —
- * catalog-authoritative + daemon-reconciled, and NEVER displayed (Q4; the card's risk is
+ * UI submits an intent, never executes). The CLIENT mints `action_request_id` (the daemon
+ * trusts the wire id verbatim as the `action_requests` PK — only `session.create` mints
+ * daemon-side; an empty id collided on the 2nd same-session mutation → AuditWriteFailed →
+ * the overloaded precondition_stale, ui-080 LESSON §39). `risk_level` is a NON-AUTHORITATIVE
+ * hint — catalog-authoritative + daemon-reconciled, NEVER displayed (Q4; the card's risk is
  * the daemon's PolicyDecision/ActionPreview). `created_at` is the UI submission time (a real
  * fact, not an invented consequence). The resource_ref targets the exact displayed hunk.
  */
@@ -54,7 +57,7 @@ export function buildHunkActionRequest(
   createdAt: string,
 ): ActionRequest {
   return {
-    action_request_id: "", // daemon mints
+    action_request_id: mintActionRequestId(),
     action_type: actionType,
     requester_type: "user",
     requester_id: "current_user",

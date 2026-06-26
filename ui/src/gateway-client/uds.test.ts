@@ -129,6 +129,42 @@ describe("UdsGatewayPort — single-shot reads (Layer A)", () => {
     );
   });
 
+  it("uds_get_pr_diff_invokes_and_parses (§6.1 — mirror get_diff; D7)", async () => {
+    // invoke gateway_get_pr_diff with camelCase args + boundary-parse the DiffResult (parse-don't-
+    // trust). The wire-vs-transport routing is the shared invokeRead path; this pins get_pr_diff's
+    // invoke shape, the fail-closed boundary parse, and the wire→plain {code} (LESSON §16) for it.
+    mockInvoke.mockResolvedValue(validDiff);
+    const port = new UdsGatewayPort();
+
+    const diff = await port.get_pr_diff("repo_1", 101, null);
+    // Tauri auto-converts JS camelCase → Rust snake_case (repoId → repo_id, prNumber → pr_number).
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_get_pr_diff", {
+      repoId: "repo_1",
+      prNumber: 101,
+      file: null,
+    });
+    expect(diff.hunks).toHaveLength(1);
+
+    // a malformed payload → BoundaryValidationError (fail-closed), never a bad partial value.
+    mockInvoke.mockResolvedValue({ not_a_diff: true });
+    await expect(port.get_pr_diff("repo_1", 101, null)).rejects.toBeInstanceOf(
+      BoundaryValidationError,
+    );
+
+    // a daemon WIRE error → PLAIN {code} (NOT an Error) so the §6.4 code routes verbatim (the
+    // consumer's WireError.safeParse must match it; the not_found honest-unavailable path).
+    mockInvoke.mockRejectedValue({ kind: "wire", code: "not_found" });
+    let thrown: unknown;
+    try {
+      await port.get_pr_diff("repo_1", 101, null);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown instanceof Error).toBe(false);
+    expect(WireError.safeParse(thrown).success).toBe(true);
+    expect((thrown as { code: string }).code).toBe("not_found");
+  });
+
   it("get_capabilities invokes the command and boundary-parses Capabilities (§6.4)", async () => {
     mockInvoke.mockResolvedValue(validCaps);
     const port = new UdsGatewayPort();
@@ -598,5 +634,54 @@ describe("UdsGatewayPort — per-stream connection aggregation (ui-059)", () => 
     mockInvoke.mockResolvedValueOnce(validCaps);
     await port.get_capabilities();
     expect(port.getConnectionState()).toBe("connected");
+  });
+});
+
+// ─── ui-070/071 cat-1 — the per-action PR-mutation port guard (enabledPrMutations) ───────────────
+describe("UdsGatewayPort — PR-mutation guard (cat-1 ui-070/071, per-action gate)", () => {
+  it("enabled_pr_mutations_defaults_empty_uds", () => {
+    // spec(ui-071/1b) — the per-action enablement set defaults EMPTY on the production transport (all PR
+    // mutations HELD; SEPARATE from the already-live L2 mutationsEnabled).
+    expect(new UdsGatewayPort().enabledPrMutations.size).toBe(0);
+  });
+
+  it("uds_submit_review_throws_never_invokes_when_not_enabled", async () => {
+    // spec(cat-1 [[27]] + per-action independence) — a github.submit_review submit with submit_review NOT
+    // in enabledPrMutations THROWS + NEVER invokes, EVEN with mutationsEnabled:true AND merge_pr enabled
+    // (the per-action gate: enabling one PR mutation never enables another).
+    const port = new UdsGatewayPort({
+      mutationsEnabled: true,
+      enabledPrMutations: new Set(["github.merge_pr"]),
+    });
+    const reviewReq = { action_type: "github.submit_review" } as ActionRequest;
+    await expect(port.submit_action(reviewReq)).rejects.toThrow();
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("uds_merge_pr_still_gated_after_refactor", async () => {
+    // spec(fold-in correctness) — merge_pr throws-never-invokes unless merge_pr ∈ enabledPrMutations
+    // (no regression from the ui-070 bool); enabling it (the future flip) lets it reach the wire.
+    const held = new UdsGatewayPort({ mutationsEnabled: true, enabledPrMutations: new Set() });
+    const mergeReq = { action_type: "github.merge_pr" } as ActionRequest;
+    await expect(held.submit_action(mergeReq)).rejects.toThrow();
+    expect(mockInvoke).not.toHaveBeenCalled();
+
+    mockInvoke.mockResolvedValue(validAck);
+    const enabled = new UdsGatewayPort({
+      mutationsEnabled: true,
+      enabledPrMutations: new Set(["github.merge_pr"]),
+    });
+    await enabled.submit_action(mergeReq);
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: mergeReq });
+  });
+
+  it("non_pr_mutation_submit_action_unaffected_by_pr_gate", async () => {
+    // spec(no L2 regression) — an L2 (non-PR-mutation) submit_action is gated by mutationsEnabled ONLY,
+    // NOT enabledPrMutations: mutationsEnabled:true + an EMPTY PR set still invokes.
+    mockInvoke.mockResolvedValue(validAck);
+    const port = new UdsGatewayPort({ mutationsEnabled: true, enabledPrMutations: new Set() });
+    const l2Req = { action_type: "git.stage_hunk" } as ActionRequest;
+    await port.submit_action(l2Req);
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: l2Req });
   });
 });

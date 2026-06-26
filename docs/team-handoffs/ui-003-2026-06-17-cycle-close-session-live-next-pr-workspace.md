@@ -4,7 +4,7 @@
 **Track:** ui
 **Worktree:** `NexusOps-ui` (branch `track/ui`)
 **Predecessor handoff:** `docs/team-handoffs/ui-002-2026-06-13-6tail-cross-track-pause.md`
-**Successor handoff:** _(filled in when the next /team-end runs)_
+**Successor handoff:** `docs/team-handoffs/ui-004-2026-06-19-phase6-7-complete-integrated-paused-daemon-gated.md`
 **Round-seal commit at handoff:** `1b2e3bd` (pushed == origin/track/ui)
 
 ## Why this handoff exists

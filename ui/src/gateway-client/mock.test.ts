@@ -115,7 +115,24 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     // → 0.38.0 (daemon D-series UI-unblock boundary merge: D1 PullRequestRow 0.34 / D2 SessionRow recovery 0.35 /
     //           D5a mergeable+checks 0.36 / D5b-1 review vertical [ReviewState + ProjectionName +Review] 0.37 /
     //           D5b-2 github.sync_reviews 0.38).
-    expect(caps.contract_version).toBe("0.38.0");
+    // → 0.42.0 (§4.7 PR-mutation boundary merge: D6 PR-card diff-stats 0.39 / D7 get_pr_diff 0.40 /
+    //           D9 github.merge_pr 0.41 / D10 github.submit_review 0.42).
+    // → 0.44.0 (head_sha boundary merge: 0.43 ExecutionProfileRegistered/5.3a · 0.44 PullRequestRow.head_sha
+    //           exposure [the cat-1 merge/review pin source] + the ruling-A owner/repo daemon resolution).
+    // → 0.45.0 (auth-bootstrap boundary merge / 083: keychain SecretStore + integration.set_live_writes
+    //           [MIGRATION_18] + connect_via_gh [+ConnectViaGhStatus enum] — the PR-mutations go-live unblock).
+    // → 0.46.0 (5.3b execution-profile-SECRETS boundary merge: profile-secret contract freeze + profile.set_secret
+    //           / set_keychain_ref + keychain self-test + session.profile_change — NO new flat enum [42 held]).
+    expect(caps.contract_version).toBe("0.46.0");
     expect(caps.protocol_version).toBe(1);
+  });
+
+  it("mock_enabled_pr_mutations_defaults_full_set", () => {
+    // spec(ui-071/1b) — the Mock is a fully-working test/dev port: enabledPrMutations defaults to the
+    // FULL PR_MUTATION_ACTION_TYPES set, so Mock-driven UI-flow tests exercise the enabled merge + review
+    // paths. (Production UdsGatewayPort defaults EMPTY — the held-flip.)
+    const enabled = new MockGatewayPort().enabledPrMutations;
+    expect(enabled.has("github.merge_pr")).toBe(true);
+    expect(enabled.has("github.submit_review")).toBe(true);
   });
 });

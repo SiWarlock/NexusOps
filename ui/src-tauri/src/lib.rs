@@ -14,6 +14,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::gateway_get_projection,
             commands::gateway_get_diff,
+            commands::gateway_get_pr_diff,
             commands::gateway_get_capabilities,
             commands::gateway_subscribe,
             commands::gateway_submit_action,

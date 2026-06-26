@@ -172,13 +172,16 @@ export const ProjectActivityPage = z.object({
 });
 export type ProjectActivityPage = z.infer<typeof ProjectActivityPage>;
 
-/** A row of the PullRequest projection — the 2nd frozen projection-row (@0.34/0.36,
- *  `shared/src/projections.rs`). A drift-pinned frozen-shadow reconciled 4→11 (P7.2/D5a): the field
- *  set + types are snapshot-pinned to the schema `$defs.PullRequestRow` (provisional.test); `status`
- *  delegates to the generated `PullRequest` enum. `.strict()` per the frozen `deny_unknown_fields`;
- *  `pr_id` (PK) + `status` are non-Option (the daemon serves a NOT-NULL PK), the rest present-and-
- *  nullable (serialized as explicit `null`, tolerated-absent on read). `pr_number` is the GitHub-native
- *  PR number — a u64 shadow (NOT a string — the work-order str→number drift), `mergeable` a bool. */
+/** A row of the PullRequest projection — the 2nd frozen projection-row (@0.34/0.36/0.39,
+ *  `shared/src/projections.rs`). A drift-pinned frozen-shadow reconciled 4→11→15 (P7.2/D5a, then the
+ *  4 D6 diff-stats @0.39): the field set + types are snapshot-pinned to the schema `$defs.PullRequestRow`
+ *  (provisional.test); `status` delegates to the generated `PullRequest` enum. `.strict()` per the frozen
+ *  `deny_unknown_fields`; `pr_id` (PK) + `status` are non-Option (the daemon serves a NOT-NULL PK), the
+ *  rest present-and-nullable (serialized as explicit `null`, tolerated-absent on read). `pr_number` is the
+ *  GitHub-native PR number — a u64 shadow (NOT a string — the work-order str→number drift), `mergeable` a
+ *  bool. The 4 D6 diff-stats (additions/deletions/changed_files/commits) are u64 (frozen `Option<u64>`,
+ *  format uint64, minimum 0) — `null` on a pre-D6/unsynced row (the §11.2 PR card renders them null-safe).
+ *  `head_sha` (@0.44, the 16th field) is the cat-1 merge/review SHA-pin source (a TEXT `Option<String>`). */
 export const PullRequestRow = z
   .object({
     pr_id: z.string(),
@@ -192,6 +195,15 @@ export const PullRequestRow = z
     pr_checked_at: z.string().nullable().optional(),
     mergeable: z.boolean().nullable().optional(),
     checks_summary: z.string().nullable().optional(),
+    additions: z.number().int().nonnegative().nullable().optional(),
+    deletions: z.number().int().nonnegative().nullable().optional(),
+    changed_files: z.number().int().nonnegative().nullable().optional(),
+    commits: z.number().int().nonnegative().nullable().optional(),
+    // head_sha (P4.7, @0.44) — the PR head commit SHA the §11.2 Workspace reads to FORM the cat-1
+    // merge/review SHA-pin. A TEXT field (frozen `Option<String>`, direct passthrough, no coercion);
+    // `null` on a pre-P4.7/unsynced row. Display/pin-FORMATION only — the daemon's anti-race is the
+    // LIVE GitHub 409, not this field.
+    head_sha: z.string().nullable().optional(),
   })
   .strict();
 export type PullRequestRow = z.infer<typeof PullRequestRow>;

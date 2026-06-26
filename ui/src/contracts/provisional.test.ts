@@ -348,6 +348,45 @@ describe("ui-061 — PR + Review frozen-shadow reconcile (§5.0/§11.2)", () => 
     expect(PullRequestRow.safeParse(noId).success).toBe(false);
   });
 
+  it("pull_request_row_diff_stats_are_uint_nullable", () => {
+    // spec(§11.2) — the 4 D6 diff-stat fields (additions/deletions/changed_files/commits) are u64
+    // NUMBERS (frozen `Option<u64>`, format uint64, minimum 0), each nullable + optional (NULL on a
+    // pre-D6/unsynced row); mirrors the pr_number uint pin. A string or negative is rejected.
+    expect(
+      PullRequestRow.safeParse({ ...prBase, additions: 40, deletions: 7, changed_files: 3, commits: 2 })
+        .success,
+    ).toBe(true);
+    // a present 0 is a VALID u64 (minimum 0) — the exact value LESSON §32 protects from a falsy guard.
+    expect(
+      PullRequestRow.safeParse({ ...prBase, additions: 0, deletions: 0, changed_files: 0, commits: 0 })
+        .success,
+    ).toBe(true);
+    // null / absent are tolerated (the brief: NULL where GitHub omitted them / pre-D6 rows).
+    expect(
+      PullRequestRow.safeParse({
+        ...prBase,
+        additions: null,
+        deletions: null,
+        changed_files: null,
+        commits: null,
+      }).success,
+    ).toBe(true);
+    // a STRING diff-stat is rejected (uint NUMBER, not a string).
+    expect(PullRequestRow.safeParse({ ...prBase, additions: "40" }).success).toBe(false);
+    // a NEGATIVE diff-stat is rejected (u64, minimum 0).
+    expect(PullRequestRow.safeParse({ ...prBase, deletions: -1 }).success).toBe(false);
+  });
+
+  it("pull_request_row_head_sha_is_string_nullable", () => {
+    // spec(§11.2/§5.0) — head_sha (P4.7) is a TEXT field (frozen `Option<String>`, direct passthrough —
+    // NOT a uint like the diff-stats): a string parses; null/absent tolerated; a non-string rejects. The
+    // UI head_sha is display/pin-FORMATION only (the daemon's anti-race is the LIVE GitHub 409).
+    expect(PullRequestRow.safeParse({ ...prBase, head_sha: "abc123def" }).success).toBe(true);
+    expect(PullRequestRow.safeParse({ ...prBase, head_sha: null }).success).toBe(true);
+    // a non-string head_sha is rejected (TEXT, not a number).
+    expect(PullRequestRow.safeParse({ ...prBase, head_sha: 123 }).success).toBe(false);
+  });
+
   it("review_row_field_set_matches_frozen_schema", () => {
     // spec(§11.2) — the NEW (4th) frozen projection-row: the 8-field shadow is snapshot-pinned to
     // the frozen schema `$defs.ReviewRow` (the D5b-1 review vertical; the ApprovalQueueRow precedent).

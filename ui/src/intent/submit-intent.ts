@@ -41,7 +41,10 @@ export interface IntentSeam {
   // approve/deny ACCEPT the daemon's rendered `Approval` and carry its `approval_id`
   // VERBATIM to the wire (the GatewayPort takes the id; the daemon owns the record).
   // The seam never synthesizes an id or a risk/decision (Q4 — policy-from-daemon).
-  approve(approval: Approval): Promise<IntentResult<ActionAck>>;
+  // `approve` OPTIONALLY threads a plan `step_id` (the §6.1 `approve(approval_id, step_id?)`
+  // wire) — a plan-level approve-all passes NONE (the daemon owns step eligibility, 2.1c L3);
+  // a single-action approve passes NONE too (byte-identical to the signed-off L2-C path).
+  approve(approval: Approval, step_id?: string): Promise<IntentResult<ActionAck>>;
   deny(approval: Approval, reason: string): Promise<IntentResult<ActionAck>>;
 }
 
@@ -80,8 +83,16 @@ export function createIntentSeam(
     submitAction: (request) => guarded(() => port.submit_action(request)),
     previewAction: (actionRequestId) =>
       guarded(() => port.preview_action(actionRequestId)),
-    // Carry the daemon's approval_id VERBATIM (extracted from the rendered Approval).
-    approve: (approval) => guarded(() => port.approve(approval.approval_id)),
+    // Carry the daemon's approval_id VERBATIM (extracted from the rendered Approval). The optional
+    // plan `step_id` is threaded ONLY when present — a plan-level / single-action approve stays a
+    // length-1 `port.approve(id)` call (never `(id, undefined)`), so the signed-off L2-C path is
+    // byte-identical (the new arg is purely additive — the #13 no-regression guardrail).
+    approve: (approval, step_id) =>
+      guarded(() =>
+        step_id === undefined
+          ? port.approve(approval.approval_id)
+          : port.approve(approval.approval_id, step_id),
+      ),
     deny: (approval, reason) => guarded(() => port.deny(approval.approval_id, reason)),
   };
 }

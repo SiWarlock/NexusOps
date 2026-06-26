@@ -51,6 +51,7 @@ import {
   worstOfConnection,
   type ConnectionState,
 } from "../connection/state";
+import { PR_MUTATION_ACTION_TYPES } from "../intent/pr-mutation-request";
 
 /** The serializable error the 050 bridge rejects with (`GatewayCommandError`, snake_case
  *  `kind` tag). Only `kind`/`code`/`message` are read here; the structural variants
@@ -72,6 +73,8 @@ function isGatewayCommandError(e: unknown): e is GatewayCommandError {
 
 const MUTATIONS_NOT_ENABLED =
   "UdsGatewayPort: L2 mutation submit is not enabled (the wire is built but gated off until the USER-gated L2-C go-live; mutationsEnabled=false)";
+const PR_MUTATION_NOT_ENABLED = (actionType: string) =>
+  `UdsGatewayPort: the PR mutation '${actionType}' is not enabled (guarded off until a future USER-signed-off go-live + the daemon auth-bootstrap re-review; not in enabledPrMutations)`;
 
 /** A frame received over the subscribe `Channel` (the TS mirror of the 050 bridge's
  *  `SubscriptionEvent`): `delta` carries a raw daemon delta (boundary-parsed before it's yielded),
@@ -147,8 +150,16 @@ export class UdsGatewayPort implements GatewayPort {
    *  false) — the single switch L2-C flips to light up the wire + the controls together. */
   readonly mutationsEnabled: boolean;
 
-  constructor(opts: { mutationsEnabled?: boolean } = {}) {
+  /** The PER-ACTION PR-mutation go-live gate (cat-1, ui-070/071 fork-1b) — the SET of enabled PR-mutation
+   *  action types; default EMPTY (all HELD); SEPARATE from `mutationsEnabled` (already true in production).
+   *  A PR mutation reaches the wire only when its action_type is in this set (throw-never-invoke in
+   *  `submit_action` + the UI control disabled). The flip is a future USER-signed-off slice (per-action,
+   *  + auth-bootstrap re-review) — never populated in production today. */
+  readonly enabledPrMutations: ReadonlySet<string>;
+
+  constructor(opts: { mutationsEnabled?: boolean; enabledPrMutations?: ReadonlySet<string> } = {}) {
     this.mutationsEnabled = opts.mutationsEnabled ?? false;
+    this.enabledPrMutations = opts.enabledPrMutations ?? new Set();
   }
 
   // ── the §6.1 read surface (single-shot — invoke + boundary-parse) ──────────────────
@@ -169,6 +180,20 @@ export class UdsGatewayPort implements GatewayPort {
     // Tauri auto-converts JS camelCase args → the Rust snake_case command params.
     return this.invokeRead(parseDiff, "gateway_get_diff", {
       worktreeId: worktree_id,
+      file,
+    });
+  }
+
+  async get_pr_diff(
+    repo_id: string,
+    pr_number: number,
+    file: string | null,
+  ): Promise<DiffResult> {
+    // D7 — the remote-PR code-diff; REUSE parseDiff (the return shape is the frozen DiffResult).
+    // Tauri auto-converts camelCase → snake_case (repoId → repo_id, prNumber → pr_number).
+    return this.invokeRead(parseDiff, "gateway_get_pr_diff", {
+      repoId: repo_id,
+      prNumber: pr_number,
       file,
     });
   }
@@ -310,10 +335,24 @@ export class UdsGatewayPort implements GatewayPort {
     if (!this.mutationsEnabled) throw new Error(MUTATIONS_NOT_ENABLED);
   }
 
+  /** cat-1 (ui-070/071 fork-1b) — a PR-mutation action_type (github.merge_pr / github.submit_review)
+   *  reaches the wire ONLY when its type is in the SEPARATE `enabledPrMutations` set. Per-action +
+   *  independent of `mutationsEnabled` (a PR mutation can't ride the already-live L2 flag, and enabling
+   *  one PR mutation never enables another); throws BEFORE invoke → the provably-unreachable layer ([[27]]). */
+  private assertPrMutationsEnabledFor(actionType: string): void {
+    if (PR_MUTATION_ACTION_TYPES.has(actionType) && !this.enabledPrMutations.has(actionType)) {
+      throw new Error(PR_MUTATION_NOT_ENABLED(actionType));
+    }
+  }
+
   async submit_action(request: ActionRequest): Promise<ActionAck> {
     this.assertMutationsEnabled();
+    this.assertPrMutationsEnabledFor(request.action_type);
     return this.invokeRead(parseAck, "gateway_submit_action", { request });
   }
+  // No PR-mutation guard here by design: preview_action takes only an opaque action_request_id (no
+  // action_type to gate on); the PR-mutation gate lives on submit_action (where the typed request is) +
+  // the daemon adjudicates. (The asymmetry is intentional — preview is a read-shaped daemon fetch.)
   async preview_action(action_request_id: string): Promise<ActionPreview> {
     this.assertMutationsEnabled();
     return this.invokeRead(parsePreview, "gateway_preview_action", {

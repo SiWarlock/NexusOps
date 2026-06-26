@@ -10,7 +10,12 @@ export default mergeConfig(
   defineConfig({
     test: {
       environment: "node",
-      include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+      include: [
+        "src/**/*.test.ts",
+        "src/**/*.test.tsx",
+        // ui-078: build-script unit tests (e.g. the prod-bundle gate's pure scanner).
+        "scripts/**/*.test.mjs",
+      ],
       globals: false,
     },
   }),

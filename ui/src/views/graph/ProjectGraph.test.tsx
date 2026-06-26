@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
-import { ProjectGraph } from "./ProjectGraph";
-import { buildProjectGraph } from "./model";
+import { ProjectGraph, parentLabels } from "./ProjectGraph";
+import { buildProjectGraph, type GraphNode, type ProjectGraphModel } from "./model";
 import { sessionPageFixture } from "../../projections/fixtures/proj_session";
 import { pullRequestFixture } from "../../projections/fixtures/proj_pull_request";
 import { projectActivityFixture } from "../../projections/fixtures/proj_project_activity";
@@ -119,5 +119,83 @@ describe("ProjectGraph view", () => {
     expect(screen.getByTestId("graph-no-project")).toBeTruthy();
     expect(screen.queryByTestId("graph-canvas")).toBeNull();
     expect(screen.queryByTestId("graph-empty")).toBeNull();
+  });
+});
+
+// ─── ui-076 (P6.6) — parentLabels memo: O(n²) per-row double-.find() → O(n) precomputed map ──────
+// The `parentLabels(graph)` pure helper replaces the per-row scan. It builds, once, a complete
+// childId→parentLabel resolution for EVERY node (root/missing-parent → "—"), read O(1) per row by the
+// Contained-by column. The existing `list_fallback_represents_every_edge` render test stays the
+// behavior + wiring pin end-to-end; these pin the helper directly (incl. the dangling-edge defensive
+// "—" the rendered path can't reach — buildProjectGraph always includes the root). [[31]] (§18 bench guards it).
+// a minimal GraphNode (the helper reads only id + label; type/rank are irrelevant to it).
+const mk = (id: string, label: string): GraphNode => ({
+  id,
+  type: "session",
+  label,
+  attentionRank: 0,
+  attentionLabel: "settled",
+});
+
+describe("ProjectGraph parentLabels memo (ui-076, §18 perf-hardening)", () => {
+  it("parent_label_matches_for_all_nodes", () => {
+    // spec(§18) — perf-hardening must not change output: the memo === the prior O(n²) parentLabelOf for
+    // EVERY node, INCLUDING a child whose parent is a NON-root node (distinct parents — the case a
+    // "map every child to the root" bug would silently pass under a star graph).
+    const graph: ProjectGraphModel = {
+      projectId: "p",
+      nodes: [mk("project:p", "Root"), mk("session:a", "Alpha"), mk("pull_request:b", "Beta")],
+      edges: [
+        { kind: "contains", from: "project:p", to: "session:a" }, // a's parent = Root
+        { kind: "contains", from: "session:a", to: "pull_request:b" }, // b's parent = Alpha (NON-root)
+      ],
+    };
+    // the prior O(n²) reference logic this memo must preserve byte-for-byte (ProjectGraph.tsx:167-171).
+    const oldParentLabelOf = (n: GraphNode): string => {
+      const e = graph.edges.find((x) => x.to === n.id);
+      if (!e) return "—";
+      return graph.nodes.find((x) => x.id === e.from)?.label ?? "—";
+    };
+    const labels = parentLabels(graph);
+    for (const n of graph.nodes) {
+      expect(labels.get(n.id)).toBe(oldParentLabelOf(n));
+    }
+    expect(labels.get("pull_request:b")).toBe("Alpha"); // distinct-parent: resolves to Alpha, NOT the root
+  });
+
+  it("parent_label_root_node_renders_dash", () => {
+    // spec(§11.6) — a node with no incoming edge (the project root) → "—".
+    const graph: ProjectGraphModel = {
+      projectId: "p",
+      nodes: [mk("project:p", "Root"), mk("session:a", "Alpha")],
+      edges: [{ kind: "contains", from: "project:p", to: "session:a" }],
+    };
+    expect(parentLabels(graph).get("project:p")).toBe("—");
+  });
+
+  it("parent_label_missing_parent_renders_dash", () => {
+    // spec(§11.6) — an edge whose `from` node is ABSENT from nodes → "—" (the defensive ?? "—" guard,
+    // preserved through the memo). Unreachable via buildProjectGraph (root always present) → pinned here.
+    const graph: ProjectGraphModel = {
+      projectId: "p",
+      nodes: [mk("session:a", "Alpha")],
+      edges: [{ kind: "contains", from: "ghost:absent", to: "session:a" }],
+    };
+    expect(parentLabels(graph).get("session:a")).toBe("—");
+  });
+
+  it("parent_label_duplicate_edges_first_wins", () => {
+    // The memo preserves the prior `.find` FIRST-WINS semantics: when two edges share a `to`, the FIRST
+    // incoming edge's parent is used. Moot for buildProjectGraph's unique-`to` contains edges, but pins
+    // the JSDoc fidelity claim against a future build-loop refactor (e.g. an accidental last-wins).
+    const graph: ProjectGraphModel = {
+      projectId: "p",
+      nodes: [mk("project:p", "Root"), mk("session:a", "Alpha"), mk("pull_request:c", "Child")],
+      edges: [
+        { kind: "contains", from: "project:p", to: "pull_request:c" }, // first → Root (wins)
+        { kind: "contains", from: "session:a", to: "pull_request:c" }, // second → ignored
+      ],
+    };
+    expect(parentLabels(graph).get("pull_request:c")).toBe("Root");
   });
 });

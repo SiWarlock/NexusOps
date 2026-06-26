@@ -22,6 +22,10 @@ export const pullRequestFixture: PullRequestProjectionPage = {
       pr_checked_at: "2026-06-16T09:00:00Z",
       mergeable: true,
       checks_summary: "3/3 checks passing",
+      // ui-075: a real captured head SHA so the Mock-backed dev-shell visual gate renders the
+      // PR-mutation controls ENABLED (prHeadSha != null ⇒ canMerge/canReview; the merge/review
+      // SHA-pin source, [[19]]/D2). A 40-char hex sha (the GitHub head commit shape).
+      head_sha: "9f2a1c7e4b8d3056a1f9e2c4b7d80a36e1c95f4b",
     },
     {
       pr_id: "repo_fixture_1#102",
@@ -35,6 +39,7 @@ export const pullRequestFixture: PullRequestProjectionPage = {
       pr_checked_at: "2026-06-16T08:40:00Z",
       mergeable: null,
       checks_summary: "merged",
+      head_sha: "3c8b5d1a9e6f24700b3a8c2d5f1e9047a6b2d8c3",
     },
     {
       pr_id: "repo_fixture_2#201",
@@ -48,6 +53,7 @@ export const pullRequestFixture: PullRequestProjectionPage = {
       pr_checked_at: "2026-06-16T08:54:00Z",
       mergeable: false,
       checks_summary: "1/3 checks failing",
+      head_sha: "7d4e0b2f6a1c8359e4b7d0a2c6f3915b8e2a4d70",
     },
   ],
   cursor: null,

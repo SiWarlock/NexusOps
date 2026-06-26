@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type {
   ActionAck,
+  ActionRequest,
   DiffLine,
   DiffResult,
   Hunk,
@@ -21,7 +22,7 @@ import type {
   ReviewRow,
 } from "../../contracts/index";
 import { reviewsByPr } from "../../projections/items";
-import { PrWorkspace } from "./PrWorkspace";
+import { PrWorkspace, prHeadSha, type PrDiffState } from "./PrWorkspace";
 import { WireError } from "../../contracts/index";
 import {
   Badge,
@@ -40,7 +41,14 @@ import { useSubmitIntent, type IntentResult } from "../../intent/submit-intent";
 import { useCanSubmitIntent } from "../../connection/read-only";
 import { buildHunkActionRequest } from "../../intent/hunk-resource-ref";
 import {
-  enrichHunkAction,
+  buildMergePrActionRequest,
+  buildSubmitReviewActionRequest,
+  isPrMutationEnabled,
+  type MergePrMethod,
+  type ReviewEvent,
+} from "../../intent/pr-mutation-request";
+import {
+  enrichActionApproval,
   type GatewayApprovalEnrichment,
 } from "../../shell/display-meta";
 import { GatewayModal, ResultNotice } from "../../overlays/GatewayModal";
@@ -182,14 +190,14 @@ function ReviewTab({ gateway }: { gateway: GatewayPort }) {
       try {
         // 053b: source the daemon's REAL risk/policy by re-fetching the ApprovalQueue + matching the
         // minted action_request_id (no UI-derived fixture); absent → an honest awaiting placeholder.
-        setPendingApproval(await enrichHunkAction(gateway, r.ok));
+        setPendingApproval(await enrichActionApproval(gateway, r.ok));
       } catch (e) {
         // The intent WAS recorded (the daemon acked); only the approval-card enrichment re-fetch
         // failed — a malformed ApprovalQueue payload (BoundaryValidationError) or a transport fault.
         // Degrade HONESTLY (the get_diff read-degrade pattern above, §11.7): log + an honest notice,
         // NEVER a silent stall and NEVER a card built from un-parsed data (forbidden #2). The approval
         // is still in the global queue; a read failure must not crash the cockpit (no re-throw).
-        console.error("enrichHunkAction (ApprovalQueue re-fetch) failed", e);
+        console.error("enrichActionApproval (ApprovalQueue re-fetch) failed", e);
         setEnrichFailed(true);
       }
     } else {
@@ -543,6 +551,155 @@ function PRsTab({
   );
 }
 
+/** ui-069 D7 + ui-070 cat-1 — owns the `get_pr_diff` fetch for the selected PR AND the github.merge_pr
+ *  submit, feeding the pure-display PrWorkspace. The diff fetch is keyed on the STABLE (repo_id, pr_number)
+ *  primitives (LESSON §17) — and the render site remounts it per `pr_id` — so a reselect re-fetches and
+ *  NEVER shows a stale diff. PrWorkspace takes NO gateway (the ui-064 no-mutation-reach pin: a read-only
+ *  display can't reach a fetch/submit by construction). The cat-1 Merge is GUARDED-DISABLED: enabled only
+ *  when canSubmitIntent && prMutationsEnabled && headSha != null — prMutationsEnabled defaults false +
+ *  headSha is null until the daemon field lands → no production path reaches a live merge. */
+function PrWorkspaceContainer({
+  gateway,
+  pr,
+  reviews,
+  onBack,
+}: {
+  gateway: GatewayPort;
+  pr: PullRequestRow;
+  reviews: ReviewRow[];
+  onBack: () => void;
+}) {
+  const { repo_id, pr_number } = pr;
+  const [prDiff, setPrDiff] = useState<PrDiffState>({ kind: "loading" });
+  const [refreshTick, setRefreshTick] = useState(0);
+  const seam = useSubmitIntent(gateway);
+  const canSubmit = useCanSubmitIntent();
+  const [pendingApproval, setPendingApproval] = useState<GatewayApprovalEnrichment | null>(null);
+  // SHARED across both cat-1 PR mutations (merge + review) — one honest outcome region per workspace.
+  const [mutationResult, setMutationResult] = useState<IntentResult<ActionAck> | null>(null);
+  const [mutationEnrichFailed, setMutationEnrichFailed] = useState(false);
+
+  useEffect(() => {
+    if (repo_id == null || pr_number == null) {
+      // no repo link / PR number → don't fetch; an honest no-link state (distinct from a daemon error).
+      setPrDiff({ kind: "no-link" });
+      return;
+    }
+    let active = true;
+    setPrDiff({ kind: "loading" });
+    gateway.get_pr_diff(repo_id, pr_number, null).then(
+      (diff) => {
+        if (active) setPrDiff({ kind: "ready", diff });
+      },
+      (e: unknown) => {
+        if (!active) return;
+        const parsed = WireError.safeParse(e);
+        if (parsed.success) {
+          // a daemon-reported read error (e.g. not_found) — honest unavailable, code verbatim.
+          setPrDiff({ kind: "error", code: parsed.data.code });
+        } else {
+          // a non-WireError (a real transport/JS Error) — degrade honestly + surface for diagnosis
+          // (never silently swallow), mirroring the ReviewTab get_diff read-degrade (§11.7/LESSON §16).
+          console.error("get_pr_diff failed unexpectedly", e);
+          setPrDiff({ kind: "error" });
+        }
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [gateway, repo_id, pr_number, refreshTick]);
+
+  // cat-1 defense-in-depth layer 1: the Merge enablement. isPrMutationEnabled(github.merge_pr) is the
+  // per-action PR-mutation go-live gate (empty set in prod, SEPARATE from L2 mutationsEnabled); headSha
+  // is the anti-race pin (null until the daemon field lands → disabled today); canSubmit is the live-link
+  // gate. The port's throw-never-invoke guard is the provably-unreachable layer beneath this.
+  const headSha = prHeadSha(pr);
+  const canMerge =
+    canSubmit && isPrMutationEnabled(gateway, "github.merge_pr") && headSha != null;
+  // The BASE review enablement (the per-verdict body-required gate is applied in PrWorkspace).
+  const canReview =
+    canSubmit && isPrMutationEnabled(gateway, "github.submit_review") && headSha != null;
+
+  // SHARED submit path for both cat-1 PR mutations — the daemon Gateway is the single executor (the UI
+  // submits an intent). On ok → open the GatewayModal for the daemon's REAL policy/preview/approve-deny
+  // (no optimistic "merged"/"reviewed"; the terminal state lands only via the confirming projection fold);
+  // on a rejection → surface the §6.4 verdict VERBATIM (ResultNotice/describeRejection) + the honest
+  // re-review affordance; on an enrich re-fetch fault → an honest degrade (never a card from un-parsed data).
+  async function submitMutation(req: ActionRequest) {
+    const r = await seam.submitAction(req);
+    if ("ok" in r) {
+      setMutationResult(null);
+      setMutationEnrichFailed(false);
+      try {
+        setPendingApproval(await enrichActionApproval(gateway, r.ok));
+      } catch (e) {
+        console.error("approval enrich (ApprovalQueue re-fetch) failed", e);
+        setMutationEnrichFailed(true);
+      }
+    } else {
+      setMutationResult(r);
+    }
+  }
+
+  async function onMerge(method: MergePrMethod) {
+    // structural guard (the control is disabled when any is missing — belt-and-suspenders, never a
+    // merge formed without a pinned head / repo identity). ui-077: the user-selected method rides into
+    // inputs.merge_method (the daemon's map_merge_method is the fail-closed authority; every merge stays
+    // per-action approved/audited regardless of method).
+    if (repo_id == null || pr_number == null || headSha == null) return;
+    await submitMutation(
+      buildMergePrActionRequest(
+        { repo_id, pr_number, head_sha: headSha, merge_method: method },
+        new Date().toISOString(),
+      ),
+    );
+  }
+
+  async function onSubmitReview(event: ReviewEvent, body: string) {
+    // structural guard (the verdict controls are disabled when any is missing — belt-and-suspenders).
+    if (repo_id == null || pr_number == null || headSha == null) return;
+    await submitMutation(
+      buildSubmitReviewActionRequest(
+        { repo_id, pr_number, head_sha: headSha, event, body },
+        new Date().toISOString(),
+      ),
+    );
+  }
+
+  function onReReview() {
+    setMutationResult(null);
+    setMutationEnrichFailed(false); // clear BOTH honest-degrade notices on a re-review
+    setRefreshTick((t) => t + 1); // re-fetch the latest PR diff so the user re-reviews the current head
+  }
+
+  return (
+    <>
+      <PrWorkspace
+        pr={pr}
+        reviews={reviews}
+        onBack={onBack}
+        prDiff={prDiff}
+        canMerge={canMerge}
+        onMerge={onMerge}
+        canReview={canReview}
+        onSubmitReview={onSubmitReview}
+        mutationResult={mutationResult}
+        mutationEnrichFailed={mutationEnrichFailed}
+        onReReview={onReReview}
+      />
+      {pendingApproval ? (
+        <GatewayModal
+          approval={pendingApproval.approval}
+          policyDecision={pendingApproval.policyDecision}
+          port={gateway}
+          onClose={() => setPendingApproval(null)}
+        />
+      ) : null}
+    </>
+  );
+}
+
 /**
  * Code & Delivery (ported from kit-views2.jsx DiffReview): the Review ·
  * Worktrees · Pull requests tab strip. Pull requests ride the REAL projection
@@ -621,7 +778,9 @@ export function DiffReview({
           // A selected PR → its read-only PR Review Workspace (ui-064); else the 6.3e worktree per-hunk
           // diff (preserved, not deleted). Reviews join to the PR client-side on pr_number.
           selectedPr ? (
-            <PrWorkspace
+            <PrWorkspaceContainer
+              key={selectedPr.pr_id}
+              gateway={gateway}
               pr={selectedPr}
               reviews={
                 selectedPr.pr_number != null

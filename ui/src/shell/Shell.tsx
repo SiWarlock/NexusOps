@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react";
 import type { GatewayPort } from "../gateway-client/types";
 import { UdsGatewayPort } from "../gateway-client/uds";
+import { PR_MUTATION_ACTION_TYPES } from "../intent/pr-mutation-request";
 import { runSubscriptionSupervisor } from "../gateway-client/subscribe-recovery";
 import { createNudgeCoalescer } from "../gateway-client/refetch-on-nudge";
 import type {
   ApprovalQueueRow,
   AuditEventRow,
+  Capabilities,
   CreditPool,
   ProjectActivityRow,
+  ProjectionName,
+  ProjectionPageByName,
   PullRequestRow,
   RecoveryStatus,
   ReviewRow,
@@ -52,7 +56,7 @@ import {
   filterByActiveProject,
   ActiveProjectProvider,
 } from "./active-project";
-import { enrichApproval, sessionDisplayFixture } from "./display-meta";
+import { sessionDisplayFixture } from "./display-meta";
 import { useViewHistory } from "./view-history";
 import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
@@ -60,8 +64,9 @@ import { EventDock } from "./EventDock";
 import { CommandPalette, type PaletteAction } from "../overlays/CommandPalette";
 import { HumanInputQueue } from "../overlays/HumanInputQueue";
 import { TaskInbox } from "../overlays/TaskInbox";
-import { GatewayModal } from "../overlays/GatewayModal";
+import { GatewayOverlay } from "../overlays/GatewayOverlay";
 import { BrainDrawer } from "../overlays/BrainDrawer";
+import { BrainStatusProvider, fakeBrainStatus } from "../views/brain/brain-status";
 import { InspectorDrawer } from "../overlays/InspectorDrawer";
 import type { GraphNode } from "../views/graph/model";
 
@@ -87,6 +92,10 @@ interface ShellData {
   // The PR-review verticals (ui-064, §11.2) — the Review projection joined to a PR client-side on
   // pr_number (reviewsByPr) for the PR Review Workspace.
   reviews: ReviewRow[];
+  // ui-079 (§11.7) — the projections that FAILED to load this cockpit-load (per-projection-resilient):
+  // each degrades only its own slice (rendered []), surfaced honestly by the partial-data banner — never
+  // silently shown as genuinely-empty. Empty set = a fully-successful (or no-degrade) load.
+  degraded: ReadonlySet<ProjectionName>;
 }
 
 // Bounded backoff for the live-subscribe reconnect recovery (052) — don't hammer the daemon on a
@@ -125,11 +134,22 @@ export function Shell({
   // PRODUCTION DEFAULT = the real UdsGatewayPort (L1 read-swap, 051). **L2-C GO-LIVE (057,
   // USER-signed-off):** constructed `mutationsEnabled: true` — the single switch that lights up the
   // mutation transport (the port methods `invoke`) AND the UI submit controls (`canSubmitIntent &&
-  // mutationsEnabled`) together. A real human can now approve/deny/submit a real, daemon-risk-classified
-  // mutation; the daemon's Action Gateway executes + audits it (INV-SEC-1 chokepoint; this UI gate is
-  // defense-in-depth). The MockGatewayPort stays the injectable test/dev seam (passed via `gateway`).
+  // mutationsEnabled`) together. **ui-075 PR-MUTATIONS GO-LIVE (cat-1, USER-signed-off + visual-gate
+  // PASSED):** the constructor below is also passed `PR_MUTATION_ACTION_TYPES` as its per-action
+  // PR-mutation gate — lighting up BOTH PR mutations (`github.merge_pr` + `github.submit_review`) at once.
+  // (The literal option form is left to the code below ONLY — never duplicated in this comment — so the
+  // `pr_mutation_flip_confined_to_the_signed_off_shell_go_live` source-grep guard matches the real flip,
+  // not prose.) A real human can now merge a PR / submit a review from the cockpit; the daemon's Action
+  // Gateway executes + audits it (INV-SEC-1 chokepoint; this UI gate is defense-in-depth,
+  // necessary-not-sufficient — live writes also require the daemon-side per-connection `live_writes_enabled`
+  // toggle ON [default OFF, 083]). The MockGatewayPort stays the injectable test/dev seam (via `gateway`).
   const [client] = useState<GatewayPort>(
-    () => gateway ?? new UdsGatewayPort({ mutationsEnabled: true }),
+    () =>
+      gateway ??
+      new UdsGatewayPort({
+        mutationsEnabled: true,
+        enabledPrMutations: PR_MUTATION_ACTION_TYPES,
+      }),
   );
   const [data, setData] = useState<ShellData | null>(null);
   const [error, setError] = useState<unknown>(null);
@@ -183,40 +203,80 @@ export function Shell({
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      // ui-079 (§6.11/§11.7) — PER-PROJECTION-RESILIENT load: each of the 7 projections settles
+      // independently (a typed per-call wrapper → `page | null`, cleaner than allSettled's union-narrowing
+      // over the heterogeneous ProjectionPageByName[K]). One projection rejecting degrades ONLY its tile
+      // (rendered [] + named in the honest partial-data banner), never blanks the whole cockpit.
+      const settle = async <K extends ProjectionName>(
+        name: K,
+      ): Promise<ProjectionPageByName[K] | null> => {
+        try {
+          return await client.get_projection(name);
+        } catch (e) {
+          console.error(`cockpit load: the ${name} projection failed to load (degraded)`, e);
+          return null;
+        }
+      };
+      const [projects, sessions, pullRequests, approvals, audit, usage, reviews] =
+        await Promise.all([
+          settle("ProjectActivity"),
+          settle("Session"),
+          settle("PullRequest"),
+          settle("ApprovalQueue"),
+          settle("AuditTrail"),
+          settle("UsageLedger"),
+          settle("Review"),
+        ]);
+      // caps is INDEPENDENT of the data tiles ([[4]]): a caps fault → version stays the fail-safe "unknown"
+      // (→ read-only), and must NOT blank the projections; a data-tile fault must NOT force read-only.
+      let caps: Capabilities | null = null;
       try {
-        const [projects, sessions, pullRequests, approvals, audit, usage, reviews, caps] =
-          await Promise.all([
-            client.get_projection("ProjectActivity"),
-            client.get_projection("Session"),
-            client.get_projection("PullRequest"),
-            client.get_projection("ApprovalQueue"),
-            client.get_projection("AuditTrail"),
-            client.get_projection("UsageLedger"),
-            client.get_projection("Review"),
-            client.get_capabilities(),
-          ]);
-        if (cancelled) return;
-        const counts = deriveProjectSwitcherCounts({
-          projects: projects.rows,
-          sessions: sessions.rows,
-          pullRequests: pullRequests.rows,
-          approvals: approvals.rows,
-        });
-        setVersion(checkVersionCompat(caps));
-        setData({
-          projects: projects.rows,
-          counts,
-          events: audit.rows,
-          sessions: sessions.rows,
-          pullRequests: pullRequests.rows,
-          approvals: approvals.rows,
-          usage: usage.rows,
-          creditPool: usage.creditPool ?? null,
-          reviews: reviews.rows,
-        });
+        caps = await client.get_capabilities();
       } catch (e) {
-        if (!cancelled) setError(e);
+        console.error("cockpit load: get_capabilities failed (→ fail-safe read-only)", e);
       }
+      if (cancelled) return;
+
+      // Which projections degraded this load (null page) — the honest partial-data banner names them
+      // (§11.7). Named distinctly from the render-scope transport `degraded` (deriveDegradedState) below.
+      const degradedProjections = new Set<ProjectionName>();
+      if (projects === null) degradedProjections.add("ProjectActivity");
+      if (sessions === null) degradedProjections.add("Session");
+      if (pullRequests === null) degradedProjections.add("PullRequest");
+      if (approvals === null) degradedProjections.add("ApprovalQueue");
+      if (audit === null) degradedProjections.add("AuditTrail");
+      if (usage === null) degradedProjections.add("UsageLedger");
+      if (reviews === null) degradedProjections.add("Review");
+
+      // TOTAL fault: EVERY projection failed (daemon unreachable / all boundary-rejected) → no data at all
+      // → the honest blank "couldn't load" screen (read-only pending) — one clear message, not 7 empty
+      // tiles (preserves the total-fault behavior). A PARTIAL failure renders the cockpit + the banner.
+      if (degradedProjections.size === 7) {
+        setError(new Error("cockpit load: every projection failed to load"));
+        return;
+      }
+
+      // caps resolved → record the version verdict; caps null → version stays "unknown" (read-only).
+      if (caps !== null) setVersion(checkVersionCompat(caps));
+
+      const counts = deriveProjectSwitcherCounts({
+        projects: projects?.rows ?? [],
+        sessions: sessions?.rows ?? [],
+        pullRequests: pullRequests?.rows ?? [],
+        approvals: approvals?.rows ?? [],
+      });
+      setData({
+        projects: projects?.rows ?? [],
+        counts,
+        events: audit?.rows ?? [],
+        sessions: sessions?.rows ?? [],
+        pullRequests: pullRequests?.rows ?? [],
+        approvals: approvals?.rows ?? [],
+        usage: usage?.rows ?? [],
+        creditPool: usage?.creditPool ?? null,
+        reviews: reviews?.rows ?? [],
+        degraded: degradedProjections,
+      });
     })();
     return () => {
       cancelled = true;
@@ -613,6 +673,10 @@ export function Shell({
       {/* ActiveProjectProvider wraps the WHOLE shell (incl. TopBar) so the
           ProjectSwitcher inside TopBar can read/set the active project. */}
       <ActiveProjectProvider value={{ activeProjectId, setActiveProject }}>
+      {/* BrainStatusProvider feeds the Brain drawer/page header the ProjectBrain §5.1 status
+          (FakeBrain default — the exposed-ahead swap-point for the live daemon 8.1 source; §13.1
+          honest-degraded). A read/display provider — no daemon dep, no canSubmitIntent gate. */}
+      <BrainStatusProvider value={fakeBrainStatus}>
       <div className="shell">
         <TopBar
           projects={data.projects}
@@ -645,6 +709,27 @@ export function Shell({
             onRepair={handleRepair}
           />
           <RecoveryBanner recovery={recovery} />
+          {/* ui-079 (§11.7) — the honest PARTIAL-DATA degrade banner: a DISTINCT surface (NOT the transport
+              DegradedBanner above — never conflate, [[11]]) naming the projection(s) that failed THIS load,
+              so a degraded tile is never silently shown as genuinely-empty. glyph+label (never color alone,
+              §11.6); role="status" (polite — the rest of the cockpit is usable). Renders only when degraded. */}
+          {data.degraded.size > 0 ? (
+            <div
+              role="status"
+              className="partial-data-banner"
+              data-testid="partial-data-banner"
+              style={{
+                padding: "8px 14px",
+                font: "var(--fs-meta) var(--font-sans)",
+                color: "var(--text-primary)",
+                background: "var(--surface-sunken)",
+                borderBottom: "1px solid var(--border-subtle)",
+              }}
+            >
+              <span aria-hidden="true">⚠</span> Some data couldn’t load (showing
+              what’s available) — unavailable: {[...data.degraded].join(", ")}.
+            </div>
+          ) : null}
           {/* §17 fail-closed / audit-integrity alert (#5) — prominent + non-dismissible. */}
           <AuditIntegrityAlert integrity={safety.integrity} />
           {/* §17 safety-state host (6.4d-2) — hosts the never-auto-resolved fencing/
@@ -766,8 +851,10 @@ export function Shell({
         ) : overlay?.kind === "tasks" ? (
           <TaskInbox onClose={() => setOverlay(null)} />
         ) : overlay?.kind === "gateway" ? (
-          <GatewayModal
-            {...enrichApproval(overlay.approval)}
+          // ui-073 — the dispatcher branches on the selected approval's plan_id: a plan-bearing
+          // approval → the N-step PlanModal; a single-action approval → the unchanged GatewayModal.
+          <GatewayOverlay
+            approval={overlay.approval}
             port={client}
             onClose={() => setOverlay(null)}
           />
@@ -788,6 +875,7 @@ export function Shell({
           />
         ) : null}
       </div>
+      </BrainStatusProvider>
       </ActiveProjectProvider>
     </ReadOnlyProvider>
   );

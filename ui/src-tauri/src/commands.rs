@@ -17,7 +17,8 @@
 use nexusops_gateway_uds::{connect_and_call, connect_and_subscribe, ClientError};
 use nexusops_shared::actions::ActionRequest;
 use nexusops_shared::ipc::{
-    GetDiffParams, GetProjectionParams, IpcErrorCode, ProjectionName, ProjectionScope,
+    GetDiffParams, GetPrDiffParams, GetProjectionParams, IpcErrorCode, ProjectionName,
+    ProjectionScope,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -126,6 +127,22 @@ pub fn get_diff_params(worktree_id: String, file: String) -> Result<Value, Gatew
     })
 }
 
+/// Marshal `get_pr_diff` params == the daemon's `GetPrDiffParams{repo_id,pr_number,file}` (D7).
+pub fn get_pr_diff_params(
+    repo_id: String,
+    pr_number: u64,
+    file: Option<String>,
+) -> Result<Value, GatewayCommandError> {
+    serde_json::to_value(GetPrDiffParams {
+        repo_id,
+        pr_number,
+        file,
+    })
+    .map_err(|e| GatewayCommandError::Serde {
+        message: e.to_string(),
+    })
+}
+
 // ── the L2-B mutation param marshaling (== the daemon's methods.rs shapes; L2-D1/O4 opaque) ────
 
 /// Marshal `submit_action` params: the `ActionRequest` serialized AS-IS (its idempotency_key /
@@ -174,6 +191,16 @@ pub async fn gateway_get_diff(
 ) -> Result<Value, GatewayCommandError> {
     let params = get_diff_params(worktree_id, file)?;
     call_daemon("get_diff", params).await
+}
+
+#[tauri::command]
+pub async fn gateway_get_pr_diff(
+    repo_id: String,
+    pr_number: u64,
+    file: Option<String>,
+) -> Result<Value, GatewayCommandError> {
+    let params = get_pr_diff_params(repo_id, pr_number, file)?;
+    call_daemon("get_pr_diff", params).await
 }
 
 #[tauri::command]
@@ -247,8 +274,8 @@ pub async fn gateway_subscribe(
             // a ProjectionDelta is plain serde-derive data over JSON-compatible fields → serializing
             // it is infallible; expect (over a null/empty fallback) so a structural fault surfaces as
             // an Internal join-error, never a silent `delta: null` masquerading as a live delta.
-            let value = serde_json::to_value(&delta)
-                .expect("a ProjectionDelta always serializes to JSON");
+            let value =
+                serde_json::to_value(&delta).expect("a ProjectionDelta always serializes to JSON");
             match on_event.send(SubscriptionEvent::Delta { delta: value }) {
                 Ok(()) => ControlFlow::Continue(()),
                 // the frontend dropped the channel → stop reading (no leaked subscription thread).
@@ -370,6 +397,20 @@ mod tests {
         let parsed: GetDiffParams = serde_json::from_value(params).unwrap();
         assert_eq!(parsed.worktree_id, "wt_1");
         assert_eq!(parsed.file, "a.ts");
+    }
+
+    #[test]
+    fn get_pr_diff_params_match_daemon() {
+        // spec(§6.1) — == the daemon's frozen GetPrDiffParams{repo_id,pr_number,file} (D7).
+        let params =
+            get_pr_diff_params("repo_1".to_string(), 101, Some("a.ts".to_string())).unwrap();
+        let parsed: GetPrDiffParams = serde_json::from_value(params).unwrap();
+        assert_eq!(parsed.repo_id, "repo_1");
+        assert_eq!(parsed.pr_number, 101);
+        assert_eq!(parsed.file.as_deref(), Some("a.ts"));
+        // the whole-changeset form (file=None) marshals to an explicit null field, not a missing key.
+        let whole = get_pr_diff_params("repo_1".to_string(), 101, None).unwrap();
+        assert_eq!(whole["file"], serde_json::Value::Null);
     }
 
     #[test]

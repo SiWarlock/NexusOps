@@ -69,6 +69,23 @@ function makeBoundaryError(): BoundaryValidationError {
   if (res.success) throw new Error("test setup: expected a parse failure");
   return new BoundaryValidationError("Session", res.error);
 }
+// ui-079: a MockGatewayPort whose `get_projection` REJECTS for the named projection(s) and delegates to
+// the real fixture for the rest — so a single projection's load-fault can be simulated without tanking
+// the others (the per-projection-resilience surface).
+function rejectingOne(...names: ProjectionName[]): MockGatewayPort {
+  const mock = new MockGatewayPort();
+  const orig = mock.get_projection.bind(mock);
+  vi.spyOn(mock, "get_projection").mockImplementation(((
+    name: ProjectionName,
+    scope?: ProjectionScope,
+    page?: ProjectionPageParams,
+  ) =>
+    names.includes(name)
+      ? Promise.reject(new Error(`forced reject: ${name} projection`))
+      : orig(name, scope, page)) as typeof mock.get_projection);
+  return mock;
+}
+
 const notExercised = () =>
   Promise.reject(new Error("rejectingGateway: mutation methods not exercised here"));
 const rejectingGateway: GatewayPort = {
@@ -83,8 +100,9 @@ const rejectingGateway: GatewayPort = {
   },
   get_capabilities: () =>
     Promise.resolve({ protocol_version: 1, contract_version: "0.5.0" }),
-  // §6.1 get_diff (unused in this read-path test — 6.3e Code/Diff has its own suite).
+  // §6.1 get_diff / get_pr_diff (unused in this read-path test — Code/Diff has its own suite).
   get_diff: notExercised,
+  get_pr_diff: notExercised,
   // §6.1 mutation surface (unused in this read-path test — the seam has its own suite).
   submit_action: notExercised,
   preview_action: notExercised,
@@ -95,6 +113,7 @@ const rejectingGateway: GatewayPort = {
   reconnect: () => {},
   notifyConnectionState: () => {},
   mutationsEnabled: false,
+  enabledPrMutations: new Set<string>(),
 };
 
 // A gateway whose live stream CLOSES once (→ the supervisor degrades) then stays open, with the
@@ -156,6 +175,69 @@ describe("Shell", () => {
     await awaitLoaded();
     expect(spy.mock.calls.some((c) => c[0] === "Review")).toBe(true);
     // the Review page parsed cleanly → the chrome rendered, not the boundary load-error surface.
+    expect(screen.queryByTestId("shell-load-error")).toBeNull();
+  });
+
+  // ── ui-079 (§6.11) — per-projection-resilient cockpit load (one failure ≠ blank cockpit) ──────────
+  it("one_projection_failure_renders_the_rest", async () => {
+    // spec(§11.4/§6.1) — ONE projection rejecting (PullRequest) does NOT blank the whole cockpit; the
+    // other projections + caps still load and render (NOT the all-or-nothing shell-load-error).
+    render(<Shell gateway={rejectingOne("PullRequest")} />);
+    await awaitLoaded(); // ProjectActivity (a surviving projection) rendered → the cockpit is alive
+    expect(screen.queryByTestId("shell-load-error")).toBeNull();
+  });
+
+  it("failed_projection_degrades_honestly_not_fabricated", async () => {
+    // spec(§11.7/[[11]]) — the failed projection is surfaced HONESTLY (a DISTINCT partial-data banner
+    // naming it), never silently shown as genuinely-empty / fabricated data.
+    render(<Shell gateway={rejectingOne("PullRequest")} />);
+    await awaitLoaded();
+    const banner = await screen.findByTestId("partial-data-banner");
+    expect(banner.textContent).toMatch(/PullRequest/); // names the unavailable projection
+  });
+
+  it("counts_survive_a_failed_counts_input_projection", async () => {
+    // spec(§11.2) — a failed ProjectActivity (a deriveProjectSwitcherCounts INPUT) → counts compute from
+    // [] (no crash); the cockpit still renders + the honest banner names it (NOT a blank shell-load-error).
+    render(<Shell gateway={rejectingOne("ProjectActivity")} />);
+    const banner = await screen.findByTestId("partial-data-banner"); // load completed (no crash)
+    expect(banner.textContent).toMatch(/ProjectActivity/);
+    expect(screen.queryByTestId("shell-load-error")).toBeNull();
+  });
+
+  it("capabilities_failure_is_fail_safe_read_only", async () => {
+    // spec([[4]]/§11.4) — get_capabilities rejecting → version stays "unknown" (read-only, canSubmitIntent
+    // false) WITHOUT blanking the projection tiles. caps is independent: a degraded banner explains the
+    // read-only (checking/reconnecting), present here but ABSENT on a normal load (→ "ok"); caps is NOT a
+    // projection tile, so NO partial-data banner for it.
+    const mock = new MockGatewayPort();
+    vi.spyOn(mock, "get_capabilities").mockRejectedValue(new Error("caps fault"));
+    render(<Shell gateway={mock} />);
+    await awaitLoaded(); // projections rendered despite caps failing
+    expect(screen.queryByTestId("shell-load-error")).toBeNull();
+    // read-only EXPLAINED: version "unknown" → a degraded banner whose message carries "read-only"
+    // (checking/reconnecting/disconnected all do; a normal load → "ok" → no banner). Query by the
+    // observable text, not a CSS class.
+    expect(screen.getByText(/read-only/i)).toBeTruthy();
+    expect(screen.queryByTestId("partial-data-banner")).toBeNull(); // caps ≠ a data tile
+  });
+
+  it("all_succeed_unchanged", async () => {
+    // spec(regression) — all 7 projections + caps succeed → the cockpit renders with NO partial-data
+    // banner and NO load-error (the happy path is unchanged by the resilient load).
+    render(<Shell gateway={new MockGatewayPort()} />);
+    await awaitLoaded();
+    expect(screen.queryByTestId("partial-data-banner")).toBeNull();
+    expect(screen.queryByTestId("shell-load-error")).toBeNull();
+  });
+
+  it("multiple_projection_failures_aggregate_in_the_banner", async () => {
+    // spec(§11.7) — TWO projections failing (2 of 7, not all) → the `degraded` set aggregates BOTH and the
+    // partial-data banner names EACH (not just the first); the cockpit still renders (not the blank fault).
+    render(<Shell gateway={rejectingOne("PullRequest", "AuditTrail")} />);
+    const banner = await screen.findByTestId("partial-data-banner");
+    expect(banner.textContent).toMatch(/PullRequest/);
+    expect(banner.textContent).toMatch(/AuditTrail/);
     expect(screen.queryByTestId("shell-load-error")).toBeNull();
   });
 

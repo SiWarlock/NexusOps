@@ -64,6 +64,14 @@ export interface GatewayPort {
   // per-hunk git.* actions go through the submit_action intent path, not this read).
   get_diff(worktree_id: string, file: string): Promise<DiffResult>;
 
+  // §6.1 get_pr_diff (D7) — a read-only remote-PR code-diff (head-vs-base) for a
+  // selected PR (the §11.2 Review-tab code panel). A READ: the daemon resolves
+  // `(repo_id, pr_number) → owner/repo` then fetches from GitHub. `file=null` = the
+  // whole changeset (all files' hunks flattened, no per-file attribution; a per-file
+  // file-tree is a post-D7 follow-on). Returns the SAME frozen `DiffResult` as get_diff
+  // (REUSED). Errors surface a `WireError` (e.g. `not_found`) like the other reads.
+  get_pr_diff(repo_id: string, pr_number: number, file: string | null): Promise<DiffResult>;
+
   // §6.1 mutation-intent surface (daemon/src/ipc/methods.rs:169-211). INV-SEC-1 /
   // §4.2 law 1: the UI SUBMITS intents only — the daemon's Action Gateway is the
   // single executor + DB writer; the daemon mints `action_request_id`. The wire
@@ -101,4 +109,15 @@ export interface GatewayPort {
    * `MockGatewayPort` defaults it TRUE (a fully-working test/dev port). NOT a §6.1 RPC method.
    */
   readonly mutationsEnabled: boolean;
+
+  /**
+   * The PER-ACTION PR-mutation go-live gate (cat-1, ui-070/071 fork-1b) — the SET of enabled PR-mutation
+   * action types (`github.merge_pr`, `github.submit_review`). SEPARATE from `mutationsEnabled` (already
+   * TRUE in production). A PR mutation reaches the wire ONLY when its action_type is in this set; the
+   * transport throws-never-invokes AND the UI control is disabled otherwise. Per-action so the future
+   * go-live can stage lowest-risk-first. `UdsGatewayPort` defaults it EMPTY (all HELD until a USER-signed-off
+   * go-live + the daemon auth-bootstrap re-review); `MockGatewayPort` defaults it to the full set. NOT a
+   * §6.1 RPC method. Read via `isPrMutationEnabled` (pr-mutation-request.ts).
+   */
+  readonly enabledPrMutations: ReadonlySet<string>;
 }

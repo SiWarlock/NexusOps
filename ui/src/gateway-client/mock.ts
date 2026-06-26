@@ -60,6 +60,7 @@ import {
 } from "../projections/fixtures/proj_session";
 import { usageDeltaFixture, usageFixture } from "../projections/fixtures/proj_usage";
 import { parseDelta, parseProjectionPage } from "./boundary";
+import { PR_MUTATION_ACTION_TYPES } from "../intent/pr-mutation-request";
 
 const DEFAULT_PROTOCOL_VERSION = 1;
 
@@ -111,6 +112,10 @@ export interface MockGatewayOptions {
    *  test/dev port (its mutations resolve), so Mock-driven UI-flow tests keep enabled controls; set
    *  false to exercise the L2-B honest-disabled state (wired-but-not-enabled). */
   mutationsEnabled?: boolean;
+  /** The per-action PR-mutation gate (cat-1, ui-070/071). Default = the full PR_MUTATION_ACTION_TYPES set
+   *  — the Mock is a fully-working dev/test port (its mutations resolve), so Mock-driven UI-flow tests can
+   *  exercise the enabled merge + review paths. */
+  enabledPrMutations?: ReadonlySet<string>;
 }
 
 export class MockGatewayPort implements GatewayPort {
@@ -120,12 +125,15 @@ export class MockGatewayPort implements GatewayPort {
   private readonly listeners = new Set<(state: ConnectionState) => void>();
   /** The L2 go-live gate the UI controls consult (056) — default TRUE (the Mock is a working port). */
   readonly mutationsEnabled: boolean;
+  /** The per-action PR-mutation gate (cat-1, ui-070/071) — default = the full set (the working Mock). */
+  readonly enabledPrMutations: ReadonlySet<string>;
 
   constructor(options: MockGatewayOptions = {}) {
     this.connection = options.connection ?? "connected";
     this.protocolVersion = options.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
     this.mutationError = options.mutationError;
     this.mutationsEnabled = options.mutationsEnabled ?? true;
+    this.enabledPrMutations = options.enabledPrMutations ?? PR_MUTATION_ACTION_TYPES;
   }
 
   async get_projection<K extends ProjectionName>(
@@ -195,6 +203,18 @@ export class MockGatewayPort implements GatewayPort {
   // built/tested without a live daemon. `worktree_id`/`file` are accepted but unused
   // (the fixture is fixed) — the daemon resolves the id→path + reads the real diff.
   async get_diff(_worktree_id: string, _file: string): Promise<DiffResult> {
+    return DiffResult.parse(diffFixture);
+  }
+
+  // §6.1 get_pr_diff (D7) — read-only PR code-diff fixture, served THROUGH the frozen
+  // DiffResult shadow (the same dogfood discipline as get_diff — the mock can never emit
+  // a diff the real boundary would reject). `repo_id`/`pr_number`/`file` are accepted but
+  // unused (the fixture is fixed); the daemon resolves repo+pr → the GitHub head-vs-base diff.
+  async get_pr_diff(
+    _repo_id: string,
+    _pr_number: number,
+    _file: string | null,
+  ): Promise<DiffResult> {
     return DiffResult.parse(diffFixture);
   }
 

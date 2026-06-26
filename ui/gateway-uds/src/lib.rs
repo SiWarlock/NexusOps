@@ -25,9 +25,9 @@ use std::time::Duration;
 
 use nexusops_shared::actions::{ActionPreview, ActionRequest};
 use nexusops_shared::ipc::{
-    ActionAck, Capabilities, DiffResult, GetDiffParams, GetProjectionParams, HelloAck, HelloFrame,
-    IpcErrorCode, ProjectionDelta, ProjectionName, ProjectionScope, RpcRequest, ServerFrame,
-    SubscribeParams, VersionSkewError, PROTOCOL_VERSION,
+    ActionAck, Capabilities, DiffResult, GetDiffParams, GetPrDiffParams, GetProjectionParams,
+    HelloAck, HelloFrame, IpcErrorCode, ProjectionDelta, ProjectionName, ProjectionScope,
+    RpcRequest, ServerFrame, SubscribeParams, VersionSkewError, PROTOCOL_VERSION,
 };
 use serde_json::Value;
 
@@ -237,6 +237,25 @@ pub fn get_diff<S: Read + Write>(
         file: file.to_string(),
     })?;
     let value = call(stream, "get_diff", params, id)?;
+    Ok(serde_json::from_value(value)?)
+}
+
+/// `get_pr_diff` — forms `GetPrDiffParams{repo_id,pr_number,file}` + calls; deserializes the
+/// `DiffResult` (the D7 remote-PR code-diff, head-vs-base; `file: None` = the whole changeset).
+/// Mirrors `get_diff`; `DiffResult` is the SAME frozen shape (REUSED, no new shadow).
+pub fn get_pr_diff<S: Read + Write>(
+    stream: &mut S,
+    repo_id: &str,
+    pr_number: u64,
+    file: Option<&str>,
+    id: u64,
+) -> Result<DiffResult, ClientError> {
+    let params = serde_json::to_value(GetPrDiffParams {
+        repo_id: repo_id.to_string(),
+        pr_number,
+        file: file.map(str::to_string),
+    })?;
+    let value = call(stream, "get_pr_diff", params, id)?;
     Ok(serde_json::from_value(value)?)
 }
 
@@ -688,6 +707,42 @@ mod tests {
     }
 
     #[test]
+    fn get_pr_diff_returns_typed_diffresult() {
+        // spec(§6.1) — get_pr_diff forms GetPrDiffParams{repo_id,pr_number,file} + calls +
+        // deserializes the typed DiffResult (the D7 remote-PR code-diff; mirrors get_diff).
+        let diff = serde_json::json!({
+            "hunks": [{
+                "header": "@@ -1,1 +1,1 @@",
+                "old_start": 1, "old_lines": 1, "new_start": 1, "new_lines": 1,
+                "lines": [{ "kind": "context", "content": "x\n" }]
+            }]
+        });
+        let mut s = FakeStream::new(rpc_ok(4, diff));
+        let result = get_pr_diff(&mut s, "repo_1", 101, None, 4).unwrap();
+        assert_eq!(result.hunks.len(), 1);
+        assert_eq!(result.hunks[0].old_start, 1);
+        // the request carried the get_pr_diff method + the GetPrDiffParams the daemon expects.
+        let req: RpcRequest = serde_json::from_slice(&s.writes[4..]).unwrap();
+        assert_eq!(req.method, "get_pr_diff");
+        assert_eq!(req.params["repo_id"], "repo_1");
+        assert_eq!(req.params["pr_number"], 101);
+        // file: None → serialized as explicit null (no skip_serializing_if — the stable §2.5-seam
+        // field-name snapshot; LESSON §15 trap 3).
+        assert_eq!(req.params["file"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn get_pr_diff_malformed_result_is_serde_error() {
+        // spec(§5.0) — a structurally valid RpcResponse whose result is NOT a DiffResult → a typed
+        // Serde error (fail-closed), never a bad partial value.
+        let mut s = FakeStream::new(rpc_ok(4, serde_json::json!({ "not_a_diff": true })));
+        assert!(matches!(
+            get_pr_diff(&mut s, "repo_1", 101, None, 4),
+            Err(ClientError::Serde(_))
+        ));
+    }
+
+    #[test]
     fn get_capabilities_returns_typed_capabilities() {
         // spec(§6.1/§6.4) — get_capabilities (no-param RPC) deserializes the typed Capabilities.
         let caps = serde_json::json!({ "protocol_version": 1, "contract_version": "0.28.0" });
@@ -787,7 +842,9 @@ mod tests {
             },
         ));
         let mut s = FakeStream::new(ack);
-        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| ControlFlow::Continue(()));
+        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| {
+            ControlFlow::Continue(())
+        });
         assert!(matches!(
             r,
             Err(ClientError::Wire(IpcErrorCode::ProtocolError))
@@ -800,7 +857,9 @@ mod tests {
         let mut reads = subscribe_ack(1, "Session");
         reads.extend_from_slice(&((MAX_FRAME_SIZE + 1) as u32).to_be_bytes()); // oversized prefix, no body
         let mut s = FakeStream::new(reads);
-        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| ControlFlow::Continue(()));
+        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| {
+            ControlFlow::Continue(())
+        });
         assert!(matches!(r, Err(ClientError::FrameTooLarge { .. })));
     }
 
@@ -810,7 +869,9 @@ mod tests {
         let mut reads = subscribe_ack(1, "Session");
         reads.extend(rpc_ok(2, serde_json::json!({ "x": 1 }))); // an RpcResponse mid-stream
         let mut s = FakeStream::new(reads);
-        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| ControlFlow::Continue(()));
+        let r = subscribe_stream(&mut s, ProjectionName::Session, 1, |_d| {
+            ControlFlow::Continue(())
+        });
         assert!(matches!(r, Err(ClientError::Protocol(_))));
     }
 
@@ -916,7 +977,7 @@ mod tests {
         assert_eq!(sent.params["action_type"], "git.stage_hunk");
         assert_eq!(sent.params["idempotency_key"], "idem-abc"); // rides opaquely (L2-O4)
         assert_eq!(sent.params["fencing_token"], 42); // rides opaquely (L2-O4)
-        // and round-trips back to the SAME ActionRequest (no field dropped/reshaped by the crate).
+                                                      // and round-trips back to the SAME ActionRequest (no field dropped/reshaped by the crate).
         let echoed: ActionRequest = serde_json::from_value(sent.params).unwrap();
         assert_eq!(echoed, req);
     }
@@ -979,11 +1040,13 @@ mod tests {
         // (so L2-C routes fencing_conflict→hard-conflict / precondition_stale→re-approvable). Pinned
         // on submit_action (fencing_conflict) + approve (precondition_stale): two methods, two codes.
         let wire = |code| {
-            frame_json(&ServerFrame::RpcResponse(nexusops_shared::ipc::RpcResponse {
-                id: 7,
-                result: None,
-                error: Some(nexusops_shared::ipc::WireError { code }),
-            }))
+            frame_json(&ServerFrame::RpcResponse(
+                nexusops_shared::ipc::RpcResponse {
+                    id: 7,
+                    result: None,
+                    error: Some(nexusops_shared::ipc::WireError { code }),
+                },
+            ))
         };
         let mut s1 = FakeStream::new(wire(IpcErrorCode::FencingConflict));
         assert!(matches!(
@@ -1023,11 +1086,13 @@ mod tests {
             Err(ClientError::Protocol(_))
         ));
         // an id-mismatch is also Protocol (a stale/uncorrelated response, even carrying a valid ack).
-        let mismatch = frame_json(&ServerFrame::RpcResponse(nexusops_shared::ipc::RpcResponse {
-            id: 99,
-            result: Some(serde_json::to_value(sample_ack()).unwrap()),
-            error: None,
-        }));
+        let mismatch = frame_json(&ServerFrame::RpcResponse(
+            nexusops_shared::ipc::RpcResponse {
+                id: 99,
+                result: Some(serde_json::to_value(sample_ack()).unwrap()),
+                error: None,
+            },
+        ));
         let mut s2 = FakeStream::new(mismatch);
         assert!(matches!(
             submit_action(&mut s2, &sample_action_request(), 7),

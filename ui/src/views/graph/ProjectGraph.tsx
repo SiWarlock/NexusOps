@@ -14,7 +14,11 @@ import {
   projectDisplayFixture,
   contextForSession,
 } from "../../shell/display-meta";
-import { buildProjectGraph, type GraphNode } from "./model";
+import {
+  buildProjectGraph,
+  type GraphNode,
+  type ProjectGraphModel,
+} from "./model";
 
 type GraphView = "graph" | "list";
 
@@ -132,6 +136,30 @@ function FocusableNode({
  * Filter/Fit are layout options without backing state yet — disabled, not faked.
  * Node-click selection highlights; the inspector drawer arrives with overlays.
  */
+/**
+ * ui-076 (§18 perf) — precompute the Contained-by column's `childId → parentLabel` resolution ONCE in
+ * O(n), replacing the per-row O(n²) double-`.find()`. Returns a COMPLETE map (an entry for EVERY node):
+ * a child resolves to its parent node's label; a root (no incoming edge) OR an edge whose `from` is
+ * absent from `nodes` → "—" (the defensive sentinel, byte-identical to the prior logic). First incoming
+ * edge wins per child (matching the prior `.find` — moot for the unique-`to` `contains` edges; kept for
+ * fidelity). The Contained-by column reads it O(1) per row. Exported for direct unit-pinning.
+ */
+export function parentLabels(graph: ProjectGraphModel): Map<string, string> {
+  const labelById = new Map(graph.nodes.map((n) => [n.id, n.label]));
+  // first incoming edge per child id (first-wins, mirroring the prior edges.find; no kind-filter — the
+  // prior logic didn't filter either, and `contains` is the only edge kind today).
+  const parentIdByChild = new Map<string, string>();
+  for (const e of graph.edges) {
+    if (!parentIdByChild.has(e.to)) parentIdByChild.set(e.to, e.from);
+  }
+  const out = new Map<string, string>();
+  for (const n of graph.nodes) {
+    const parentId = parentIdByChild.get(n.id);
+    out.set(n.id, parentId != null ? (labelById.get(parentId) ?? "—") : "—");
+  }
+  return out;
+}
+
 export function ProjectGraph({
   projectId,
   projects,
@@ -161,14 +189,10 @@ export function ProjectGraph({
     projects.find((p) => p.project_id === projectId)?.name ?? projectId;
 
   // The Contained-by column represents the edge set: each child names its parent.
-  // O(n²) across the table (a scan per row) — fine for MVP node counts; when real
-  // subscriptions + larger graphs land, memoize a childId→parent map (the graph-
-  // render perf budget is tracked in MVP_TASKS Carry-forward).
-  const parentLabelOf = (node: GraphNode): string => {
-    const edge = graph.edges.find((e) => e.to === node.id);
-    if (!edge) return "—";
-    return graph.nodes.find((n) => n.id === edge.from)?.label ?? "—";
-  };
+  // ui-076 (§18 perf): precompute the whole column ONCE in O(n) (parentLabels) and read it O(1)/row,
+  // replacing the prior per-row O(n²) double-`.find()` — timely now that live subscriptions render real
+  // (larger) graphs. Behavior-identical (same labels, same "—" for root/missing); bench-guarded ([[31]]).
+  const parentLabelByNodeId = parentLabels(graph);
 
   const isEmpty = graph.edges.length === 0;
   const placed = layout(graph.nodes);
@@ -408,7 +432,9 @@ export function ProjectGraph({
                   <td>
                     <AttentionMarker rank={node.attentionRank} variant="dot" />
                   </td>
-                  <td className="graph-table__parent">{parentLabelOf(node)}</td>
+                  <td className="graph-table__parent">
+                    {parentLabelByNodeId.get(node.id) ?? "—"}
+                  </td>
                 </tr>
               ))}
             </tbody>

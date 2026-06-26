@@ -184,7 +184,7 @@ describe("DiffReview L2 — per-hunk intent submission (cat-1)", () => {
   });
 
   it("per_hunk_modal_shows_real_row_policy_on_match", async () => {
-    // spec(§11.5/044) — 053b: on submit, enrichHunkAction re-fetches the ApprovalQueue, matches
+    // spec(§11.5/044) — 053b: on submit, enrichActionApproval re-fetches the ApprovalQueue, matches
     // the minted action_request_id, and the modal renders the daemon ROW's REAL policy (not a
     // UI-invented per-hunk reason). The mock mints ar_mock_0001 → serve a row with that id.
     const port = new MockGatewayPort();
@@ -301,21 +301,122 @@ describe("DiffReview — PR Workspace selection (ui-064 Layer 2)", () => {
     // "← Worktree diff" deselects → the 6.3e worktree per-hunk diff returns (preserved, not deleted).
     const port = new MockGatewayPort();
     vi.spyOn(port, "get_diff").mockResolvedValue(DIFF);
+    vi.spyOn(port, "get_pr_diff").mockResolvedValue(DIFF); // D7: the workspace fetches the PR code-diff
     render(
       <ReadOnlyProvider value={CONNECTED}>
         <DiffReview prs={[PR]} reviews={[]} gateway={port} />
       </ReadOnlyProvider>,
     );
-    // open the Kanban + select PR #101 → the PR Workspace (its D7 placeholder is unique to it)
+    // open the Kanban + select PR #101 → the PR Workspace (its read-only PR code-diff is unique to it)
     fireEvent.click(screen.getByRole("button", { name: /Pull requests/i }));
     fireEvent.click(screen.getByRole("button", { name: /Add OAuth device flow/i }));
-    expect(screen.getByTestId("pr-diff-unavailable")).toBeTruthy();
+    expect(await screen.findByTestId("pr-diff")).toBeTruthy();
     // deselect → the worktree per-hunk diff returns (get_diff-sourced), the workspace is gone
     fireEvent.click(screen.getByRole("button", { name: /Worktree diff/i }));
     await waitFor(() => {
-      expect(screen.queryByTestId("pr-diff-unavailable")).toBeNull();
+      expect(screen.queryByTestId("pr-diff")).toBeNull();
     });
     expect(port.get_diff).toHaveBeenCalled(); // the worktree ReviewTab is back (sources its diff)
+  });
+});
+
+// ─── ui-069 — D7 PR code-diff via get_pr_diff (§11.2/§11.7) ──────────────────
+// a diff whose content encodes (repo_id, pr_number) so a stale diff under the wrong PR is detectable.
+const diffFor = (repo_id: string, pr_number: number): DiffResult => ({
+  hunks: [
+    {
+      header: `@@ ${repo_id}#${pr_number} @@`,
+      old_start: 1,
+      old_lines: 1,
+      new_start: 1,
+      new_lines: 1,
+      lines: [{ kind: "context", content: `diff for ${repo_id}#${pr_number}\n` }],
+    },
+  ],
+});
+const renderWithPrs = (prs: PullRequestRow[], port: MockGatewayPort) => {
+  vi.spyOn(port, "get_diff").mockResolvedValue(DIFF);
+  render(
+    <ReadOnlyProvider value={CONNECTED}>
+      <DiffReview prs={prs} reviews={[]} gateway={port} />
+    </ReadOnlyProvider>,
+  );
+};
+const openKanban = () =>
+  fireEvent.click(screen.getByRole("button", { name: /Pull requests/i }));
+
+describe("DiffReview — D7 PR code-diff (ui-069)", () => {
+  const PR_A: PullRequestRow = {
+    pr_id: "r1#84",
+    project_id: "p1",
+    repo_id: "r1",
+    pr_number: 84,
+    title: "PR Alpha",
+    status: "open",
+    head_branch: "agent/a",
+    base_branch: "main",
+    pr_checked_at: null,
+    mergeable: true,
+    checks_summary: null,
+  };
+  const PR_B: PullRequestRow = {
+    ...PR_A,
+    pr_id: "r2#85",
+    repo_id: "r2",
+    pr_number: 85,
+    title: "PR Beta",
+  };
+  const PR_NO_REPO: PullRequestRow = {
+    ...PR_A,
+    pr_id: "r0#orphan",
+    repo_id: null,
+    title: "PR NoRepo",
+  };
+
+  it("diff_review_fetches_pr_diff_for_selected_pr", async () => {
+    // spec(§11.2 + ui-064) — selecting a PR fetches get_pr_diff(repo_id, pr_number) once and the result
+    // flows into the PR Workspace; the container owns the fetch (PrWorkspace is pure-display, no gateway).
+    const port = new MockGatewayPort();
+    const prDiffSpy = vi.spyOn(port, "get_pr_diff").mockResolvedValue(diffFor("r1", 84));
+    renderWithPrs([PR_A], port);
+    openKanban();
+    fireEvent.click(screen.getByRole("button", { name: /PR Alpha/i }));
+    await waitFor(() => expect(prDiffSpy).toHaveBeenCalledWith("r1", 84, null));
+    expect(prDiffSpy).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(/diff for r1#84/)).toBeTruthy();
+  });
+
+  it("pr_workspace_no_fetch_when_repo_or_pr_number_null", async () => {
+    // spec(§11.7) — a null repo_id (or pr_number) → DON'T fetch get_pr_diff; render an honest
+    // "no repo link" state (distinct from a daemon error, never a fabricated diff).
+    const port = new MockGatewayPort();
+    const prDiffSpy = vi.spyOn(port, "get_pr_diff").mockResolvedValue(diffFor("x", 1));
+    renderWithPrs([PR_NO_REPO], port);
+    openKanban();
+    fireEvent.click(screen.getByRole("button", { name: /PR NoRepo/i }));
+    expect(await screen.findByTestId("pr-diff-no-link")).toBeTruthy();
+    expect(prDiffSpy).not.toHaveBeenCalled();
+  });
+
+  it("diff_review_reselect_pr_refetches_no_stale_diff", async () => {
+    // spec(LESSON §17) — the fetch is keyed on the stable (repo_id, pr_number) primitives: reselecting a
+    // different PR re-fires get_pr_diff with the NEW (repo_id, pr_number) and NEVER renders the prior
+    // PR's diff under the new PR (no stale-diff-across-selection — a real correctness bug, not cosmetic).
+    const port = new MockGatewayPort();
+    const prDiffSpy = vi
+      .spyOn(port, "get_pr_diff")
+      .mockImplementation((repo_id, pr_number) => Promise.resolve(diffFor(repo_id, pr_number)));
+    renderWithPrs([PR_A, PR_B], port);
+    openKanban();
+    fireEvent.click(screen.getByRole("button", { name: /PR Alpha/i }));
+    expect(await screen.findByText(/diff for r1#84/)).toBeTruthy();
+    // reselect PR B via the Kanban → re-fetch with B's primitives
+    openKanban();
+    fireEvent.click(screen.getByRole("button", { name: /PR Beta/i }));
+    await waitFor(() => expect(prDiffSpy).toHaveBeenCalledWith("r2", 85, null));
+    expect(await screen.findByText(/diff for r2#85/)).toBeTruthy();
+    // PR A's diff is NEVER shown under PR B (no stale diff across selection).
+    expect(screen.queryByText(/diff for r1#84/)).toBeNull();
   });
 });
 
@@ -368,5 +469,275 @@ describe("DiffReview — null-safe PR-number chip (ui-067)", () => {
     // spec(§11.2) — regression: a present pr_number still renders the "#<n>" chip (happy path).
     renderPrs([PR_WITH_NUMBER]);
     expect(screen.getByText("#101")).toBeTruthy();
+  });
+});
+
+// ─── ui-070 cat-1 — github.merge_pr Merge control (guarded-disabled) ─────────────
+// A PR with a real head_sha (ui-072: head_sha is now a typed PullRequestRow field @0.44 — no cast).
+// prHeadSha reads it; a production row without it → null → Merge disabled.
+const PR_MERGEABLE: PullRequestRow = {
+  pr_id: "repo_1#101",
+  project_id: "p1",
+  repo_id: "repo_1",
+  pr_number: 101,
+  title: "Add OAuth device flow",
+  status: "open",
+  head_branch: "agent/auth",
+  base_branch: "main",
+  pr_checked_at: null,
+  mergeable: true,
+  checks_summary: null,
+  head_sha: "headsha123",
+};
+
+function renderMerge(port: MockGatewayPort, status: ConnectionStatus = CONNECTED) {
+  vi.spyOn(port, "get_diff").mockResolvedValue(DIFF);
+  vi.spyOn(port, "get_pr_diff").mockResolvedValue(DIFF);
+  render(
+    <ReadOnlyProvider value={status}>
+      <DiffReview prs={[PR_MERGEABLE]} reviews={[]} gateway={port} />
+    </ReadOnlyProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /Pull requests/i }));
+  fireEvent.click(screen.getByRole("button", { name: /Add OAuth device flow/i }));
+}
+
+describe("DiffReview — github.merge_pr Merge control (cat-1 ui-070)", () => {
+  it("merge_disabled_when_pr_mutations_not_enabled", async () => {
+    // spec(cat-1) — even with a head_sha + a live link, Merge stays DISABLED while merge_pr is NOT in
+    // enabledPrMutations (the guarded-disabled default; the go-live flip is a future USER-signed-off slice).
+    const port = new MockGatewayPort({ enabledPrMutations: new Set() });
+    renderMerge(port);
+    const btn = await screen.findByRole("button", { name: /^Merge/i });
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("merge_disabled_when_connection_degraded", async () => {
+    // spec(§11.6 defense-in-depth) — Merge stays disabled when the link is degraded (canSubmitIntent
+    // false) even with merge_pr enabled + a head_sha.
+    const port = new MockGatewayPort(); // enabledPrMutations defaults to the full set
+    renderMerge(port, DEGRADED);
+    const btn = await screen.findByRole("button", { name: /^Merge/i });
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("merge_click_forms_and_submits_then_opens_gateway_modal", async () => {
+    // spec(§11.2 + ui-064) — with prMutationsEnabled (Mock default true) + a head_sha + a live link Merge
+    // is enabled; clicking forms buildMergePrActionRequest (github.merge_pr, sha-pinned, repo resource_ref,
+    // no owner/repo) + submits + opens the GatewayModal. The container owns the gateway; PrWorkspace none.
+    const port = new MockGatewayPort();
+    const submitSpy = vi.spyOn(port, "submit_action");
+    renderMerge(port);
+    fireEvent.click(await screen.findByRole("button", { name: /^Merge/i }));
+    await waitFor(() => expect(submitSpy).toHaveBeenCalledTimes(1));
+    const req = submitSpy.mock.calls[0]![0];
+    expect(req.action_type).toBe("github.merge_pr");
+    expect((req.inputs as { sha: string }).sha).toBe("headsha123"); // the displayed head pinned
+    expect(req.resource_refs[0]).toEqual({ type: "repo", id: "repo_1" });
+    expect(req.inputs).not.toHaveProperty("owner"); // ruling A — UI never names owner/repo
+    expect(await screen.findByTestId("gateway-modal")).toBeTruthy();
+  });
+
+  it("merge_no_optimistic_done", async () => {
+    // spec([[16]]/[[17]]) — submit opens the daemon's pending approval card; the UI NEVER shows
+    // "merged"/"done" optimistically (merged only on the confirming PullRequestMerged projection fold).
+    const port = new MockGatewayPort();
+    renderMerge(port);
+    fireEvent.click(await screen.findByRole("button", { name: /^Merge/i }));
+    await screen.findByTestId("gateway-modal");
+    const modal = screen.getByTestId("gateway-modal");
+    expect(modal.textContent ?? "").not.toMatch(/\b(merged|done|succeeded|completed)\b/i);
+  });
+
+  it("merge_failure_is_honest_re_review_not_fabricated", async () => {
+    // spec(§11.7/D2/forbidden#2) — a rejected merge submit surfaces the daemon's §6.4 code VERBATIM +
+    // an honest re-review affordance, NEVER a fabricated success/card.
+    const port = new MockGatewayPort({ mutationError: { code: "fencing_conflict" } });
+    renderMerge(port);
+    fireEvent.click(await screen.findByRole("button", { name: /^Merge/i }));
+    const region = await screen.findByTestId("pr-mutation-result");
+    expect(region.textContent).toMatch(/fencing_conflict/);
+    expect(region.textContent).toMatch(/re-review/i);
+    expect(screen.getByTestId("pr-mutation-rereview")).toBeTruthy(); // a real re-review button, not just text
+    expect(screen.queryByText(/\bmerged\b/i)).toBeNull(); // no fabricated success
+  });
+
+  it("merge_enrich_failure_degrades_honestly", async () => {
+    // spec(§11.7/LESSON §16) — the merge submit succeeds but the post-submit ApprovalQueue re-fetch fails
+    // (malformed payload / transport fault) → the intent WAS recorded but the card can't load → an honest
+    // notice, NEVER a silent stall and NEVER a card built from un-parsed data.
+    const port = new MockGatewayPort();
+    vi.spyOn(port, "get_projection").mockRejectedValue(
+      new BoundaryValidationError("ApprovalQueue", new ZodError([])),
+    );
+    renderMerge(port);
+    fireEvent.click(await screen.findByRole("button", { name: /^Merge/i }));
+    expect(await screen.findByTestId("pr-mutation-enrich-unavailable")).toBeTruthy();
+    expect(screen.queryByTestId("gateway-modal")).toBeNull(); // no card from un-enriched data
+  });
+
+  // ── ui-077 — the chosen merge-method threads through onMerge(method) → buildMergePrActionRequest ──
+  it("selected_method_rides_into_merge_request", async () => {
+    // spec(§6.3) — selecting squash (resp. rebase) + Merge → the chosen method rides VERBATIM into
+    // inputs.merge_method (onMerge(method) → buildMergePrActionRequest → the existing live seam).
+    for (const method of ["squash", "rebase"] as const) {
+      const port = new MockGatewayPort();
+      const submitSpy = vi.spyOn(port, "submit_action");
+      renderMerge(port);
+      fireEvent.change(
+        await screen.findByRole("combobox", { name: /merge method/i }),
+        { target: { value: method } },
+      );
+      fireEvent.click(await screen.findByRole("button", { name: /^Merge$/i }));
+      await waitFor(() => expect(submitSpy).toHaveBeenCalledTimes(1));
+      expect(
+        (submitSpy.mock.calls[0]![0].inputs as { merge_method: string }).merge_method,
+      ).toBe(method);
+      cleanup();
+    }
+  });
+
+  it("merge_method_defaults_to_merge", async () => {
+    // spec(§7.2) — no explicit selection → inputs.merge_method === "merge" (the ui-075 prior behavior).
+    const port = new MockGatewayPort();
+    const submitSpy = vi.spyOn(port, "submit_action");
+    renderMerge(port);
+    fireEvent.click(await screen.findByRole("button", { name: /^Merge$/i }));
+    await waitFor(() => expect(submitSpy).toHaveBeenCalledTimes(1));
+    expect(
+      (submitSpy.mock.calls[0]![0].inputs as { merge_method: string }).merge_method,
+    ).toBe("merge");
+  });
+});
+
+// ─── ui-071 cat-1 — github.submit_review verdict controls (guarded-disabled) ─────
+describe("DiffReview — github.submit_review controls (cat-1 ui-071)", () => {
+  // open the PR Workspace + type a body (Request changes / Comment need a non-empty one).
+  function openReview(port: MockGatewayPort, status: ConnectionStatus = CONNECTED, body = "lgtm") {
+    vi.spyOn(port, "get_diff").mockResolvedValue(DIFF);
+    vi.spyOn(port, "get_pr_diff").mockResolvedValue(DIFF);
+    render(
+      <ReadOnlyProvider value={status}>
+        <DiffReview prs={[PR_MERGEABLE]} reviews={[]} gateway={port} />
+      </ReadOnlyProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Pull requests/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Add OAuth device flow/i }));
+    fireEvent.change(screen.getByTestId("pr-review-body"), { target: { value: body } });
+  }
+
+  it("review_controls_disabled_when_submit_review_not_enabled", async () => {
+    // spec(cat-1) — the verdict controls stay DISABLED while submit_review is NOT in enabledPrMutations
+    // (even merge_pr enabled doesn't enable review — per-action gate).
+    const port = new MockGatewayPort({ enabledPrMutations: new Set(["github.merge_pr"]) });
+    openReview(port);
+    expect((await screen.findByRole("button", { name: /Approve PR/i })) as HTMLButtonElement).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(screen.getByRole("button", { name: /Request changes/i })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /^Comment/i })).toHaveProperty("disabled", true);
+  });
+
+  it("submit_review_click_forms_event_value_per_control_and_opens_modal", async () => {
+    // spec(§11.2 + ui-064 + cat-1 no-cross-wiring) — clicking a verdict forms buildSubmitReviewActionRequest
+    // with the EXACT event of the clicked control (Approve→approve / Request-changes→request_changes /
+    // Comment→comment), commit_id-pinned, repo resource_ref, no owner/repo, body trimmed; submits + opens
+    // the GatewayModal. approve carries merge-gate power → a mis-wired verdict is a real safety bug.
+    const cases: { name: RegExp; event: string }[] = [
+      { name: /Approve PR/i, event: "approve" },
+      { name: /Request changes/i, event: "request_changes" },
+      { name: /^Comment/i, event: "comment" },
+    ];
+    for (const c of cases) {
+      const port = new MockGatewayPort(); // enabledPrMutations defaults full
+      const submitSpy = vi.spyOn(port, "submit_action");
+      openReview(port, CONNECTED, "needs a tweak");
+      fireEvent.click(await screen.findByRole("button", { name: c.name }));
+      await waitFor(() => expect(submitSpy).toHaveBeenCalledTimes(1));
+      const req = submitSpy.mock.calls[0]![0];
+      expect(req.action_type).toBe("github.submit_review");
+      expect((req.inputs as { event: string }).event).toBe(c.event); // event matches the control — no cross-wiring
+      expect((req.inputs as { commit_id: string }).commit_id).toBe("headsha123"); // displayed head pinned
+      expect((req.inputs as { body: string }).body).toBe("needs a tweak");
+      expect(req.resource_refs[0]).toEqual({ type: "repo", id: "repo_1" });
+      expect(req.inputs).not.toHaveProperty("owner");
+      expect(await screen.findByTestId("gateway-modal")).toBeTruthy();
+      cleanup();
+    }
+  });
+
+  it("submit_review_no_optimistic_done", async () => {
+    // spec([[16]]/[[17]]) — submit opens the daemon's pending approval card; the UI NEVER shows a
+    // "reviewed"/"done" success optimistically (the terminal state lands via the daemon ActionResult).
+    const port = new MockGatewayPort();
+    openReview(port);
+    fireEvent.click(await screen.findByRole("button", { name: /Approve PR/i }));
+    await screen.findByTestId("gateway-modal");
+    const modal = screen.getByTestId("gateway-modal");
+    expect(modal.textContent ?? "").not.toMatch(/\b(reviewed|approved|done|succeeded|completed)\b/i);
+  });
+
+  it("submit_review_failure_is_honest_re_review", async () => {
+    // spec(§11.7/D2/forbidden#2) — a rejected review submit surfaces the daemon's §6.4 code VERBATIM +
+    // the honest re-review affordance, NEVER a fabricated success.
+    const port = new MockGatewayPort({ mutationError: { code: "fencing_conflict" } });
+    openReview(port);
+    fireEvent.click(await screen.findByRole("button", { name: /Request changes/i }));
+    const region = await screen.findByTestId("pr-mutation-result");
+    expect(region.textContent).toMatch(/fencing_conflict/);
+    expect(screen.getByTestId("pr-mutation-rereview")).toBeTruthy();
+    // no fabricated success (symmetry with the merge-path twin; "reviewed" excluded — honest re-review prose).
+    expect(region.textContent ?? "").not.toMatch(/\b(merged|done|succeeded)\b/i);
+  });
+});
+
+// ─── ui-072 — head_sha sourced, but it is NOT the go-live switch (the per-action gate is) ──────
+describe("DiffReview — real head_sha is not a go-live (cat-1 ui-072)", () => {
+  // PR_MERGEABLE carries a real head_sha (the daemon pin source @0.44). Open the workspace + type a body
+  // so the verdict controls' ONLY remaining blocker is the per-action gate (isolating head_sha's effect).
+  function openWithBody(port: MockGatewayPort) {
+    vi.spyOn(port, "get_diff").mockResolvedValue(DIFF);
+    vi.spyOn(port, "get_pr_diff").mockResolvedValue(DIFF);
+    render(
+      <ReadOnlyProvider value={CONNECTED}>
+        <DiffReview prs={[PR_MERGEABLE]} reviews={[]} gateway={port} />
+      </ReadOnlyProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Pull requests/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Add OAuth device flow/i }));
+    fireEvent.change(screen.getByTestId("pr-review-body"), { target: { value: "lgtm" } });
+  }
+
+  it("real_head_sha_does_not_enable_controls_while_gate_empty", async () => {
+    // spec(cat-1 [[27]]/[[28]]) — THE load-bearing pin: a real head_sha + enabledPrMutations EMPTY (the
+    // production default) leaves Merge AND all 3 verdict controls DISABLED. head_sha sourcing is NOT a
+    // go-live — only the per-action gate flip is. (Sourcing the pin must never become an enable.)
+    const port = new MockGatewayPort({ enabledPrMutations: new Set() });
+    openWithBody(port);
+    expect((await screen.findByRole("button", { name: /^Merge/i })) as HTMLButtonElement).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(screen.getByRole("button", { name: /Approve PR/i })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /Request changes/i })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /^Comment/i })).toHaveProperty("disabled", true);
+  });
+
+  it("real_head_sha_with_enabled_action_enables_control", async () => {
+    // spec(ui-072) — real head_sha + the action in enabledPrMutations (Mock's full default) → the control
+    // ENABLES: head_sha was the last UI-side blocker and is now sourced (the daemon auth-bootstrap is the
+    // remaining DAEMON-side go-live blocker, out of scope). Proves the pin no longer blocks.
+    const port = new MockGatewayPort(); // enabledPrMutations defaults full
+    openWithBody(port);
+    expect((await screen.findByRole("button", { name: /^Merge/i })) as HTMLButtonElement).toHaveProperty(
+      "disabled",
+      false,
+    );
+    // all 4 controls enable (symmetry with the gate-empty pin that disabled all 4) — body typed, so the
+    // verdict controls' only gates (canReview + body) are satisfied.
+    expect(screen.getByRole("button", { name: /Approve PR/i })).toHaveProperty("disabled", false);
+    expect(screen.getByRole("button", { name: /Request changes/i })).toHaveProperty("disabled", false);
+    expect(screen.getByRole("button", { name: /^Comment/i })).toHaveProperty("disabled", false);
   });
 });

@@ -6,6 +6,7 @@
   "description": "NexusOps Tauri desktop UI — projection-driven reattaching client (Phase 6).",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "VITE_NEXUSOPS_MOCK=1 vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "gen:contracts": "node scripts/gen-contracts.mjs",
@@ -14,6 +15,7 @@
     "test:run": "vitest run",
     "bench": "vitest bench --run",
     "bench:guard": "vitest run --config vitest.bench.config.ts",
+    "check:bundle": "vite build && node scripts/check-prod-bundle.mjs",
     "oxlint": "oxlint",
     "lint": "oxlint",
     "tauri": "tauri"

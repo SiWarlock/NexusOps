@@ -3,7 +3,7 @@
 - **Date:** 2026-06-17
 - **Phase:** Phase 6 — **P6.10** (ungated quality/hardening queue; `ARCHITECTURE.md §11.2`/§11.5/§11.7/§6.1)
 - **Predecessor:** [ui-020](ui-020-2026-06-17-graph-render-benchmark.md)
-- **Successor:** _(none yet)_
+- **Successor:** [ui-022](ui-022-2026-06-21-pr-workspace-d6-d7-merge-review-cat1.md)
 - **Track:** `track/ui` · implementer `ui-implementer` · orchestrator `ui-orchestrator` · lead `team-lead`
 - **Slice commit:** `59b3238` (`fix(ui): quality/hardening bundle — null-safe PR chip, deny-reason trim, test depth (P6.10)`)
 

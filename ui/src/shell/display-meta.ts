@@ -13,6 +13,7 @@
 // this fixture is deleted — no view-layer change.
 import type {
   ActionAck,
+  ActionPlan,
   Approval,
   ApprovalQueueRow,
   PolicyDecision,
@@ -240,7 +241,7 @@ export function enrichApproval(row: ApprovalQueueRow): GatewayApprovalEnrichment
 // decision (forbidden #2). Parse-don't-trust is intrinsic: get_projection boundary-validates the page
 // (a malformed payload → BoundaryValidationError, never a fabricated row — LESSON 22). The handle is
 // typed `Pick<…,"get_projection">` → compile-time NO mutation reach; the per-hunk submit stays L2-HELD.
-export async function enrichHunkAction(
+export async function enrichActionApproval(
   gateway: Pick<GatewayPort, "get_projection">,
   ack: ActionAck,
 ): Promise<GatewayApprovalEnrichment> {
@@ -273,6 +274,95 @@ export async function enrichHunkAction(
       safer_alt: null,
     },
   };
+}
+
+// ─── ActionPlan SAMPLE (ui-073 — the exposed-ahead N-step plan-render fixture) ──
+// There is NO live plan-submitter in production: the Brain "Run via Gateway" submit path is 8.1-gated
+// + guarded-disabled (slice A), and `proj_approval_queue` carries per-approval rows WITHOUT the full
+// ActionPlan model (no title / approval_mode / dependencies / per-step label). So PlanModal renders
+// this daemon-SHAPED sample (the intent-seam-shadow precedent — the render path is real, only the
+// data source is a fixture). FLAG (not faked): the live plan-data feed — assemble from
+// proj_approval_queue grouped by plan_id, OR a future `get_action_plan` RPC serving the full model —
+// is a deferred follow-on; when it lands this sample is deleted and the plan is built from the
+// projection (no view-layer change). `overall_risk` + per-step `risk_level` here are the daemon's
+// catalog-authoritative values (a daemon-formed plan), NOT UI-derived (Q3).
+export const samplePlan: ActionPlan = {
+  plan_id: "plan_sample_1",
+  title: "Land the auth-refactor across three steps",
+  approval_mode: "step_by_step",
+  overall_risk: 3,
+  dependencies: [
+    { step_id: "step_apply", depends_on_step_ids: ["step_worktree"] },
+    { step_id: "step_pr", depends_on_step_ids: ["step_apply"] },
+  ],
+  steps: [
+    {
+      step_id: "step_worktree",
+      label: "Create the refactor worktree",
+      required: true,
+      can_skip: false,
+      rollback_action_type: null,
+      status: "awaiting_approval",
+      action_request: {
+        action_request_id: "ar_plan_worktree",
+        action_type: "git.create_worktree",
+        requester_type: "project_brain",
+        requester_id: "brain_main",
+        resource_refs: [{ type: "repo", id: "repo_auth" }],
+        inputs: {},
+        risk_level: 1,
+        status: "awaiting_approval",
+        created_at: "2026-06-21T00:00:00Z",
+      },
+    },
+    {
+      step_id: "step_apply",
+      label: "Apply the refactor patch",
+      required: true,
+      can_skip: false,
+      rollback_action_type: "git.revert_commit",
+      status: "awaiting_approval",
+      action_request: {
+        action_request_id: "ar_plan_apply",
+        action_type: "git.commit",
+        requester_type: "project_brain",
+        requester_id: "brain_main",
+        resource_refs: [{ type: "worktree", id: "wt_auth_refactor" }],
+        inputs: {},
+        risk_level: 3,
+        status: "awaiting_approval",
+        created_at: "2026-06-21T00:00:00Z",
+      },
+    },
+    {
+      step_id: "step_pr",
+      label: "Open the pull request",
+      required: false,
+      can_skip: true,
+      rollback_action_type: null,
+      status: "awaiting_approval",
+      action_request: {
+        action_request_id: "ar_plan_pr",
+        action_type: "github.create_pr",
+        requester_type: "project_brain",
+        requester_id: "brain_main",
+        resource_refs: [{ type: "repo", id: "repo_auth" }],
+        inputs: {},
+        risk_level: 2,
+        status: "awaiting_approval",
+        created_at: "2026-06-21T00:00:00Z",
+      },
+    },
+  ],
+};
+
+/** Build the ActionPlan PlanModal renders for a plan-bearing approval (ui-073). EXPOSED-AHEAD:
+ *  with no live plan-submitter, this returns the daemon-SHAPED `samplePlan` stamped with the
+ *  approval's `plan_id` (a single fixture, NOT a per-id lookup). The live plan-data feed (group
+ *  proj_approval_queue by plan_id, or a get_action_plan RPC) is a deferred follow-on — wired here
+ *  the day a plan-submitter exists (no view change). */
+export function enrichPlan(planId: string): ActionPlan {
+  return { ...samplePlan, plan_id: planId };
 }
 
 // ─── Settings display fixtures (Integrations / Execution profiles) ──────────

@@ -123,7 +123,9 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     //           [MIGRATION_18] + connect_via_gh [+ConnectViaGhStatus enum] — the PR-mutations go-live unblock).
     // → 0.46.0 (5.3b execution-profile-SECRETS boundary merge: profile-secret contract freeze + profile.set_secret
     //           / set_keychain_ref + keychain self-test + session.profile_change — NO new flat enum [42 held]).
-    expect(caps.contract_version).toBe("0.46.0");
+    // → 0.47.0 (092 friendly-project-name: ProjectRescanned+name [daemon event] + proj_project_activity.name —
+    //           consumed by the already-optional ProjectActivityRow.name [ui-082], NO new flat enum [42 held]).
+    expect(caps.contract_version).toBe("0.47.0");
     expect(caps.protocol_version).toBe(1);
   });
 

@@ -52,7 +52,7 @@ afterEach(cleanup);
 // The first project's name renders in BOTH the switcher trigger and the sidebar
 // workspace tree (prototype chrome) — the load gate awaits all matches.
 const awaitLoaded = () =>
-  screen.findAllByText(projectActivityFixture.rows[0]!.name);
+  screen.findAllByText(projectActivityFixture.rows[0]!.name!);
 
 // The switcher trigger carries the stable "Switch project" title (the project
 // name itself appears in several chrome regions).
@@ -156,7 +156,7 @@ describe("Shell", () => {
     fireEvent.click(switcherTrigger());
     const listbox = screen.getByRole("listbox");
     for (const project of projectActivityFixture.rows) {
-      expect(within(listbox).getByText(project.name)).toBeTruthy();
+      expect(within(listbox).getByText(project.name!)).toBeTruthy();
     }
   });
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ProjectActivityRow } from "../../contracts/index";
 import type { GatewayPort } from "../../gateway-client/types";
 import type { ProjectSwitcherCounts } from "../../shell/derive";
@@ -7,6 +7,12 @@ import { useCanSubmitIntent } from "../../connection/read-only";
 import { buildRescanProjectActionRequest } from "../../intent/rescan-project-request";
 import { pickFolder as defaultPickFolder } from "../../host/pick-folder";
 import { ProjectsOverview, type AddProjectNotice } from "./ProjectsOverview";
+
+/** The last path segment (the project's folder name) for the notice copy — `/` and `\` aware. */
+function basename(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
 
 /**
  * The add-project CONTAINER (the cockpit "Add project" wiring). Mirrors `PrWorkspaceContainer`: it
@@ -26,6 +32,7 @@ export function ProjectsOverviewContainer({
   activeProjectId,
   onSelectProject,
   pickFolder = defaultPickFolder,
+  scanTimeoutMs = 8000,
 }: {
   gateway: GatewayPort;
   projects: ProjectActivityRow[];
@@ -34,11 +41,41 @@ export function ProjectsOverviewContainer({
   onSelectProject: (id: string) => void;
   /** Injectable for tests; defaults to the real Tauri folder picker. */
   pickFolder?: () => Promise<string | null>;
+  /** Injectable scan-resolution timeout (ms) before the honest "registered — refresh" fallback. */
+  scanTimeoutMs?: number;
 }) {
   const seam = useSubmitIntent(gateway);
   const canSubmit = useCanSubmitIntent();
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState<AddProjectNotice | null>(null);
+  // The in-flight scan we're waiting to see appear (its minted project_id + the folder basename).
+  const [pendingScan, setPendingScan] = useState<{ projectId: string; basename: string } | null>(
+    null,
+  );
+
+  // Resolve the Scanning notice when the minted project_id appears in the projections prop (daemon
+  // slice 091's ProjectRescanned→ProjectActivity fold+nudge surfaces it) — confirm + auto-select it.
+  useEffect(() => {
+    if (!pendingScan) return;
+    if (projects.some((p) => p.project_id === pendingScan.projectId)) {
+      setNotice({ kind: "ok", message: `Added ${pendingScan.basename}.` });
+      onSelectProject(pendingScan.projectId);
+      setPendingScan(null);
+    }
+  }, [projects, pendingScan, onSelectProject]);
+
+  // A missed nudge must NEVER hang the Scanning notice (§11.4/§11.7): after the (injectable)
+  // timeout, replace it with an honest fallback — registration DID succeed, it's just unconfirmed.
+  // The timer is cancelled on resolve (pendingScan→null re-runs this) AND on unmount (cleanup).
+  useEffect(() => {
+    if (!pendingScan) return;
+    const base = pendingScan.basename;
+    const timer = setTimeout(() => {
+      setNotice({ kind: "info", message: `Registered ${base} — refresh if it doesn't appear.` });
+      setPendingScan(null);
+    }, scanTimeoutMs);
+    return () => clearTimeout(timer);
+  }, [pendingScan, scanTimeoutMs]);
 
   async function onAddProject() {
     // belt-and-suspenders: the button is disabled when these hold, but never form an intent without them.
@@ -57,12 +94,20 @@ export function ProjectsOverviewContainer({
 
     setAdding(true);
     try {
-      const r = await seam.submitAction(
-        buildRescanProjectActionRequest({ path }, new Date().toISOString()),
-      );
+      const req = buildRescanProjectActionRequest({ path }, new Date().toISOString());
+      const r = await seam.submitAction(req);
       if ("ok" in r) {
-        // the daemon accepted + auto-executed the rescan; the project surfaces via the projection.
-        setNotice({ kind: "ok", message: `Scanning ${path}…` });
+        // the daemon accepted + auto-executed the rescan; track the minted project_id so we resolve
+        // the notice when it appears in the projections (or fall back on timeout — never hang).
+        const base = basename(path);
+        if (req.project_id) {
+          setPendingScan({ projectId: req.project_id, basename: base });
+          setNotice({ kind: "pending", message: `Scanning ${base}…` });
+        } else {
+          // no id to track (defends the optional-project_id type boundary) — never show an
+          // unresolvable "Scanning"; go straight to the honest fallback.
+          setNotice({ kind: "info", message: `Registered ${base} — refresh if it doesn't appear.` });
+        }
       } else if ("error" in r) {
         // surface the daemon's §6.4 code VERBATIM (never collapse/remap) — honest rejection.
         setNotice({ kind: "error", message: `Couldn't add the project (${r.error.code}).` });

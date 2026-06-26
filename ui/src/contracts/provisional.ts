@@ -158,10 +158,14 @@ export const SessionProjectionPage = z.object({
 });
 export type SessionProjectionPage = z.infer<typeof SessionProjectionPage>;
 
-/** A single row of the ProjectActivity projection — a project (provisional). */
+/** A single row of the ProjectActivity projection — a project (provisional).
+ *  The daemon serves proj_project_activity as a COUNTERS table with NO `name` column (§7.2), so
+ *  `name` is optional (the switcher/header render an id-fallback when absent — see `projectLabel`);
+ *  non-`.strict()` so the daemon's counter columns (active_sessions/…/updated_at_seq) are tolerated.
+ *  The daemon friendly-name (slice 092) populates `name` later → consumed with zero rework. */
 export const ProjectActivityRow = z.object({
   project_id: z.string(),
-  name: z.string(),
+  name: z.string().nullable().optional(),
 });
 export type ProjectActivityRow = z.infer<typeof ProjectActivityRow>;
 

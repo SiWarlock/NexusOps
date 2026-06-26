@@ -45,4 +45,16 @@ describe("gateway-client boundary validator (parse, don't trust)", () => {
     };
     expect(() => parseProjectionPage("Session", missingField)).toThrow();
   });
+
+  it("boundary_parses_a_real_name_less_projectactivity_row", () => {
+    // spec(§7.2) — the live cockpit-load path: the daemon serves ProjectActivity as a bare array of
+    // name-LESS counter rows (proj_project_activity has no `name` col). The required-`name` shadow
+    // rejected EVERY real row (the 5th Mock-vs-real trap); the relaxed shadow must accept it.
+    const page = parseProjectionPage("ProjectActivity", [
+      { project_id: "proj_x", active_sessions: 1, open_prs: 0, updated_at_seq: 3 },
+    ]);
+    expect(page.projection).toBe("ProjectActivity");
+    expect(page.rows).toHaveLength(1);
+    expect((page.rows[0] as { project_id: string }).project_id).toBe("proj_x");
+  });
 });

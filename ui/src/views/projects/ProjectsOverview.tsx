@@ -3,6 +3,7 @@ import type { ProjectActivityRow } from "../../contracts/index";
 import { Badge, Button } from "../../design-system/kit";
 import type { ProjectSwitcherCounts } from "../../shell/derive";
 import { projectDisplayFixture, type WorkflowTone } from "../../shell/display-meta";
+import { projectLabel } from "../../shell/project-label";
 
 const ZERO: ProjectSwitcherCounts = { activeSessions: 0, openPRs: 0, waitingOnYou: 0 };
 
@@ -20,8 +21,18 @@ const WF_TONE: Record<WorkflowTone, [string, string, string, string]> = {
 };
 
 /** Honest, non-optimistic feedback for the add-project flow (the daemon ack / verbatim §6.4
- *  rejection — never a synthesized success). Rendered as a `role="status"` line, glyph+label. */
-export type AddProjectNotice = { kind: "ok" | "error"; message: string };
+ *  rejection — never a synthesized success). Rendered as a `role="status"` line, glyph+label.
+ *  Kinds: `pending` = Scanning… (unconfirmed); `ok` = the project appeared (confirmed); `info` =
+ *  the neutral timeout fallback (registered but unconfirmed — NOT an error); `error` = a rejection. */
+export type AddProjectNotice = { kind: "ok" | "error" | "pending" | "info"; message: string };
+
+// Per-kind glyph (never color alone, §11) — error is the only attention hue; the rest are neutral.
+const NOTICE_GLYPH: Record<AddProjectNotice["kind"], string> = {
+  ok: "✓",
+  error: "⚠",
+  pending: "…",
+  info: "ℹ",
+};
 
 /**
  * Projects overview (ported from kit-views.jsx ProjectsOverview): the top-layer
@@ -88,7 +99,7 @@ export function ProjectsOverview({
               }}
             >
               {/* glyph + label — never color alone (§11) */}
-              <span aria-hidden="true">{addProjectNotice.kind === "error" ? "⚠" : "✓"}</span>
+              <span aria-hidden="true">{NOTICE_GLYPH[addProjectNotice.kind]}</span>
               {addProjectNotice.message}
             </span>
           ) : null}
@@ -168,7 +179,7 @@ export function ProjectsOverview({
                       color: "var(--text-primary)",
                     }}
                   >
-                    {p.name}
+                    {projectLabel(p)}
                   </span>
                   <span
                     style={{

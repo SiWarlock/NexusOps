@@ -9,6 +9,7 @@ import { Check, ChevronsUpDown, FolderGit2 } from "lucide-react";
 import type { ProjectActivityRow } from "../contracts/index";
 import type { ProjectSwitcherCounts } from "./derive";
 import { projectDisplayFixture, type WorkflowTone } from "./display-meta";
+import { projectLabel } from "./project-label";
 import { useActiveProject } from "./active-project";
 import { isRovingKey, nextTabIndex } from "../a11y/roving";
 
@@ -62,9 +63,11 @@ export function ProjectSwitcher({
 
   const hasProjects = projects.length > 0;
   const activeProject = projects.find((p) => p.project_id === activeProjectId);
-  const triggerLabel = hasProjects
-    ? (activeProject?.name ?? "Select project")
-    : "No project";
+  const triggerLabel = !hasProjects
+    ? "No project"
+    : activeProject
+      ? projectLabel(activeProject) // name, or an id-fallback for a name-less daemon row
+      : "Select project";
   // The roving cursor starts at the active option (first if none active).
   const activeIndex = Math.max(
     0,
@@ -227,7 +230,7 @@ export function ProjectSwitcher({
                 // The visible count glyphs below are aria-hidden (no double-read).
                 // Worded to avoid "sessions"/"pull requests" so the name doesn't
                 // collide with the view-switch buttons.
-                aria-label={`${project.name}${isActive ? " (active project)" : ""} — ${c.activeSessions} active, ${c.openPRs} open PRs, ${c.waitingOnYou} waiting`}
+                aria-label={`${projectLabel(project)}${isActive ? " (active project)" : ""} — ${c.activeSessions} active, ${c.openPRs} open PRs, ${c.waitingOnYou} waiting`}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -258,7 +261,7 @@ export function ProjectSwitcher({
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {project.name}
+                    {projectLabel(project)}
                   </span>
                   <span
                     style={{

@@ -145,3 +145,37 @@ describe("ProjectSwitcher dropdown — keyboard a11y (L2)", () => {
     expect(setActiveProject).not.toHaveBeenCalled();
   });
 });
+
+// L3 — name fallback (the daemon serves name-LESS ProjectActivity rows; §7.2/§11.6).
+describe("ProjectSwitcher — name fallback for daemon name-less rows (L3)", () => {
+  const id = "proj_01HX2ABCDEFGHJKMNPQRSTVW";
+  const nameless = [{ project_id: id }] as ProjectActivityRow[];
+
+  it("trigger_shows_id_fallback_when_active_project_has_no_name", () => {
+    // spec(§11.6) — a name-less ACTIVE project renders a non-empty id-derived label, never blank and
+    // never "No project" (which means no active project at all — the distinct state).
+    renderSwitcher(id, () => {}, nameless);
+    const trigger = screen.getByRole("button");
+    expect(trigger).toHaveProperty("disabled", false); // there IS a project
+    expect(trigger.textContent ?? "").not.toContain("No project");
+    expect(trigger.textContent ?? "").toContain(id.slice(-6)); // id-derived, unique, interim
+  });
+
+  it("option_shows_id_fallback_when_name_absent", () => {
+    // target the NAME span specifically — the option subtitle already renders the full project_id,
+    // so asserting the whole option text would false-pass without the name fallback.
+    renderSwitcher(id, () => {}, nameless);
+    fireEvent.click(screen.getByRole("button"));
+    const nameEl = screen.getByRole("option").querySelector(".project-switcher__name");
+    expect(nameEl?.textContent ?? "").toContain(id.slice(-6));
+  });
+
+  it("real_name_still_shown_when_present", () => {
+    // forward-compat (§5.0 [[2]]) — a named project still shows the real name (no rework when the
+    // daemon friendly-name lands; supersedes the id-fallback).
+    renderSwitcher("project_fixture_1");
+    expect(
+      screen.getByRole("button", { name: /auth-service/i }).textContent ?? "",
+    ).toContain("auth-service");
+  });
+});

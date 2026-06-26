@@ -25,6 +25,7 @@ import {
   waitingSessions,
   type ProjectSwitcherCounts,
 } from "./derive";
+import { headerProjectLabel, projectLabel } from "./project-label";
 import { CommandCenter } from "../views/command/CommandCenter";
 import { ProjectGraph } from "../views/graph/ProjectGraph";
 import { Settings } from "../views/settings/Settings";
@@ -764,7 +765,7 @@ export function Shell({
               usage={data.usage}
               creditPool={data.creditPool}
               events={data.events}
-              projectName={activeProject?.name ?? "No project"}
+              projectName={headerProjectLabel(activeProject)}
               onOpenSession={openSession}
               onOpenProjects={() => navigate("projects")}
             />
@@ -824,7 +825,7 @@ export function Shell({
             <AuditTrail
               events={data.events}
               projectId={activeProjectId}
-              projectName={activeProject?.name ?? "No project"}
+              projectName={headerProjectLabel(activeProject)}
             />
           )}
         </main>
@@ -832,7 +833,7 @@ export function Shell({
           events={data.events}
           connection={connection}
           projectId={activeProjectId}
-          projectName={activeProject?.name}
+          projectName={activeProject ? projectLabel(activeProject) : undefined}
           onOpenAudit={() => navigate("audit")}
         />
         {/* Overlay surfaces (one at a time — prototype behavior). */}

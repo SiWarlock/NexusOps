@@ -26,7 +26,7 @@ const auditView = (container: HTMLElement): void => {
 describe("a11y reachability + wiring", () => {
   it("every_interactive_control_is_keyboard_focusable", async () => {
     const { container } = render(<Shell gateway={new MockGatewayPort()} />);
-    await screen.findAllByText(projectActivityFixture.rows[0]!.name); // loaded
+    await screen.findAllByText(projectActivityFixture.rows[0]!.name!); // loaded (fixture always names)
 
     // Sweep the content views — the audit is the single §11.6 gate for any
     // per-view control (sidebar nav, Graph|List toggle, Sessions sort headers),
@@ -80,7 +80,7 @@ describe("a11y reachability + wiring", () => {
 
   it("shell_sweep_green_with_dropdown_open", async () => {
     const { container } = render(<Shell gateway={new MockGatewayPort()} />);
-    await screen.findAllByText(projectActivityFixture.rows[0]!.name); // loaded
+    await screen.findAllByText(projectActivityFixture.rows[0]!.name!); // loaded (fixture always names)
     auditView(container); // dropdown closed — trigger only
     // open the ProjectSwitcher dropdown → its roving listbox must sweep clean: the
     // active option is the one tabstop, the rest are -1 roving members (§9 audit

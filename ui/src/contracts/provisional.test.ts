@@ -7,6 +7,7 @@ import {
   DiffResult,
   GetDiffParams,
   Hunk,
+  ProjectActivityRow,
   PullRequestRow,
   ReviewRow,
   ServerFrame,
@@ -468,5 +469,29 @@ describe("ui-062 — SessionRow recovery-shadow reconcile (§5.1/§11.4)", () =>
     expect(SessionRow.safeParse({ ...sessionBase, resume_mode: "bogus" }).success).toBe(false);
     // `.strict()` — `title` is no longer a field (renamed to display_name) → an extra field rejected.
     expect(SessionRow.safeParse({ ...sessionBase, title: "x" }).success).toBe(false);
+  });
+});
+
+describe("ProjectActivityRow (provisional — the daemon's name-less counters shape)", () => {
+  it("projectactivity_row_parses_without_name", () => {
+    // spec(§7.2) — the daemon serves proj_project_activity (a COUNTERS table, NO `name` col, loose
+    // serve) → a real bare row must parse: `name` optional + extra counter cols tolerated (NOT .strict).
+    const row = ProjectActivityRow.parse({
+      project_id: "proj_x",
+      active_sessions: 2,
+      open_prs: 0,
+      updated_at_seq: 5,
+    });
+    expect(row.project_id).toBe("proj_x");
+    expect(row.name).toBeUndefined();
+  });
+
+  it("projectactivity_row_still_accepts_a_name", () => {
+    // forward-compat: a row WITH a name (the deferred daemon friendly-name) still binds.
+    expect(ProjectActivityRow.parse({ project_id: "proj_x", name: "auth" }).name).toBe("auth");
+  });
+
+  it("projectactivity_row_requires_project_id", () => {
+    expect(ProjectActivityRow.safeParse({ name: "auth" }).success).toBe(false);
   });
 });

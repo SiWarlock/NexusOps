@@ -139,7 +139,7 @@ describe("Shell read-swap (Layer C-single-shot — UdsGatewayPort default)", () 
 
     // Real daemon data rendered (the project name from the loaded ProjectActivity page).
     expect(
-      await screen.findAllByText(projectActivityFixture.rows[0]!.name),
+      await screen.findAllByText(projectActivityFixture.rows[0]!.name!),
     ).not.toHaveLength(0);
     // The UDS port reached the daemon via invoke — the Mock NEVER invokes, so this
     // proves the read-swap (the real client is in use, not the fixture mock).
@@ -167,7 +167,7 @@ describe("Shell read-swap (Layer C-single-shot — UdsGatewayPort default)", () 
   async function productionShellAtCodeView(): Promise<HTMLElement> {
     installProductionShellInvoke();
     render(<Shell />); // no gateway prop → the production UdsGatewayPort, mutations-enabled (L2-C)
-    await screen.findAllByText(projectActivityFixture.rows[0]!.name); // loaded → connected + compatible
+    await screen.findAllByText(projectActivityFixture.rows[0]!.name!); // loaded → connected + compatible
     const sidebar = screen.getByRole("navigation", { name: "Sidebar" });
     fireEvent.click(
       within(sidebar).getByRole("button", { name: /code \/ diff review/i }),
@@ -216,7 +216,7 @@ describe("Shell PR-mutations go-live (cat-1 ui-075)", () => {
   async function productionShellAtPrWorkspace(): Promise<void> {
     installProductionShellInvoke();
     render(<Shell />); // no gateway prop → the production UdsGatewayPort (PR-mutations enabled at commit 2)
-    await screen.findAllByText(projectActivityFixture.rows[0]!.name); // loaded → connected + compatible
+    await screen.findAllByText(projectActivityFixture.rows[0]!.name!); // loaded → connected + compatible
     const sidebar = screen.getByRole("navigation", { name: "Sidebar" });
     fireEvent.click(
       within(sidebar).getByRole("button", { name: /code \/ diff review/i }),

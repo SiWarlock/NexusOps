@@ -5,6 +5,7 @@ afterEach(cleanup);
 import { ProjectsOverviewContainer } from "./ProjectsOverviewContainer";
 import { ReadOnlyProvider, type ConnectionStatus } from "../../connection/read-only";
 import { MockGatewayPort } from "../../gateway-client/mock";
+import type { ProjectActivityRow } from "../../contracts/index";
 
 const CONNECTED: ConnectionStatus = { connection: "connected", version: "compatible" };
 const DEGRADED: ConnectionStatus = { connection: "connecting", version: "unknown" };
@@ -84,5 +85,74 @@ describe("ProjectsOverviewContainer — add-project (project.rescan) wiring", ()
     fireEvent.click(addButton());
 
     expect((await screen.findByRole("status")).textContent).toMatch(/precondition_stale/i);
+  });
+});
+
+// ui-082 — the Scanning notice resolves on the project appearing + a timeout fallback (never hangs).
+describe("ProjectsOverviewContainer — Scanning resolve + timeout (ui-082)", () => {
+  function renderResolve(opts: {
+    onSelectProject?: (id: string) => void;
+    scanTimeoutMs?: number;
+    pickFolder?: () => Promise<string | null>;
+  }) {
+    const port = new MockGatewayPort();
+    const view = (projects: ProjectActivityRow[]) => (
+      <ReadOnlyProvider value={CONNECTED}>
+        <ProjectsOverviewContainer
+          gateway={port}
+          projects={projects}
+          counts={{}}
+          activeProjectId={null}
+          onSelectProject={opts.onSelectProject ?? (() => {})}
+          pickFolder={opts.pickFolder ?? (() => Promise.resolve("/repos/auth-service"))}
+          scanTimeoutMs={opts.scanTimeoutMs}
+        />
+      </ReadOnlyProvider>
+    );
+    const utils = render(view([]));
+    // NB: spread utils FIRST, then our typed rerender — else utils.rerender (which takes a React
+    // element) shadows ours and the test would pass a raw row array to RTL.
+    return { port, ...utils, rerender: (projects: ProjectActivityRow[]) => utils.rerender(view(projects)) };
+  }
+
+  it("container_resolves_scanning_when_project_appears", async () => {
+    // spec(daemon 091 pairing) — after an "ok" submit, when the minted project_id appears in `projects`
+    // the Scanning notice resolves (clears the pending state) + the new project is auto-selected.
+    const onSelectProject = vi.fn();
+    const { port, rerender } = renderResolve({ onSelectProject });
+    const spy = vi.spyOn(port, "submit_action");
+    fireEvent.click(addButton());
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    const projectId = (spy.mock.calls[0]![0] as { project_id: string }).project_id;
+    expect((await screen.findByRole("status")).textContent).toMatch(/scanning/i);
+
+    rerender([{ project_id: projectId, name: "auth-service" } as ProjectActivityRow]);
+
+    await waitFor(() => expect(onSelectProject).toHaveBeenCalledWith(projectId));
+    expect(screen.getByRole("status").textContent ?? "").not.toMatch(/scanning/i);
+  });
+
+  it("container_scanning_times_out_to_an_honest_fallback", async () => {
+    // spec(§11.4/§11.7) — if the project never appears within the injectable timeout, the notice
+    // becomes an honest "registered — refresh" fallback (never an indefinite hang, never a false error).
+    renderResolve({ scanTimeoutMs: 30 });
+    fireEvent.click(addButton());
+    expect((await screen.findByRole("status")).textContent).toMatch(/scanning/i);
+    await waitFor(() => expect(screen.getByRole("status").textContent ?? "").toMatch(/refresh/i));
+    expect(screen.getByRole("status").textContent ?? "").not.toMatch(/scanning/i);
+  });
+
+  it("container_clears_the_scan_timer_on_unmount", async () => {
+    // spec(no-leak) — a pending scan timer is cleared on unmount (no stale setState / no leak).
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    const { port, unmount } = renderResolve({ scanTimeoutMs: 5000 });
+    const spy = vi.spyOn(port, "submit_action");
+    fireEvent.click(addButton());
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    await screen.findByRole("status"); // pending scan → timer armed
+    clearSpy.mockClear();
+    unmount();
+    expect(clearSpy).toHaveBeenCalled();
+    clearSpy.mockRestore(); // don't leak the global spy onto later tests
   });
 });

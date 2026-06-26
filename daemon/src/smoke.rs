@@ -13,6 +13,19 @@
 //! - `kill <session_id>`           → `submit_action` a `session.kill` (stop the supervised session)
 //! - `audit`                       → `get_projection AuditTrail` (the recorded event trail)
 //!
+//! **086 — the 083 live-validation chain** (each a THIN wrapper over an EXISTING audited action via the
+//! same `submit_action`/`connect_via_gh`; NO new mutation surface — the daemon gates + executes unchanged):
+//! - `connect-gh --provider github --account <acct>`   → the `connect_via_gh` trigger (gh token → keychain)
+//! - `connect --provider github --keychain-ref <ref> --account <acct>` → `integration.connect` (risk-2)
+//! - `set-live-writes --connection <id> --enabled <true|false>`        → `integration.set_live_writes` (risk-2)
+//! - `create-pr --project <id> --head <b> --base <b> --title <t> [--body <b>]` → `github.create_pr` (risk-3)
+//! - `merge-pr --repo <id> --pr <n> --sha <head> --method <merge|squash|rebase>` → `github.merge_pr` (risk-3)
+//! - `submit-review --repo <id> --pr <n> --sha <commit> --event <approve|request_changes|comment> [--body]` → `github.submit_review` (risk-3)
+//!
+//! The risk-2/3 actions land at `awaiting_approval` (the user runs `smoke approve <id>` — the per-action
+//! approval gate the 083 validation exercises stays visible). End-to-end CHAIN: connect-gh → connect →
+//! approve → set-live-writes → approve → create-pr → approve → merge-pr/submit-review → approve.
+//!
 //! It is a dev tool — errors print a clear message + a non-zero exit. Fail-closed isn't required here
 //! (it only submits intents; the daemon is the adjudicator + the sole mutator).
 
@@ -24,7 +37,7 @@ use std::time::Duration;
 use nexusops_shared::actions::{
     ActionRequest, RequesterType, ResourceRef, ResourceType, RiskLevel,
 };
-use nexusops_shared::ids::ActionRequestId;
+use nexusops_shared::ids::{ActionRequestId, ProjectId};
 use nexusops_shared::ipc::{HelloFrame, RpcRequest, ServerFrame, PROTOCOL_VERSION};
 use nexusops_shared::status::ActionRequest as ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
@@ -39,13 +52,21 @@ const SOCKET_FILE: &str = "gateway.sock";
 /// generous bound so a busy launch still completes; a read past it → Err → a clear failure message.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-const USAGE: &str = "usage: nexusopsd smoke <create|queue|approve|deny|kill|audit> [args]\n  \
+const USAGE: &str = "usage: nexusopsd smoke <sub> [args]\n  \
     create --project <id> [--prompt \"<text>\"] [--profile <id>]\n  \
     queue\n  \
     approve <approval_id>\n  \
     deny <approval_id> <reason...>\n  \
     kill <session_id>\n  \
-    audit";
+    audit\n  \
+    --- 083 live-validation chain (each SUBMITS; then `smoke approve <id>`) ---\n  \
+    connect-gh --provider github --account <acct>\n  \
+    connect --provider github --keychain-ref <ref> --account <acct>\n  \
+    set-live-writes --connection <connection_id> --enabled <true|false>\n  \
+    create-pr --project <project_id> --head <branch> --base <branch> --title <t> [--body <b>]\n  \
+    merge-pr --repo <repo_id> --pr <n> --sha <head_sha> --method <merge|squash|rebase>\n  \
+    submit-review --repo <repo_id> --pr <n> --sha <commit_id> --event <approve|request_changes|comment> [--body <b>]\n  \
+    CHAIN: connect-gh → connect → approve → set-live-writes → approve → create-pr → approve → merge-pr → approve";
 
 /// Run the `smoke` subcommand. `args` is the full process argv (`args[1] == "smoke"`,
 /// `args[2]` = the subcommand, `args[3..]` = its arguments).
@@ -59,6 +80,18 @@ pub fn run(args: &[String]) -> ExitCode {
         "deny" => cmd_deny(rest),
         "kill" => cmd_kill(rest),
         "audit" => cmd_get_projection("AuditTrail", "audit trail"),
+        // 086 — the 083 live-validation chain (each a THIN wrapper over an EXISTING audited action).
+        "connect-gh" => cmd_connect_gh(rest),
+        "connect" => {
+            build_integration_connect_request(rest).and_then(|r| submit("integration.connect", r))
+        }
+        "set-live-writes" => build_set_live_writes_request(rest)
+            .and_then(|r| submit("integration.set_live_writes", r)),
+        "create-pr" => build_create_pr_request(rest).and_then(|r| submit("github.create_pr", r)),
+        "merge-pr" => build_merge_pr_request(rest).and_then(|r| submit("github.merge_pr", r)),
+        "submit-review" => {
+            build_submit_review_request(rest).and_then(|r| submit("github.submit_review", r))
+        }
         "" => Err(format!("missing subcommand\n{USAGE}")),
         other => Err(format!("unknown smoke subcommand '{other}'\n{USAGE}")),
     };
@@ -153,6 +186,176 @@ fn cmd_kill(rest: &[String]) -> Result<String, String> {
     let params = serde_json::to_value(&req).map_err(|e| format!("encode session.kill: {e}"))?;
     let result = call("submit_action", params)?;
     Ok(format!("session.kill {session_id} →\n{}", pretty(&result)))
+}
+
+// ---- 086: the 083 live-validation chain — pure `build_*_request` helpers (the cmd_kill pattern) ----
+//
+// Each helper assembles a typed `ActionRequest` for an action that ALREADY EXISTS (no new mutation
+// surface) — the daemon's policy/approval/executor/keychain pipeline runs UNCHANGED; the CLI is just a
+// local IPC client. The recorded `risk_level` is a placeholder (`Level0`) — the §6.3 catalog reconciles
+// it to the authoritative risk at submit (recorded-not-trusted, LESSON §19), so a wrong recorded risk
+// can't bypass anything. The requester is `User` (UI/IPC, PIN e). A missing/invalid REQUIRED arg → a
+// typed `Err(String)` (fail-closed CLI parse — never a malformed/partial submit).
+
+/// the value following a required `flag`, or a typed error.
+fn required(rest: &[String], flag: &str) -> Result<String, String> {
+    flag_value(rest, flag).ok_or_else(|| format!("missing required {flag}\n{USAGE}"))
+}
+
+/// a base `ActionRequest` for `action_type` (the shared boilerplate every build_* helper fills in).
+/// Returns `Result` so the placeholder-timestamp parse propagates via `?` (the cmd_kill pattern) rather
+/// than `.expect()` — never a panic on the (impossible) parse failure.
+fn smoke_request(
+    action_type: &str,
+    project_id: Option<ProjectId>,
+    resource_refs: Vec<ResourceRef>,
+    inputs: serde_json::Value,
+) -> Result<ActionRequest, String> {
+    Ok(ActionRequest {
+        action_request_id: ActionRequestId::new(),
+        project_id,
+        action_type: action_type.to_string(),
+        requester_type: RequesterType::User, // UI/IPC (PIN e)
+        requester_id: "smoke".to_string(),
+        resource_refs,
+        inputs,
+        // recorded-not-trusted (§15/LESSON §19) — the catalog reconciles to the authoritative risk at submit.
+        risk_level: RiskLevel::Level0,
+        idempotency_key: None,
+        fencing_token: None,
+        status: ActionRequestStatus::Submitted,
+        // a placeholder — the daemon's `request::insert` stamps `created_at` from its Clock.
+        created_at: Timestamp::parse("1970-01-01T00:00:00Z")
+            .map_err(|e| format!("placeholder timestamp: {e}"))?,
+        preview: None,
+    })
+}
+
+/// `integration.connect` (risk-2, edges-029) — REGISTRATION-ONLY: inputs carry the keychain_ref POINTER,
+/// NEVER a token (LESSON §49). The connection identity is the inputs (`requires_resource_refs=false`).
+pub fn build_integration_connect_request(rest: &[String]) -> Result<ActionRequest, String> {
+    let provider = required(rest, "--provider")?;
+    let keychain_ref = required(rest, "--keychain-ref")?;
+    let account = required(rest, "--account")?;
+    smoke_request(
+        "integration.connect",
+        None,
+        vec![],
+        serde_json::json!({ "provider": provider, "keychain_ref": keychain_ref, "account": account }),
+    )
+}
+
+/// `integration.set_live_writes` (risk-2, 083) — the live-writes governance flip. `--enabled` is parsed
+/// to a JSON BOOL (fail-closed on a non-bool — a mis-parsed enable is the one CLI footgun worth pinning).
+pub fn build_set_live_writes_request(rest: &[String]) -> Result<ActionRequest, String> {
+    let connection_id = required(rest, "--connection")?;
+    let enabled: bool = required(rest, "--enabled")?
+        .parse()
+        .map_err(|_| "--enabled must be `true` or `false`".to_string())?;
+    smoke_request(
+        "integration.set_live_writes",
+        None,
+        vec![],
+        serde_json::json!({ "connection_id": connection_id, "enabled": enabled }),
+    )
+}
+
+/// `github.create_pr` (risk-3, D-series) — the audited create TARGET is the envelope `project_id` (the
+/// executor's `resolve_repo_target` reads `req.project_id`, LESSON §63); a Project resource_ref carries
+/// the same id for the catalog `requires_resource_refs`. `--body` is optional.
+pub fn build_create_pr_request(rest: &[String]) -> Result<ActionRequest, String> {
+    let project = required(rest, "--project")?;
+    // parse the project id at CLI-submit time → a clear `--project: <parse error>` here, NOT a confusing
+    // execute-time "missing the audited project_id" from the daemon on a malformed id (the resolve target).
+    let project_id = ProjectId::parse(&project).map_err(|e| format!("--project: {e}"))?;
+    let head = required(rest, "--head")?;
+    let base = required(rest, "--base")?;
+    let title = required(rest, "--title")?;
+    let mut inputs = serde_json::json!({ "head": head, "base": base, "title": title });
+    if let Some(body) = flag_value(rest, "--body") {
+        inputs["body"] = serde_json::Value::String(body);
+    }
+    smoke_request(
+        "github.create_pr",
+        Some(project_id.clone()),
+        vec![ResourceRef {
+            resource_type: ResourceType::Project,
+            id: project_id.as_str().to_string(),
+            uri: None,
+        }],
+        inputs,
+    )
+}
+
+/// `github.merge_pr` (risk-3, D9/LESSON §60) — the audited target is the Repo resource_ref (`resolve_pr_
+/// target`, LESSON §63/082); `--sha` is the anti-race head-pin (LESSON §60). `--pr` parses to a u64
+/// (fail-closed on non-numeric — never a malformed pr_number).
+pub fn build_merge_pr_request(rest: &[String]) -> Result<ActionRequest, String> {
+    let repo = required(rest, "--repo")?;
+    let pr_number: u64 = required(rest, "--pr")?
+        .parse()
+        .map_err(|_| "--pr must be a positive integer".to_string())?;
+    let sha = required(rest, "--sha")?;
+    let merge_method = required(rest, "--method")?;
+    smoke_request(
+        "github.merge_pr",
+        None,
+        vec![ResourceRef {
+            resource_type: ResourceType::Repo,
+            id: repo,
+            uri: None,
+        }],
+        serde_json::json!({ "pr_number": pr_number, "sha": sha, "merge_method": merge_method }),
+    )
+}
+
+/// `github.submit_review` (risk-3, D10/LESSON §61) — the Repo resource_ref is the audited target; `--sha`
+/// is the reviewed-head pin (the executor's `commit_id`). `--body` optional (GitHub requires it for
+/// request_changes/comment — the daemon enforces that; the CLI just forwards).
+pub fn build_submit_review_request(rest: &[String]) -> Result<ActionRequest, String> {
+    let repo = required(rest, "--repo")?;
+    let pr_number: u64 = required(rest, "--pr")?
+        .parse()
+        .map_err(|_| "--pr must be a positive integer".to_string())?;
+    let commit_id = required(rest, "--sha")?;
+    let event = required(rest, "--event")?;
+    let mut inputs =
+        serde_json::json!({ "pr_number": pr_number, "commit_id": commit_id, "event": event });
+    if let Some(body) = flag_value(rest, "--body") {
+        inputs["body"] = serde_json::Value::String(body);
+    }
+    smoke_request(
+        "github.submit_review",
+        None,
+        vec![ResourceRef {
+            resource_type: ResourceType::Repo,
+            id: repo,
+            uri: None,
+        }],
+        inputs,
+    )
+}
+
+// ---- 086: the subcommand arms (THIN — build → submit the EXISTING action) -----------------------
+
+/// `connect-gh --provider github --account <acct>` → the EXISTING `connect_via_gh` IPC trigger (the
+/// daemon sources the `gh` token → keychain; NO token printed). Prints the keychain_ref / gh_unavailable.
+fn cmd_connect_gh(rest: &[String]) -> Result<String, String> {
+    let provider = required(rest, "--provider")?;
+    let account = required(rest, "--account")?;
+    let result = call(
+        "connect_via_gh",
+        serde_json::json!({ "provider": provider, "account": account }),
+    )?;
+    Ok(format!("connect_via_gh →\n{}", pretty(&result)))
+}
+
+/// Submit a built `ActionRequest` via the GENERIC `submit_action` method (the cmd_kill pattern) — the
+/// daemon's pipeline gates it (risk-2/3 → awaiting_approval; the user then `smoke approve <id>`).
+fn submit(label: &str, req: ActionRequest) -> Result<String, String> {
+    let params = serde_json::to_value(&req).map_err(|e| format!("encode {label}: {e}"))?;
+    let result = call("submit_action", params)?;
+    Ok(format!("{label} submitted →\n{}", pretty(&result)))
 }
 
 // ---- the UDS call mechanism (the `hook.rs` precedent) -------------------------------------------

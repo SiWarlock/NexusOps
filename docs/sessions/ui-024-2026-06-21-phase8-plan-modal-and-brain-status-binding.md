@@ -3,7 +3,7 @@
 - **Date:** 2026-06-21
 - **Phase:** 8 (Project Brain seam & drawer — un-deferred 2026-06-21, user-approved) · track `ui`
 - **Predecessor:** [ui-023](ui-023-2026-06-21-real-head-sha-pin.md)
-- **Successor:** _(next ui session)_
+- **Successor:** [ui-025](ui-025-2026-06-25-pr-mutations-cat1-go-live.md)
 - **Commits:** `15fad1f` (ui-073, B) · `9a7f2ef` (ui-074, A1) — both LOCAL on `track/ui`, push HELD.
 
 ## Why this session existed

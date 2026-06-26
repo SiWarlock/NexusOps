@@ -575,6 +575,39 @@ describe("DiffReview — github.merge_pr Merge control (cat-1 ui-070)", () => {
     expect(await screen.findByTestId("pr-mutation-enrich-unavailable")).toBeTruthy();
     expect(screen.queryByTestId("gateway-modal")).toBeNull(); // no card from un-enriched data
   });
+
+  // ── ui-077 — the chosen merge-method threads through onMerge(method) → buildMergePrActionRequest ──
+  it("selected_method_rides_into_merge_request", async () => {
+    // spec(§6.3) — selecting squash (resp. rebase) + Merge → the chosen method rides VERBATIM into
+    // inputs.merge_method (onMerge(method) → buildMergePrActionRequest → the existing live seam).
+    for (const method of ["squash", "rebase"] as const) {
+      const port = new MockGatewayPort();
+      const submitSpy = vi.spyOn(port, "submit_action");
+      renderMerge(port);
+      fireEvent.change(
+        await screen.findByRole("combobox", { name: /merge method/i }),
+        { target: { value: method } },
+      );
+      fireEvent.click(await screen.findByRole("button", { name: /^Merge$/i }));
+      await waitFor(() => expect(submitSpy).toHaveBeenCalledTimes(1));
+      expect(
+        (submitSpy.mock.calls[0]![0].inputs as { merge_method: string }).merge_method,
+      ).toBe(method);
+      cleanup();
+    }
+  });
+
+  it("merge_method_defaults_to_merge", async () => {
+    // spec(§7.2) — no explicit selection → inputs.merge_method === "merge" (the ui-075 prior behavior).
+    const port = new MockGatewayPort();
+    const submitSpy = vi.spyOn(port, "submit_action");
+    renderMerge(port);
+    fireEvent.click(await screen.findByRole("button", { name: /^Merge$/i }));
+    await waitFor(() => expect(submitSpy).toHaveBeenCalledTimes(1));
+    expect(
+      (submitSpy.mock.calls[0]![0].inputs as { merge_method: string }).merge_method,
+    ).toBe("merge");
+  });
 });
 
 // ─── ui-071 cat-1 — github.submit_review verdict controls (guarded-disabled) ─────

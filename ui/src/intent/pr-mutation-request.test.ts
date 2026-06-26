@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   PR_MUTATION_ACTION_TYPES,
+  MERGE_METHODS,
   buildMergePrActionRequest,
   buildSubmitReviewActionRequest,
   isPrMutationEnabled,
@@ -65,6 +66,22 @@ describe("buildMergePrActionRequest (cat-1 ui-070, ruling A)", () => {
       "2026-06-21T00:00:00Z",
     );
     expect((req.inputs as { sha: string }).sha).toBe("deadbeefsha");
+  });
+
+  it("merge_method_value_is_closed_set", () => {
+    // spec(§6.3) — the chosen merge_method rides into inputs VERBATIM for each of the closed set
+    // {merge, squash, rebase}. The `MergePrMethod` union is the tsc-enforced UI closure (passing any
+    // other literal fails typecheck); the daemon's `map_merge_method` is the runtime fail-closed authority,
+    // so the UI offers only the closed options + never re-validates beyond that.
+    for (const m of MERGE_METHODS) {
+      const req = buildMergePrActionRequest(
+        { repo_id: "repo_1", pr_number: 101, head_sha: "abc123", merge_method: m.value },
+        "2026-06-25T00:00:00Z",
+      );
+      expect((req.inputs as { merge_method: string }).merge_method).toBe(m.value);
+    }
+    // the closed set is exactly the three GitHub methods (no more, no fewer).
+    expect(MERGE_METHODS.map((m) => m.value)).toEqual(["merge", "squash", "rebase"]);
   });
 });
 

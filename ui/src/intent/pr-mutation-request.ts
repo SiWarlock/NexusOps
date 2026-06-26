@@ -26,9 +26,20 @@ export function isPrMutationEnabled(
   return gateway.enabledPrMutations.has(actionType);
 }
 
-/** The merge method (user-ruled: fixed merge-commit; the squash/rebase selector is DEFERRED). A
- *  one-member union now, extensible when the selector lands — the type enforces the ruling. */
-export type MergePrMethod = "merge";
+/** The GitHub merge method (ui-077, USER-approved all three). The closed `{merge, squash, rebase}` union
+ *  is the tsc-enforced UI closure; the daemon's `map_merge_method` (github_write.rs) is the runtime
+ *  fail-closed authority (an unknown method is rejected). Rides the EXISTING live `github.merge_pr` gate —
+ *  no new go-live / no new mutation type (a method parameter on an already-approved-per-action mutation). */
+export type MergePrMethod = "merge" | "squash" | "rebase";
+
+/** The merge-method selector's options + the builder's accepted values, sharing one closed source.
+ *  GitHub-labeled; ordered merge → squash → rebase (GitHub's own order; `merge` is the default). The UI
+ *  offers ONLY these and never re-validates beyond the closed set (the daemon is the authority). */
+export const MERGE_METHODS: ReadonlyArray<{ value: MergePrMethod; label: string }> = [
+  { value: "merge", label: "Merge commit" },
+  { value: "squash", label: "Squash and merge" },
+  { value: "rebase", label: "Rebase and merge" },
+];
 
 /** The review verdict (fork-2b: all three GitHub review actions). The daemon maps these → octocrab
  *  ReviewAction (daemon LESSON 61); `approve` carries branch-protection merge-gate power. */

@@ -13,7 +13,11 @@ import { Eyebrow } from "../cockpit";
 import { ReviewsList } from "./ReviewsList";
 import { ResultNotice } from "../../overlays/GatewayModal";
 import type { IntentResult } from "../../intent/submit-intent";
-import type { ReviewEvent } from "../../intent/pr-mutation-request";
+import {
+  MERGE_METHODS,
+  type MergePrMethod,
+  type ReviewEvent,
+} from "../../intent/pr-mutation-request";
 
 const PLACEHOLDER: CSSProperties = {
   font: "var(--fs-label)/1.5 var(--font-sans)",
@@ -191,9 +195,10 @@ export function PrWorkspace({
   /** cat-1 (ui-070) — the computed Merge enablement (`canSubmitIntent && isPrMutationEnabled(merge_pr) &&
    *  headSha != null`); the container computes it (the gateway + the hook live there). */
   canMerge: boolean;
-  /** Raised on a Merge click (only fires when `canMerge`) — the container forms + submits the
-   *  github.merge_pr intent + opens the GatewayModal (PrWorkspace never mutates). */
-  onMerge: () => void;
+  /** Raised on a Merge click (only fires when `canMerge`) with the SELECTED merge method (ui-077) — the
+   *  container forms + submits the github.merge_pr intent with `inputs.merge_method` + opens the
+   *  GatewayModal (PrWorkspace never mutates). Default `"merge"` until the user picks another method. */
+  onMerge: (method: MergePrMethod) => void;
   /** cat-1 (ui-071) — the BASE review enablement (`canSubmitIntent && isPrMutationEnabled(submit_review)
    *  && headSha != null`); the per-verdict body-required gate is applied locally (approve vs the rest). */
   canReview: boolean;
@@ -215,6 +220,10 @@ export function PrWorkspace({
   // dedup'd daemon-side (idempotency, daemon LESSON 20) — never a silent double-execute.
   const [reviewBody, setReviewBody] = useState("");
   const bodyNonEmpty = reviewBody.trim().length > 0;
+  // ui-077 — the selected merge method (merge/squash/rebase), default "merge" (preserves ui-075 behavior).
+  // The method-AGNOSTIC gate is `canMerge` (the selector is canMerge-gated, never its own gate); the chosen
+  // method rides into onMerge(method) → buildMergePrActionRequest → inputs.merge_method (the daemon validates).
+  const [mergeMethod, setMergeMethod] = useState<MergePrMethod>("merge");
   const merge = mergeability(pr.mergeable);
   return (
     <div style={{ height: "100%", overflowY: "auto", padding: "14px 16px", background: "var(--surface-canvas)" }}>
@@ -293,6 +302,40 @@ export function PrWorkspace({
           only when its gate holds (Merge: canMerge; verdicts: canReview AND [approve OR a non-empty body]);
           a click raises onMerge / onSubmitReview(event, body) → the container submits + opens the modal. */}
       <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+        {/* ui-077 — the merge-method selector (merge/squash/rebase). canMerge-gated (method-AGNOSTIC — no
+            method bypasses the gate); the chosen method rides into onMerge(method). A native <select> styled
+            with the kit form-control tokens (Graphite-Arc) + the global :focus-visible ring (a11y/focus.css). */}
+        <select
+          aria-label="Merge method"
+          value={mergeMethod}
+          // the closed <option> set guarantees the value is a MergePrMethod (the daemon re-validates).
+          onChange={(e) => setMergeMethod(e.target.value as MergePrMethod)}
+          disabled={!canMerge}
+          style={{
+            // appearance:none so the kit form-control TOKENS actually paint (a native select otherwise
+            // renders the OS chrome on macOS, overriding background/border/radius). A custom caret replaces
+            // the native arrow appearance:none removes; backgroundColor (not the `background` shorthand,
+            // which would reset the caret image).
+            appearance: "none",
+            WebkitAppearance: "none",
+            font: "var(--fs-meta) var(--font-sans)",
+            color: "var(--text-primary)",
+            backgroundColor: "var(--surface-sunken)",
+            backgroundImage:
+              "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'%3E%3Cpath d='M1 1.5L5 5.5L9 1.5' fill='none' stroke='%23888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\")",
+            backgroundRepeat: "no-repeat",
+            backgroundPosition: "right 8px center",
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--r-2)",
+            padding: "0 26px 0 8px",
+          }}
+        >
+          {MERGE_METHODS.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
+            </option>
+          ))}
+        </select>
         <span
           title={
             canMerge
@@ -305,7 +348,7 @@ export function PrWorkspace({
             size="sm"
             icon={<GitMerge size={13} />}
             disabled={!canMerge}
-            onClick={onMerge}
+            onClick={() => onMerge(mergeMethod)}
           >
             Merge
           </Button>

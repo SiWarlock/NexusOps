@@ -44,6 +44,7 @@ import {
   buildMergePrActionRequest,
   buildSubmitReviewActionRequest,
   isPrMutationEnabled,
+  type MergePrMethod,
   type ReviewEvent,
 } from "../../intent/pr-mutation-request";
 import {
@@ -641,13 +642,15 @@ function PrWorkspaceContainer({
     }
   }
 
-  async function onMerge() {
+  async function onMerge(method: MergePrMethod) {
     // structural guard (the control is disabled when any is missing — belt-and-suspenders, never a
-    // merge formed without a pinned head / repo identity).
+    // merge formed without a pinned head / repo identity). ui-077: the user-selected method rides into
+    // inputs.merge_method (the daemon's map_merge_method is the fail-closed authority; every merge stays
+    // per-action approved/audited regardless of method).
     if (repo_id == null || pr_number == null || headSha == null) return;
     await submitMutation(
       buildMergePrActionRequest(
-        { repo_id, pr_number, head_sha: headSha, merge_method: "merge" },
+        { repo_id, pr_number, head_sha: headSha, merge_method: method },
         new Date().toISOString(),
       ),
     );

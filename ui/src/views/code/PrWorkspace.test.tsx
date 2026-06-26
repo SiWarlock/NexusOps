@@ -5,7 +5,7 @@
 // (ui-068) + the read-only D7 PR code-diff (ui-069, passed down by DiffReview as `prDiff`), with ALL
 // mutations + Brain controls rendered DISABLED (a future cat-1 arc + the deferred Brain sibling).
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { cleanup, render, screen, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, fireEvent, within } from "@testing-library/react";
 import { PrWorkspace, prHeadSha, type PrDiffState } from "./PrWorkspace";
 import type { ReviewEvent } from "../../intent/pr-mutation-request";
 import type { DiffResult, PullRequestRow, ReviewRow } from "../../contracts/index";
@@ -326,5 +326,36 @@ describe("prHeadSha (ui-072 — real head_sha pin source)", () => {
     expect(prHeadSha(pr({ head_sha: null }))).toBeNull();
     // the absent-field (pre-P4.7 row) path: the base fixture omits head_sha → undefined ?? null → null.
     expect(prHeadSha(pr())).toBeNull();
+  });
+});
+
+// ─── ui-077 — the merge-method selector (merge/squash/rebase) on the Merge control ──────────────────
+describe("PrWorkspace merge-method selector (ui-077)", () => {
+  it("merge_control_offers_all_three_methods", () => {
+    // spec(§7.2) — the Merge control offers all THREE GitHub methods (merge/squash/rebase), GitHub-labeled,
+    // keyboard-reachable + labeled (a native <select>, never color-alone). Default selection = "merge".
+    renderWs({ canMerge: true });
+    const select = screen.getByRole("combobox", {
+      name: /merge method/i,
+    }) as HTMLSelectElement;
+    const opts = within(select).getAllByRole("option") as HTMLOptionElement[];
+    expect(opts.map((o) => o.value)).toEqual(["merge", "squash", "rebase"]);
+    expect(opts.map((o) => o.textContent)).toEqual([
+      "Merge commit",
+      "Squash and merge",
+      "Rebase and merge",
+    ]);
+    expect(select.value).toBe("merge"); // default preserved (ui-075 behavior)
+  });
+
+  it("merge_method_controls_gated_with_canMerge", () => {
+    // spec(§11.2/§11.4) — the gate is method-AGNOSTIC: when !canMerge the selector AND the Merge button are
+    // disabled (no method can be picked to bypass the gate); the selector is canMerge-gated, not its own gate.
+    renderWs({ canMerge: false });
+    expect(
+      (screen.getByRole("combobox", { name: /merge method/i }) as HTMLSelectElement)
+        .disabled,
+    ).toBe(true);
+    expect(isDisabled(/^Merge$/)).toBe(true);
   });
 });

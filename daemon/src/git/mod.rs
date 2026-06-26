@@ -210,3 +210,46 @@ fn parse_range(s: &str) -> (u32, u32) {
         None => (s.parse().unwrap_or(0), 1),
     }
 }
+
+/// (W1-git-stage/095) Slice a ONE-HUNK patch out of a raw unified diff (`git diff … -- <file>`): the
+/// FILE PREAMBLE (the `diff --git`/`index`/`---`/`+++` lines before the first `@@`) + the SINGLE hunk
+/// whose `@@` header matches the position quad `(old_start, old_lines, new_start, new_lines)`. Returns
+/// `None` if NO hunk matches those positions — the §17 read↔mutate guard (the file changed since the UI
+/// read it / the displayed hunk is gone → fail-closed, no apply). **Byte-faithful** (`split_inclusive`
+/// preserves the exact bytes incl. trailing newlines + the `\ No newline at eof` marker), so the sliced
+/// patch re-applies via `git apply` without any DiffLine→patch round-trip fidelity risk. The position
+/// quad IS the frozen position-only resource-ref (4.0b-ui1) — the AUDITED unit.
+pub fn find_hunk_patch(
+    diff: &str,
+    old_start: u32,
+    old_lines: u32,
+    new_start: u32,
+    new_lines: u32,
+) -> Option<String> {
+    // the byte offset of every `@@` (hunk-start) line, preserving exact bytes via split_inclusive.
+    let mut hunk_starts: Vec<usize> = Vec::new();
+    let mut offset = 0usize;
+    for line in diff.split_inclusive('\n') {
+        if line.starts_with("@@") {
+            hunk_starts.push(offset);
+        }
+        offset += line.len();
+    }
+    let &first = hunk_starts.first()?;
+    let preamble = &diff[..first];
+    for (i, &start) in hunk_starts.iter().enumerate() {
+        let end = hunk_starts.get(i + 1).copied().unwrap_or(diff.len());
+        let block = &diff[start..end];
+        let header_line = block.lines().next().unwrap_or("");
+        let h = parse_hunk_header(header_line);
+        if h.old_start == old_start
+            && h.old_lines == old_lines
+            && h.new_start == new_start
+            && h.new_lines == new_lines
+        {
+            // preamble + the EXACT matching hunk block = a valid one-hunk patch for `git apply`.
+            return Some(format!("{preamble}{block}"));
+        }
+    }
+    None
+}

@@ -289,9 +289,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     // P5.2 (edges-020/021) — git.create_worktree/create_branch via the git CLI (forbidden #6 — never
     // git2 for mutations); git.status/git.diff delegate to the inner read stub. risk-2 (approval-gated).
+    // W1-git-stage/095 — git.stage_hunk/unstage_hunk also ride ExecutorKind::Git; the injected
+    // DbWorktreePathResolver resolves the audited worktree_id → proj_worktree.path over read-only WAL.
     catalog_exec.register(
         ExecutorKind::Git,
-        Arc::new(GitExecutor::new(Box::new(SystemGitCli))),
+        Arc::new(
+            GitExecutor::new(Box::new(SystemGitCli)).with_worktree_resolver(Box::new(
+                nexusopsd::git::executor::DbWorktreePathResolver::new(base_dir.join(DB_FILENAME)),
+            )),
+        ),
     );
     // P4.7/083 (C3) — the LIVE GitHub auth: a keychain secret store + the per-connection live-writes gate,
     // SHARED by the read + write clients. Each client builds a PER-OWNER octocrab via GithubAuthResolver —

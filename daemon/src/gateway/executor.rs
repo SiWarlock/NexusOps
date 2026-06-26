@@ -50,6 +50,19 @@ pub enum EmittedEvent {
         event_type: &'static str,
         payload_json: String,
     },
+    /// `ProfileSecretSet` — the P5.3b/085 pointer-record for `profile.set_keychain_ref`. A TYPED variant
+    /// (like `SessionStarted`, not `Namespaced`) because the pipeline's txn-B must BOTH append the audit
+    /// event AND UPDATE the canonical `execution_profiles.keychain_ref` row — the latter via
+    /// `profiles::secret::apply_secret_set`, ATOMIC with the append (fail-closed: a fault rolls back both;
+    /// §15 #5 / LESSON §16). `execution_profiles` is the CANONICAL registry (NOT a projection — LESSON §62),
+    /// so the row is recorded by a direct UPDATE in txn-B, not a projector fold. The `keychain_ref` is
+    /// daemon-derived (re-derived by the `ProfileExecutor` from the AUDITED resource_ref id — confused-
+    /// deputy-safe §63). The payload carries ONLY the id — the keychain POINTER is daemon-derived
+    /// (`profile_keychain_ref(id)`), recomputed by `apply_secret_set` for the row UPDATE (kept out of the
+    /// event so the §15 JSON-value redactor doesn't mask the ULID-bearing pointer; §15 #4 POINTER-only).
+    ProfileSecretSet {
+        execution_profile_id: nexusops_shared::ids::ExecutionProfileId,
+    },
 }
 
 /// Pre-execution validation failures (§6.3). 2.3 enforces only the catalog `requires_resource_refs`

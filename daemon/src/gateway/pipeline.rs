@@ -152,6 +152,11 @@ fn emitted_event_deltas(req: &ActionRequest, ev: &EmittedEvent) -> Vec<Projectio
             }
             deltas_for_event(event_type, &ids)
         }
+        // P5.3b/085 — ProfileSecretSet records onto the CANONICAL `execution_profiles` row, which is NOT a
+        // subscribe-able `proj_*` projection (no `ProjectionName` variant) → NO delta nudge (the same
+        // "canonical-registry has no subscribe name" class as proj_project/proj_repository, the D4b flag).
+        // The audit event still rides the audit-trail blanket via the gateway's `publish_after_commit`.
+        EmittedEvent::ProfileSecretSet { .. } => vec![],
     }
 }
 
@@ -1071,6 +1076,17 @@ impl Gateway {
                     // the action stays `executing` → L5 (INV-SEC-1 — never an unaudited session record).
                     for ev in emitted_events {
                         gtx.append(&request::emitted_event_intent(req, ev, &now)?)?;
+                        // P5.3b/085 — a ProfileSecretSet emitted event ALSO records the keychain POINTER
+                        // onto the CANONICAL execution_profiles row (NOT a projection — LESSON §62), ATOMIC
+                        // in THIS txn-B: the SQL lives in profiles::secret::apply_secret_set (layer hygiene);
+                        // the pipeline just dispatches. A fault `?`-propagates → txn-B rolls back the append
+                        // too → fail-closed (no half-written keychain_ref; the test pins both roll back).
+                        if let EmittedEvent::ProfileSecretSet {
+                            execution_profile_id,
+                        } = ev
+                        {
+                            crate::profiles::secret::apply_secret_set(gtx, execution_profile_id)?;
+                        }
                     }
                     Ok(ActionAck {
                         action_request_id: act_id.clone(),

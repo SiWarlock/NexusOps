@@ -1532,8 +1532,8 @@ fn test_action_type_catalog_covers_mvp_set() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        32,
-        "the §6.3 MVP set is 32 types (31 + integration.set_live_writes, P4.7/083)"
+        33,
+        "the §6.3 MVP set is 33 types (32 + profile.set_keychain_ref, P5.3b/085)"
     );
     for at in MVP_ACTION_TYPES {
         let e = lookup(at).unwrap_or_else(|| panic!("catalog missing the MVP type {at}"));
@@ -1985,8 +1985,8 @@ fn test_agent_mutation_family_snapshot_spec_6_3() {
 
     assert_eq!(
         MVP_ACTION_TYPES.len(),
-        32,
-        "the human-facing §6.3 MVP set is 32 — the agent family stays a separate machine-internal const"
+        33,
+        "the human-facing §6.3 MVP set is 33 — the agent family stays a separate machine-internal const"
     );
     assert_eq!(
         AGENT_MUTATION_ACTION_TYPES.len(),
@@ -3181,8 +3181,11 @@ fn test_contract_version_bumped_0_45_0() {
     // D10 cat-1 `github.submit_review`; 0.43.0 = the P5.3a `execution_profiles` registry; 0.44.0 = the
     // P4.7 PR `head_sha` enrichment; **0.45.0** = the P4.7 (083) auth-bootstrap toggle vertical — the
     // `integration.set_live_writes` catalog action + the `IntegrationLiveWritesSet` event (the live-writes
-    // authorization flip). Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.45.0");
+    // authorization flip). Additive, no frozen type reshaped (§5.0). **0.46.0** = the P5.3b/085
+    // execution-profile SECRET vertical — the `profile.set_keychain_ref` catalog action +
+    // `ExecutorKind::Profile` + the `ProfileSecretSet`/`SessionProfileChanged` events + the
+    // `SetProfileSecret{Params,Result}` IPC wire types. Additive, no frozen type reshaped (§5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.46.0");
 }
 
 // =================================================================================================
@@ -3366,6 +3369,118 @@ fn execution_profile_registered_schema_snapshot() {
     assert_rejects_unknown(
         &sample_execution_profile_registered(),
         "ExecutionProfileRegistered",
+    );
+}
+
+// ---- P5.3b RED — the execution-profile SECRET vertical contract surface (§15 #4/#8, §2.5-seam) ----
+
+#[test]
+fn test_set_profile_secret_wire_types() {
+    // spec(§5.1 / §2.5-seam / 085) — the `profile.set_secret` inbound-secret IPC trigger wire types
+    // (the FIRST inbound-secret surface, the ⚠️ NEW POSTURE). Params carry {execution_profile_id, secret}
+    // — the inbound `secret` is the new posture (a user-typed credential over the getpeereid-authed local
+    // UDS). The result carries ONLY the keychain_ref POINTER (NEVER the token — §15 #4 / LESSON §64
+    // no-echo). Field-name FREEZE; reject-unknown end-to-end (§5.0/§15 fail-closed).
+    use nexusops_shared::ipc::{SetProfileSecretParams, SetProfileSecretResult};
+
+    let p = SetProfileSecretParams {
+        execution_profile_id: "prof_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        secret: "sk-ant-the-inbound-secret".to_string(),
+    };
+    expect_fields(&p, &["execution_profile_id", "secret"]);
+    assert_rejects_unknown(&p, "SetProfileSecretParams");
+    // §15 #4 / LESSON §43/§64 — the inbound-secret params type has a REDACTING Debug: a `{:?}` must NEVER
+    // echo the credential (a future re-add of `#[derive(Debug)]` over the raw `secret` field fails here).
+    let dbg = format!("{p:?}");
+    assert!(
+        !dbg.contains("sk-ant-the-inbound-secret"),
+        "Debug must redact the secret"
+    );
+    assert!(
+        dbg.contains("[redacted]"),
+        "Debug shows the redaction marker"
+    );
+
+    let r = SetProfileSecretResult {
+        keychain_ref: "nexusops/profile/prof_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+    };
+    expect_fields(&r, &["keychain_ref"]);
+    assert_rejects_unknown(&r, "SetProfileSecretResult");
+}
+
+#[test]
+fn test_profile_secret_set_snapshot() {
+    // spec(§15 / §2.5-seam / 085) — the GATEWAY-emitted pointer-record event the `profile.set_keychain_ref`
+    // action emits in txn-B; `profiles::apply_secret_set` UPDATEs `execution_profiles.keychain_ref` atomically.
+    // The §2.5-seam field-name FREEZE: {execution_profile_id, keychain_ref}. **§15 #4 — load-bearing:**
+    // `keychain_ref` is a NON-SECRET POINTER, NEVER the token (registration-only, LESSON §49/§64). EVENT_TYPE
+    // single-home; reject-unknown.
+    use nexusops_shared::events::ProfileSecretSet;
+    use nexusops_shared::ids::ExecutionProfileId;
+    let e = ProfileSecretSet {
+        execution_profile_id: ExecutionProfileId::parse("prof_01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
+    };
+    // the payload carries ONLY the id — the keychain POINTER is daemon-derived (recomputed from the id),
+    // kept OUT of the event to avoid the §15 JSON-value redactor masking the ULID-bearing pointer.
+    expect_fields(&e, &["execution_profile_id"]);
+    assert_eq!(ProfileSecretSet::EVENT_TYPE, "ProfileSecretSet");
+    assert_rejects_unknown(&e, "ProfileSecretSet");
+}
+
+#[test]
+fn test_session_profile_changed_snapshot() {
+    // spec(§15 #8 / §2.5-seam / 085) — the GATEWAY-emitted swap event the `session.profile_change` action
+    // emits: the profile RE-BIND is recorded, never silently switched (§15 #8 no-account-hop). The §2.5-seam
+    // field-name FREEZE: {session_id, execution_profile_id}. A distinct lifecycle fact (NOT a SessionStarted
+    // reuse). EVENT_TYPE single-home; reject-unknown.
+    use nexusops_shared::events::SessionProfileChanged;
+    use nexusops_shared::ids::{ExecutionProfileId, SessionId};
+    let e = SessionProfileChanged {
+        session_id: SessionId::parse("sess_01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
+        execution_profile_id: ExecutionProfileId::parse("prof_01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
+    };
+    expect_fields(&e, &["session_id", "execution_profile_id"]);
+    assert_eq!(SessionProfileChanged::EVENT_TYPE, "SessionProfileChanged");
+    assert_rejects_unknown(&e, "SessionProfileChanged");
+}
+
+#[test]
+fn test_profile_set_keychain_ref_catalog_entry() {
+    // spec(§6.3 / 085) — the pointer-record Gateway action. risk-2 (approval-gated), the NEW
+    // ExecutorKind::Profile (a pure profile-registry mutation — its own domain, the ExecutorKind::Integration
+    // precedent), requires_resource_refs=true (the target profile is the audited resource_ref the executor
+    // re-derives the keychain_ref from — confused-deputy-safe, LESSON §63), and **standing_grant_eligible=false**
+    // — a credential-pointer record is NEVER bulk-grantable (the §6.2 credential floor, LESSON §49). In the MVP set.
+    use nexusops_shared::actions::RiskLevel;
+    use nexusops_shared::catalog::{lookup, ExecutorKind, MVP_ACTION_TYPES};
+
+    assert!(
+        MVP_ACTION_TYPES.contains(&"profile.set_keychain_ref"),
+        "profile.set_keychain_ref is in the MVP set"
+    );
+    let e = lookup("profile.set_keychain_ref").expect("catalogued");
+    assert_eq!(e.locked_risk, RiskLevel::Level2);
+    assert_eq!(e.executor, ExecutorKind::Profile);
+    assert!(
+        e.requires_resource_refs,
+        "the target profile is the audited resource_ref (confused-deputy-safe ref derivation)"
+    );
+    assert!(
+        !e.standing_grant_eligible,
+        "a credential-pointer record is NON-standing-grantable (§6.2 floor, LESSON §49)"
+    );
+
+    // the NEW ExecutorKind::Profile frozen value: wire `profile`, in ALL, round-trips (LESSON §2).
+    assert!(ExecutorKind::ALL.contains(&ExecutorKind::Profile));
+    assert_eq!(
+        serde_json::to_value(ExecutorKind::Profile).unwrap(),
+        serde_json::json!("profile"),
+        "ExecutorKind::Profile wire value = `profile`"
+    );
+    assert_eq!(
+        serde_json::from_value::<ExecutorKind>(serde_json::json!("profile")).unwrap(),
+        ExecutorKind::Profile,
+        "round-trips from the wire value"
     );
 }
 

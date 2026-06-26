@@ -20,6 +20,7 @@ pub mod plan;
 pub mod policy;
 pub mod precondition;
 pub mod preview;
+pub mod profile_executor;
 pub mod recovery;
 pub mod request;
 pub mod session_executor;

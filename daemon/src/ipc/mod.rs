@@ -44,6 +44,9 @@ pub use methods::read_review_typed;
 // P4.0b-2-F2 — the pure intercept-wait-class decision (the testable core the live `intercept` handler
 // delegates to); pub for the unit test. `INTERCEPT_SATURATED_REASON` = the fail-closed exhaustion reason.
 pub use methods::{intercept_verdict_with_wait_class, INTERCEPT_SATURATED_REASON};
+// P5.3b/085 (C2) — the inbound-secret `profile.set_secret` trigger core (parse+fail-closed-unknown gate
+// → keychain write → POINTER); pub for the integration test. The RPC dispatch routes "profile.set_secret".
+pub use methods::set_profile_secret;
 pub use peer::{authorize_peer, current_euid, peer_uid};
 pub use server::serve_connection;
 pub use subscribe::push_subscription;

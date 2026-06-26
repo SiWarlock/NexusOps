@@ -70,6 +70,10 @@ pub(crate) fn dispatch(
     wait_class: &InterceptWaitClass,
     github: &dyn crate::integrations::github::GithubReadClient,
     gh_connector: &dyn crate::integrations::auth::GhConnector,
+    // P5.3b/085 (cat-1) — the keychain store for the `profile.set_secret` inbound-secret trigger (the
+    // FIRST inbound-secret surface). Reachable ONLY post-auth (the rule-#7 getpeereid gate runs first in
+    // serve_connection). Reuses the SAME production `KeyringSecretStore` as the github clients (main.rs).
+    secret_store: &dyn crate::integrations::keychain::SecretStore,
 ) -> Result<RpcResponse, IpcError> {
     let outcome: Result<serde_json::Value, IpcErrorCode> = match req.method.as_str() {
         "get_capabilities" => Ok(capabilities_value()),
@@ -87,6 +91,14 @@ pub(crate) fn dispatch(
         // mechanism; the AUDIT is the subsequent integration.connect registration the UI submits). The
         // rule-#7 getpeereid gate already authed the peer; the gateway-trusted local UI is the only caller.
         "connect_via_gh" => connect_via_gh(&req.params, gh_connector),
+        // P5.3b/085 (C2, CAT-1) — the "set profile credential" inbound-secret trigger: the user-typed
+        // secret arrives INBOUND over the getpeereid-authed local UDS (the ⚠️ NEW POSTURE) → the daemon
+        // holds it in Zeroizing → the OS keychain under the daemon-derived per-profile ref; the result is
+        // the keychain_ref POINTER only (NO secret echoed — §15 #4 / LESSON §64). Fail-closed on an
+        // unknown/unparseable profile (LESSON §62 — no keychain entry for an unregistered profile). NOT a
+        // Gateway mutation (it writes the keychain, not the DB — the §49 non-Gateway secret-write; the AUDIT
+        // is the subsequent `profile.set_keychain_ref` pointer-record action). Peer-authed by the rule-#7 gate.
+        "profile.set_secret" => profile_set_secret(&req.params, secret_store, db_path),
         "subscribe" => subscribe_ack(&req.params),
         // §6.1 mutation methods (2.1b) — run the Gateway pipeline on the write-actor (the sole
         // mutator, forbidden #2/#3). A `GatewayError` → a structured `IpcErrorCode` response; the
@@ -827,6 +839,52 @@ fn connect_via_gh(
         // message — AuthError::Keychain wraps only a structural SecretStoreError class).
         Err(AuthError::Keychain(_)) => Err(IpcErrorCode::InternalError),
     }
+}
+
+/// (P5.3b/085 C2, CAT-1) `profile.set_secret` — the inbound-secret IPC trigger dispatch wrapper. Parses the
+/// `SetProfileSecretParams` (a malformed params is a client `protocol_error`), then delegates to the testable
+/// [`set_profile_secret`] core. The secret rides Zeroizing daemon-side + is dropped post-write; the result is
+/// the keychain_ref POINTER only (§15 #4 / LESSON §64 no-echo). A keychain backend fault → `internal_error`
+/// (the token is NEVER in the message). NB: `params.clone()` makes a transient plaintext copy of the inbound
+/// secret at the JSON boundary (unavoidable — it arrives as JSON; the local-trust-boundary accepts it, the
+/// ⚠️ NEW POSTURE); the clone drops at the end of this fn, and the daemon-side transient is Zeroizing-scrubbed.
+fn profile_set_secret(
+    params: &serde_json::Value,
+    store: &dyn crate::integrations::keychain::SecretStore,
+    db_path: &Path,
+) -> Result<serde_json::Value, IpcErrorCode> {
+    let params: nexusops_shared::ipc::SetProfileSecretParams =
+        serde_json::from_value(params.clone()).map_err(|_| IpcErrorCode::ProtocolError)?;
+    let result = set_profile_secret(store, db_path, params)?;
+    // infallible: SetProfileSecretResult is a single String → to_value cannot fail.
+    Ok(serde_json::to_value(result).unwrap_or(serde_json::Value::Null))
+}
+
+/// The testable core of [`profile_set_secret`] (P5.3b/085 C2). Fail-closed gate order: (1) the
+/// `execution_profile_id` MUST parse (unparseable → `protocol_error` — no keychain touched); (2) the profile
+/// MUST be REGISTERED (`profiles::profile_exists`, read-only WAL — a read fault → `internal_error`; an
+/// unregistered/unknown id → `not_found`; LESSON §62 — NEVER write a keychain entry for an unregistered
+/// profile); only THEN (3) the inbound secret (held in Zeroizing, dropped post-write) is written to the OS
+/// keychain under the daemon-derived `profile_keychain_ref` and the POINTER is returned (§15 #4 / LESSON §64).
+pub fn set_profile_secret(
+    store: &dyn crate::integrations::keychain::SecretStore,
+    db_path: &Path,
+    params: nexusops_shared::ipc::SetProfileSecretParams,
+) -> Result<nexusops_shared::ipc::SetProfileSecretResult, IpcErrorCode> {
+    use nexusops_shared::ids::ExecutionProfileId;
+    // (1) the id MUST parse — an unparseable id is a malformed param, fail-closed (no keychain touched).
+    let id = ExecutionProfileId::parse(&params.execution_profile_id)
+        .map_err(|_| IpcErrorCode::ProtocolError)?;
+    // (2) fail-closed-on-unknown (LESSON §62): never write a secret for a profile the registry doesn't know.
+    if !crate::profiles::profile_exists(db_path, &id).map_err(|_| IpcErrorCode::InternalError)? {
+        return Err(IpcErrorCode::NotFound);
+    }
+    // (3) the inbound secret rides Zeroizing — moved out of params, written to the keychain, dropped (the
+    // plaintext heap allocation is scrubbed; §15). A backend fault → structural internal_error (the token is
+    // NEVER in the message — SecretStoreError carries only a class).
+    let secret = zeroize::Zeroizing::new(params.secret);
+    crate::profiles::secret::write_profile_secret(store, &id, secret)
+        .map_err(|_| IpcErrorCode::InternalError)
 }
 
 /// The MANDATORY bound on the GitHub PR-diff fetch (LESSON §46): a hung call returns a typed error,

@@ -342,6 +342,39 @@ fn test_set_live_writes_denied_for_non_ui_requester() {
 }
 
 #[test]
+fn test_profile_mutations_denied_for_non_ui_requester() {
+    // spec(§15 #8 — "the Brain may never set/change a profile") — P5.3b: profile.set_keychain_ref (record a
+    // profile's credential pointer) + session.profile_change (rebind a session's profile) are UI/human-
+    // initiated ONLY. An AgentSession / ProjectBrain / WorkflowPack / SystemPolicy requester is DENIED
+    // *before* risk resolution (the GITHUB_MUTATION / integration-authorization gate generalized).
+    let policy = CatalogPolicy;
+    for action_type in ["profile.set_keychain_ref", "session.profile_change"] {
+        for requester in [
+            RequesterType::AgentSession,
+            RequesterType::ProjectBrain,
+            RequesterType::WorkflowPack,
+            RequesterType::SystemPolicy,
+        ] {
+            assert_eq!(
+                policy.decide(&request_from(action_type, requester)).status,
+                PolicyDecisionStatus::Deny,
+                "{requester:?} {action_type} is denied (UI/IPC-only, §15 #8 Brain-never-sets-a-profile)"
+            );
+        }
+    }
+    // the positive controls — a User (UI/IPC) requester is NOT denied (BOTH route to RequireApproval, risk-2).
+    for action_type in ["profile.set_keychain_ref", "session.profile_change"] {
+        assert_eq!(
+            policy
+                .decide(&request_from(action_type, RequesterType::User))
+                .status,
+            PolicyDecisionStatus::RequireApproval,
+            "a User (UI/IPC) {action_type} → RequireApproval (risk-2, not denied)"
+        );
+    }
+}
+
+#[test]
 fn test_merge_pr_require_approval_for_ui_requester() {
     // spec(§6.2 risk-3 / F1) — a User (the desktop UI) requester is the permitted initiator → the merge
     // routes to RequireApproval (risk-3: not auto-execute, not on the risk-0 allowlist) — NOT auto-allowed,

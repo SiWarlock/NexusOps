@@ -44,7 +44,7 @@ catalog_enum! {
     /// the `ActionRequest` TERMINATES at the policy/approval verdict and **no daemon executor runs the
     /// tool** (the agent executes the allowed tool itself; the daemon only adjudicates + audits, the
     /// INV-SEC-1 chokepoint). It is NOT a real-executor namespace and never reaches the executor seam.
-    ExecutorKind { Brain, Project, Workflow, Plan, Session, Git, Github, Linear, Code, Review, Adjudication, Integration }
+    ExecutorKind { Brain, Project, Workflow, Plan, Session, Git, Github, Linear, Code, Review, Adjudication, Integration, Profile }
 }
 
 catalog_enum! {
@@ -94,6 +94,7 @@ pub const MVP_ACTION_TYPES: &[&str] = &[
     "session.create",
     "session.kill",
     "session.profile_change",
+    "profile.set_keychain_ref",
     "session.attach_terminal",
     "session.send_message",
     "session.pause",
@@ -313,6 +314,27 @@ pub fn lookup(action_type: &str) -> Option<ActionTypeCatalogEntry> {
             I::FromInputs,
             X::Integration,
             false,
+            true,
+        ),
+        // P5.3b/085 — profile.set_keychain_ref: the typed Gateway action that RECORDS the keychain POINTER
+        // onto the canonical `execution_profiles` row (the §15 #4 pointer; the SECRET itself was written to
+        // the keychain by the peer-authed `profile.set_secret` IPC trigger — registration-only, LESSON §49).
+        // risk-2 (approval-gated, the integration.connect/credential tier) + **NON-standing-grantable**
+        // (`entry_no_standing_grant`, §6.2 credential floor — a credential-pointer record is NEVER bulk-
+        // grantable, the integration.connect precedent, LESSON §49/§32). requires_resource_refs=true — the
+        // TARGET PROFILE is the audited resource_ref the `ProfileExecutor` re-derives `profile_keychain_ref`
+        // from (NEVER `inputs` — confused-deputy-safe, LESSON §63). NaturalResourceRef idempotency (the
+        // profile is the natural key; re-recording the same daemon-derived pointer dedups). The NEW
+        // `ExecutorKind::Profile` (a pure profile-registry mutation — its own domain, the
+        // `ExecutorKind::Integration` precedent; the executor UPDATEs the canonical row via
+        // `profiles::apply_secret_set` in the gateway txn-B). The F2 UI/IPC-only requester gate lives in the
+        // policy engine (the GITHUB_MUTATION/integration-authorization gate generalized, §15 #8).
+        "profile.set_keychain_ref" => entry_no_standing_grant(
+            R::Level2,
+            P::Api,
+            I::NaturalResourceRef,
+            X::Profile,
+            true,
             true,
         ),
         "git.create_worktree" => {

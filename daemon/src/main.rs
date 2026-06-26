@@ -257,7 +257,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `execution_profiles` table over a read-only WAL conn; the default is the cold-start-seeded id.
     let profile_lookup = Box::new(nexusopsd::profiles::SqliteProfileLookup::new(
         base_dir.join(DB_FILENAME),
-        default_execution_profile_id,
+        default_execution_profile_id.clone(),
     ));
     catalog_exec.register(
         ExecutorKind::Session,
@@ -265,6 +265,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             launcher,
             supervisor_handle,
             profile_lookup,
+        )),
+    );
+    // P5.3b/085 — profile.set_keychain_ref (ExecutorKind::Profile): the audited pointer-record action. The
+    // ProfileExecutor re-derives the keychain_ref from the AUDITED resource_ref profile id (confused-deputy-
+    // safe §63) + refuses an unregistered target (fail-closed-on-unknown §62, via its own SqliteProfileLookup);
+    // the canonical-row UPDATE rides the pipeline txn-B (apply_secret_set). The SECRET write is the separate
+    // peer-authed `profile.set_secret` IPC trigger (NOT this action — registration-only, LESSON §49/§64).
+    catalog_exec.register(
+        ExecutorKind::Profile,
+        Arc::new(nexusopsd::gateway::profile_executor::ProfileExecutor::new(
+            Box::new(nexusopsd::profiles::SqliteProfileLookup::new(
+                base_dir.join(DB_FILENAME),
+                default_execution_profile_id,
+            )),
         )),
     );
     // P5.1 (edges-019) — project.rescan (ExecutorKind::Project): read-only detection emitting
@@ -448,6 +462,30 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => eprintln!("nexusopsd: restart recovery skipped (proj_session unavailable): {e}"),
     }
 
+    // P5.3b/085 (piece 2+3) — the startup keychain self-test + runtime-status recompute pass: for each
+    // registered profile, RE-DERIVE the RUNTIME status from the live keychain self-test (a configured
+    // keychain_ref whose entry doesn't resolve → `misconfigured`, §5.1; §7.2 recompute-not-replay — the
+    // persisted `status` stays the CONFIG state). Cold-start, read-only WAL (the executor stays sole
+    // writer). The result is the DORMANT-until-ui-reader in-memory runtime view (LESSON §41 — logged here;
+    // the ui profile-status read RPC that holds + serves it, and resolve_profile consulting `misconfigured`
+    // to refuse a launch, are the named follow-ons). A fault is logged, never fatal.
+    match nexusopsd::profiles::secret::run_profile_self_test_pass(
+        &db_path,
+        github_secret_store.as_ref(),
+    ) {
+        Ok(statuses) => {
+            let misconfigured = statuses
+                .iter()
+                .filter(|(_, s)| *s == nexusops_shared::status::ExecutionProfile::Misconfigured)
+                .count();
+            eprintln!(
+                "nexusopsd: profile self-test — {} profile(s), {misconfigured} misconfigured",
+                statuses.len()
+            );
+        }
+        Err(e) => eprintln!("nexusopsd: profile self-test skipped: {e}"),
+    }
+
     let listener = bind(&base_dir.join(SOCKET_FILE))?;
     eprintln!("nexusopsd: GatewayPort listening at {SOCKET_FILE}");
     // D7 — the GitHub read client for the `get_pr_diff` §6.1 network read. P4.7/083 (C3): now
@@ -481,6 +519,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         registry.clone(),
         github_read,
         gh_connector,
+        // P5.3b/085 (C2) — the keychain store for the `profile.set_secret` inbound-secret trigger; REUSES
+        // the SAME production KeyringSecretStore as the github clients + the connect_via_gh trigger (so the
+        // secret a profile-set writes is the one resolve_authed_token/the clients read).
+        github_secret_store.clone(),
         shutdown_rx,
     );
 

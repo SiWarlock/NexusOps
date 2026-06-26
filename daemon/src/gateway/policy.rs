@@ -25,6 +25,13 @@ const GITHUB_MUTATION_TYPES: &[&str] = &["github.merge_pr", "github.submit_revie
 /// the GITHUB_MUTATION gate generalized to the integration-authorization flip).
 const INTEGRATION_AUTHORIZATION_TYPES: &[&str] = &["integration.set_live_writes"];
 
+/// P5.3b/085 — the PROFILE-mutation action types that are **UI/human-initiated ONLY**: an agent / Brain /
+/// pack / system requester is DENIED before risk resolution. §15 #8 ("the Brain may never set/change a
+/// profile") — no agent may record a profile's credential pointer (`profile.set_keychain_ref`) or rebind a
+/// live session's profile (`session.profile_change`). The GITHUB_MUTATION / integration-authorization gate
+/// generalized to the profile/credential surface (the PIN-e session-lifecycle precedent).
+const PROFILE_MUTATION_TYPES: &[&str] = &["profile.set_keychain_ref", "session.profile_change"];
+
 /// The risk-0 action types PERMITTED to auto-execute (PIN d — the lead-ruled EXPLICIT allowlist,
 /// belt-and-suspenders over the catalog + the LESSON 19 re-gate). A risk-0 type NOT here fails CLOSED
 /// (`RequireApproval`) at [`CatalogPolicy`], so a future risk-0 MUTATION can never silently
@@ -172,6 +179,20 @@ impl PolicyEngine for CatalogPolicy {
                 PolicyDecisionStatus::Deny,
                 format!(
                     "integration-authorization '{}' is UI/IPC-initiated only — a {:?} requester is denied (§15 #8)",
+                    req.action_type, req.requester_type
+                ),
+            );
+        }
+        // P5.3b/085 — a profile mutation (profile.set_keychain_ref, session.profile_change) is UI/human-
+        // initiated ONLY: an agent / Brain / pack / system requester is DENIED before any risk resolution
+        // (§15 #8 — the Brain may never set/change a profile; the integration-authorization gate generalized).
+        if PROFILE_MUTATION_TYPES.contains(&req.action_type.as_str())
+            && !is_ui_ipc_requester(req.requester_type)
+        {
+            return decision(
+                PolicyDecisionStatus::Deny,
+                format!(
+                    "profile-mutation '{}' is UI/IPC-initiated only — a {:?} requester is denied (§15 #8 Brain-never-sets-a-profile)",
                     req.action_type, req.requester_type
                 ),
             );

@@ -11,7 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::harness::{ResumeMode, TelemetrySample};
-use crate::ids::{ExecutionProfileId, WorkspaceId, WorktreeId};
+use crate::ids::{ExecutionProfileId, SessionId, WorkspaceId, WorktreeId};
 use crate::objects::{DeviceId, LocalRunnerId};
 use crate::status::{ExecutionProfile, PullRequest, ReviewState, Session};
 use crate::time::Timestamp;
@@ -89,6 +89,48 @@ pub struct ExecutionProfileRegistered {
 impl ExecutionProfileRegistered {
     /// The EventTypeRegistry name — ONE home (the P5.3a profiles register-mutator + the seed).
     pub const EVENT_TYPE: &'static str = "ExecutionProfileRegistered";
+}
+
+/// `ProfileSecretSet` payload (§15 #4 / DATA_MODEL §2.8 / P5.3b/085) — the **GATEWAY-emitted** pointer-record
+/// for the `profile.set_keychain_ref` action: the user-typed credential has already been written to the OS
+/// keychain by the `profile.set_secret` IPC trigger (substrate, NOT audited — the secret can't be audited);
+/// THIS event is the audited trail that the profile now has a configured secret, and the gateway's txn-B
+/// UPDATEs `execution_profiles.keychain_ref` to the POINTER atomically with appending it (`profiles::apply_secret_set`).
+/// Unlike `ExecutionProfileRegistered` (a System-actor cold-start substrate event), this is an *audited Action's*
+/// terminal event — the requester actor lives on the [`crate::event_envelope::EventEnvelope`] columns (like
+/// `PullRequestMerged`). **§15 rule #4 — load-bearing:** the payload carries ONLY the `execution_profile_id`,
+/// NEVER the token. The keychain POINTER is **daemon-derived** (`nexusops/profile/<prof_id>`) and so is NOT
+/// stored in the event — it is recomputed from the id wherever needed (the canonical-row UPDATE +
+/// `SecretStore` read). Keeping the (high-entropy-ULID-bearing) pointer OUT of the event payload also avoids a
+/// §15 JSON-value-redactor false-positive that would mask it to `[REDACTED]`; the bare prefixed-id is allowlisted.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct ProfileSecretSet {
+    pub execution_profile_id: ExecutionProfileId,
+}
+
+impl ProfileSecretSet {
+    /// The EventTypeRegistry name — ONE home (the `profile.set_keychain_ref` executor emit path + the
+    /// `profiles::apply_secret_set` canonical-row UPDATE in txn-B).
+    pub const EVENT_TYPE: &'static str = "ProfileSecretSet";
+}
+
+/// `SessionProfileChanged` payload (§15 #8 / P5.3b/085) — the **GATEWAY-emitted** profile-rebind for the
+/// approval-gated `session.profile_change` action: a live session's ExecutionProfile binding was changed to a
+/// REGISTERED target. The §15 #8 no-silent-account-hop record — a profile is changed ONLY via this audited,
+/// approval-gated path, NEVER silently switched (a distinct lifecycle fact, NOT a `SessionStarted` reuse —
+/// "started" vs "re-bound"). Identity (the requester actor) is on the envelope columns; the payload carries
+/// the session + the new profile id (auditable). `deny_unknown_fields` reject-unknown (§5.0/§15).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct SessionProfileChanged {
+    pub session_id: SessionId,
+    pub execution_profile_id: ExecutionProfileId,
+}
+
+impl SessionProfileChanged {
+    /// The EventTypeRegistry name — ONE home (the `session.profile_change` SessionExecutor emit path).
+    pub const EVENT_TYPE: &'static str = "SessionProfileChanged";
 }
 
 /// `AuditIntegrityViolation` payload (§17 Option C). Emitted when startup replay QUARANTINES a

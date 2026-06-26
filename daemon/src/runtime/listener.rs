@@ -66,6 +66,9 @@ pub fn spawn_accept_loop(
     // sources the `gh` token → keychain; NO token over IPC); cloned (Arc) per connection. Peer-authed by
     // the rule-#7 gate that runs first in `serve_connection`.
     gh_connector: Arc<dyn crate::integrations::auth::GhConnector>,
+    // P5.3b/085 (C2, CAT-1) — the keychain store for the `profile.set_secret` inbound-secret trigger;
+    // cloned (Arc) per connection. Reachable ONLY post-auth (the rule-#7 gate runs first in serve_connection).
+    secret_store: Arc<dyn crate::integrations::keychain::SecretStore>,
     mut shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     let permits = Arc::new(Semaphore::new(max_connections));
@@ -109,6 +112,8 @@ pub fn spawn_accept_loop(
                     let github = Arc::clone(&github);
                     // a per-connection clone of the P4.7/083 "Connect via gh" connector (Arc, cheap).
                     let gh_connector = Arc::clone(&gh_connector);
+                    // a per-connection clone of the P5.3b/085 keychain store (Arc, cheap).
+                    let secret_store = Arc::clone(&secret_store);
                     tokio::task::spawn_blocking(move || {
                         // the permit is held for the connection's lifetime; it RELEASES when this
                         // closure ends (connection closed) — no leak / self-DoS.
@@ -147,6 +152,7 @@ pub fn spawn_accept_loop(
                             &wait_class,
                             github.as_ref(),
                             gh_connector.as_ref(),
+                            secret_store.as_ref(),
                         ) {
                             eprintln!("nexusopsd: connection closed: {e}");
                         }

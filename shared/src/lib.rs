@@ -204,4 +204,13 @@ pub mod time;
 /// (`{provider, account}`, NO token — the daemon sources it), `ConnectViaGhResult` (`{status, keychain_ref?}`
 /// — the keychain POINTER only), `ConnectViaGhStatus` (`connected|gh_unavailable`). The F2 UI/IPC-only
 /// requester gate is a daemon policy concern (no `shared/` surface). Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.45.0";
+/// 0.46.0 (P5.3b/085) adds the execution-profile SECRET vertical: (a) the §6.3 catalog entry
+/// `profile.set_keychain_ref` (risk-2, the NEW `ExecutorKind::Profile`, NaturalResourceRef,
+/// requires_resource_refs=true, **NON-standing-grantable** — the §6.2 credential floor; MVP set 32→33) — the
+/// typed Gateway action recording the §15 #4 keychain POINTER onto the canonical `execution_profiles` row;
+/// (b) the §7.1 `ProfileSecretSet` (`{execution_profile_id}` — NO secret; the keychain pointer is daemon-derived) + `SessionProfileChanged`
+/// (`{session_id, execution_profile_id}` — the §15 #8 no-account-hop rebind) events; (c) the §6.1
+/// `profile.set_secret` inbound-secret IPC trigger wire types — `SetProfileSecretParams` (`{execution_profile_id,
+/// secret}` — the FIRST inbound `secret`, getpeereid-authed, Zeroizing daemon-side), `SetProfileSecretResult`
+/// (`{keychain_ref}` — the POINTER only, no echo). Additive, no frozen type reshaped (§5.0).
+pub const CONTRACT_VERSION: &str = "0.46.0";

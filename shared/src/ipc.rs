@@ -295,6 +295,45 @@ pub struct ConnectViaGhResult {
     pub keychain_ref: Option<String>,
 }
 
+/// `profile.set_secret` params (§6.1; P5.3b/085) — the inbound-secret IPC trigger (the FIRST inbound-secret
+/// surface, the ⚠️ NEW POSTURE). Unlike `connect_via_gh` (daemon-sourced), the `secret` arrives INBOUND over
+/// the getpeereid-authed local UDS (a user-typed profile credential; the local-trust-boundary relaxation of
+/// LESSON §64's daemon-sourced-only rule). `execution_profile_id` keys the per-profile keychain entry
+/// (`nexusops/profile/<prof_id>`). Peer-authed (getpeereid §15 #7, connection-scoped — first). The daemon
+/// holds `secret` in `Zeroizing` and drops it immediately after the keychain write; it NEVER enters an event,
+/// row, or log (§15 #4). `deny_unknown_fields` reject-unknown (§5.0/§15 fail-closed).
+// NO `Debug` derive — this carries the inbound plaintext credential; a `{:?}` must NEVER echo it (§15 #4 /
+// LESSON §43/§64). A custom `Debug` (below) redacts the `secret` field so the type stays debug-printable
+// (the dispatch / error paths) without ever leaking the value — the `codex::AuthSources` precedent.
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetProfileSecretParams {
+    pub execution_profile_id: String,
+    /// the inbound user-typed credential (the NEW posture). Held in `Zeroizing` daemon-side, written to the
+    /// keychain, and dropped — NEVER echoed into the result, an event, a row, or a log (§15 #4 / LESSON §64).
+    pub secret: String,
+}
+
+impl std::fmt::Debug for SetProfileSecretParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // the `secret` is REDACTED — a debug print of this struct must never leak the credential (§15 #4).
+        f.debug_struct("SetProfileSecretParams")
+            .field("execution_profile_id", &self.execution_profile_id)
+            .field("secret", &"[redacted]")
+            .finish()
+    }
+}
+
+/// `profile.set_secret` result (§6.1; P5.3b/085). Carries ONLY the §15 #4 keychain POINTER — the secret
+/// NEVER appears (the LESSON §64 no-echo pin). A keychain backend FAULT is an `internal_error` wire error
+/// (not this result; the token is never in the message). `deny_unknown_fields` reject-unknown (§5.0/§15).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetProfileSecretResult {
+    /// the §15 #4 keychain POINTER (`nexusops/profile/<prof_id>`) — NEVER the token.
+    pub keychain_ref: String,
+}
+
 /// `get_diff` result (§6.1) — the file's structured diff (HEAD→workdir), reject-unknown. REUSED by the
 /// D7 `get_pr_diff` (remote-PR head-vs-base) for ui consistency.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

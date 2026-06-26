@@ -30,7 +30,8 @@ use nexusopsd::gateway::Gateway;
 use nexusopsd::idgen::UlidGen;
 use nexusopsd::runtime::WriteActor;
 use nexusopsd::session::{
-    spawn_supervisor_task, FakeLauncher, LaunchedSession, SessionLauncher, SupervisorHandle,
+    spawn_supervisor_task, FakeLauncher, LaunchedSession, SessionCommand, SessionLauncher,
+    SupervisorControl, SupervisorHandle,
 };
 
 fn open(path: &std::path::Path) -> EventStore {
@@ -368,6 +369,233 @@ fn test_live_session_create_has_interception() {
             !exec_src.contains(tok),
             "the session executor must stay launcher-agnostic (no `{tok}`) — the live launcher is \
              injected via the SessionLauncher seam (Option A; #10 lives at PtyLauncher)"
+        );
+    }
+}
+
+// =============================================================================
+// W1-exec (094) — the session.send_message/pause/resume executor bodies. Each validates the catalog
+// `requires_resource_refs` precondition FIRST, parses the target SessionId from the resource_ref, and
+// routes a typed SessionCommand to the supervisor (the execute_kill precedent); `side_effect_applied =
+// delivered`. An observable SupervisorHandle (from_sender) lets us assert the EXACT routed command.
+// =============================================================================
+
+/// A `SessionExecutor` over an OBSERVABLE supervisor: routes flow into `rx` so a test can assert the
+/// exact `SupervisorControl::Route { session_id, command }` enqueued (the supervisor task is not
+/// spawned — `route` enqueues into our channel, so `delivered == true` while `rx` is held).
+fn executor_with_observable_supervisor() -> (
+    SessionExecutor,
+    tokio::sync::mpsc::UnboundedReceiver<SupervisorControl>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = SupervisorHandle::from_sender(tx);
+    let launcher = FakeLauncher::new(full_caps());
+    let lookup = Box::new(FakeProfileLookup::new(ExecutionProfileId::new()));
+    let executor = SessionExecutor::new(Box::new(launcher), handle, lookup);
+    (executor, rx)
+}
+
+/// a session-control request (session.pause/resume/send_message) keyed on the target session resource_ref.
+fn session_ctrl_req(action_type: &str, target: &SessionId) -> ActionRequest {
+    let mut req = base_req(action_type);
+    req.resource_refs = vec![ResourceRef {
+        resource_type: ResourceType::Session,
+        id: target.as_str().to_string(),
+        uri: None,
+    }];
+    req
+}
+
+fn send_message_req(target: &SessionId, message: &str) -> ActionRequest {
+    let mut req = session_ctrl_req("session.send_message", target);
+    req.inputs = serde_json::json!({ "message": message });
+    req
+}
+
+#[test]
+fn session_send_message_routes_to_supervisor() {
+    // spec(§9.1) — a valid target + message → SessionCommand::SendMessage(text) routed; delivered honesty
+    // (side_effect_applied == true while the supervisor channel is live, the execute_kill precedent).
+    let (executor, mut rx) = executor_with_observable_supervisor();
+    let target = SessionId::new();
+    let outcome = executor.execute(&send_message_req(&target, "hello agent"));
+    assert!(
+        matches!(
+            outcome,
+            ExecutionOutcome::Succeeded {
+                side_effect_applied: true,
+                ..
+            }
+        ),
+        "a routed send_message → Succeeded + delivered"
+    );
+    match rx.try_recv() {
+        Ok(SupervisorControl::Route {
+            session_id,
+            command,
+        }) => {
+            assert_eq!(session_id, target, "routed to the target session");
+            assert_eq!(
+                command,
+                SessionCommand::SendMessage("hello agent".to_string()),
+                "routed the SendMessage command carrying the message text"
+            );
+        }
+        _ => panic!("expected a SupervisorControl::Route(SendMessage)"),
+    }
+}
+
+#[test]
+fn session_send_message_empty_message_fails() {
+    // spec(§9.1 — I::FromInputs required input) — an EMPTY or ABSENT inputs.message → Failed BEFORE any
+    // route (a send with no message is invalid; no SessionCommand reaches the supervisor).
+    let (executor, mut rx) = executor_with_observable_supervisor();
+    let target = SessionId::new();
+    // (a) empty string
+    assert!(
+        matches!(
+            executor.execute(&send_message_req(&target, "")),
+            ExecutionOutcome::Failed(_)
+        ),
+        "empty message → Failed"
+    );
+    // (b) absent inputs.message entirely
+    let no_msg = session_ctrl_req("session.send_message", &target);
+    assert!(
+        matches!(executor.execute(&no_msg), ExecutionOutcome::Failed(_)),
+        "absent message → Failed"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "no command routed when the message is empty/absent"
+    );
+}
+
+#[test]
+fn session_send_message_missing_or_invalid_target_fails() {
+    // spec(§6.3 precondition — the execute_kill precedent) — no resource_ref (catalog
+    // requires_resource_refs) OR an unparseable SessionId → Failed BEFORE any route.
+    let (executor, mut rx) = executor_with_observable_supervisor();
+    // (a) no resource_ref → the requires_resource_refs precondition fails first.
+    let mut no_ref = base_req("session.send_message");
+    no_ref.inputs = serde_json::json!({ "message": "hi" });
+    assert!(
+        matches!(executor.execute(&no_ref), ExecutionOutcome::Failed(_)),
+        "no resource_ref → Failed (requires_resource_refs)"
+    );
+    // (b) a resource_ref carrying an unparseable SessionId → Failed before route.
+    let mut bad = base_req("session.send_message");
+    bad.resource_refs = vec![ResourceRef {
+        resource_type: ResourceType::Session,
+        id: "not_a_session_id".to_string(),
+        uri: None,
+    }];
+    bad.inputs = serde_json::json!({ "message": "hi" });
+    assert!(
+        matches!(executor.execute(&bad), ExecutionOutcome::Failed(_)),
+        "invalid SessionId → Failed"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "no command routed on a missing/invalid target"
+    );
+}
+
+#[test]
+fn session_pause_routes_pause() {
+    // spec(§9.1) — session.pause routes SessionCommand::Pause to the target; delivered honesty.
+    let (executor, mut rx) = executor_with_observable_supervisor();
+    let target = SessionId::new();
+    let outcome = executor.execute(&session_ctrl_req("session.pause", &target));
+    assert!(matches!(
+        outcome,
+        ExecutionOutcome::Succeeded {
+            side_effect_applied: true,
+            ..
+        }
+    ));
+    match rx.try_recv() {
+        Ok(SupervisorControl::Route {
+            session_id,
+            command,
+        }) => {
+            assert_eq!(session_id, target);
+            assert_eq!(command, SessionCommand::Pause, "routed Pause");
+        }
+        _ => panic!("expected Route(Pause)"),
+    }
+}
+
+#[test]
+fn session_resume_routes_resume() {
+    // spec(§9.1) — session.resume routes SessionCommand::Resume (distinct from the survival decide_resume).
+    let (executor, mut rx) = executor_with_observable_supervisor();
+    let target = SessionId::new();
+    let outcome = executor.execute(&session_ctrl_req("session.resume", &target));
+    assert!(matches!(
+        outcome,
+        ExecutionOutcome::Succeeded {
+            side_effect_applied: true,
+            ..
+        }
+    ));
+    match rx.try_recv() {
+        Ok(SupervisorControl::Route {
+            session_id,
+            command,
+        }) => {
+            assert_eq!(session_id, target);
+            assert_eq!(command, SessionCommand::Resume, "routed Resume");
+        }
+        _ => panic!("expected Route(Resume)"),
+    }
+}
+
+#[test]
+fn session_pause_validates_precondition_first() {
+    // spec(§6.3) — requires_resource_refs validated FIRST: a pause with NO resource_ref → Failed, no route.
+    let (executor, mut rx) = executor_with_observable_supervisor();
+    let req = base_req("session.pause"); // no resource_refs
+    assert!(
+        matches!(executor.execute(&req), ExecutionOutcome::Failed(_)),
+        "no resource_ref → Failed (precondition validated before any route)"
+    );
+    assert!(rx.try_recv().is_err(), "no command routed");
+}
+
+#[test]
+fn session_control_bodies_only_via_gateway_execute() {
+    // spec(§15 INV-SEC-1) — the send_message/pause/resume bodies grant NO new executor-side authority:
+    // they ONLY route a SessionCommand to the supervisor (the execute_kill seam) + emit NO event, and
+    // are reachable ONLY via the registered ExecutorKind::Session execute path. (a) behavioral: each
+    // Succeeds with emitted_events EMPTY (no Gateway-bypass emission); (b) structural: the executor stays
+    // launcher-agnostic (no live-adapter token), so a send_message feed can't smuggle an un-intercepted launch.
+    let (executor, _rx) = executor_with_observable_supervisor();
+    let target = SessionId::new();
+    for outcome in [
+        executor.execute(&send_message_req(&target, "hi")),
+        executor.execute(&session_ctrl_req("session.pause", &target)),
+        executor.execute(&session_ctrl_req("session.resume", &target)),
+    ] {
+        match outcome {
+            ExecutionOutcome::Succeeded { emitted_events, .. } => assert!(
+                emitted_events.is_empty(),
+                "a session-control body emits NO event (route-only — no Gateway-bypass authority)"
+            ),
+            _ => panic!("expected Succeeded (routed)"),
+        }
+    }
+    // structural: the executor constructs no live-adapter / launch path (the launcher-agnostic pin —
+    // send_message routes to an EXISTING actor; it cannot create an un-intercepted agent).
+    let exec_src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/gateway/session_executor.rs"
+    ))
+    .expect("session_executor.rs present");
+    for tok in ["ClaudeAdapter", "harness::claude", "PortablePtySpawner"] {
+        assert!(
+            !exec_src.contains(tok),
+            "the session-control executor stays launcher-agnostic (no `{tok}`)"
         );
     }
 }

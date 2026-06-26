@@ -21,7 +21,7 @@ use nexusops_shared::status::Session;
 use nexusopsd::harness::{
     FakeHarness, HarnessAdapter, MutationIntercept, ResumeMode, ResumeResult,
 };
-use nexusopsd::session::actor::SCROLLBACK_SAVE_INTERVAL;
+use nexusopsd::session::actor::{SCROLLBACK_SAVE_INTERVAL, STATUS_POLL_INTERVAL};
 use nexusopsd::session::{
     spawn_session_actor, FakeLauncher, LaunchedSession, SessionCommand, SessionLauncher,
     SessionSupervisor,
@@ -223,6 +223,225 @@ async fn test_adapter_drive_object_safe() {
         terminal_status,
         Session::Killed,
         "the boxed adapter drove to a terminal §5.1 state via the Kill command"
+    );
+}
+
+// ---- W1-exec (094): the actor handles SendMessage/Pause/Resume ----------------------------------
+
+/// Build a `TerminalSession` over an empty-read `FakePty`, returning the recorded-input handle (and a
+/// failing-writer variant for the LESSON-30 soft-degrade test). The actor grabs a cross-thread writer
+/// off the terminal BEFORE the pump takes it; writes land in this `input` sink.
+fn fake_terminal_with_input(id: &str, fail_writes: bool) -> (TerminalSession, Arc<Mutex<Vec<u8>>>) {
+    let mut pty = FakePty::new(
+        vec![],
+        ExitStatus {
+            exit_code: Some(0),
+            signal: None,
+        },
+    );
+    if fail_writes {
+        pty = pty.fail_writes();
+    }
+    let input = pty.input_sink();
+    let terminal = TerminalSession::new(
+        TerminalId::from_raw(id),
+        Box::new(pty),
+        Box::new(CollectingTerminalSink {
+            exits: Arc::new(Mutex::new(Vec::new())),
+        }),
+    );
+    (terminal, input)
+}
+
+#[tokio::test]
+async fn session_actor_handles_new_commands() {
+    // spec(§9.1) — the command loop PROCESSES SendMessage/Pause/Resume (not a silent drop): SendMessage
+    // writes the text + submit terminator to the session PTY; Pause/Resume are handled (the actor survives
+    // + keeps driving); Kill still terminates it. The mailbox preserves order, so by the time the actor
+    // breaks on Kill the SendMessage write has landed.
+    let adapter: Box<dyn HarnessAdapter> = Box::new(FakeHarness::new(full_caps()));
+    let (terminal, input) = fake_terminal_with_input("term_w1exec", false);
+    let (status_tx, _status_rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = spawn_session_actor(SessionId::new(), adapter, terminal, status_tx, noop_store());
+
+    handle
+        .commands
+        .send(SessionCommand::SendMessage("hello".to_string()))
+        .await
+        .expect("route SendMessage");
+    handle
+        .commands
+        .send(SessionCommand::Pause)
+        .await
+        .expect("route Pause");
+    handle
+        .commands
+        .send(SessionCommand::Resume)
+        .await
+        .expect("route Resume");
+    handle
+        .commands
+        .send(SessionCommand::Kill)
+        .await
+        .expect("route Kill");
+
+    let (_id, status) = handle.join.await.expect("actor joins");
+    assert_eq!(
+        status,
+        Session::Killed,
+        "the actor survived Pause/Resume + terminated on Kill (commands handled, not dropped)"
+    );
+    assert_eq!(
+        input.lock().unwrap().clone(),
+        b"hello\r",
+        "SendMessage wrote the text + submit terminator to the session PTY"
+    );
+}
+
+/// A harness that COUNTS `stream_status` polls (the deterministic observable for the pause-gating pin)
+/// and never self-terminates (Active forever → the actor lives until Kill). The poll count is the
+/// drive signal: while the actor is PAUSED, the status-poll arm is gated → the count must not advance.
+struct PollCountingHarness {
+    polls: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl HarnessAdapter for PollCountingHarness {
+    fn capabilities(&self) -> HarnessCapabilities {
+        full_caps()
+    }
+    fn launch(&mut self) -> NormalizedStatus {
+        Session::Starting
+    }
+    fn stream_status(&self) -> NormalizedStatus {
+        self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Session::Active // never terminal → driven only by Kill
+    }
+    fn intercept_mutation(&self) -> Option<MutationIntercept> {
+        None
+    }
+    fn read_transcript(&self) -> Option<TranscriptRef> {
+        None
+    }
+    fn telemetry_heartbeat(&self) -> Option<TelemetrySample> {
+        None
+    }
+    fn resume(&self) -> ResumeResult {
+        ResumeResult {
+            mode: ResumeMode::Relaunched,
+            replayed_event_count: 0,
+        }
+    }
+}
+
+/// give the single-thread runtime turns to drain whatever is READY (a bounded settle, never a wall-clock
+/// sleep). Under PAUSED time the only ready work is what was just enqueued/advanced, so this drains it.
+async fn settle() {
+    for _ in 0..10_000 {
+        tokio::task::yield_now().await;
+    }
+}
+
+/// yield until the poll counter reaches `target` (bounded; the `drive_until` precedent).
+async fn drive_until_polls(polls: &Arc<std::sync::atomic::AtomicUsize>, target: usize) {
+    for _ in 0..MAX_DRAIN_YIELDS {
+        if polls.load(std::sync::atomic::Ordering::SeqCst) >= target {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("drive_until_polls: never reached {target} within the yield budget");
+}
+
+#[tokio::test(start_paused = true)]
+async fn session_pause_gates_the_status_drive() {
+    // spec(§9.1 — the ADD pin) — Pause GATES the actor's status-drive poll (the flag is READ, not merely
+    // set): under PAUSED test-time, advancing N status-poll intervals while PAUSED drives ZERO polls; after
+    // Resume, advancing one interval drives a poll again. Deterministic via the test clock + a poll-counter
+    // (the `test_save_tick_periodic_checkpoint` precedent — no wall-clock flake). A broken gate is caught by
+    // the FIRST processed tick incrementing the counter; a correct gate keeps it flat regardless of drain depth.
+    use std::sync::atomic::Ordering;
+    let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let adapter: Box<dyn HarnessAdapter> = Box::new(PollCountingHarness {
+        polls: polls.clone(),
+    });
+    let (terminal, _input) = fake_terminal_with_input("term_pause_gate", false);
+    let (status_tx, _status_rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = spawn_session_actor(SessionId::new(), adapter, terminal, status_tx, noop_store());
+
+    // launch + the interval's IMMEDIATE (t=0) status-poll tick → the baseline poll.
+    drive_until_polls(&polls, 1).await;
+    let baseline = polls.load(Ordering::SeqCst);
+
+    // PAUSE — processed deterministically: under paused time NO ticker is ready (frozen clock), so the
+    // ONLY ready work after the send is the Pause command → the recv arm runs it (sets paused).
+    handle
+        .commands
+        .send(SessionCommand::Pause)
+        .await
+        .expect("route Pause");
+    settle().await;
+
+    // advance N status-poll intervals while PAUSED → N ticks fire, but the gated poll arm is skipped.
+    const N: u32 = 5;
+    for _ in 0..N {
+        tokio::time::advance(STATUS_POLL_INTERVAL).await;
+    }
+    settle().await;
+    assert_eq!(
+        polls.load(Ordering::SeqCst),
+        baseline,
+        "while PAUSED, advancing {N} status-poll intervals drove ZERO polls (the pause flag GATES the drive)"
+    );
+
+    // RESUME → the gate re-opens → the actor drives status polls again. (The "the N paused intervals
+    // leaked NONE" claim is already proven deterministically by the `== baseline` assertion above; this
+    // phase only needs to prove the gate re-opened — `> baseline`, awaited via drive_until, is robust
+    // against the `Delay` catch-up tick + advance interplay that an exact-count assertion would race on.)
+    handle
+        .commands
+        .send(SessionCommand::Resume)
+        .await
+        .expect("route Resume");
+    settle().await; // process Resume (un-gate); the now-un-gated ticker fires the pending tick → a poll
+    drive_until_polls(&polls, baseline + 1).await;
+    assert!(
+        polls.load(Ordering::SeqCst) > baseline,
+        "after RESUME the actor drives status polls again (the gate re-opened)"
+    );
+
+    handle
+        .commands
+        .send(SessionCommand::Kill)
+        .await
+        .expect("route Kill");
+    handle.join.await.expect("actor joins");
+}
+
+#[tokio::test]
+async fn session_send_message_pty_write_error_degrades_soft() {
+    // spec(§15/§9.1 + LESSON 30) — a SendMessage PTY-write ERROR does NOT fail/kill the session (the
+    // safety invariant is independent of the feed landing; the agent's tool calls are still intercepted).
+    // The session still terminates CLEANLY on the explicit Kill (Killed, not Failed) despite the write error.
+    let adapter: Box<dyn HarnessAdapter> = Box::new(FakeHarness::new(full_caps()));
+    let (terminal, _input) = fake_terminal_with_input("term_w1exec_err", true); // writer errors
+    let (status_tx, _status_rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = spawn_session_actor(SessionId::new(), adapter, terminal, status_tx, noop_store());
+
+    handle
+        .commands
+        .send(SessionCommand::SendMessage("hello".to_string()))
+        .await
+        .expect("route SendMessage (write will error)");
+    handle
+        .commands
+        .send(SessionCommand::Kill)
+        .await
+        .expect("route Kill");
+
+    let (_id, status) = handle.join.await.expect("actor joins");
+    assert_eq!(
+        status,
+        Session::Killed,
+        "a SendMessage write error degraded SOFT — the session was not failed by the write, and Kill terminates cleanly"
     );
 }
 

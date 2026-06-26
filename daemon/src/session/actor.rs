@@ -27,12 +27,20 @@ use nexusops_shared::status::Session;
 use super::launcher::{COLS, ROWS};
 use crate::harness::HarnessAdapter;
 use crate::terminal::{
-    HeadlessVt, ScrollbackStore, TerminalEmit, TerminalSession, DEFAULT_SCROLLBACK_CAPACITY,
+    HeadlessVt, PtyWriter, ScrollbackStore, TerminalEmit, TerminalSession,
+    DEFAULT_SCROLLBACK_CAPACITY,
 };
 
+/// The byte appended after a `session.send_message` text to SUBMIT it in the agent's TUI (W1-exec/094;
+/// the `write_initial_prompt` `\r` precedent — the TUI submits on Enter = CR in PTY raw mode). The
+/// deterministic test pins the exact bytes; *which* terminator actually submits at the live agent is
+/// the same runbook 0.1-HITL watch item as the initial_prompt feed.
+const MESSAGE_SUBMIT_TERMINATOR: u8 = b'\r';
+
 /// The §5.1-status poll cadence (4.0a scaffold). The sync trait is poll-based; 4.0b replaces the poll
-/// with push-based hook/transcript-stream ingestion feeding the adapter.
-const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// with push-based hook/transcript-stream ingestion feeding the adapter. `pub` so the W1-exec/094
+/// pause-gating test advances by the canonical interval (the `SCROLLBACK_SAVE_INTERVAL` precedent).
+pub const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// The telemetry pump cadence (4.0c) — the statusLine `refreshInterval` (§9.1/§11.4). Each tick calls
 /// `adapter.poll_telemetry()` (drain the live usage source → emit a `TelemetrySampled` DELTA via the
@@ -50,12 +58,24 @@ const COMMAND_MAILBOX_CAPACITY: usize = 16;
 /// `pub` so the 075e cadence test advances by the canonical interval, not a magic number.
 pub const SCROLLBACK_SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
-/// A control message to a [`SessionActor`] via its mailbox. 4.0a carries only `Kill` (the route/reap
-/// observable); pause/resume (the inbound client `{pause}`/`{resume}`) join at 6.3d.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// A control message to a [`SessionActor`] via its mailbox. `Kill` (4.0a) is the route/reap observable;
+/// W1-exec/094 adds the cockpit's drive controls — `SendMessage` (feed input to the agent), `Pause` /
+/// `Resume` (gate the actor's status/telemetry drive loop). NOT `Copy` (the `SendMessage` `String`).
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SessionCommand {
     /// Abort the session → a terminal `Killed` status; the supervisor reaps the actor.
     Kill,
+    /// Feed a message to the agent's PTY stdin (`session.send_message`). Best-effort — a PTY write error
+    /// degrades SOFT (the feed landing is not a safety invariant; the agent's tool calls are still
+    /// intercepted regardless — LESSON 30/25/26).
+    SendMessage(String),
+    /// Pause the actor's status/telemetry DRIVE loop (`session.pause`) — actor-internal control, NO §5.1
+    /// status change. **Soft pause:** the agent PROCESS is not OS-suspended in MVP (a real-suspend is a
+    /// follow-on); the actor stops observing/driving until `Resume`. A paused session is still `Kill`-able.
+    Pause,
+    /// Resume the actor's drive loop (`session.resume`) — un-pause a live paused actor. DISTINCT from the
+    /// daemon-restart survival `decide_resume` (the §8.1 ladder); this routes to a LIVE actor.
+    Resume,
 }
 
 /// A handle to a spawned [`SessionActor`]: its `JoinHandle` (yields `(SessionId, terminal Session)`
@@ -142,6 +162,10 @@ async fn run(
     // be `abort()`ed; a live long-running agent never EOFs on its own → without this the pump (and the
     // actor's `pump.await`) would hang forever, blocking daemon shutdown.
     let killer = terminal.killer();
+    // W1-exec/094 — grab the cross-thread PTY writer BEFORE the pump takes the terminal, so a
+    // `SendMessage` command can feed the agent's stdin while the pump owns the terminal (the `killer`
+    // precedent; the master read + write are independent handles). WRITE-ONLY (no #9 status source).
+    let writer: Box<dyn PtyWriter> = terminal.writer();
 
     // 075c — the per-session headless VT (the survival snapshot source). The pump thread FEEDS it the
     // decoded display bytes; the actor SNAPSHOTS it (periodic tick + on reap) into the `ScrollbackStore`.
@@ -184,6 +208,11 @@ async fn run(
     // actor on shutdown, so a SUPERVISED actor never orphans. (A direct caller that drops all senders
     // without a Kill on a non-terminating adapter would leave the actor polling — a documented misuse.)
     let mut ticker = tokio::time::interval(STATUS_POLL_INTERVAL);
+    // `Delay` (not the default `Burst`) so a PAUSE (W1-exec/094) that suspends the status arm does NOT
+    // replay a BURST of catch-up polls on Resume — driving resumes from NOW (the telemetry/save tick
+    // precedent). For the normal unpaused cadence this is equivalent (no ticks are ever missed); a status
+    // poll reads CURRENT state, so dropping missed deadlines loses nothing.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // the 4.0c telemetry pump tick (statusLine refresh cadence). `MissedTickBehavior::Delay` so a
     // backlog never bursts (LESSON §9); it rides the same `select!` as the status poll + the mailbox,
     // so it NEVER blocks the command mailbox (poll_telemetry is a cheap drain + a fire-and-forget emit).
@@ -195,6 +224,10 @@ async fn run(
     let mut save_tick = tokio::time::interval(SCROLLBACK_SAVE_INTERVAL);
     save_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut mailbox_open = true;
+    // W1-exec/094 — the soft-pause flag: while `true`, the actor's status + telemetry DRIVE arms are
+    // GATED (it stops observing/driving the agent) until `Resume`. Actor-internal, NO §5.1 status change.
+    // The Kill arm + the survival save tick are NEVER gated (a paused session stays killable + survivable).
+    let mut paused = false;
     loop {
         tokio::select! {
             cmd = commands.recv(), if mailbox_open => match cmd {
@@ -203,10 +236,24 @@ async fn run(
                     let _ = status_tx.send(current);
                     break;
                 }
+                // W1-exec/094 — feed the message + submit terminator to the agent's PTY stdin. Best-effort
+                // / fail-SOFT (LESSON 30): a write error is DROPPED — it does NOT fail/kill the session (the
+                // INV-SEC-1 invariant is independent of the feed landing; every agent tool call still routes
+                // through the unchanged interception regardless of how the agent was prompted).
+                Some(SessionCommand::SendMessage(text)) => {
+                    let mut bytes = text.into_bytes();
+                    bytes.push(MESSAGE_SUBMIT_TERMINATOR);
+                    let _ = writer.write(&bytes);
+                }
+                // W1-exec/094 — pause/resume the drive loop (actor-internal; the gated arms below read this).
+                Some(SessionCommand::Pause) => paused = true,
+                Some(SessionCommand::Resume) => paused = false,
                 // every command sender dropped → stop polling the mailbox, keep driving the lifecycle.
                 None => mailbox_open = false,
             },
-            _ = ticker.tick() => {
+            // the status DRIVE poll is GATED while paused (W1-exec/094): the tick still fires, but the
+            // adapter is not observed/driven until Resume (no §5.1 advance, no terminal reap while paused).
+            _ = ticker.tick(), if !paused => {
                 // stream_status is a cheap `&self` read of the adapter's structured-stream state
                 // (safety #9 — never PTY-scraped); poll inline, no spawn_blocking.
                 let next = adapter.stream_status();
@@ -218,7 +265,8 @@ async fn run(
                     }
                 }
             }
-            _ = telemetry_tick.tick() => {
+            // the telemetry pump is GATED while paused (W1-exec/094) — a paused session is not observed.
+            _ = telemetry_tick.tick(), if !paused => {
                 // 4.0c — the telemetry pump: drain the live usage source → emit a TelemetrySampled
                 // DELTA via the adapter's injected sink (a non-mutation OBSERVATION; the cat-1
                 // boundary holds — the sink is opaque, this actor never imports `WriteHandle`). A

@@ -39,11 +39,9 @@ pub use scrollback_store::FakeScrollbackStore;
 pub use scrollback_store::{NoopScrollbackStore, ScrollbackStore};
 
 use std::io::{self, Read, Write};
-// Arc + Mutex are used only by the `test-support`-gated `FakePty` (its recorded-input handle).
-#[cfg(any(test, feature = "test-support"))]
-use std::sync::Arc;
-#[cfg(any(test, feature = "test-support"))]
-use std::sync::Mutex;
+// Arc + Mutex back the production `PortablePtyHost`'s shared cross-thread writer (W1-exec/094) AND the
+// `test-support`-gated `FakePty` recorded-input handle.
+use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -116,6 +114,11 @@ pub trait Pty: Send {
     /// child is what makes the read return EOF (a live long-running agent never EOFs on its own → the
     /// pump would hang forever without this, blocking daemon shutdown).
     fn killer(&self) -> Box<dyn PtyKiller>;
+    /// A cross-thread [`PtyWriter`] handle for this PTY's stdin (W1-exec/094). EXTRACTED BEFORE the
+    /// blocking read-pump takes ownership of the `Pty`, so the `SessionActor` can feed input
+    /// (`session.send_message`) WHILE the pump owns the `Pty` on a `spawn_blocking` thread (the
+    /// [`killer`](Pty::killer) precedent — the master PTY read + write are independent handles).
+    fn writer(&self) -> Box<dyn PtyWriter>;
 }
 
 /// A cross-thread handle that kills a [`Pty`]'s child (P4.0b-2 L3 — the live-agent shutdown-bounding
@@ -123,6 +126,17 @@ pub trait Pty: Send {
 /// `Pty` on a `spawn_blocking` thread, and kills the child to unblock the pump's blocked `read`.
 pub trait PtyKiller: Send + Sync {
     fn kill(&self);
+}
+
+/// A cross-thread handle that WRITES input to a [`Pty`]'s child stdin (W1-exec/094). `Send + Sync` +
+/// `write(&self, …)` so the `SessionActor` holds it WHILE the read-pump owns the `Pty` on a
+/// `spawn_blocking` thread and feeds `session.send_message` keystrokes. **WRITE-ONLY by construction**
+/// — there is NO read/output method on this trait, so it can never be a status source (safety #9 holds
+/// structurally, not just by convention; status derives from the adapter stream, never the PTY).
+pub trait PtyWriter: Send + Sync {
+    /// Write input bytes to the child's stdin (keystrokes / a fed message). Errors are the caller's to
+    /// degrade-soft (the feed landing is not a safety invariant — LESSON 30).
+    fn write(&self, bytes: &[u8]) -> io::Result<()>;
 }
 
 // ---- the event-emission seam (daemon-internal; production binds the write-actor at 3.2/3.3) ------
@@ -269,6 +283,13 @@ impl TerminalSession {
     /// Kill/shutdown (a live agent never EOFs on its own; killing the child makes the read return EOF).
     pub fn killer(&self) -> Box<dyn PtyKiller> {
         self.pty.killer()
+    }
+
+    /// A cross-thread [`PtyWriter`] for this session's PTY stdin (W1-exec/094) — grab it BEFORE moving
+    /// the session into the (blocking) read-pump, so the actor can feed `session.send_message` input
+    /// while the pump owns the terminal (the [`killer`](TerminalSession::killer) precedent). WRITE-ONLY.
+    pub fn writer(&self) -> Box<dyn PtyWriter> {
+        self.pty.writer()
     }
 
     /// Bytes currently buffered (read but not yet flushed) — the backpressure level. Bounded by the
@@ -430,7 +451,10 @@ pub struct PortablePtyHost {
     /// the master end — retained for `resize` (the `reader`/`writer` are cloned/taken off it).
     master: Box<dyn portable_pty::MasterPty + Send>,
     reader: Box<dyn Read + Send>,
-    writer: Box<dyn Write + Send>,
+    /// the master writer, SHARED behind `Arc<Mutex>` so the cross-thread [`PortableWriter`] handle
+    /// (W1-exec/094 — `session.send_message`) and the `&mut self` [`write`](Pty::write) path drive the
+    /// SAME PTY stdin (the master read + write are independent; the pump never writes, so it is uncontended).
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
@@ -480,7 +504,7 @@ impl PortablePtyHost {
         Ok(Self {
             master: pair.master,
             reader,
-            writer,
+            writer: Arc::new(Mutex::new(writer)),
             child,
         })
     }
@@ -498,8 +522,12 @@ impl Pty for PortablePtyHost {
     }
 
     fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.writer.write_all(bytes)?;
-        self.writer.flush()
+        let mut w = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        w.write_all(bytes)?;
+        w.flush()
     }
 
     fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()> {
@@ -536,6 +564,16 @@ impl Pty for PortablePtyHost {
             self.child.clone_killer(),
         )))
     }
+
+    fn writer(&self) -> Box<dyn PtyWriter> {
+        // share the master writer (Arc clone) — the cross-thread `&self` handle drives the SAME PTY stdin
+        // as `write(&mut self)`. The `Arc<Mutex>` is what lets the `&self` `PtyWriter` own a share of the
+        // single master writer (NOT a concurrency fix — the two write sites are already serialized: the
+        // pre-spawn `write_initial_prompt` and the post-spawn `session.send_message` both run on the
+        // single write-actor thread / the actor that only exists after create completes). The pump owns
+        // the master READER (it never writes), so read + write are independent handles, never contended.
+        Box::new(PortableWriter(Arc::clone(&self.writer)))
+    }
 }
 
 /// The production [`PtyKiller`] — a `portable-pty` `ChildKiller` (cross-thread kill of the live child).
@@ -550,6 +588,21 @@ impl PtyKiller for PortableKiller {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .kill();
+    }
+}
+
+/// The production [`PtyWriter`] (W1-exec/094) — a cross-thread handle over the SHARED master writer, so
+/// the `SessionActor` feeds `session.send_message` stdin while the pump owns the `Pty`. WRITE-ONLY.
+struct PortableWriter(Arc<Mutex<Box<dyn Write + Send>>>);
+
+impl PtyWriter for PortableWriter {
+    fn write(&self, bytes: &[u8]) -> io::Result<()> {
+        let mut w = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        w.write_all(bytes)?;
+        w.flush()
     }
 }
 
@@ -661,6 +714,9 @@ pub struct FakePty {
     /// set by the [`PtyKiller`] this `FakePty` hands out (or by `kill`) — once set, a blocked/looping
     /// `read` returns EOF (the kill broke the read), so the actor's pump terminates.
     killed: Arc<std::sync::atomic::AtomicBool>,
+    /// W1-exec/094 — when set, the [`PtyWriter`] this `FakePty` hands out returns an `Err` on every
+    /// write (the LESSON-30 fail-soft test for `session.send_message`). Default false (writes succeed).
+    write_fails: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -672,6 +728,7 @@ impl FakePty {
             input: Arc::new(Mutex::new(Vec::new())),
             loop_until_killed: false,
             killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            write_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -689,7 +746,16 @@ impl FakePty {
             input: Arc::new(Mutex::new(Vec::new())),
             loop_until_killed: true,
             killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            write_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// W1-exec/094 — a `FakePty` whose handed-out [`PtyWriter`] FAILS every write (the LESSON-30
+    /// soft-degrade test for `session.send_message`). Builder form (grab `input_sink`/spawn after).
+    pub fn fail_writes(self) -> Self {
+        self.write_fails
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self
     }
 
     /// A handle to the recorded child input — grab it BEFORE moving the `FakePty` into a session.
@@ -750,6 +816,16 @@ impl Pty for FakePty {
     fn killer(&self) -> Box<dyn PtyKiller> {
         Box::new(FakeKiller(self.killed.clone()))
     }
+
+    fn writer(&self) -> Box<dyn PtyWriter> {
+        // a cross-thread writer over the SAME recorded-input sink (so a test asserts the fed bytes via
+        // `input_sink`); honors the `write_fails` flag (the LESSON-30 fail-soft test). The `killer`/`input`
+        // shared-handle precedent.
+        Box::new(FakeWriter {
+            input: Arc::clone(&self.input),
+            fail: Arc::clone(&self.write_fails),
+        })
+    }
 }
 
 /// The [`FakePty`]'s cross-thread killer — sets the shared `killed` flag so a blocked/looping `read`
@@ -761,5 +837,28 @@ struct FakeKiller(Arc<std::sync::atomic::AtomicBool>);
 impl PtyKiller for FakeKiller {
     fn kill(&self) {
         self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// The [`FakePty`]'s cross-thread [`PtyWriter`] (W1-exec/094) — appends to the SAME recorded-input sink
+/// the test asserts on (`input_sink`), or returns an `Err` when the `fail` flag is set (the LESSON-30
+/// soft-degrade test). `test-support`-gated with `FakePty`.
+#[cfg(any(test, feature = "test-support"))]
+struct FakeWriter {
+    input: Arc<Mutex<Vec<u8>>>,
+    fail: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl PtyWriter for FakeWriter {
+    fn write(&self, bytes: &[u8]) -> io::Result<()> {
+        if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(io::Error::other("fake pty write failure (test)"));
+        }
+        self.input
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(bytes);
+        Ok(())
     }
 }

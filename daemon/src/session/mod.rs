@@ -162,7 +162,9 @@ impl SessionSupervisor {
 /// write-actor-thread caller's `send` is a NON-BLOCKING enqueue that can never stall the single
 /// mutation path (cat-1 no-stall, P4.0b-1) — the live session count is naturally bounded, so there is
 /// no unbounded-growth concern.
-enum SupervisorControl {
+/// The supervisor task's control messages (`pub` so a test-support [`SupervisorHandle::from_sender`]
+/// can OBSERVE the routed commands — W1-exec/094). Daemon-internal (no `shared/` contract).
+pub enum SupervisorControl {
     Spawn {
         launched: LaunchedSession,
         status_tx: StatusObserver,
@@ -185,6 +187,14 @@ pub struct SupervisorHandle {
 }
 
 impl SupervisorHandle {
+    /// (W1-exec/094, test-support) Build a handle over a caller-provided control sender — so a test can
+    /// OBSERVE the routed `SupervisorControl` (assert the EXACT routed command) WITHOUT spawning a real
+    /// supervisor task. Test-only (the `FakeLauncher` precedent); production uses [`spawn_supervisor_task`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_sender(control: mpsc::UnboundedSender<SupervisorControl>) -> Self {
+        Self { control }
+    }
+
     /// Spawn a session through the supervisor task — a NON-BLOCKING enqueue. Returns the session id
     /// (read off `launched`; the supervisor task picks the Spawn up on the runtime). A send failure
     /// (the supervisor task is gone — shutdown) is benign: the id is still returned (the session is moot).

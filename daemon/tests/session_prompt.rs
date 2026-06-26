@@ -29,7 +29,7 @@ use nexusopsd::session::{
     spawn_supervisor_task, LaunchedSession, NullTerminalSink, SessionLauncher, SupervisorHandle,
 };
 use nexusopsd::terminal::{
-    ExitStatus, FakePty, Pty, PtyKiller, PtyRead, TerminalId, TerminalSession,
+    ExitStatus, FakePty, Pty, PtyKiller, PtyRead, PtyWriter, TerminalId, TerminalSession,
 };
 
 /// the input sink of a launched [`FakePty`] (Arc-shared so a test can assert the bytes written).
@@ -162,10 +162,21 @@ impl Pty for WriteErrPty {
     fn killer(&self) -> Box<dyn PtyKiller> {
         Box::new(NoopKiller)
     }
+    fn writer(&self) -> Box<dyn PtyWriter> {
+        // consistent with this PTY's always-erroring write — the cross-thread writer also errors. (This
+        // test exercises the initial_prompt feed via `terminal.write()`, not the cross-thread writer.)
+        Box::new(ErrWriter)
+    }
 }
 struct NoopKiller;
 impl PtyKiller for NoopKiller {
     fn kill(&self) {}
+}
+struct ErrWriter;
+impl PtyWriter for ErrWriter {
+    fn write(&self, _bytes: &[u8]) -> io::Result<()> {
+        Err(io::Error::other("simulated PTY write failure"))
+    }
 }
 
 /// A permissive [`ProfileLookup`](nexusopsd::profiles::ProfileLookup) for the prompt tests: every id

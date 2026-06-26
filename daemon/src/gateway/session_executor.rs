@@ -35,6 +35,11 @@ const SESSION_CREATE: &str = "session.create";
 const SESSION_KILL: &str = "session.kill";
 /// P5.3b/085 — the §15 #8 no-silent-account-hop profile rebind (the approval-gated CHANGE, PIN c).
 const SESSION_PROFILE_CHANGE: &str = "session.profile_change";
+/// W1-exec/094 — the cockpit DRIVE controls: feed a message to the agent, pause/resume the session.
+/// Each routes a typed `SessionCommand` to the live supervisor (the `session.kill` precedent).
+const SESSION_SEND_MESSAGE: &str = "session.send_message";
+const SESSION_PAUSE: &str = "session.pause";
+const SESSION_RESUME: &str = "session.resume";
 
 /// The byte appended after an `initial_prompt` to SUBMIT it in claude's TUI (P4.0b-2-smoke, brief 053
 /// Q2). `\r` (CR) — claude's TUI submits on Enter, which is CR in PTY raw mode. The deterministic test
@@ -302,6 +307,88 @@ impl SessionExecutor {
             emitted_events: vec![],
         }
     }
+
+    /// W1-exec/094 — validate the catalog `requires_resource_refs` precondition FIRST (this path runs its
+    /// own side effect, never reaching `inner.execute`), then parse the target `SessionId` from the first
+    /// resource_ref. A missing precondition / missing-or-unparseable target → `Failed` BEFORE any route
+    /// (no silent skip — the `execute_kill`/`execute_profile_change` precedent).
+    fn validated_target(
+        &self,
+        req: &ActionRequest,
+        label: &str,
+    ) -> Result<SessionId, ExecutionOutcome> {
+        if let Err(e) = self.inner.validate(req) {
+            return Err(ExecutionOutcome::Failed(e.to_string()));
+        }
+        let Some(rref) = req.resource_refs.first() else {
+            return Err(ExecutionOutcome::Failed(format!(
+                "{label} requires the target session resource_ref"
+            )));
+        };
+        SessionId::parse(&rref.id).map_err(|_| {
+            ExecutionOutcome::Failed(format!("{label}: invalid session id '{}'", rref.id))
+        })
+    }
+
+    /// W1-exec/094 — the shared route body for `session.pause`/`session.resume`: validate + parse the
+    /// target, then route the typed `SessionCommand` to the supervisor. `side_effect_applied = delivered`
+    /// (honest §17 — the `execute_kill` precedent). NB `delivered` = the supervisor TASK accepted the
+    /// route enqueue (alive), NOT that the target session received it: a dead supervisor task → false →
+    /// clean rollback; an already-reaped/unknown session is silently discarded by the supervisor (the
+    /// route still enqueues → delivered=true, exactly as `session.kill` behaves). Route-ONLY — emits NO
+    /// event, grants NO new authority (INV-SEC-1: the agent's tool calls stay intercepted).
+    fn execute_route(
+        &self,
+        req: &ActionRequest,
+        command: SessionCommand,
+        label: &str,
+    ) -> ExecutionOutcome {
+        let target = match self.validated_target(req, label) {
+            Ok(t) => t,
+            Err(outcome) => return outcome,
+        };
+        let delivered = self.supervisor.route(target, command);
+        ExecutionOutcome::Succeeded {
+            changed_resources: req.resource_refs.clone(),
+            detail: format!("{label} — routed (delivered={delivered})"),
+            side_effect_applied: delivered,
+            emitted_events: vec![],
+        }
+    }
+
+    /// W1-exec/094 — the `session.send_message` body: validate + parse the target, then route the
+    /// REQUIRED non-empty message (`I::FromInputs`) as `SessionCommand::SendMessage(text)` to the live
+    /// session. An empty/absent message → `Failed` BEFORE any route (a send with no message is invalid).
+    /// `side_effect_applied = delivered`; route-ONLY (no event). Best-effort enqueue (Q1) — the actual
+    /// PTY write is the actor's LESSON-30 soft-degrade; feeding the agent grants NO new authority (its
+    /// resulting tool calls are still adjudicated by the existing interception, LESSON 25/26).
+    ///
+    /// §15/§13 real-input-fidelity caveat (inherited, NOT a blocker): the risk-2 approve path executes
+    /// off the §15-REDACTED durable row, so a secret-shaped token in the message is masked by execute-time
+    /// → over-redact, never leak (the invariant holds; the deferred fidelity hardening is lead-routed).
+    fn execute_send_message(&self, req: &ActionRequest) -> ExecutionOutcome {
+        let target = match self.validated_target(req, SESSION_SEND_MESSAGE) {
+            Ok(t) => t,
+            Err(outcome) => return outcome,
+        };
+        let message = match req.inputs.get("message").and_then(|v| v.as_str()) {
+            Some(m) if !m.is_empty() => m.to_string(),
+            _ => {
+                return ExecutionOutcome::Failed(
+                    "session.send_message requires a non-empty inputs.message".to_string(),
+                )
+            }
+        };
+        let delivered = self
+            .supervisor
+            .route(target, SessionCommand::SendMessage(message));
+        ExecutionOutcome::Succeeded {
+            changed_resources: req.resource_refs.clone(),
+            detail: format!("session.send_message — routed (delivered={delivered})"),
+            side_effect_applied: delivered,
+            emitted_events: vec![],
+        }
+    }
 }
 
 impl ActionExecutor for SessionExecutor {
@@ -316,6 +403,10 @@ impl ActionExecutor for SessionExecutor {
             SESSION_CREATE => self.execute_create(req),
             SESSION_KILL => self.execute_kill(req),
             SESSION_PROFILE_CHANGE => self.execute_profile_change(req),
+            // W1-exec/094 — the drive controls route a typed SessionCommand to the supervisor.
+            SESSION_SEND_MESSAGE => self.execute_send_message(req),
+            SESSION_PAUSE => self.execute_route(req, SessionCommand::Pause, SESSION_PAUSE),
+            SESSION_RESUME => self.execute_route(req, SessionCommand::Resume, SESSION_RESUME),
             // every non-session action delegates to the catalog executor, which validates internally
             // (`resolve`) — no double-check here.
             _ => self.inner.execute(req),

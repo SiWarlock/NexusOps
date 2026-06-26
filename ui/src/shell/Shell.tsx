@@ -28,7 +28,7 @@ import {
 import { CommandCenter } from "../views/command/CommandCenter";
 import { ProjectGraph } from "../views/graph/ProjectGraph";
 import { Settings } from "../views/settings/Settings";
-import { ProjectsOverview } from "../views/projects/ProjectsOverview";
+import { ProjectsOverviewContainer } from "../views/projects/ProjectsOverviewContainer";
 import { AuditTrail } from "../views/audit/AuditTrail";
 import { SessionTerminal } from "../views/terminal/SessionTerminal";
 import { DiffReview } from "../views/code/DiffReview";
@@ -794,7 +794,8 @@ export function Shell({
             // Reached via the TopBar gear (§11.2 nav model).
             <Settings usage={data.usage} creditPool={data.creditPool} />
           ) : contentView === "projects" ? (
-            <ProjectsOverview
+            <ProjectsOverviewContainer
+              gateway={client}
               projects={data.projects}
               counts={data.counts}
               activeProjectId={activeProjectId}

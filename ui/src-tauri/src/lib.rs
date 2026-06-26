@@ -9,6 +9,10 @@ mod commands;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Native folder picker for the cockpit "Add project" flow (project.rescan inputs.path). Scoped
+        // to `dialog:allow-open` (capabilities/default.json) — the picker returns only the chosen path;
+        // the daemon Gateway is still the sole mutator (the path feeds a project.rescan intent).
+        .plugin(tauri_plugin_dialog::init())
         // The complete command allowlist (registered = invokable; nothing else is exposed). Still NO
         // generic `gateway_call` — reads + subscribe + the 4 typed L2 mutation commands only (LESSON 21).
         .invoke_handler(tauri::generate_handler![

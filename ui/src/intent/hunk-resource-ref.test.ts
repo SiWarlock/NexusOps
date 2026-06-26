@@ -3,8 +3,16 @@ import {
   buildHunkActionRequest,
   hunkResourceRef,
   HUNK_ID_SEP,
+  displayedHunkSha256,
+  displayedHunkCanonical,
+  PREFIX,
 } from "./hunk-resource-ref";
-import { ActionRequest, ResourceRef, type Hunk } from "../contracts/index";
+import {
+  ActionRequest,
+  DiffLineKind,
+  ResourceRef,
+  type Hunk,
+} from "../contracts/index";
 
 // The U+001F unit separator, via escape (a literal control char is fragile in source).
 const SEP = "\u001f";
@@ -101,5 +109,96 @@ describe("buildHunkActionRequest (§6.1/§6.2 — the submitted intent assembler
     expect(a.action_request_id).toMatch(ACT_ULID);
     expect(b.action_request_id).toMatch(ACT_ULID);
     expect(a.action_request_id).not.toBe(b.action_request_id);
+  });
+});
+
+// The LOCKED daemon canonicalization (096 Step-2.5; independently re-verified via
+// `printf ' a\n-b\n+c\n' | shasum -a 256`). The @@ header is EXCLUDED; for each DiffLine in
+// order: one origin byte (context→" ", added→"+", removed→"-") + content VERBATIM, joined "",
+// sha256 → lowercase hex (64 chars). This frozen {canonical, digest} vector is the
+// cross-language contract lock — the daemon pins the IDENTICAL pair.
+const VECTOR_HUNK: Hunk = {
+  header: "@@ -1,3 +1,3 @@",
+  old_start: 1,
+  old_lines: 3,
+  new_start: 1,
+  new_lines: 3,
+  lines: [
+    { kind: "context", content: "a\n" },
+    { kind: "removed", content: "b\n" },
+    { kind: "added", content: "c\n" },
+  ],
+};
+const VECTOR_CANONICAL = " a\n-b\n+c\n";
+const VECTOR_SHA256 =
+  "2980a502c1e0d3a04db1ff7021ede674af4f53fa3b352e485ac67e0b15c39ee6";
+
+describe("displayedHunkSha256 — the §17 verify-before-destroy content hash (LOCKED 096 canonicalization)", () => {
+  it("displayed_hunk_sha256_matches_frozen_conformance_vector", () => {
+    // spec(§17/§6.3) — the LOCKED daemon canonicalization, pinned BOTH the intermediate
+    // canonical string AND the digest (the cross-language contract lock; mirror of the daemon).
+    expect(displayedHunkCanonical(VECTOR_HUNK)).toBe(VECTOR_CANONICAL);
+    expect(displayedHunkSha256(VECTOR_HUNK)).toBe(VECTOR_SHA256);
+    expect(displayedHunkSha256(VECTOR_HUNK)).toMatch(/^[0-9a-f]{64}$/); // lowercase hex, 64 chars
+  });
+
+  it("discard_request_carries_displayed_hunk_sha256_input", () => {
+    // spec(§6.3/§17) — verify-before-destroy: git.discard_hunk submits the content hash in
+    // INPUTS (additive; `inputs` is z.unknown() opaque → NO contract/Zod change). The daemon
+    // re-derives + compares; absent/empty/mismatch → Failed, so a stale hash never destroys.
+    const req = buildHunkActionRequest(
+      "git.discard_hunk",
+      "wt_demo_0001",
+      "src/gateway/review.ts",
+      VECTOR_HUNK,
+      "2026-06-13T00:00:00Z",
+    );
+    expect(() => ActionRequest.parse(req)).not.toThrow();
+    // Pin against the FROZEN constant (not displayedHunkSha256(VECTOR_HUNK)) so this is an
+    // INDEPENDENT cross-language contract pin, not a tautology that would mask a systematic
+    // hash bug shared by build + expected. (Test 1 separately pins the fn → the frozen vector.)
+    expect(req.inputs).toEqual({ displayed_hunk_sha256: VECTOR_SHA256 });
+  });
+
+  it("stage_unstage_requests_have_null_inputs", () => {
+    // spec(§6.3) — the content hash is discard-ONLY (the daemon relay scoped it to
+    // git.discard_hunk); stage/unstage keep inputs:null (the position-only posture, daemon
+    // LESSON §72 / ui LESSON §42 — stage's same-position content-drift is accepted; discard's is NOT).
+    for (const at of ["git.stage_hunk", "git.unstage_hunk"] as const) {
+      const req = buildHunkActionRequest(at, "wt_1", "a.ts", VECTOR_HUNK, "2026-06-13T00:00:00Z");
+      expect(req.inputs).toBeNull();
+    }
+  });
+
+  it("diff_line_prefix_map_is_complete_over_generated_kinds", () => {
+    // spec(§6.1; LESSON §5/§30) — PREFIX is Record<DiffLineKind,string> COMPLETE over the
+    // GENERATED enum: a daemon-added 4th kind FAILS here until the canonicalization covers it
+    // (a canonicalization-divergence net — an uncovered kind would hash to a divergent string).
+    for (const kind of DiffLineKind.options) {
+      expect(PREFIX[kind], `PREFIX missing kind "${kind}"`).toBeDefined();
+      expect(typeof PREFIX[kind]).toBe("string");
+    }
+    // the frozen MVP origin bytes (the unified-diff convention the daemon mirrors)
+    expect(PREFIX.context).toBe(" ");
+    expect(PREFIX.added).toBe("+");
+    expect(PREFIX.removed).toBe("-");
+  });
+
+  it("canonicalization_is_byte_verbatim", () => {
+    // spec(§6.3/§17) — the daemon's "do NOT re-render / strip / re-add newlines / collapse
+    // whitespace" invariant. (a) a context line whose content starts with a space keeps BOTH the
+    // prefix space AND the content space (no collapse); (b) a final line with NO trailing \n
+    // hashes verbatim (no fabricated newline).
+    const indented: Hunk = {
+      ...VECTOR_HUNK,
+      lines: [{ kind: "context", content: " x\n" }],
+    };
+    expect(displayedHunkCanonical(indented)).toBe("  x\n"); // prefix " " + content " x\n"
+
+    const noNewline: Hunk = {
+      ...VECTOR_HUNK,
+      lines: [{ kind: "added", content: "tail" }],
+    };
+    expect(displayedHunkCanonical(noNewline)).toBe("+tail"); // no fabricated trailing \n
   });
 });

@@ -10,6 +10,8 @@
 // (a `ResourceType`, lowercase `"file"`) and the id is the U+001F-delimited triple. The
 // brief/daemon prose's informal `resource_type:"File"` is Rust-variant shorthand —
 // `ResourceType::File` serializes to the wire value `"file"`.
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import type {
   ActionRequest,
   Hunk,
@@ -20,6 +22,49 @@ import { mintActionRequestId } from "./mint-id";
 
 /** The U+001F unit-separator delimiting worktree_id / file / positions (frozen §6.3). */
 export const HUNK_ID_SEP = "\u001f";
+
+/** The kind of one displayed `DiffLine`, derived from the generated `DiffLineKind` enum
+ *  (`Hunk.lines[].kind` delegates to `bundle.shape.DiffLineKind`). Deriving from the consumed
+ *  row keeps {@link PREFIX} tsc-COMPLETE over the generated enum: a daemon-added 4th kind
+ *  grows this union → the `Record` below stops type-checking until covered (LESSON §5/§30). */
+type DiffLineKind = Hunk["lines"][number]["kind"];
+
+/**
+ * The LOCKED origin-byte prefix per diff-line kind (the unified-diff convention the daemon
+ * mirrors at 096): a `context` line → `" "`, an `added` line → `"+"`, a `removed` line → `"-"`.
+ * `Record<DiffLineKind, …>` so tsc forces every generated kind to carry a prefix — an uncovered
+ * kind would hash to a divergent canonical string vs the daemon (a destroy-gate divergence).
+ * Pinned complete by `diff_line_prefix_map_is_complete_over_generated_kinds`.
+ */
+export const PREFIX: Record<DiffLineKind, string> = {
+  context: " ",
+  added: "+",
+  removed: "-",
+};
+
+/**
+ * Canonicalize the displayed `Hunk` BODY to the LOCKED daemon string (096 Step-2.5): for each
+ * `DiffLine` IN ORDER, one {@link PREFIX} origin byte immediately followed by `DiffLine.content`
+ * VERBATIM (the raw `get_diff` content — the daemon strips the origin marker INTO `content` and
+ * retains the trailing `\n`), all joined with NO separator. The `@@` header is EXCLUDED. Do NOT
+ * re-render / strip / re-add newlines or collapse leading whitespace — `content` carries its own
+ * `\n`, so `.join("")` is correct. The intermediate string is the cross-language contract lock.
+ */
+export function displayedHunkCanonical(hunk: Hunk): string {
+  return hunk.lines.map((line) => PREFIX[line.kind] + line.content).join("");
+}
+
+/**
+ * The §17 verify-before-destroy content hash: SHA-256 of {@link displayedHunkCanonical}, as
+ * lowercase hex (64 chars). The daemon re-derives the live hunk, re-computes this hash, and
+ * compares before discarding — absent / empty / mismatch → `Failed` ("hunk changed,
+ * re-examine"), so a stale hash never destroys the wrong content (extending LESSON §19 from
+ * position-identity to content-identity). Frozen-vector-pinned both sides (the daemon pins the
+ * identical {canonical, digest}).
+ */
+export function displayedHunkSha256(hunk: Hunk): string {
+  return bytesToHex(sha256(utf8ToBytes(displayedHunkCanonical(hunk))));
+}
 
 /**
  * The displayed `Hunk` → its `File` resource_ref. The id is
@@ -62,7 +107,13 @@ export function buildHunkActionRequest(
     requester_type: "user",
     requester_id: "current_user",
     resource_refs: [hunkResourceRef(worktreeId, file, hunk)],
-    inputs: null,
+    // The §17 verify-before-destroy content hash is DISCARD-ONLY (the daemon relay scoped it to
+    // git.discard_hunk; stage/unstage keep the position-only posture, daemon LESSON §72). `inputs` is
+    // the §6.2 z.unknown() opaque passthrough — adding this key is NOT a contract/Zod change.
+    inputs:
+      actionType === "git.discard_hunk"
+        ? { displayed_hunk_sha256: displayedHunkSha256(hunk) }
+        : null,
     risk_level: 0, // non-authoritative hint — daemon reconciles to the catalog; never displayed
     status: "submitted",
     created_at: createdAt,

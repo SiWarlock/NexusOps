@@ -19,24 +19,37 @@ const WF_TONE: Record<WorkflowTone, [string, string, string, string]> = {
   none: ["No pack", "var(--text-faint)", "var(--neutral-surface)", "var(--border-default)"],
 };
 
+/** Honest, non-optimistic feedback for the add-project flow (the daemon ack / verbatim §6.4
+ *  rejection — never a synthesized success). Rendered as a `role="status"` line, glyph+label. */
+export type AddProjectNotice = { kind: "ok" | "error"; message: string };
+
 /**
  * Projects overview (ported from kit-views.jsx ProjectsOverview): the top-layer
  * project card grid — name + repo, live counters (active sessions · open PRs ·
  * waiting badge, derived from REAL projections), and the workflow-pack chip
  * (display side-map — fixture until the WorkflowInstance projection lands).
- * Card click selects the project and returns to its Command Center. "Add
- * project" is a daemon mutation — disabled, not faked (§11.6).
+ * Card click selects the project and returns to its Command Center. "Add project"
+ * submits a `project.rescan` intent (wired by `ProjectsOverviewContainer`) — gated
+ * on `canAddProject` (the fail-safe READ-ONLY gate, forbidden #6); disabled-not-faked
+ * when the daemon is unavailable.
  */
 export function ProjectsOverview({
   projects,
   counts,
   activeProjectId,
   onSelectProject,
+  canAddProject = false,
+  onAddProject,
+  addProjectNotice = null,
 }: {
   projects: ProjectActivityRow[];
   counts: Record<string, ProjectSwitcherCounts>;
   activeProjectId: string | null;
   onSelectProject: (id: string) => void;
+  /** Fail-safe gate: the button is disabled unless the daemon is live + not mid-submit. */
+  canAddProject?: boolean;
+  onAddProject?: () => void;
+  addProjectNotice?: AddProjectNotice | null;
 }) {
   return (
     <div
@@ -61,9 +74,38 @@ export function ProjectsOverview({
         <Badge tone="neutral" mono>
           {projects.length}
         </Badge>
-        <div style={{ marginLeft: "auto" }}>
-          <span title="Project registration arrives with the daemon project contract">
-            <Button variant="primary" size="sm" icon={<Plus size={14} />} disabled>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+          {addProjectNotice ? (
+            <span
+              role="status"
+              style={{
+                font: "var(--fs-meta) var(--font-sans)",
+                color: addProjectNotice.kind === "error" ? "var(--warning-ink)" : "var(--text-muted)",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                maxWidth: 320,
+              }}
+            >
+              {/* glyph + label — never color alone (§11) */}
+              <span aria-hidden="true">{addProjectNotice.kind === "error" ? "⚠" : "✓"}</span>
+              {addProjectNotice.message}
+            </span>
+          ) : null}
+          <span
+            title={
+              canAddProject
+                ? "Add a git repository as a project"
+                : "Connect to the daemon to add a project"
+            }
+          >
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<Plus size={14} />}
+              disabled={!canAddProject}
+              onClick={onAddProject}
+            >
               Add project
             </Button>
           </span>

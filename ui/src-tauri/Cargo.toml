@@ -19,6 +19,9 @@ tauri-build = { version = "2" }
 
 [dependencies]
 tauri = { version = "2" }
+# Native folder picker for the cockpit "Add project" flow (the JS calls the plugin's open({directory})).
+# Scoped to `dialog:allow-open` in capabilities/default.json — no save/message surface.
+tauri-plugin-dialog = { version = "2" }
 nexusops-gateway-uds = { path = "../gateway-uds" }
 nexusops-shared = { path = "../../shared" }
 serde = { version = "1.0", features = ["derive"] }

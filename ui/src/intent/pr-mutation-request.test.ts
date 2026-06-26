@@ -136,29 +136,34 @@ function walk(dir: string): string[] {
   return out;
 }
 
-describe("ui-070/071 cat-1 — enabledPrMutations held-flip discipline", () => {
-  it("production_construction_never_enables_pr_mutations", () => {
-    // spec(cat-1 [[27]]/[[28]]) — NO production (non-test) source constructs a port with a NON-EMPTY
-    // enabledPrMutations VALUE (the go-live flip is a future USER-signed-off slice → today NO production
-    // path reaches a live PR mutation). The scan flags any `enabledPrMutations:` VALUE that is neither the
-    // empty `new Set()` nor a `ReadonlySet<…>` TYPE annotation (the field/option decls) — i.e. a populated
-    // construction (`new Set([...])`, `PR_MUTATION_ACTION_TYPES`, any var) goes RED. (The Mock's default
-    // full set is an `=` assignment, not a `:` value, and Mock is dev/test-only — never the production seam.)
+describe("ui-070/071/075 cat-1 — enabledPrMutations flip discipline (go-live confined to the Shell)", () => {
+  it("pr_mutation_flip_confined_to_the_signed_off_shell_go_live", () => {
+    // spec(cat-1 [[27]]/[[28]]) — ui-075 GO-LIVE (USER-signed-off + visual-gate PASSED): the production
+    // PR-mutations flip (`enabledPrMutations: PR_MUTATION_ACTION_TYPES`) lives at EXACTLY ONE deliberate
+    // site — the Shell (`src/shell/Shell.tsx`, the production entry the user signed off). This guard stays
+    // LOAD-BEARING: it still flags any OTHER production file that constructs a port with a NON-EMPTY
+    // enabledPrMutations VALUE (a rogue / second / accidental flip goes RED) — only the Shell is the allowed
+    // go-live seam. (Was `production_construction_never_enables_pr_mutations` while HELD; the go-live moved
+    // the assertion from "zero flips" to "the Shell, and only the Shell".) The scan flags any
+    // `enabledPrMutations:` VALUE that is neither the empty `new Set()` nor a `ReadonlySet<…>` TYPE decl.
+    // (The Mock's default full set is an `=` assignment, not a `:` value, and Mock is dev/test-only.)
     const offenders = walk("src").filter((f) => {
       const src = readFileSync(f, "utf8");
       // every `enabledPrMutations: <value>` occurrence; a VALUE is an object-literal construction option,
       // a TYPE is the `ReadonlySet<…>` field/param decl. Flag any value that is neither a `ReadonlySet`
-      // type nor the empty `new Set()` — a populated construction (the go-live flip) goes RED.
+      // type nor the empty `new Set()` — a populated construction (a PR-mutation flip) is captured here.
       for (const m of src.matchAll(/enabledPrMutations\s*:\s*([^\n;,]+)/g)) {
         const value = m[1]!.trim();
         // exclude the `ReadonlySet<…>` TYPE decl + the safe empty `new Set()` construction; anything
-        // else (a populated `new Set([...])`, `PR_MUTATION_ACTION_TYPES`, a var) is a flip → RED.
+        // else (a populated `new Set([...])`, `PR_MUTATION_ACTION_TYPES`, a var) is a flip → captured.
         if (!value.startsWith("ReadonlySet") && !/^new Set\s*<[^>]*>?\s*\(\s*\)/.test(value) && !/^new Set\s*\(\s*\)/.test(value)) {
           return true;
         }
       }
       return false;
     });
-    expect(offenders).toEqual([]);
+    // The Shell IS the deliberate, USER-signed-off go-live flip — the SOLE allowed production site. Any
+    // OTHER production flip would appear here and fail the assertion (the guard is pinned, NOT retired).
+    expect(offenders).toEqual(["src/shell/Shell.tsx"]);
   });
 });

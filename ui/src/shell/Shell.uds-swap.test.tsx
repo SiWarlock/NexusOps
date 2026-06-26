@@ -189,3 +189,116 @@ describe("Shell read-swap (Layer C-single-shot — UdsGatewayPort default)", () 
     );
   });
 });
+
+// ─── ui-075 commit 2 (cat-1) — the PR-mutations go-live flip production-shell pins ──────────────────
+// The cat-1 go-live: an ENABLED PR-mutation control here PROVES the production UdsGatewayPort carries the
+// action_type in `enabledPrMutations` (the only enablement path is `canSubmit && isPrMutationEnabled(
+// gateway, type) && head_sha != null`; the daemon Gateway stays the INV-SEC-1 chokepoint, this UI gate is
+// defense-in-depth). Un-skipped + the Shell flip applied together at commit 2 (post HITL visual-gate PASS).
+describe("Shell PR-mutations go-live (cat-1 ui-075)", () => {
+  // Render the PRODUCTION Shell (no gateway prop → the real UdsGatewayPort) against a connected +
+  // version-compatible daemon, navigate Code/Diff → "Pull requests" → the head_sha'd fixture PR
+  // (project_fixture_1 "Add OAuth device flow"), landing in the PR Review Workspace. gateway_submit_action
+  // returns a fake ack so a live click resolves; gateway_subscribe never settles so the stream stays
+  // connected (canSubmitIntent true) for the pins.
+  async function productionShellAtPrWorkspace(): Promise<void> {
+    mockInvoke.mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === "gateway_get_capabilities") {
+        return Promise.resolve({ protocol_version: 1, contract_version: "0.31.0" });
+      }
+      if (cmd === "gateway_get_projection") {
+        return Promise.resolve(PROJECTION_FIXTURES[(args as { name: string }).name]);
+      }
+      if (cmd === "gateway_get_diff") {
+        // the Code view's default Review tab fetches the worktree diff on mount (before we tab to
+        // "Pull requests") — resolve it so the navigation is noise-free (the PR-mutation enablement
+        // keys off get_PR_diff + head_sha, not this worktree get_diff).
+        return Promise.resolve({
+          hunks: [
+            {
+              header: "@@ -1,1 +1,1 @@",
+              old_start: 1,
+              old_lines: 1,
+              new_start: 1,
+              new_lines: 1,
+              lines: [{ kind: "context", content: "x\n" }],
+            },
+          ],
+        });
+      }
+      if (cmd === "gateway_get_pr_diff") {
+        return Promise.resolve({
+          hunks: [
+            {
+              header: "@@ -1,1 +1,1 @@",
+              old_start: 1,
+              old_lines: 1,
+              new_start: 1,
+              new_lines: 1,
+              lines: [{ kind: "context", content: "x\n" }],
+            },
+          ],
+        });
+      }
+      if (cmd === "gateway_submit_action") {
+        return Promise.resolve({ action_request_id: "ar_live", status: "submitted" });
+      }
+      if (cmd === "gateway_subscribe") {
+        return new Promise(() => {});
+      }
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+    render(<Shell />); // no gateway prop → the production UdsGatewayPort (PR-mutations enabled at commit 2)
+    await screen.findAllByText(projectActivityFixture.rows[0]!.name); // loaded → connected + compatible
+    const sidebar = screen.getByRole("navigation", { name: "Sidebar" });
+    fireEvent.click(
+      within(sidebar).getByRole("button", { name: /code \/ diff review/i }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /Pull requests/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Add OAuth device flow/i }));
+  }
+
+  it("production_shell_enables_pr_merge_when_connected", async () => {
+    // spec(P7.4 / §7.2 / §11.2 / [[28]]) — the go-live flip: the production Shell constructs the
+    // UdsGatewayPort with `enabledPrMutations: PR_MUTATION_ACTION_TYPES`, so with a connected daemon
+    // serving a head_sha'd PR the Merge control is LIVE (enabled). An enabled control proves the
+    // production port carries `github.merge_pr`.
+    await productionShellAtPrWorkspace();
+    const merge = await screen.findByRole("button", { name: /^Merge/i });
+    expect(merge).toHaveProperty("disabled", false);
+  });
+
+  it("production_shell_enables_pr_review_when_connected", async () => {
+    // spec(P7.4 / §7.2 / §11.2 / [[28]]) — both-at-once: the Approve PR verdict control is also LIVE
+    // (enabled), proving the production port carries `github.submit_review` too (not a staged single flip).
+    await productionShellAtPrWorkspace();
+    const approve = await screen.findByRole("button", { name: /Approve PR/i });
+    expect(approve).toHaveProperty("disabled", false);
+  });
+
+  it("production_shell_pr_merge_click_reaches_live_transport", async () => {
+    // spec(§6.1 / [[28]]) — a real Merge click on the production cockpit reaches the LIVE mutation
+    // transport (`invoke("gateway_submit_action", …)` → the daemon Gateway). The real daemon executing +
+    // auditing it is the DEFERRED operator walkthrough; this is the deterministic proxy.
+    await productionShellAtPrWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: /^Merge/i }));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "gateway_submit_action",
+        expect.objectContaining({ request: expect.anything() }),
+      ),
+    );
+  });
+
+  it("production_shell_pr_review_click_reaches_live_transport", async () => {
+    // spec(§6.1 / [[28]]) — the second mutation: a real Approve click reaches the live transport too.
+    await productionShellAtPrWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: /Approve PR/i }));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "gateway_submit_action",
+        expect.objectContaining({ request: expect.anything() }),
+      ),
+    );
+  });
+});

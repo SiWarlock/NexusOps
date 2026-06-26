@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { GatewayPort } from "../gateway-client/types";
 import { UdsGatewayPort } from "../gateway-client/uds";
+import { PR_MUTATION_ACTION_TYPES } from "../intent/pr-mutation-request";
 import { runSubscriptionSupervisor } from "../gateway-client/subscribe-recovery";
 import { createNudgeCoalescer } from "../gateway-client/refetch-on-nudge";
 import type {
@@ -126,11 +127,22 @@ export function Shell({
   // PRODUCTION DEFAULT = the real UdsGatewayPort (L1 read-swap, 051). **L2-C GO-LIVE (057,
   // USER-signed-off):** constructed `mutationsEnabled: true` — the single switch that lights up the
   // mutation transport (the port methods `invoke`) AND the UI submit controls (`canSubmitIntent &&
-  // mutationsEnabled`) together. A real human can now approve/deny/submit a real, daemon-risk-classified
-  // mutation; the daemon's Action Gateway executes + audits it (INV-SEC-1 chokepoint; this UI gate is
-  // defense-in-depth). The MockGatewayPort stays the injectable test/dev seam (passed via `gateway`).
+  // mutationsEnabled`) together. **ui-075 PR-MUTATIONS GO-LIVE (cat-1, USER-signed-off + visual-gate
+  // PASSED):** the constructor below is also passed `PR_MUTATION_ACTION_TYPES` as its per-action
+  // PR-mutation gate — lighting up BOTH PR mutations (`github.merge_pr` + `github.submit_review`) at once.
+  // (The literal option form is left to the code below ONLY — never duplicated in this comment — so the
+  // `pr_mutation_flip_confined_to_the_signed_off_shell_go_live` source-grep guard matches the real flip,
+  // not prose.) A real human can now merge a PR / submit a review from the cockpit; the daemon's Action
+  // Gateway executes + audits it (INV-SEC-1 chokepoint; this UI gate is defense-in-depth,
+  // necessary-not-sufficient — live writes also require the daemon-side per-connection `live_writes_enabled`
+  // toggle ON [default OFF, 083]). The MockGatewayPort stays the injectable test/dev seam (via `gateway`).
   const [client] = useState<GatewayPort>(
-    () => gateway ?? new UdsGatewayPort({ mutationsEnabled: true }),
+    () =>
+      gateway ??
+      new UdsGatewayPort({
+        mutationsEnabled: true,
+        enabledPrMutations: PR_MUTATION_ACTION_TYPES,
+      }),
   );
   const [data, setData] = useState<ShellData | null>(null);
   const [error, setError] = useState<unknown>(null);

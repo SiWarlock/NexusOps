@@ -77,7 +77,7 @@ _(LOCKED-text corrections + planning-doc reconciles are tracked in "Architecture
 
 ## WAVE work — wire daemon features into the cockpit (autonomous-mode goal)
 
-> The goal-driven task home (origin: 2026-06-26 lead directive — every daemon user-facing feature WIRED + functional + smoke-testable). Authoritative gap-map: `docs/planning/daemon-ui-gap-map.md` (+ ui-side `docs/planning/ui-wiring-gap-map-ui-side.md`). Each WAVE = a slice cluster; the ui + daemon lanes run disjoint. **Spec anchors:** `§9.1` (harness/session lifecycle), `§6.1` (IPC methods + projections), `§7` (projections), `§11` (cockpit), `§15` (safety gates).
+> The goal-driven task home (origin: 2026-06-26 lead directive — every daemon user-facing feature WIRED + functional + smoke-testable). Authoritative gap-map: `docs/planning/daemon-ui-gap-map.md` (+ ui-side `docs/planning/ui-wiring-gap-map-ui-side.md`). Each WAVE = a slice cluster; the ui + daemon lanes run disjoint. **Spec anchors:** `§9.1` (harness/session lifecycle), `§6.1` (IPC methods + projections), `§2.8` (execution-profile registry), `§7` (projections), `§11` (cockpit), `§15` (safety gates).
 
 ### WAVE-1 — session-lifecycle control (the cockpit can VIEW but not DRIVE agents — the #1 gap)
 - [ ] **W1-A** — `session.create` "Launch agent" UI wiring (the dedicated IPC method, daemon-mints the id; a multi-layer GatewayPort/Tauri transport add) — _ui (task #13, in flight)_

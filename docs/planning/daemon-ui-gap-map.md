@@ -105,3 +105,22 @@
 - "wired_functional" for github.create_pr, the auth/governance surface (connect_via_gh/set_live_writes/set_secret), and the git hunk UI is **static-evidence only** — needs a runtime smoke pass to confirm the live data/exec path (esp. the git executors which are known daemon stubs).
 - The `agent.*` family is the Claude/Codex interception (machine-internal) — correctly NOT a user-facing UI surface; excluded from the goal.
 - Reconcile against ui-orchestrator's ui-side map for Mock-vs-real on the projection consumers (ProjectActivity/Worktree/ProjectGraph rows that are provisional/not-frozen).
+
+## 6. Reconciliation with the ui-side map (MERGED 2026-06-26)
+
+> Folds `docs/planning/ui-wiring-gap-map-ui-side.md` (ui-orchestrator's Mock-vs-real verification half) into this authoritative map. The ui-side file is retained as the source artifact; this section is the consolidated truth. Verified de-duped count: **35 features — wired_functional 6 · wired_but_broken 8 (all Mock-masked) · not_wired 21 · mock_only_suspect 1 (`preview_action`) · n/a_internal 2 (`agent.*` + intercept).**
+
+**Agrees + sharpened (ui-side confirms daemon-orch's doc):**
+- The empty-`action_request_id` mutation-builder class is **Mock-masked** (`Mock.submit_action` returns a canned ack, never validates the id) → only surfaces on the live daemon. Collapsed to 2 mint-id slices (ui-080 add-project + ui-081 the 3 siblings — git hunks ×3 + merge_pr + submit_review). **All landed.**
+- AuditTrail: daemon serves `headline`/`actor_label` (`schema.rs:239`); the UI `AuditEventRow` requires `actor_type`+`event_type` → every populated row fails the boundary parse. → **W2-audit** (daemon adds `event_type` + UI reconcile).
+
+**ui-side NEW findings folded into the WAVEs:**
+- **UsageLedger is broader than `creditPool`** — the whole `UsageRow` shadow mismatches the served columns (`session_id`≠`subject_id`, `tokens_in/out`≠`tokens`, `cost_estimate`≠`cost`, no `harness`); currently masked because `TelemetrySampled` ingress is P4-dormant (table empty). → **W2-usage** = row-reconcile to `schema.rs:253` names **+** serve `creditPool` (both halves, was under-scoped to just creditPool).
+- **Transport gaps** — `connect_via_gh` (`methods.rs:93`) + `profile.set_secret` (`methods.rs:101`) are live daemon IPC methods **absent from `gateway-client/types.ts` + the Tauri `lib.rs` allowlist** → no consumer can call them. The W3-connect + profile verticals must add the transport FIRST. _(daemon dep: none — daemon side shipped.)_
+- **Worktree** — daemon serves+nudges `proj_worktree` but the UI has no consumer (not in Shell's 7 `get_projection`s, no shadow). Pure-UI add when a worktree panel is wanted (no daemon dep).
+- **Plan/Team dead on BOTH sides** — daemon `projectors()` registers no projector for either (always-empty tables) and the UI renders static `planFixture`/`teamFixture` (Mock-risk: look live, no backing). → **W2-plan-team** is daemon-gated (needs the projectors) before any UI un-fixture.
+
+**ui-side corroborations (NOT gaps — recorded so they aren't re-raised):**
+- **ApprovalQueue live refresh = OK.** The nudge is pushed via the gateway pipeline path (`pipeline.rs:79` `approval_queue_delta(row:None)` on submit/approve/deny/expire); ui-059 already subscribes + refetches. No daemon fix.
+- **PlanModal per-step `approve(approval_id, step_id)` = latent Phase-8 UX gap, not urgent.** The daemon `approve()` ignores `step_id` (`methods.rs:229`, "RESERVED in 2.1c") → per-step buttons resolve the whole approval; unreachable today (no live plan feed). Folds into the WAVE-4 `submit_action_plan`/plan-modal slice (daemon dep: per-step targeting in `approve()`).
+- **`preview_action` = mock_only_suspect** — referenced by PlanModal/GatewayModal but PlanModal is partly `samplePlan`-driven → reachability re-verify owed (is preview reached from a real submit or only the fixture demo?).

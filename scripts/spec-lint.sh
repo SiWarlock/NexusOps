@@ -67,6 +67,16 @@ phase_anchor_line() { # $1 = phase id
   ' "$TRACKER"
 }
 
+# the `## WAVE work` section's `**Spec anchors:**` line — the goal-driven WAVE tasks (W1-*/W2-*/…)
+# share one anchor set rather than each carrying a `## Phase N` Spec-anchors line.
+wave_anchor_line() {
+  awk '
+    /^## WAVE work/ {inwave=1; next}
+    inwave && /^## / {exit}
+    inwave && /\*\*Spec anchors:\*\*/ {print; exit}
+  ' "$TRACKER"
+}
+
 # ---- brief <path> --------------------------------------------------------------------------------
 cmd_brief() {
   local brief="${1:?usage: spec-lint.sh brief <path>}"
@@ -79,10 +89,14 @@ cmd_brief() {
     anchor_in_arch "$a" || bad "anchor $a cited in the brief has no matching heading/id in $ARCH_DOC"
   done
 
-  # 2. Task ID(s) exist in the tracker with unticked work (bundles cite several)
-  local task_ids tid
-  task_ids=$(grep -E '^\- \*\*Task ID:?\*\*' "$brief" | grep -oE '[A-Za-z]+[0-9]*\.[0-9]+' | sort -u || true)
-  [ -n "$task_ids" ] || bad "no Task ID line found (## Use case + traceability)"
+  # 2. Task ID(s) exist in the tracker with unticked work (bundles cite several). Two ID schemes:
+  #    numeric phase tasks (P2.1 → `### 2.1` heading) and WAVE goal tasks (W1-prof → a
+  #    `- [ ] **W1-prof**` checkbox bullet under a `### WAVE-N` heading). A brief uses one scheme.
+  local task_line task_ids wave_ids tid
+  task_line=$(grep -E '^\- \*\*Task ID:?\*\*' "$brief" || true)
+  task_ids=$(printf '%s\n' "$task_line" | grep -oE '[A-Za-z]+[0-9]*\.[0-9]+' | sort -u || true)
+  wave_ids=$(printf '%s\n' "$task_line" | grep -oE 'W[0-9]+-[A-Za-z0-9]+' | sort -u || true)
+  [ -n "$task_ids" ] || [ -n "$wave_ids" ] || bad "no Task ID line found (## Use case + traceability)"
   for tid in $task_ids; do
     # Tracker task headings are numeric (### 2.1); brief Task IDs are alpha-prefixed (P2.1) per the
     # brief-template convention. Strip the leading non-digit prefix to match (P2.1 → 2.1). The
@@ -99,14 +113,30 @@ cmd_brief() {
       bad "task $tid has no unticked checkbox in $TRACKER (already done, or mis-cited)"
     fi
   done
+  # WAVE goal tasks live as `- [ ] **W<n>-<id>**` checkbox bullets (not `###` headings).
+  for tid in $wave_ids; do
+    if grep -E "^- \[ \] \*\*${tid}\*\*" "$TRACKER" >/dev/null 2>&1; then
+      : # present + unticked
+    elif grep -E "^- \[[xX]\] \*\*${tid}\*\*" "$TRACKER" >/dev/null 2>&1; then
+      bad "WAVE task $tid is already ticked in $TRACKER (mis-cited)"
+    else
+      bad "WAVE task $tid not found as an unticked checkbox in $TRACKER"
+    fi
+  done
 
-  # 3. brief anchors ⊆ the phase's Spec anchors (prefix-aware), unless explicitly widened
-  local phase="${task_ids%%.*}"; phase="${phase%%$'\n'*}"
-  local pnum="${phase#"${phase%%[0-9]*}"}"   # P2 → 2 (tracker phase headings are numeric: "## Phase 2")
-  local pline pset
-  pline=$(phase_anchor_line "$pnum")
+  # 3. brief anchors ⊆ the phase's (or WAVE work's) Spec anchors (prefix-aware), unless explicitly widened
+  local pline pset phaselabel
+  if [ -n "$task_ids" ]; then
+    local phase="${task_ids%%.*}"; phase="${phase%%$'\n'*}"
+    local pnum="${phase#"${phase%%[0-9]*}"}"   # P2 → 2 (tracker phase headings are numeric: "## Phase 2")
+    pline=$(phase_anchor_line "$pnum")
+    phaselabel="phase $phase"
+  else
+    pline=$(wave_anchor_line)
+    phaselabel="WAVE work"
+  fi
   if [ -z "$pline" ]; then
-    note "phase $phase (→ ${pnum}) has no Spec anchors: line — subset check skipped"
+    note "$phaselabel has no Spec anchors: line — subset check skipped"
   else
     pset=$(printf '%s\n' "$pline" | extract_anchors)
     if grep -qi 'widens phase scope because' "$brief"; then
@@ -114,7 +144,7 @@ cmd_brief() {
     else
       for a in $anchors; do
         printf '%s\n' "$pset" | contained_in_set "$a" \
-          || bad "brief anchor $a is outside phase $phase's Spec anchors ($(printf '%s' "$pset" | tr '\n' ' ')) — add an explicit 'widens phase scope because…' line or fix the anchor"
+          || bad "brief anchor $a is outside $phaselabel's Spec anchors ($(printf '%s' "$pset" | tr '\n' ' ')) — add an explicit 'widens phase scope because…' line or fix the anchor"
       done
     fi
   fi

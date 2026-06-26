@@ -45,7 +45,7 @@ use crate::ipc::{
     VersionSkewError, WireError,
 };
 use crate::objects::{DesktopObjectKind, DeviceId, LocalRunnerId};
-use crate::projections::{ApprovalQueueRow, PullRequestRow, ReviewRow, SessionRow};
+use crate::projections::{ApprovalQueueRow, AuditEventRow, PullRequestRow, ReviewRow, SessionRow};
 use crate::status::{
     ActionRequest, AgentTeam, Approval, ExecutionProfile, ProjectBrain, PullRequest, ReviewState,
     Session, Task, WorkflowInstance, WorktreeGit, WorktreeOverlay,
@@ -283,6 +283,11 @@ struct ContractBundle {
     // execution_profiles registry read surface for the cockpit profile picker. Additive (shared/src/ipc.rs).
     profile_row: ProfileRow,
     get_execution_profiles_result: GetExecutionProfilesResult,
+    // W2-audit/097 (CONTRACT 0.49.0) — the projection-honesty opener: the 5th frozen projection-row
+    // AuditEventRow (the proj_audit_trail read model the cockpit Audit tile consumes, typed; surfaces the
+    // raw `event_type` for the namespace-filter + per-type icons). The proj_audit_trail.event_type column
+    // (MIGRATION_20) rides the daemon side; AuditTrail uses the existing ProjectionName variant. Additive.
+    audit_event_row: AuditEventRow,
 }
 
 /// The canonical, versioned JSON-Schema string (trailing newline). Deterministic:

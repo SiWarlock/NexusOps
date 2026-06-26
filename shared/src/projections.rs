@@ -130,3 +130,30 @@ pub struct ReviewRow {
     pub submitted_at: Option<String>,
     pub body: Option<String>,
 }
+
+/// One row of the `proj_audit_trail` read model (§2.3/§14 / §7) — a rendered, redaction-safe
+/// audit-timeline entry the cockpit Audit tile renders. The 5th frozen projection-row (after
+/// ApprovalQueue/PullRequest/Session/Review, W2-audit/097). The blanket `AuditProjector` folds EVERY event
+/// → one row. The load-bearing W2 add is the raw machine `event_type` (e.g. `SessionStarted` /
+/// `github.merge_pr`) — the cockpit's namespace-filter + per-type icons consume it (the `headline` stays the
+/// redaction-safe human render, never the raw payload — §15). The always-NULL `scope_json`/`outcome` DDL
+/// columns are NOT wire fields (the `read_audit_typed` retain-whitelist drops them; add when a producer
+/// populates them). `seq` is the event-sequence ordering key (the envelope's `i64`). `sensitivity` /
+/// `actor_label` are the wire-string renders — a DEGRADABLE display tile, NOT re-bound to the
+/// Sensitivity/ActorType enums (forward-compat over reject-unknown for non-safety display fields).
+/// **Nullability matches the DDL:** `event_id` (PK) / `seq` / `occurred_at` / `event_type` (the projector
+/// always populates it; the MIGRATION_20 offset-reset re-folds historical rows) / `sensitivity` (NOT NULL)
+/// are non-Option; the rest are `Option`. Optionals serialize as explicit `null` (no `skip_serializing_if`)
+/// so the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)] // reject-unknown end-to-end (§5.0/§15 fail-closed)
+pub struct AuditEventRow {
+    pub event_id: String,
+    pub seq: i64,
+    pub project_id: Option<String>,
+    pub occurred_at: String,
+    pub event_type: String,
+    pub headline: String,
+    pub actor_label: Option<String>,
+    pub sensitivity: String,
+}

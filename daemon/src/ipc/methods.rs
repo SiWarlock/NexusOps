@@ -22,7 +22,9 @@ use nexusops_shared::ipc::{
     GetDiffParams, GetExecutionProfilesResult, GetPrDiffParams, GetProjectionParams, IpcErrorCode,
     ProfileRow, ProjectionName, RpcRequest, RpcResponse, SubscribeParams, WireError,
 };
-use nexusops_shared::projections::{ApprovalQueueRow, PullRequestRow, ReviewRow, SessionRow};
+use nexusops_shared::projections::{
+    ApprovalQueueRow, AuditEventRow, PullRequestRow, ReviewRow, SessionRow,
+};
 use nexusops_shared::status::ActionRequest as ActionRequestStatus;
 use nexusops_shared::time::Timestamp;
 
@@ -570,6 +572,15 @@ fn get_projection(
             Err(code) => Err(code),
         });
     }
+    // W2-audit/097 — the AuditTrail projection served TYPED (the frozen AuditEventRow), not loose JSON, so
+    // the cockpit Audit tile's namespace-filter + per-type icons consume a contract (the raw event_type).
+    // The Review/Session precedent above; the UI ui-079 honest-banner degrades the tile on a read error.
+    if params.name == ProjectionName::AuditTrail {
+        return Ok(match read_audit_typed(db_path) {
+            Ok(typed) => serde_json::to_value(typed).map_err(|_| IpcErrorCode::InternalError),
+            Err(code) => Err(code),
+        });
+    }
     let table = projection_table(params.name);
     // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
     let conn =
@@ -744,6 +755,52 @@ pub fn read_session_typed(db_path: &Path) -> Result<Vec<SessionRow>, IpcErrorCod
         // value (e.g. an unbindable `status`/`resume_mode`).
         obj.retain(|k, _| SESSION_ROW_WIRE_FIELDS.contains(&k.as_str()));
         let typed: SessionRow =
+            serde_json::from_value(row).map_err(|_| IpcErrorCode::InternalError)?;
+        out.push(typed);
+    }
+    Ok(out)
+}
+
+/// (W2-audit/097) The `AuditEventRow` wire fields — `proj_audit_trail` carries 2 extra always-NULL columns
+/// (`scope_json`/`outcome`) NOT on the frozen row, so each row RETAINS only these before the STRICT
+/// deserialize (the `read_session_typed` whitelist precedent; a future column won't trip
+/// `deny_unknown_fields`). Kept drift-proof by `audit_row_wire_fields_match_struct` (this const must equal
+/// the `AuditEventRow` serialized field set — a typo or a struct-field add fails that test).
+const AUDIT_ROW_WIRE_FIELDS: &[&str] = &[
+    "event_id",
+    "seq",
+    "project_id",
+    "occurred_at",
+    "event_type",
+    "headline",
+    "actor_label",
+    "sensitivity",
+];
+
+/// (W2-audit/097) Read `proj_audit_trail` served TYPED as the frozen [`AuditEventRow`] — no loose JSON on
+/// the cockpit Audit-tile read path (the `read_session_typed` precedent, LESSON §37). `proj_audit_trail`
+/// carries the always-NULL `scope_json`/`outcome` columns NOT on the wire row, so each row is REDUCED to
+/// [`AUDIT_ROW_WIRE_FIELDS`] before the STRICT deserialize. A row that no longer deserializes (corrupt /
+/// contract-broken — e.g. a NULL `event_type`, which the non-Option `String` rejects) is an integrity error
+/// → `InternalError` (fail-closed, never a silent skip; the UI ui-079 honest-banner degrades the tile).
+pub fn read_audit_typed(db_path: &Path) -> Result<Vec<AuditEventRow>, IpcErrorCode> {
+    // read-only WAL — never a writable Connection (single-writer; Forbidden #3 / LESSON §3).
+    let conn =
+        crate::eventstore::open_read_only(db_path).map_err(|_| IpcErrorCode::InternalError)?;
+    let json =
+        read_table_as_json(&conn, "proj_audit_trail").map_err(|_| IpcErrorCode::InternalError)?;
+    let serde_json::Value::Array(raw_rows) = json else {
+        return Err(IpcErrorCode::InternalError);
+    };
+    let mut out = Vec::with_capacity(raw_rows.len());
+    for mut row in raw_rows {
+        let serde_json::Value::Object(obj) = &mut row else {
+            return Err(IpcErrorCode::InternalError);
+        };
+        // RETAIN only the wire fields — drop the always-NULL scope_json/outcome (else deny_unknown_fields
+        // rejects them). The STRICT deserialize then fails closed on a bad value (e.g. a NULL event_type).
+        obj.retain(|k, _| AUDIT_ROW_WIRE_FIELDS.contains(&k.as_str()));
+        let typed: AuditEventRow =
             serde_json::from_value(row).map_err(|_| IpcErrorCode::InternalError)?;
         out.push(typed);
     }
@@ -1242,6 +1299,39 @@ mod tests {
         assert_eq!(
             struct_fields, whitelist,
             "read_session_typed whitelist drifted from SessionRow fields"
+        );
+    }
+
+    #[test]
+    fn audit_row_wire_fields_match_struct() {
+        // drift-proof: the retain-whitelist MUST equal AuditEventRow's serialized field set, so a typo or a
+        // struct-field add/rename can't silently drop a wire field from the typed audit serve.
+        use nexusops_shared::projections::AuditEventRow;
+        use std::collections::BTreeSet;
+        let sample = AuditEventRow {
+            event_id: "e".into(),
+            seq: 1,
+            project_id: None,
+            occurred_at: "t".into(),
+            event_type: "T".into(),
+            headline: "h".into(),
+            actor_label: None,
+            sensitivity: "internal".into(),
+        };
+        let struct_fields: BTreeSet<String> = serde_json::to_value(&sample)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let whitelist: BTreeSet<String> = AUDIT_ROW_WIRE_FIELDS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            struct_fields, whitelist,
+            "read_audit_typed whitelist drifted from AuditEventRow fields"
         );
     }
 

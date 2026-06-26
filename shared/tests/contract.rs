@@ -3244,6 +3244,65 @@ fn test_review_row_rejects_unknown_field() {
     );
 }
 
+// =====================================================================================
+// AuditEventRow projection-row (the 5th frozen row) — proj_audit_trail event_type. CONTRACT 0.49.0.
+// =====================================================================================
+
+fn sample_audit_event_row() -> nexusops_shared::projections::AuditEventRow {
+    use nexusops_shared::projections::AuditEventRow;
+    // fully populated (all Options Some) so the field-name snapshot sees every key.
+    AuditEventRow {
+        event_id: "evt_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        seq: 42,
+        project_id: Some("prj_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+        occurred_at: "2026-06-26T00:00:00Z".to_string(),
+        event_type: "SessionStarted".to_string(),
+        headline: "Session started".to_string(),
+        actor_label: Some("user".to_string()),
+        sensitivity: "internal".to_string(),
+    }
+}
+
+#[test]
+fn test_audit_event_row_frozen_shape() {
+    // spec(§7.2 / §2.5-seam) — the 5th frozen projection-row (after ApprovalQueue/PullRequest/Session/Review).
+    // The field-name set is frozen + round-trips; the raw `event_type` is surfaced (the cockpit Audit-tile
+    // namespace-filter + per-type icons); the always-NULL `scope_json`/`outcome` columns are NOT wire fields
+    // (the retain-whitelist drops them). `sensitivity`/`actor_label` are the wire-string renders (parallel,
+    // not re-bound to the Sensitivity/ActorType enums). deny_unknown_fields.
+    expect_fields(
+        &sample_audit_event_row(),
+        &[
+            "event_id",
+            "seq",
+            "project_id",
+            "occurred_at",
+            "event_type",
+            "headline",
+            "actor_label",
+            "sensitivity",
+        ],
+    );
+    let json = serde_json::to_string(&sample_audit_event_row()).unwrap();
+    let back: nexusops_shared::projections::AuditEventRow =
+        serde_json::from_str(&json).expect("AuditEventRow round-trips");
+    assert_eq!(back, sample_audit_event_row(), "all 8 fields round-trip");
+}
+
+#[test]
+fn test_audit_event_row_rejects_unknown_field() {
+    // spec(§5.0/§15) — deny_unknown_fields on the frozen row: a valid row + an unfrozen column fails to
+    // deserialize (what makes read_audit_typed fail closed on a column not on the frozen wire shape).
+    let mut v = serde_json::to_value(sample_audit_event_row()).unwrap();
+    v.as_object_mut()
+        .unwrap()
+        .insert("not_a_real_column".to_string(), serde_json::json!(true));
+    assert!(
+        serde_json::from_value::<nexusops_shared::projections::AuditEventRow>(v).is_err(),
+        "deny_unknown_fields rejects an unfrozen column"
+    );
+}
+
 // ---- CONTRACT_VERSION pin (the SINGLE canonical version assert) ----
 
 #[test]
@@ -3261,8 +3320,12 @@ fn test_contract_version_bumped_0_45_0() {
     // scan-path basename) surfaced into `proj_project_activity.name` (MIGRATION_19). Additive-optional.
     // **0.48.0** = the W1-prof `get_execution_profiles` read RPC — the new secret-free `ProfileRow` +
     // `GetExecutionProfilesResult` IPC wire types (the §2.8 registry read surface; §15 #4 keychain
-    // POINTER never served). Additive, no frozen type reshaped (§5.0).
-    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.48.0");
+    // POINTER never served). Additive, no frozen type reshaped (§5.0). **0.49.0** = the W2-audit
+    // projection-honesty opener — the raw `event_type` surfaced on `proj_audit_trail` (MIGRATION_20) + the
+    // 5th frozen projection-row `AuditEventRow` served typed/fail-closed (the cockpit Audit namespace-filter
+    // + per-type icons). Additive (a new projection-row + the audit `event_type` column; no frozen type
+    // reshaped, §5.0).
+    assert_eq!(nexusops_shared::CONTRACT_VERSION, "0.49.0");
 }
 
 // =================================================================================================

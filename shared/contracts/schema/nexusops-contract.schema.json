@@ -803,6 +803,52 @@
       ],
       "type": "string"
     },
+    "AuditEventRow": {
+      "additionalProperties": false,
+      "description": "One row of the `proj_audit_trail` read model (§2.3/§14 / §7) — a rendered, redaction-safe\naudit-timeline entry the cockpit Audit tile renders. The 5th frozen projection-row (after\nApprovalQueue/PullRequest/Session/Review, W2-audit/097). The blanket `AuditProjector` folds EVERY event\n→ one row. The load-bearing W2 add is the raw machine `event_type` (e.g. `SessionStarted` /\n`github.merge_pr`) — the cockpit's namespace-filter + per-type icons consume it (the `headline` stays the\nredaction-safe human render, never the raw payload — §15). The always-NULL `scope_json`/`outcome` DDL\ncolumns are NOT wire fields (the `read_audit_typed` retain-whitelist drops them; add when a producer\npopulates them). `seq` is the event-sequence ordering key (the envelope's `i64`). `sensitivity` /\n`actor_label` are the wire-string renders — a DEGRADABLE display tile, NOT re-bound to the\nSensitivity/ActorType enums (forward-compat over reject-unknown for non-safety display fields).\n**Nullability matches the DDL:** `event_id` (PK) / `seq` / `occurred_at` / `event_type` (the projector\nalways populates it; the MIGRATION_20 offset-reset re-folds historical rows) / `sensitivity` (NOT NULL)\nare non-Option; the rest are `Option`. Optionals serialize as explicit `null` (no `skip_serializing_if`)\nso the §2.5-seam field-name snapshot is stable (LESSON §15 trap 3).",
+      "properties": {
+        "actor_label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event_id": {
+          "type": "string"
+        },
+        "event_type": {
+          "type": "string"
+        },
+        "headline": {
+          "type": "string"
+        },
+        "occurred_at": {
+          "type": "string"
+        },
+        "project_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sensitivity": {
+          "type": "string"
+        },
+        "seq": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "seq",
+        "occurred_at",
+        "event_type",
+        "headline",
+        "sensitivity"
+      ],
+      "type": "object"
+    },
     "AuditIntegrityViolation": {
       "additionalProperties": false,
       "description": "`AuditIntegrityViolation` payload (§17 Option C). Emitted when startup replay QUARANTINES a\ncorrupt / unredacted event row — the LOUD, consumer-visible record that the audit history has\na gap (the core of why Option C beats a silent skip). Carries the affected `seq` + a\nredaction-safe **structural** `reason` — NEVER the corrupt payload or any row content (§15).",
@@ -3486,6 +3532,9 @@
     "approval_scope": {
       "$ref": "#/$defs/ApprovalScope"
     },
+    "audit_event_row": {
+      "$ref": "#/$defs/AuditEventRow"
+    },
     "audit_integrity_violation": {
       "$ref": "#/$defs/AuditIntegrityViolation"
     },
@@ -3941,9 +3990,10 @@
     "profile_secret_set",
     "session_profile_changed",
     "profile_row",
-    "get_execution_profiles_result"
+    "get_execution_profiles_result",
+    "audit_event_row"
   ],
   "title": "nexusops-contract",
   "type": "object",
-  "x-contract-version": "0.48.0"
+  "x-contract-version": "0.49.0"
 }

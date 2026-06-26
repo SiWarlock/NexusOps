@@ -119,20 +119,39 @@ fn columns(path: &std::path::Path, table: &str) -> std::collections::BTreeMap<St
     .collect()
 }
 
+// ---- W2-audit/097 — MIGRATION_20 floor (proj_audit_trail.event_type) -------------------------
+
+#[test]
+fn migration_20_audit_event_type_floor() {
+    // spec(LESSON §50) — the per-migration FLOOR: after MIGRATION_20 the store opens at >= 20 AND
+    // proj_audit_trail carries the `event_type` column (the W2-audit projection-honesty surface). A floor
+    // (>=) not exact-latest, so the NEXT migration's bump can't silently break this test.
+    let (_d, path) = temp_db();
+    let store = open(&path);
+    assert!(
+        store.user_version().unwrap() >= 20,
+        "the store opens at >= MIGRATION_20"
+    );
+    assert!(
+        columns(&path, "proj_audit_trail").contains_key("event_type"),
+        "proj_audit_trail carries the event_type column"
+    );
+}
+
 // ---- L2 RED #6 — MIGRATION_8: action_plans + the plan dimension ------------------------------
 
 #[test]
 fn test_migration_8_action_plans_and_plan_dimension() {
     // spec(§6.2 / DATA_MODEL §2.9) — MIGRATION_8 adds the action_plans table + action_requests.plan_id
     // + generalizes approvals (action_request_id NULLABLE, + plan_id) + the proj_approval_queue
-    // plan dimension. (The store opens at the LATEST version — now 19 after MIGRATION_19, the P4.7/092
-    // proj_project_activity.name friendly-name column.)
+    // plan dimension. (The store opens at the LATEST version — now 20 after MIGRATION_20, the W2-audit/097
+    // proj_audit_trail.event_type column.)
     let (_d, path) = temp_db();
     let store = open(&path);
     assert_eq!(
         store.user_version().unwrap(),
-        19,
-        "the store opens at the latest SUPPORTED_USER_VERSION (19 after MIGRATION_19, P4.7/092 project name)"
+        20,
+        "the store opens at the latest SUPPORTED_USER_VERSION (20 after MIGRATION_20, W2-audit event_type)"
     );
 
     // action_plans — the thin grouping table + the plan-submit immutable context (Flag 2)

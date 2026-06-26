@@ -3140,6 +3140,171 @@ fn test_session_typed_serve_fails_closed() {
 }
 
 // =============================================================================
+// W2-audit (097) — proj_audit_trail.event_type fold + the 5th typed AuditEventRow serve
+// =============================================================================
+
+#[test]
+fn audit_trail_persists_event_type() {
+    // spec(§2.3) — the blanket AuditProjector persists the RAW machine `event_type` alongside the
+    // redaction-safe headline (the cockpit Audit-tile namespace-filter + per-type icons consume it).
+    // Distinct event types each carry their own type.
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"starting\"}"))
+        .unwrap();
+    store.append(rescan_intent(&pid)).unwrap();
+    let types: std::collections::BTreeSet<String> = {
+        let conn = nexusopsd::eventstore::open_read_only(&path).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT event_type FROM proj_audit_trail")
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    assert!(
+        types.contains("SessionStarted"),
+        "session event_type persisted: {types:?}"
+    );
+    assert!(
+        types.contains("ProjectRescanned"),
+        "rescan event_type persisted: {types:?}"
+    );
+}
+
+#[test]
+fn audit_trail_rebuild_repopulates_event_type() {
+    // spec(§4/§17) — proj_audit_trail ∈ REBUILD_TABLES: a rebuild re-folds + repopulates event_type for
+    // every (historical) row, rebuild-equivalent (the MIGRATION_20 offset-reset gives the SAME on a catch-up
+    // upgrade — historical audit rows carry their type, not NULL).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"starting\"}"))
+        .unwrap();
+    store.append(rescan_intent(&pid)).unwrap();
+    let types = |path: &std::path::Path| -> Vec<(i64, Option<String>)> {
+        let conn = nexusopsd::eventstore::open_read_only(path).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT seq, event_type FROM proj_audit_trail ORDER BY seq")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    let before = types(&path);
+    store.rebuild_projections().unwrap();
+    assert_eq!(
+        before,
+        types(&path),
+        "rebuild repopulates the same event_type values"
+    );
+    assert!(
+        before.iter().all(|(_, et)| et.is_some()),
+        "every audit row carries event_type (no NULLs): {before:?}"
+    );
+}
+
+#[test]
+fn read_audit_typed_round_trips() {
+    // spec(§6.1) — get_projection(AuditTrail) is served TYPED via read_audit_typed (no loose JSON): a
+    // populated table → Vec<AuditEventRow> (event_type/headline/actor_label/sensitivity); the always-NULL
+    // scope_json/outcome columns are dropped by the retain-whitelist (else deny_unknown_fields rejects them).
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"starting\"}"))
+        .unwrap();
+    let rows = nexusopsd::ipc::read_audit_typed(&path).expect("typed audit read");
+    assert_eq!(rows.len(), 1, "one audit row served");
+    assert_eq!(rows[0].event_type, "SessionStarted");
+    assert_eq!(rows[0].headline, "Session started");
+    assert!(
+        !rows[0].sensitivity.is_empty(),
+        "sensitivity is the wire-string render"
+    );
+}
+
+#[test]
+fn read_audit_typed_fails_closed_on_corrupt_row() {
+    // spec(LESSON §37) — the typed serve FAILS CLOSED on a proj_audit_trail row that no longer deserializes
+    // (event_type NULL → the non-Option String field can't bind) → InternalError, never a silent skip / loose
+    // leak. (Direct writable conn = test-only fixture corruption; production always populates event_type.)
+    use nexusops_shared::ipc::IpcErrorCode;
+    let (_d, path) = temp_db();
+    let mut store = open(&path);
+    let sid = SessionId::new();
+    let pid = ProjectId::new();
+    store
+        .append(session_intent(&sid, &pid, "{\"status\":\"starting\"}"))
+        .unwrap();
+    {
+        let c = rusqlite::Connection::open(&path).expect("fixture conn");
+        c.execute("UPDATE proj_audit_trail SET event_type = NULL", [])
+            .expect("corrupt the event_type");
+    }
+    let err = nexusopsd::ipc::read_audit_typed(&path)
+        .expect_err("a row that doesn't deserialize fails closed");
+    assert_eq!(err, IpcErrorCode::InternalError);
+}
+
+#[test]
+fn audit_trail_event_type_backfills_via_catch_up_on_conflict() {
+    // spec(LESSON §52 — the PRODUCTION upgrade path, NOT a masking rebuild). MIGRATION_20's offset-reset does
+    // NOT truncate proj_audit_trail → on the next startup `catch_up_replay` re-folds over the EXISTING
+    // pre-migration rows (event_type NULL) via INSERT … ON CONFLICT(event_id) DO UPDATE. event_type is
+    // backfilled ONLY if it is in the DO UPDATE SET — the `rebuild()` test truncates first (pure INSERT) so it
+    // can't see this. Pins: the upgrade backfills EVERY row + read_audit_typed does NOT fail closed.
+    let (_d, path) = temp_db();
+    let pid = ProjectId::new();
+    {
+        let mut store = open(&path);
+        store
+            .append(session_intent(
+                &SessionId::new(),
+                &pid,
+                "{\"status\":\"starting\"}",
+            ))
+            .unwrap();
+        store.append(rescan_intent(&pid)).unwrap();
+    }
+    // simulate a PRE-MIGRATION_20 db on which MIGRATION_20 just ran: the audit rows EXIST but event_type is
+    // NULL (the ALTER added a nullable column over existing rows), and the migration's offset-reset rewound
+    // the audit projector. The rows are NOT dropped — that is the rebuild path, not the upgrade path.
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute("UPDATE proj_audit_trail SET event_type = NULL", [])
+            .unwrap();
+        conn.execute(
+            "DELETE FROM projection_offsets WHERE projection_name = 'audit_trail'",
+            [],
+        )
+        .unwrap();
+    }
+    // reopening runs catch_up_replay → re-folds over the existing rows via ON CONFLICT DO UPDATE.
+    let _store = open(&path);
+    assert_eq!(
+        count(
+            &path,
+            "SELECT COUNT(*) FROM proj_audit_trail WHERE event_type IS NULL"
+        ),
+        0,
+        "catch-up backfilled event_type on EVERY existing row (it is in the ON CONFLICT DO UPDATE SET)"
+    );
+    nexusopsd::ipc::read_audit_typed(&path)
+        .expect("read_audit_typed succeeds post-upgrade (no fail-closed on a backfilled row)");
+}
+
+// =============================================================================
 // D5b-1 (P4.6) — the structured-review vertical: ReviewSynced fold + proj_review + typed ReviewRow serve
 // =============================================================================
 

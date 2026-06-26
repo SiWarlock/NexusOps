@@ -31,10 +31,11 @@ impl Projector for AuditProjector {
 
         tx.execute(
             "INSERT INTO proj_audit_trail \
-             (event_id, seq, project_id, occurred_at, headline, actor_label, sensitivity) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             (event_id, seq, project_id, occurred_at, headline, actor_label, sensitivity, event_type) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
              ON CONFLICT(event_id) DO UPDATE SET \
-               headline=excluded.headline, actor_label=excluded.actor_label",
+               headline=excluded.headline, actor_label=excluded.actor_label, \
+               event_type=excluded.event_type",
             params![
                 env.event_id.as_str(),
                 env.seq,
@@ -43,6 +44,10 @@ impl Projector for AuditProjector {
                 headline,
                 actor_label,
                 sensitivity,
+                // W2-audit/097 — the raw machine event_type (the namespace-filter + icons). In the ON
+                // CONFLICT DO UPDATE SET so the MIGRATION_20 offset-reset BACKFILLS pre-migration rows on a
+                // catch-up upgrade (not only a truncating rebuild) — LESSON §52.
+                env.event_type.as_str(),
             ],
         )?;
 

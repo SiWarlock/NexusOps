@@ -634,3 +634,21 @@ ALTER TABLE proj_integration_connection ADD COLUMN live_writes_enabled INTEGER N
 pub const MIGRATION_19_PROJECT_ACTIVITY_NAME: &str = "\
 ALTER TABLE proj_project_activity ADD COLUMN name TEXT;
 ";
+
+/// Migration 20 (W2-audit/097) — the WAVE-2 projection-honesty opener: surface the raw machine `event_type`
+/// on `proj_audit_trail` so the cockpit Audit tile's namespace-filter (`github.*`/`session.*`) + per-type
+/// icons work. The blanket `AuditProjector` already has `env.event_type` (the `headline_for` input) — this
+/// adds the column + the `read_audit_typed` typed serve (the 5th frozen `AuditEventRow`). `TEXT` nullable
+/// for the ALTER (existing rows can't be NOT NULL without a default). **OFFSET-RESET** (unlike the
+/// ALTER-only MIGRATION_15/17/18/19 — the **MIGRATION_8** precedent, schema.rs:443): `proj_audit_trail` is
+/// a BLANKET projection (every event → one row, ON CONFLICT upsert), so resetting the audit projector's
+/// offset makes the next startup `catch_up_replay` re-fold over the EXISTING (event_type-NULL) rows via
+/// `INSERT … ON CONFLICT(event_id) DO UPDATE SET event_type=excluded.event_type` → historical audit rows
+/// carry their type on a plain upgrade (not only a manual rebuild; the non-Option `event_type` would else
+/// fail the whole typed serve closed for pre-migration rows). `ensure_offset_row` re-creates the deleted
+/// offset at 0 so a DELETE re-folds. The historical `proj_audit_trail` CREATE (MIGRATION_3) is deliberately
+/// UNCHANGED (editing it would duplicate-column-fail a fresh DB — LESSON §50).
+pub const MIGRATION_20_AUDIT_EVENT_TYPE: &str = "\
+ALTER TABLE proj_audit_trail ADD COLUMN event_type TEXT;
+DELETE FROM projection_offsets WHERE projection_name = 'audit_trail';
+";

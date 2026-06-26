@@ -221,4 +221,9 @@ pub mod time;
 /// — §15 #4: NO keychain_ref/secret; credential state as the derived `has_credential` bool) +
 /// `GetExecutionProfilesResult` (`{profiles}`) IPC wire types — the §2.8 `execution_profiles` registry read
 /// surface the cockpit profile picker consumes. Additive, no frozen type reshaped (§5.0).
-pub const CONTRACT_VERSION: &str = "0.48.0";
+/// 0.49.0 (W2-audit/097) — the WAVE-2 projection-honesty opener: the 5th frozen projection-row
+/// `AuditEventRow` (the `proj_audit_trail` read model, served typed/fail-closed) surfacing the raw machine
+/// `event_type` (the cockpit Audit-tile namespace-filter + per-type icons), backed by the
+/// `proj_audit_trail.event_type` column (MIGRATION_20, offset-reset). Additive (a new projection-row + the
+/// audit `event_type` column; no frozen type reshaped, §5.0).
+pub const CONTRACT_VERSION: &str = "0.49.0";

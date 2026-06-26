@@ -142,3 +142,32 @@ describe("SessionsTable view", () => {
     expect(screen.queryByTestId("sessions-filtered-empty")).toBeNull();
   });
 });
+
+describe("SessionsTable rowActions slot (WAVE-1 Slice B — per-row Kill)", () => {
+  it("rowActions_slot_renders_per_row_in_an_actions_column", () => {
+    // spec(presentational table + render-prop slot, forbidden #2) — SessionsTable stays gateway-agnostic;
+    // the per-row control flows in via the rowActions render-prop (the headerActions mirror). An Actions
+    // column header appears and each body row gets the slot output keyed to its OWN row.
+    render(
+      <SessionsTable
+        sessions={sessions}
+        projects={projects}
+        rowActions={(row) => (
+          <button type="button" aria-label={`act ${row.id}`}>
+            act {row.id}
+          </button>
+        )}
+      />,
+    );
+    expect(screen.getByRole("columnheader", { name: /actions/i })).not.toBeNull();
+    // one slot button per row (named by its own row id — proves per-row binding, not a shared instance)
+    expect(screen.getAllByRole("button", { name: /^act / })).toHaveLength(sessions.length);
+  });
+
+  it("no_actions_column_without_rowActions", () => {
+    // spec(opt-in slot) — the Actions column appears ONLY when rowActions is supplied; existing callers
+    // (no rowActions) render the unchanged table.
+    renderTable();
+    expect(screen.queryByRole("columnheader", { name: /actions/i })).toBeNull();
+  });
+});

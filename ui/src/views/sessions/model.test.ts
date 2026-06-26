@@ -4,10 +4,15 @@ import {
   sortSessionRows,
   filterSessionRows,
   distinctStatuses,
+  isSessionKillable,
 } from "./model";
 import type { SessionRow } from "../../contracts/index";
 import { sessionPageFixture } from "../../projections/fixtures/proj_session";
 import { projectActivityFixture } from "../../projections/fixtures/proj_project_activity";
+import {
+  ENDED_SESSION_STATUSES,
+  LIVE_SESSION_STATUSES,
+} from "../terminal/session-lifecycle";
 
 const sessions = sessionPageFixture.rows;
 const projects = projectActivityFixture.rows;
@@ -154,5 +159,23 @@ describe("sessions table filtering", () => {
       "session_fixture_5", // waiting_on_human_input, rank 5
       "session_fixture_3", // changes_ready, rank 4
     ]);
+  });
+});
+
+describe("session killability (§5.1 terminal partition — WAVE-1 Slice B)", () => {
+  it("is_session_killable", () => {
+    // spec(§5.1) — a non-terminal session can be killed; a terminal one has nothing to kill. Derived
+    // from session-lifecycle's drift-pinned partition (single source — Lesson §5), so a NEW §5.1 status
+    // is auto-covered: EVERY ENDED status is non-killable, EVERY LIVE status is killable.
+    for (const terminal of ENDED_SESSION_STATUSES) {
+      expect(isSessionKillable(terminal)).toBe(false);
+    }
+    for (const live of LIVE_SESSION_STATUSES) {
+      expect(isSessionKillable(live)).toBe(true);
+    }
+    // spot-pin the canonical terminal members (a readable anchor alongside the derived loops).
+    for (const terminal of ["failed", "completed", "archived", "killed"]) {
+      expect(isSessionKillable(terminal)).toBe(false);
+    }
   });
 });

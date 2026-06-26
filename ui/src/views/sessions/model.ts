@@ -11,6 +11,7 @@ import type {
 import { compareByAttention, type AttentionRank } from "../../status/attention";
 import { describeStatus } from "../../status/descriptors";
 import { toSessionItems } from "../../projections/items";
+import { isEndedSession } from "../terminal/session-lifecycle";
 
 export type SessionsSortKey = "attention" | "name" | "status" | "project";
 export type SortDir = "asc" | "desc";
@@ -33,6 +34,16 @@ export interface SessionsSort {
 
 /** Attention-first by default (§5.2): needs-attention sessions at the top. */
 export const DEFAULT_SORT: SessionsSort = { key: "attention", dir: "desc" };
+
+/**
+ * A session can be KILLED iff it is non-terminal — a terminal session (its agent process has ended) has
+ * nothing to kill (WAVE-1 Slice B). REUSES the drift-pinned `ENDED_SESSION_STATUSES` / `isEndedSession`
+ * (views/terminal/session-lifecycle.ts) as the SINGLE terminal-set source, so there is no second
+ * terminal-status set to drift against the frozen §5.1 Session enum (Lesson §5).
+ */
+export function isSessionKillable(status: string): boolean {
+  return !isEndedSession(status);
+}
 
 /** A column's natural first-click direction: attention defaults desc, text asc. */
 export function naturalDir(key: SessionsSortKey): SortDir {

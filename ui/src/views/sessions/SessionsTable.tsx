@@ -17,6 +17,7 @@ import {
   type SessionsFilter,
   type SessionsSort,
   type SessionsSortKey,
+  type SessionRowVM,
 } from "./model";
 
 const NO_FILTER: SessionsFilter = { text: "", status: null };
@@ -37,6 +38,10 @@ interface SessionsTableProps {
   projects: ProjectActivityRow[];
   /** Optional toolbar slot (e.g. the WAVE-1 "Launch agent" control) rendered in the filters header. */
   headerActions?: ReactNode;
+  /** Optional per-row action slot (e.g. the WAVE-1 "Kill" control) — a render-prop that keeps the table
+   *  gateway-agnostic / purely presentational (the `headerActions` mirror, forbidden #2). When supplied,
+   *  an "Actions" column is rendered and each body row gets `rowActions(row)` for its OWN row. */
+  rowActions?: (row: SessionRowVM) => ReactNode;
 }
 
 const COLUMNS: { key: SessionsSortKey; label: string }[] = [
@@ -65,9 +70,13 @@ function ariaSortFor(
  * (no invented rows — forbidden #2); reads its data through props (the Shell's
  * gateway boundary). Board / filtering / model+team columns are deferred.
  */
-export function SessionsTable({ sessions, projects, headerActions }: SessionsTableProps) {
+export function SessionsTable({ sessions, projects, headerActions, rowActions }: SessionsTableProps) {
   const [sort, setSort] = useState<SessionsSort>(DEFAULT_SORT);
   const [filter, setFilter] = useState<SessionsFilter>(NO_FILTER);
+
+  // Column count for the empty-state colSpan: the sort columns + the Recovery column + (when supplied)
+  // the per-row Actions column.
+  const totalCols = COLUMNS.length + 1 + (rowActions ? 1 : 0);
 
   // Pipeline: build -> filter -> sort. Status options come from the UNFILTERED set
   // (stable as the filter narrows). truly-empty (no rows at all) is distinct from
@@ -138,12 +147,14 @@ export function SessionsTable({ sessions, projects, headerActions }: SessionsTab
             {/* Recovery is a display-only column (the resume-mode indicator) — not
                 a sort key, so a plain header (no sort button). */}
             <th scope="col">Recovery</th>
+            {/* Actions is an opt-in per-row control column (the rowActions render-prop slot). */}
+            {rowActions ? <th scope="col">Actions</th> : null}
           </tr>
         </thead>
         <tbody>
           {filteredEmpty ? (
             <tr>
-              <td colSpan={COLUMNS.length + 1} data-testid="sessions-filtered-empty">
+              <td colSpan={totalCols} data-testid="sessions-filtered-empty">
                 No sessions match the filters.{" "}
                 <button type="button" onClick={() => setFilter(NO_FILTER)}>
                   Clear filters
@@ -152,7 +163,7 @@ export function SessionsTable({ sessions, projects, headerActions }: SessionsTab
             </tr>
           ) : rows.length === 0 ? (
             <tr>
-              <td colSpan={COLUMNS.length + 1} data-testid="sessions-empty">
+              <td colSpan={totalCols} data-testid="sessions-empty">
                 No sessions.
               </td>
             </tr>
@@ -170,6 +181,9 @@ export function SessionsTable({ sessions, projects, headerActions }: SessionsTab
                 <td className="sessions__recovery">
                   {row.resumeMode ? <ResumeModeBadge mode={row.resumeMode} /> : "—"}
                 </td>
+                {rowActions ? (
+                  <td className="sessions__actions">{rowActions(row)}</td>
+                ) : null}
               </tr>
             ))
           )}

@@ -175,4 +175,16 @@ export interface GatewayPort {
    * `isProfileChangeEnabled` (intent/profile-change-request.ts).
    */
   readonly enabledProfileChange: boolean;
+
+  /**
+   * The per-action SESSION-DRIVE go-live gate (WAVE-1 W1-C-b; the `enabledPrMutations` mirror — a SET, so
+   * it seeds the per-control boolean consolidation). The SET of enabled drive action types
+   * (`session.send_message`/`session.pause`/`session.resume`). A drive `submit_action` reaches the wire
+   * ONLY when its action_type is in this set — the transport throws-never-invokes AND the control is
+   * disabled otherwise. SEPARATE from `mutationsEnabled` (an approval-gated drive write can't ride the live
+   * L2 flag). `UdsGatewayPort` defaults it EMPTY (all held until a USER cat-1 sign-off); `MockGatewayPort`
+   * defaults it to the full drive set. NOT a §6.1 RPC method. Read via `isSessionControlEnabled`
+   * (intent/session-drive-request.ts).
+   */
+  readonly enabledSessionControls: ReadonlySet<string>;
 }

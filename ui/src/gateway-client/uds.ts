@@ -59,6 +59,7 @@ import {
 import { PR_MUTATION_ACTION_TYPES } from "../intent/pr-mutation-request";
 import { SESSION_KILL_ACTION_TYPE } from "../intent/kill-session-request";
 import { SESSION_PROFILE_CHANGE_ACTION_TYPE } from "../intent/profile-change-request";
+import { SESSION_DRIVE_ACTION_TYPES } from "../intent/session-drive-request";
 
 /** The serializable error the 050 bridge rejects with (`GatewayCommandError`, snake_case
  *  `kind` tag). Only `kind`/`code`/`message` are read here; the structural variants
@@ -88,6 +89,8 @@ const SESSION_KILL_NOT_ENABLED =
   "UdsGatewayPort: agent-kill (session.kill) is not enabled (held off until a USER cat-1 sign-off + visual gate; enabledSessionKill=false — a destructive write does NOT auto-ride the live mutationsEnabled flip)";
 const PROFILE_CHANGE_NOT_ENABLED =
   "UdsGatewayPort: profile-change (session.profile_change) is not enabled (held off until a USER cat-1 sign-off + visual gate; enabledProfileChange=false — a session live-write does NOT auto-ride the live mutationsEnabled flip; defense-in-depth to the daemon risk-2 approval)";
+const SESSION_DRIVE_NOT_ENABLED = (actionType: string) =>
+  `UdsGatewayPort: session-drive '${actionType}' is not enabled (held off until a USER cat-1 sign-off + visual gate; not in enabledSessionControls — an approval-gated drive write does NOT auto-ride the live mutationsEnabled flip; defense-in-depth to the daemon approval)`;
 
 /** A frame received over the subscribe `Channel` (the TS mirror of the 050 bridge's
  *  `SubscriptionEvent`): `delta` carries a raw daemon delta (boundary-parsed before it's yielded),
@@ -185,6 +188,11 @@ export class UdsGatewayPort implements GatewayPort {
    *  control disabled) until a USER cat-1 sign-off flips it — defense-in-depth to the daemon risk-2 approval. */
   readonly enabledProfileChange: boolean;
 
+  /** The per-action SESSION-DRIVE go-live gate (WAVE-1 W1-C-b; the `enabledPrMutations` Set mirror).
+   *  default EMPTY: a drive submit_action (send_message/pause/resume) throws-never-invokes (+ the control
+   *  disabled) until a USER cat-1 sign-off adds its type to the set — seeds the per-control consolidation. */
+  readonly enabledSessionControls: ReadonlySet<string>;
+
   constructor(
     opts: {
       mutationsEnabled?: boolean;
@@ -192,6 +200,7 @@ export class UdsGatewayPort implements GatewayPort {
       enabledSessionLaunch?: boolean;
       enabledSessionKill?: boolean;
       enabledProfileChange?: boolean;
+      enabledSessionControls?: ReadonlySet<string>;
     } = {},
   ) {
     this.mutationsEnabled = opts.mutationsEnabled ?? false;
@@ -199,6 +208,7 @@ export class UdsGatewayPort implements GatewayPort {
     this.enabledSessionLaunch = opts.enabledSessionLaunch ?? false;
     this.enabledSessionKill = opts.enabledSessionKill ?? false;
     this.enabledProfileChange = opts.enabledProfileChange ?? false;
+    this.enabledSessionControls = opts.enabledSessionControls ?? new Set();
   }
 
   // ── the §6.1 read surface (single-shot — invoke + boundary-parse) ──────────────────
@@ -419,11 +429,23 @@ export class UdsGatewayPort implements GatewayPort {
     }
   }
 
+  /** WAVE-1 W1-C-b — a session-drive submit (send_message/pause/resume) reaches the wire ONLY when its
+   *  action_type is in the `enabledSessionControls` set. Per-action (enabling pause ≠ enabling resume) +
+   *  independent of `mutationsEnabled` (an approval-gated drive write can't ride the live L2 flag); throws
+   *  BEFORE invoke → the provably-unreachable layer ([[27]]). Non-drive types are unaffected. The
+   *  `assertPrMutationsEnabledFor` Set mirror. */
+  private assertSessionControlEnabledFor(actionType: string): void {
+    if (SESSION_DRIVE_ACTION_TYPES.has(actionType) && !this.enabledSessionControls.has(actionType)) {
+      throw new Error(SESSION_DRIVE_NOT_ENABLED(actionType));
+    }
+  }
+
   async submit_action(request: ActionRequest): Promise<ActionAck> {
     this.assertMutationsEnabled();
     this.assertPrMutationsEnabledFor(request.action_type);
     this.assertSessionKillEnabledFor(request.action_type);
     this.assertProfileChangeEnabledFor(request.action_type);
+    this.assertSessionControlEnabledFor(request.action_type);
     return this.invokeRead(parseAck, "gateway_submit_action", { request });
   }
   // No PR-mutation guard here by design: preview_action takes only an opaque action_request_id (no

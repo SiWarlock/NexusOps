@@ -63,6 +63,7 @@ import {
 import { usageDeltaFixture, usageFixture } from "../projections/fixtures/proj_usage";
 import { parseDelta, parseProjectionPage } from "./boundary";
 import { PR_MUTATION_ACTION_TYPES } from "../intent/pr-mutation-request";
+import { SESSION_DRIVE_ACTION_TYPES } from "../intent/session-drive-request";
 
 const DEFAULT_PROTOCOL_VERSION = 1;
 
@@ -127,6 +128,9 @@ export interface MockGatewayOptions {
   /** The per-action profile-change gate (WAVE-1 W1-C-a). Default TRUE — the working Mock; set false to
    *  exercise the held (default-OFF in production) Change-profile control. */
   enabledProfileChange?: boolean;
+  /** The per-action session-drive Set gate (WAVE-1 W1-C-b). Default = the full drive set — the working
+   *  Mock; set an empty/partial set to exercise the held (default-EMPTY in production) drive controls. */
+  enabledSessionControls?: ReadonlySet<string>;
 }
 
 export class MockGatewayPort implements GatewayPort {
@@ -144,6 +148,8 @@ export class MockGatewayPort implements GatewayPort {
   readonly enabledSessionKill: boolean;
   /** The per-action profile-change gate (WAVE-1 W1-C-a) — default TRUE (the working Mock). */
   readonly enabledProfileChange: boolean;
+  /** The per-action session-drive Set gate (WAVE-1 W1-C-b) — default = the full drive set (the working Mock). */
+  readonly enabledSessionControls: ReadonlySet<string>;
 
   constructor(options: MockGatewayOptions = {}) {
     this.connection = options.connection ?? "connected";
@@ -154,6 +160,7 @@ export class MockGatewayPort implements GatewayPort {
     this.enabledSessionLaunch = options.enabledSessionLaunch ?? true;
     this.enabledSessionKill = options.enabledSessionKill ?? true;
     this.enabledProfileChange = options.enabledProfileChange ?? true;
+    this.enabledSessionControls = options.enabledSessionControls ?? SESSION_DRIVE_ACTION_TYPES;
   }
 
   async get_projection<K extends ProjectionName>(

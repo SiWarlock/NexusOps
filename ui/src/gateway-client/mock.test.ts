@@ -167,6 +167,15 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     expect(new MockGatewayPort().enabledProfileChange).toBe(true);
   });
 
+  it("mock_enabled_session_controls_defaults_full_set", () => {
+    // spec(W1-C-b) — the Mock defaults the FULL drive set (send_message/pause/resume) ON so Mock-driven
+    // drive-control flows exercise the enabled path (production UdsGatewayPort defaults to an EMPTY set).
+    const set = new MockGatewayPort().enabledSessionControls;
+    expect(set.has("session.send_message")).toBe(true);
+    expect(set.has("session.pause")).toBe(true);
+    expect(set.has("session.resume")).toBe(true);
+  });
+
   it("mock_get_execution_profiles_includes_two_credentialed_for_the_picker", async () => {
     // spec(W1-C-a) — the picker needs ≥2 CREDENTIALED profiles so a "change to a DIFFERENT profile" flow
     // is exercisable (one is_default + one non-default credentialed) alongside ≥1 needs-credential row.

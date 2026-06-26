@@ -859,3 +859,52 @@ describe("UdsGatewayPort — session.profile_change guard (WAVE-1 W1-C-a, defaul
     expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: l2Req });
   });
 });
+
+// ─── ui-087 WAVE-1 W1-C-b — the per-action session-drive Set gate (enabledSessionControls, default-EMPTY) ──
+describe("UdsGatewayPort — session-drive guard (WAVE-1 W1-C-b, default-EMPTY Set held-flip)", () => {
+  it("uds_default_enabled_session_controls_is_empty", () => {
+    // spec(default-OFF / the enabledPrMutations mirror) — the production default holds ALL drive controls
+    // (the Set is EMPTY; all held until a USER cat-1 sign-off). Even with mutationsEnabled on.
+    expect(new UdsGatewayPort().enabledSessionControls.size).toBe(0);
+    expect(new UdsGatewayPort({ mutationsEnabled: true }).enabledSessionControls.size).toBe(0);
+  });
+
+  it("uds_submit_action_drive_throws_never_invokes_when_not_in_set", async () => {
+    // spec(cat-1 [[27]] + the held-flip) — each drive type (send_message/pause/resume) THROWS + NEVER
+    // invokes when NOT in enabledSessionControls, EVEN with mutationsEnabled:true (an approval-gated drive
+    // write does not auto-ride the live L2 flag).
+    const port = new UdsGatewayPort({ mutationsEnabled: true }); // enabledSessionControls defaults EMPTY
+    for (const type of ["session.send_message", "session.pause", "session.resume"]) {
+      const req = { action_type: type } as ActionRequest;
+      await expect(port.submit_action(req)).rejects.toThrow(/not enabled/i);
+    }
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("uds_submit_action_drive_invokes_when_in_set", async () => {
+    // spec(§6.1) — a drive type IN the set (test-only; production stays empty) invokes gateway_submit_action
+    // verbatim; per-action — enabling pause does NOT enable resume.
+    mockInvoke.mockResolvedValue(validAck);
+    const port = new UdsGatewayPort({
+      mutationsEnabled: true,
+      enabledSessionControls: new Set(["session.pause"]),
+    });
+    const pauseReq = { action_type: "session.pause" } as ActionRequest;
+    await port.submit_action(pauseReq);
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: pauseReq });
+    // resume NOT in the set → still throws-never-invokes (per-action independence).
+    await expect(
+      port.submit_action({ action_type: "session.resume" } as ActionRequest),
+    ).rejects.toThrow(/not enabled/i);
+  });
+
+  it("non_drive_submit_action_unaffected_by_session_controls_gate", async () => {
+    // spec(no L2 regression) — the Set gate keys on the 3 drive types ONLY: an L2 non-drive submit
+    // (mutationsEnabled:true, empty Set) still invokes (the gate is scoped to the drive set).
+    mockInvoke.mockResolvedValue(validAck);
+    const port = new UdsGatewayPort({ mutationsEnabled: true });
+    const l2Req = { action_type: "git.stage_hunk" } as ActionRequest;
+    await port.submit_action(l2Req);
+    expect(mockInvoke).toHaveBeenCalledWith("gateway_submit_action", { request: l2Req });
+  });
+});

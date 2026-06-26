@@ -1,31 +1,11 @@
 import type { CSSProperties, ReactNode } from "react";
 import { UsageMeter as KitUsageMeter } from "@ui-kit/status/UsageMeter";
-import type { CreditPool, UsageRow } from "../../contracts/index";
-import {
-  buildUsageRows,
-  creditPoolState,
-  type CreditPoolState,
-} from "./model";
+import type { UsageRow } from "../../contracts/index";
+import { buildUsageRows } from "./model";
 
 interface UsageDashboardProps {
   rows: UsageRow[];
-  creditPool: CreditPool | null;
 }
-
-const CREDIT_POOL_LABEL: Record<CreditPoolState, string> = {
-  normal: "Normal",
-  near_exhaustion: "Near exhaustion",
-  hard_stop: "Hard stop",
-};
-
-// A non-color channel for the credit-pool threshold (forbidden #5): the kit
-// UsageMeter escalates fill COLOR by threshold, so the state must ALSO be carried
-// by a glyph + label — never color alone.
-const CREDIT_POOL_GLYPH: Record<CreditPoolState, string> = {
-  normal: "●",
-  near_exhaustion: "⚠",
-  hard_stop: "⛔",
-};
 
 const card: CSSProperties = {
   border: "1px solid var(--border-default)",
@@ -70,28 +50,27 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub: st
   );
 }
 
-/**
- * The Usage dashboard (ported to the kit-views4 UsageSection layout, driven by
- * the REAL Usage projection): stat cards (spend/tokens aggregates — sums of the
- * projection rows; estimated-quality marked with ≈), the Agent-SDK credit-pool
- * meter with its non-color threshold state (forbidden #5), top context
- * consumers (real context_pct; Codex/null renders NO bar — "unknown", forbidden
- * #4), and the per-subject table (accuracy label always present, §11.7).
- * The prototype's 14-day spend history has NO backing projection — its card
- * renders an honest pending note (flagged), never invented bars (forbidden #2).
- */
-export function UsageDashboard({ rows, creditPool }: UsageDashboardProps) {
-  const vms = buildUsageRows(rows);
-  const poolState: CreditPoolState | null = creditPool
-    ? creditPoolState(creditPool.used, creditPool.limit, creditPool.kind)
-    : null;
+const fmtK = (n: number) => `${Math.round(n / 1000)}k`;
 
-  const spend = rows.reduce((s, r) => s + r.cost, 0);
-  const tokens = rows.reduce((s, r) => s + r.tokens, 0);
+/**
+ * The Usage dashboard (driven by the REAL Usage projection, the frozen 11-field UsageRow):
+ * stat cards (spend = Σ cost_estimate, tokens = Σ(tokens_in+tokens_out) with the real in/out split —
+ * estimated-quality marked with ≈), top context consumers (real context_pct_max; no metadata renders
+ * NO bar — "unknown", forbidden #4), and the per-ledger table (accuracy label always present, §11.7).
+ * There is NO credit-pool meter — the daemon has no credit-balance source, so the section is honestly
+ * OMITTED with a "not reported" note (§11.7), never faked. The prototype's 14-day spend history has no
+ * backing projection — its card renders an honest pending note, never invented bars (forbidden #2).
+ */
+export function UsageDashboard({ rows }: UsageDashboardProps) {
+  const vms = buildUsageRows(rows);
+
+  const spend = rows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
+  const tokensIn = rows.reduce((s, r) => s + (r.tokens_in ?? 0), 0);
+  const tokensOut = rows.reduce((s, r) => s + (r.tokens_out ?? 0), 0);
   const anyEstimated = rows.some((r) => r.metric_quality !== "exact");
-  // forbidden #4 (mirrors the model's isContextUnknown): Codex reports no context
-  // metadata — a stray number on a codex row must still not render as a bar.
-  const contextRows = rows.filter((r) => r.harness !== "codex" && r.context_pct != null);
+  // forbidden #4 (mirrors the model's isContextUnknown): no context metadata (context_pct_max null)
+  // must not render as a bar.
+  const contextRows = rows.filter((r) => r.context_pct_max != null);
 
   return (
     <div
@@ -103,50 +82,32 @@ export function UsageDashboard({ rows, creditPool }: UsageDashboardProps) {
         <StatCard
           label="Spend today"
           value={`${anyEstimated ? "≈" : ""}$${spend.toFixed(2)}`}
-          sub={`across ${rows.length} subject${rows.length === 1 ? "" : "s"}`}
+          sub={`across ${rows.length} ledger row${rows.length === 1 ? "" : "s"}`}
         />
         <StatCard
           label="Tokens today"
-          value={`${Math.round(tokens / 1000)}k`}
-          sub="in + out (split lands with usage enrichment)"
+          value={fmtK(tokensIn + tokensOut)}
+          sub={`${fmtK(tokensIn)} in · ${fmtK(tokensOut)} out`}
         />
         <StatCard
-          label="Subjects metered"
+          label="Ledger rows"
           value={String(rows.length)}
           sub={`${contextRows.length} reporting context`}
         />
       </div>
 
-      {creditPool && poolState ? (
-        <section className="usage__credit-pool" aria-label="Agent-SDK credit pool" style={card}>
-          <KitUsageMeter
-            value={creditPool.used}
-            max={creditPool.limit}
-            variant="bar"
-            label="Agent-SDK credits"
-            valueText={`${creditPool.used} / ${creditPool.limit}`}
-            accuracy="exact"
-          />
-          <span
-            className="usage__credit-pool-state"
-            data-testid="credit-pool-state"
-            data-state={poolState}
-            style={{
-              display: "inline-block",
-              marginTop: 8,
-              font: "var(--fs-meta) var(--font-sans)",
-              color:
-                poolState === "normal"
-                  ? "var(--success-ink)"
-                  : poolState === "near_exhaustion"
-                    ? "var(--warning-ink)"
-                    : "var(--danger-ink)",
-            }}
-          >
-            {CREDIT_POOL_GLYPH[poolState]} {CREDIT_POOL_LABEL[poolState]}
-          </span>
-        </section>
-      ) : null}
+      {/* Credit-pool meter HONESTLY OMITTED (W2-usage) — the daemon has no remaining-balance source
+          (the SDK monthly pool is not telemetry-observable). Explain the absence (§11.7), never fake it. */}
+      <div
+        data-testid="credit-pool-unavailable"
+        style={{
+          ...card,
+          font: "var(--fs-meta)/1.5 var(--font-sans)",
+          color: "var(--text-faint)",
+        }}
+      >
+        Credit balance not available — not reported by the daemon.
+      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         <div style={card}>
@@ -179,10 +140,10 @@ export function UsageDashboard({ rows, creditPool }: UsageDashboardProps) {
               </span>
             ) : (
               [...contextRows]
-                .toSorted((a, b) => (b.context_pct ?? 0) - (a.context_pct ?? 0))
+                .toSorted((a, b) => (b.context_pct_max ?? 0) - (a.context_pct_max ?? 0))
                 .slice(0, 4)
                 .map((r) => (
-                  <div key={r.subject_id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div key={r.ledger_id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <span
                       style={{
                         flex: 1,
@@ -193,13 +154,13 @@ export function UsageDashboard({ rows, creditPool }: UsageDashboardProps) {
                         whiteSpace: "nowrap",
                       }}
                     >
-                      {r.subject_id}
+                      {r.model ?? r.ledger_id}
                     </span>
                     <KitUsageMeter
-                      value={r.context_pct ?? 0}
+                      value={r.context_pct_max ?? 0}
                       max={100}
-                      valueText={`${r.context_pct}%`}
-                      accuracy={r.metric_quality}
+                      valueText={`${r.context_pct_max}%`}
+                      accuracy={r.metric_quality ?? "unavailable"}
                       style={{ width: 150, flex: "none" }}
                     />
                   </div>
@@ -210,12 +171,12 @@ export function UsageDashboard({ rows, creditPool }: UsageDashboardProps) {
       </div>
 
       <div style={card}>
-        <Eyebrow style={{ marginBottom: 11 }}>Per-subject usage</Eyebrow>
+        <Eyebrow style={{ marginBottom: 11 }}>Per-ledger usage</Eyebrow>
         <table className="usage__table" data-testid="usage-table">
           <thead>
             <tr>
               <th scope="col">Subject</th>
-              <th scope="col">Harness</th>
+              <th scope="col">Model</th>
               <th scope="col">Tokens</th>
               <th scope="col">Cost</th>
               <th scope="col">Context</th>
@@ -231,9 +192,9 @@ export function UsageDashboard({ rows, creditPool }: UsageDashboardProps) {
               </tr>
             ) : (
               vms.map((vm) => (
-                <tr key={vm.subjectId} data-item-id={`Usage:${vm.subjectId}`}>
-                  <td>{vm.subjectId}</td>
-                  <td>{vm.harness}</td>
+                <tr key={vm.ledgerId} data-item-id={`Usage:${vm.ledgerId}`}>
+                  <td>{vm.label}</td>
+                  <td>{vm.model}</td>
                   <td>{vm.tokensDisplay}</td>
                   <td>{vm.costDisplay}</td>
                   <td className="usage__context">{vm.contextDisplay}</td>

@@ -14,14 +14,13 @@ import {
   ShieldQuestion,
   Workflow,
 } from "lucide-react";
-import { Badge, Button, HarnessBadge, RiskBadge, UsageMeter } from "../../design-system/kit";
+import { Badge, Button, HarnessBadge, RiskBadge } from "../../design-system/kit";
 import { StatusPill } from "../../status/StatusPill";
 import { describeStatus } from "../../status/descriptors";
 import { humanizeActorLabel } from "../audit/actor-label";
 import type {
   ApprovalQueueRow,
   AuditEventRow,
-  CreditPool,
   SessionRow,
   UsageRow,
 } from "../../contracts/index";
@@ -266,20 +265,18 @@ function CommandRail({
   approvals,
   waiting,
   usage,
-  creditPool,
   events,
   activeSessionCount,
 }: {
   approvals: ApprovalQueueRow[];
   waiting: SessionRow[];
   usage: UsageRow[];
-  creditPool: CreditPool | null;
   events: AuditEventRow[];
   activeSessionCount: number;
 }) {
   const queueCount = approvals.length + waiting.length;
-  const spend = usage.reduce((s, u) => s + u.cost, 0);
-  const tokens = usage.reduce((s, u) => s + u.tokens, 0);
+  const spend = usage.reduce((s, u) => s + (u.cost_estimate ?? 0), 0);
+  const tokens = usage.reduce((s, u) => s + (u.tokens_in ?? 0) + (u.tokens_out ?? 0), 0);
   const anyEstimated = usage.some((u) => u.metric_quality !== "exact");
   return (
     <aside
@@ -343,15 +340,8 @@ function CommandRail({
       <div style={{ ...sectionPad, borderBottom: "1px solid var(--border-subtle)" }}>
         <Eyebrow style={{ marginBottom: 10 }}>Capacity</Eyebrow>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {creditPool ? (
-            <UsageMeter
-              label="Agent-SDK credits"
-              value={creditPool.used}
-              max={creditPool.limit}
-              valueText={`${creditPool.used} / ${creditPool.limit}`}
-            />
-          ) : null}
-          {/* Spend/token/runtime LIMITS are daemon config not yet exposed — stat
+          {/* Credit-pool meter HONESTLY OMITTED (W2-usage) — the daemon has no remaining-balance
+              source. Spend/token/runtime LIMITS are daemon config not yet exposed — stat
               lines, not meters (a meter needs a real max; flagged). */}
           <div style={{ display: "flex", flexDirection: "column", gap: 5, font: "var(--fs-meta) var(--font-mono)", color: "var(--text-muted)" }}>
             <span style={{ display: "flex", justifyContent: "space-between" }}>
@@ -400,7 +390,6 @@ export function CommandCenter({
   approvals,
   waiting,
   usage,
-  creditPool,
   events,
   projectName,
   onOpenSession,
@@ -413,7 +402,6 @@ export function CommandCenter({
   /** GLOBAL waiting sessions (rail HIQ). */
   waiting: SessionRow[];
   usage: UsageRow[];
-  creditPool: CreditPool | null;
   events: AuditEventRow[];
   projectName: string;
   onOpenSession: (s: SessionRow) => void;
@@ -577,7 +565,6 @@ export function CommandCenter({
         approvals={approvals}
         waiting={waiting}
         usage={usage}
-        creditPool={creditPool}
         events={events}
         activeSessionCount={activeCount}
       />

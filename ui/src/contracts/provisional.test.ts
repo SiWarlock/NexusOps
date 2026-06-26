@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import * as provisionalExports from "./provisional";
 import {
   ApprovalQueueRow,
   AuditEventRow,
@@ -16,6 +17,8 @@ import {
   ServerFrame,
   SessionRow,
   TerminalOutputFrame,
+  UsageProjectionPage,
+  UsageRow,
   WireError,
 } from "./index";
 
@@ -400,6 +403,76 @@ describe("provisional AuditEventRow (§7.2 — the W2-audit frozen row, 0.49.0)"
     expect(Object.keys(AuditEventRow.shape).toSorted(), "field drift in AuditEventRow").toEqual(
       frozen,
     );
+  });
+});
+
+describe("provisional UsageRow (§7.2 — the W2-usage frozen row, 0.50.0)", () => {
+  // A valid 11-field row matching the frozen daemon shape (shared/src/projections.rs UsageRow).
+  const usageBase = {
+    ledger_id: "ledger_1",
+    project_id: "project_1",
+    session_id: "session_1",
+    execution_profile_id: "ep_1",
+    model: "claude-sonnet-4",
+    bucket_day: "2026-06-26",
+    tokens_in: 100,
+    tokens_out: 40,
+    context_pct_max: 64,
+    cost_estimate: 1.92,
+    metric_quality: "exact",
+  };
+
+  it("usage_row_frozen_11_field_strict_shadow", () => {
+    // spec([[24]] frozen-shadow + the daemon deny_unknown_fields) — EXACTLY the 11 frozen fields,
+    // `.strict()`, with the nullability + the metric_quality enum binding:
+    expect(UsageRow.safeParse(usageBase).success).toBe(true);
+    // `.strict()` rejects an unknown key (e.g. the dropped internal `updated_at_seq`).
+    expect(
+      UsageRow.safeParse({ ...usageBase, updated_at_seq: 7 }).success,
+      "UsageRow must reject an unknown field (.strict)",
+    ).toBe(false);
+    // every data column is nullable (ledger_id PK stays required); metric_quality nullable.
+    expect(
+      UsageRow.safeParse({
+        ...usageBase,
+        project_id: null,
+        session_id: null,
+        execution_profile_id: null,
+        model: null,
+        bucket_day: null,
+        tokens_in: null,
+        tokens_out: null,
+        context_pct_max: null,
+        cost_estimate: null,
+        metric_quality: null,
+      }).success,
+    ).toBe(true);
+    // metric_quality binds the generated MetricQuality enum — a canonical value parses, bogus rejects.
+    expect(UsageRow.safeParse({ ...usageBase, metric_quality: "estimated" }).success).toBe(true);
+    expect(UsageRow.safeParse({ ...usageBase, metric_quality: "bogus_q" }).success).toBe(false);
+    // ledger_id (PK) is required.
+    const { ledger_id: _omit, ...noPk } = usageBase;
+    expect(UsageRow.safeParse(noPk).success, "ledger_id (PK) is required").toBe(false);
+  });
+
+  it("usage_row_field_set_matches_frozen_schema", () => {
+    // spec(§5.0 / [[24]]) — the shadow's field-set must equal the frozen daemon `$defs.UsageRow`
+    // (the AuditEventRow/profile_row precedent); pin both directions.
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
+      $defs: Record<string, { properties?: Record<string, unknown> }>;
+    };
+    const frozen = Object.keys(schema.$defs.UsageRow!.properties!).toSorted();
+    expect(Object.keys(UsageRow.shape).toSorted(), "field drift in UsageRow").toEqual(frozen);
+  });
+
+  it("credit_pool_type_removed", () => {
+    // spec(the honest-OMIT) — the daemon has NO credit-balance source → the faked `CreditPool` type
+    // + `UsageProjectionPage.creditPool` are REMOVED. The page carries only projection/rows/cursor;
+    // `CreditPool` is no longer an exported schema (compile-time enforced by tsc; runtime-pinned here).
+    expect(Object.keys(UsageProjectionPage.shape).toSorted()).toEqual(
+      ["cursor", "projection", "rows"].toSorted(),
+    );
+    expect("CreditPool" in provisionalExports, "CreditPool must no longer be exported").toBe(false);
   });
 });
 

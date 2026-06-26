@@ -26,7 +26,6 @@ const renderCC = (overrides: Partial<ComponentProps<typeof CommandCenter>> = {})
       approvals={[]}
       waiting={[]}
       usage={[]}
-      creditPool={null}
       events={[]}
       projectName="auth-service"
       onOpenSession={() => {}}
@@ -118,24 +117,24 @@ describe("CommandCenter triage cockpit", () => {
     expect(screen.getByText(/queue clear/i)).toBeTruthy();
   });
 
-  it("capacity_renders_real_credit_pool_meter", () => {
-    renderCC({ creditPool: { kind: "sdk", used: 870, limit: 1000 } });
-    expect(screen.getByText("870 / 1000")).toBeTruthy();
-  });
-
   it("ctx_unknown_never_fabricated_for_codex_rows", () => {
-    // §9.1 / forbidden #4: a session whose usage row reports no context renders
-    // an explicit "unknown" — never a ring with an invented number.
+    // §9.1 / forbidden #4: a session whose usage row reports no context (context_pct_max null)
+    // renders an explicit "unknown" — never a ring with an invented number.
     renderCC({
       sessions: [sessionOf("cx", "running_command")],
       usage: [
         {
-          subject_id: "cx",
-          harness: "codex",
-          tokens: 1000,
-          cost: 0.1,
+          ledger_id: "ledger_cx",
+          project_id: "project_1",
+          session_id: "cx",
+          execution_profile_id: "ep_1",
+          model: "gpt-5-codex",
+          bucket_day: "2026-06-26",
+          tokens_in: 700,
+          tokens_out: 300,
+          context_pct_max: null,
+          cost_estimate: 0.1,
           metric_quality: "exact",
-          context_pct: null,
         },
       ],
     });

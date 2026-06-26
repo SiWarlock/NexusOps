@@ -129,7 +129,9 @@ describe("MockGatewayPort read surface (§14 mandate)", () => {
     //           types in shared/src/ipc.rs [secret-free, §15 #4] — status reuses ExecutionProfile, NO new flat enum [42 held]).
     // → 0.49.0 (W2-audit: proj_audit_trail+event_type [MIGRATION_20] + the frozen AuditEventRow [5th projection-row]
     //           — actor_label/sensitivity/event_type are struct fields / plain strings, NO new flat enum [42 held]).
-    expect(caps.contract_version).toBe("0.49.0");
+    // → 0.50.0 (W2-usage: the frozen 11-field UsageRow [6th projection-row] — tokens_in/out / cost_estimate /
+    //           context_pct_max / metric_quality[reuses MetricQuality]; the faked creditPool dropped. NO new flat enum [42 held]).
+    expect(caps.contract_version).toBe("0.50.0");
     expect(caps.protocol_version).toBe(1);
   });
 

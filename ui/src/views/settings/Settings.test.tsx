@@ -8,10 +8,7 @@ afterEach(cleanup);
 
 const renderSettings = () =>
   render(
-    <Settings
-      usage={usageFixture.rows}
-      creditPool={usageFixture.creditPool ?? null}
-    />,
+    <Settings usage={usageFixture.rows} />,
   );
 
 describe("Settings tabbed surface", () => {
@@ -45,7 +42,9 @@ describe("Settings tabbed surface", () => {
     fireEvent.click(screen.getByRole("tab", { name: /usage/i }));
     // the Usage tab mounts the live dashboard (real projection aggregates)
     expect(screen.getByTestId("usage-table")).toBeTruthy();
-    expect(screen.getByTestId("credit-pool-state")).toBeTruthy();
+    // the credit-pool meter is honestly OMITTED (no daemon source) — the honest note renders instead
+    expect(screen.queryByTestId("credit-pool-state")).toBeNull();
+    expect(screen.getByTestId("credit-pool-unavailable")).toBeTruthy();
     // the prototype's 14-day spend history has no backing projection — its card
     // is an HONEST pending note, never invented bars (forbidden #2)
     expect(screen.getByTestId("spend-history-pending")).toBeTruthy();

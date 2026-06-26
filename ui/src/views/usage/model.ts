@@ -1,23 +1,26 @@
 // The Usage view-model (§11.4/§11.7/§9.1): a pure mapping of usage rows → display
 // VMs that enforces three render-policy rules in ONE place (views never fabricate
 // a % or drop a label):
-//   (a) the accuracy label is derived from metric_quality and is always present;
-//   (b) forbidden #4 — Codex / null context renders the literal "unknown", NEVER a
-//       number or 0% (supportsContextMetadata=false);
+//   (a) the accuracy label is derived from metric_quality (null → "unavailable") and is always present;
+//   (b) forbidden #4 — no context metadata (context_pct_max null, §9.1 supportsContextMetadata=false)
+//       renders the literal "unknown", NEVER a number/0%;
 //   (c) an `unavailable` usage value renders "unknown", never 0/empty.
-import type { CreditPool, Harness, MetricQuality, UsageRow } from "../../contracts/index";
-
-export type CreditPoolState = "normal" | "near_exhaustion" | "hard_stop";
+import type { MetricQuality, UsageRow } from "../../contracts/index";
 
 export interface UsageRowVM {
-  subjectId: string;
-  harness: Harness;
+  /** The ledger PK — the React key + data-item-id. */
+  ledgerId: string;
+  /** The primary display label: the model, falling back to ledger_id when model is null (Q1). */
+  label: string;
+  /** The raw model (or "—" when null) — the table's Model column. */
+  model: string;
+  /** The effective metric quality (null coalesced → "unavailable", §11.7). */
   metricQuality: MetricQuality;
   /** Always present (§11.7) — never dropped, even for `exact`. */
   accuracyLabel: string;
   /** A percentage like "64%", or the literal "unknown" (forbidden #4 / null). */
   contextDisplay: string;
-  /** The token count, or "unknown" when the metric is unavailable. */
+  /** The token count Σ(tokens_in + tokens_out), or "unknown" when the metric is unavailable. */
   tokensDisplay: string;
   /** The cost, or "unknown" when the metric is unavailable. */
   costDisplay: string;
@@ -31,47 +34,37 @@ const ACCURACY_LABEL: Record<MetricQuality, string> = {
   unavailable: "unavailable",
 };
 
-// forbidden #4: context is "unknown" for Codex (no context metadata, §9.1) OR a
-// null/absent context_pct — NEVER a number, even if a stray one arrives on Codex.
+/** metric_quality is Option<MetricQuality> — null coalesces to the honest "unavailable" degrade
+ *  (§11.7 / Q3), NOT a value-hiding default (it renders "unavailable" accuracy + "unknown" values,
+ *  never a fabricated number). */
+function effectiveQuality(q: MetricQuality | null): MetricQuality {
+  return q ?? "unavailable";
+}
+
+// forbidden #4: context is "unknown" when the daemon serves no context metadata (context_pct_max
+// null, §9.1 supportsContextMetadata=false) — NEVER a number, even a stray one. A real 0 is "0%".
 function isContextUnknown(row: UsageRow): boolean {
-  return row.harness === "codex" || row.context_pct == null;
+  return row.context_pct_max == null;
 }
 
 export function buildUsageRows(rows: UsageRow[]): UsageRowVM[] {
   return rows.map((row) => {
-    const unavailable = row.metric_quality === "unavailable";
+    const quality = effectiveQuality(row.metric_quality);
+    const unavailable = quality === "unavailable";
+    const tokens = (row.tokens_in ?? 0) + (row.tokens_out ?? 0);
     return {
-      subjectId: row.subject_id,
-      harness: row.harness,
-      metricQuality: row.metric_quality,
-      accuracyLabel: ACCURACY_LABEL[row.metric_quality],
-      contextDisplay: isContextUnknown(row) ? UNKNOWN : `${row.context_pct}%`,
-      tokensDisplay: unavailable ? UNKNOWN : String(row.tokens),
-      costDisplay: unavailable ? UNKNOWN : `$${row.cost.toFixed(2)}`,
+      ledgerId: row.ledger_id,
+      label: row.model ?? row.ledger_id,
+      model: row.model ?? "—",
+      metricQuality: quality,
+      accuracyLabel: ACCURACY_LABEL[quality],
+      contextDisplay: isContextUnknown(row) ? UNKNOWN : `${row.context_pct_max}%`,
+      // "unknown" when the metric is unavailable OR the underlying numeric is null (not reported) —
+      // NEVER a fabricated 0/$0.00 on an exact/estimated row with missing data (§11.7 / forbidden #2).
+      tokensDisplay:
+        unavailable || (row.tokens_in == null && row.tokens_out == null) ? UNKNOWN : String(tokens),
+      costDisplay:
+        unavailable || row.cost_estimate == null ? UNKNOWN : `$${row.cost_estimate.toFixed(2)}`,
     };
   });
-}
-
-/** Provisional thresholds (§11.4 pins no exact numbers — reconcile at the daemon freeze). */
-const NEAR_EXHAUSTION_REMAINING_PCT = 15;
-
-/** The two billing-pool kinds (§9.1) — DERIVED from the provisional `CreditPool`
- *  shape (single source; never re-declared — Lesson §2). */
-export type CreditPoolKind = CreditPool["kind"];
-
-export function creditPoolState(
-  used: number,
-  limit: number,
-  kind: CreditPoolKind,
-): CreditPoolState {
-  // Assumes the daemon invariant 0 <= used (a negative `used` would read as
-  // >100% remaining → normal, which is a meaningless input, not a real state).
-  // §9.1 two-pool asymmetry: ONLY the capped/no-fallback SDK pool hard-stops; the
-  // auto-resetting interactive pool's exhaustion is the recoverable near_exhaustion
-  // signal, never a hard-stop (a control plane can't let a supervised run die there).
-  const exhausted = limit <= 0 || (limit - used) / limit <= 0;
-  if (exhausted) return kind === "sdk" ? "hard_stop" : "near_exhaustion";
-  const remainingPct = ((limit - used) / limit) * 100;
-  if (remainingPct <= NEAR_EXHAUSTION_REMAINING_PCT) return "near_exhaustion";
-  return "normal";
 }

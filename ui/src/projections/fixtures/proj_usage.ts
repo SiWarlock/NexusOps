@@ -1,49 +1,69 @@
-// Fixture data for the Usage projection (PROVISIONAL — 6.4b). §14 test/dev
-// infrastructure, served THROUGH the boundary validator. Covers the load-bearing
-// cases: a Codex row (context_pct null → "unknown"), an estimated row, and an
-// `unavailable` row (value → "unknown", not 0). The credit pool is near-exhaustion
-// (870/1000 → 13% remaining) so the threshold's non-color channel is exercised.
+// Fixture data for the Usage projection (W2-usage 0.50 — the frozen 11-field UsageRow).
+// §14 test/dev infrastructure, served THROUGH the boundary validator. Covers the
+// load-bearing cases: a row with context (a %), an estimated-quality row, a
+// no-context-metadata row (context_pct_max null → "unknown", §9.1/forbidden #4), and an
+// `unavailable` row (value → "unknown", not 0; model null → the ledger_id label fallback).
+// NO creditPool — the daemon has no credit-balance source (honest-omit, W2-usage).
 import type { ProjectionDelta, UsageProjectionPage } from "../../contracts/index";
 
 export const usageFixture: UsageProjectionPage = {
   projection: "UsageLedger",
   rows: [
     {
-      subject_id: "session_fixture_1",
-      harness: "claude",
-      tokens: 128000,
-      cost: 1.92,
+      ledger_id: "ledger_fixture_1",
+      project_id: "project_fixture_1",
+      session_id: "session_fixture_1",
+      execution_profile_id: "ep_fixture_1",
+      model: "claude-sonnet-4",
+      bucket_day: "2026-06-26",
+      tokens_in: 96000,
+      tokens_out: 32000,
+      context_pct_max: 64,
+      cost_estimate: 1.92,
       metric_quality: "exact",
-      context_pct: 64,
     },
     {
-      subject_id: "session_fixture_2",
-      harness: "claude",
-      tokens: 45000,
-      cost: 0.68,
+      ledger_id: "ledger_fixture_2",
+      project_id: "project_fixture_1",
+      session_id: "session_fixture_2",
+      execution_profile_id: "ep_fixture_1",
+      model: "claude-sonnet-4",
+      bucket_day: "2026-06-26",
+      tokens_in: 33000,
+      tokens_out: 12000,
+      context_pct_max: 22,
+      cost_estimate: 0.68,
       metric_quality: "estimated",
-      context_pct: 22,
     },
     {
-      // Codex → no context metadata (§9.1) → null → "unknown" (forbidden #4)
-      subject_id: "session_fixture_3",
-      harness: "codex",
-      tokens: 88000,
-      cost: 1.1,
+      // no context metadata (§9.1 supportsContextMetadata=false) → null → "unknown" (forbidden #4)
+      ledger_id: "ledger_fixture_3",
+      project_id: "project_fixture_2",
+      session_id: "session_fixture_3",
+      execution_profile_id: "ep_fixture_2",
+      model: "gpt-5-codex",
+      bucket_day: "2026-06-26",
+      tokens_in: 60000,
+      tokens_out: 28000,
+      context_pct_max: null,
+      cost_estimate: 1.1,
       metric_quality: "exact",
-      context_pct: null,
     },
     {
-      // unavailable → value renders "unknown", never 0
-      subject_id: "session_fixture_4",
-      harness: "claude",
-      tokens: 0,
-      cost: 0,
+      // unavailable → value renders "unknown", never 0; model null → the ledger_id label fallback (Q1)
+      ledger_id: "ledger_fixture_4",
+      project_id: "project_fixture_1",
+      session_id: "session_fixture_4",
+      execution_profile_id: "ep_fixture_1",
+      model: null,
+      bucket_day: "2026-06-26",
+      tokens_in: null,
+      tokens_out: null,
+      context_pct_max: null,
+      cost_estimate: null,
       metric_quality: "unavailable",
-      context_pct: null,
     },
   ],
-  creditPool: { kind: "sdk", used: 870, limit: 1000 },
   cursor: null,
 };
 

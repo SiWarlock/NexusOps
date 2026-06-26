@@ -1,95 +1,93 @@
 import { describe, it, expect } from "vitest";
-import { buildUsageRows, creditPoolState } from "./model";
+import { buildUsageRows } from "./model";
+import * as model from "./model";
 import type { UsageRow } from "../../contracts/index";
 
+// An 11-field frozen UsageRow (W2-usage 0.50); override per case.
+function row(over: Partial<UsageRow> = {}): UsageRow {
+  return {
+    ledger_id: "ledger_1",
+    project_id: "project_1",
+    session_id: "session_1",
+    execution_profile_id: "ep_1",
+    model: "claude-sonnet-4",
+    bucket_day: "2026-06-26",
+    tokens_in: 100,
+    tokens_out: 40,
+    context_pct_max: 64,
+    cost_estimate: 1.5,
+    metric_quality: "exact",
+    ...over,
+  };
+}
+
 describe("usage view-model", () => {
-  it("codex_context_is_unknown_not_a_number", () => {
-    // forbidden #4: Codex reports no context metadata (§9.1 supportsContextMetadata
-    // =false) — context is the literal "unknown", NEVER a number/0%, even if a
-    // stray number arrives on a Codex row.
-    const rows: UsageRow[] = [
-      { subject_id: "x", harness: "codex", tokens: 100, cost: 1, metric_quality: "exact", context_pct: null },
-      { subject_id: "y", harness: "codex", tokens: 100, cost: 1, metric_quality: "exact", context_pct: 42 },
-    ];
-    const [nullCtx, numCtx] = buildUsageRows(rows);
-    expect(nullCtx!.contextDisplay).toBe("unknown");
-    expect(numCtx!.contextDisplay).toBe("unknown");
+  it("build_usage_rows_maps_frozen_fields", () => {
+    // spec(the consumer reconcile) — maps the frozen fields: label = model (Q1), ledgerId = the PK
+    // key, tokens = Σ(tokens_in+tokens_out), cost = cost_estimate, context = context_pct_max%.
+    const [vm] = buildUsageRows([row()]);
+    expect(vm!.ledgerId).toBe("ledger_1");
+    expect(vm!.label).toBe("claude-sonnet-4"); // model is the primary label
+    expect(vm!.tokensDisplay).toBe("140"); // 100 + 40
+    expect(vm!.costDisplay).toBe("$1.50");
+    expect(vm!.contextDisplay).toBe("64%");
+    // Q1: model null → the ledger_id label fallback (never empty).
+    const [noModel] = buildUsageRows([row({ model: null, ledger_id: "ledger_9" })]);
+    expect(noModel!.label).toBe("ledger_9");
   });
 
-  it("claude_context_renders_percentage", () => {
-    // the unknown rule is Codex/null-scoped, not blanket: a Claude row with a real
-    // context_pct shows the percentage; a Claude row with null context → unknown.
-    const [pct] = buildUsageRows([
-      { subject_id: "z", harness: "claude", tokens: 100, cost: 1, metric_quality: "exact", context_pct: 64 },
-    ]);
-    expect(pct!.contextDisplay).toBe("64%");
-    const [nullCtx] = buildUsageRows([
-      { subject_id: "z2", harness: "claude", tokens: 100, cost: 1, metric_quality: "exact", context_pct: null },
-    ]);
-    expect(nullCtx!.contextDisplay).toBe("unknown");
-    // a legitimate Claude 0% is "0%", NOT "unknown" (0 is a real value — the rule
-    // keys on null/Codex via `== null`, not falsiness).
-    const [zeroCtx] = buildUsageRows([
-      { subject_id: "z3", harness: "claude", tokens: 100, cost: 1, metric_quality: "exact", context_pct: 0 },
-    ]);
-    expect(zeroCtx!.contextDisplay).toBe("0%");
+  it("context_unknown_when_context_pct_max_null", () => {
+    // spec(§9.1 / forbidden #4) — no context metadata (the daemon serves context_pct_max null) →
+    // the literal "unknown", NEVER a number/0%; a present value renders the percentage; 0 is a real 0%.
+    expect(buildUsageRows([row({ context_pct_max: null })])[0]!.contextDisplay).toBe("unknown");
+    expect(buildUsageRows([row({ context_pct_max: 64 })])[0]!.contextDisplay).toBe("64%");
+    expect(buildUsageRows([row({ context_pct_max: 0 })])[0]!.contextDisplay).toBe("0%");
   });
 
-  it("accuracy_label_from_metric_quality", () => {
-    // §11.7: the accuracy label is derived from metric_quality (present per row);
-    // an `unavailable` usage shows "unknown" for the value, not 0/empty.
+  it("accuracy_and_unavailable_values", () => {
+    // spec(§11.7) — the accuracy label derives from metric_quality (always present); an `unavailable`
+    // usage renders "unknown" for the value, never 0/empty.
     const [ex, est, un] = buildUsageRows([
-      { subject_id: "a", harness: "claude", tokens: 100, cost: 1.5, metric_quality: "exact", context_pct: 50 },
-      { subject_id: "b", harness: "claude", tokens: 100, cost: 1.5, metric_quality: "estimated", context_pct: 50 },
-      { subject_id: "c", harness: "claude", tokens: 0, cost: 0, metric_quality: "unavailable", context_pct: null },
+      row({ metric_quality: "exact" }),
+      row({ metric_quality: "estimated" }),
+      row({ metric_quality: "unavailable", tokens_in: null, tokens_out: null, cost_estimate: null }),
     ]);
     expect(ex!.accuracyLabel).toBe("exact");
     expect(est!.accuracyLabel).toBe("estimated");
     expect(un!.accuracyLabel).toBe("unavailable");
-    // unavailable usage → "unknown", never 0/empty
     expect(un!.tokensDisplay).toBe("unknown");
     expect(un!.costDisplay).toBe("unknown");
   });
 
-  it("credit_pool_state_from_thresholds", () => {
-    // normal / near_exhaustion (≤15% remaining) / hard_stop (exhausted); pure.
-    // Retargeted to the kind-aware signature — the SDK pool keeps the prior behavior.
-    expect(creditPoolState(100, 1000, "sdk")).toBe("normal"); // 90% remaining
-    expect(creditPoolState(900, 1000, "sdk")).toBe("near_exhaustion"); // 10% remaining
-    expect(creditPoolState(850, 1000, "sdk")).toBe("near_exhaustion"); // 15% remaining (boundary)
-    expect(creditPoolState(1000, 1000, "sdk")).toBe("hard_stop"); // 0 remaining
-    expect(creditPoolState(1100, 1000, "sdk")).toBe("hard_stop"); // over the cap
+  it("null_metric_quality_treated_as_unavailable", () => {
+    // spec(Q3 / §11.7) — metric_quality is nullable (Option<MetricQuality>); null → the honest
+    // "unavailable" degrade. Use PRESENT numeric data so this isolates the effectiveQuality(null)
+    // coalesce: the accuracy is "unavailable" + the values render "unknown" (unavailable hides them).
+    const [vm] = buildUsageRows([row({ metric_quality: null })]);
+    expect(vm!.accuracyLabel).toBe("unavailable");
+    expect(vm!.metricQuality).toBe("unavailable");
+    expect(vm!.tokensDisplay).toBe("unknown");
+    expect(vm!.costDisplay).toBe("unknown");
   });
 
-  it("credit_pool_sdk_exhaustion_is_hard_stop", () => {
-    // spec(§9.1) — the capped monthly SDK/-p pool has NO fallback → hard_stop at
-    // exhaustion (incl. the degenerate no/unknown-limit input).
-    expect(creditPoolState(1000, 1000, "sdk")).toBe("hard_stop"); // 0 remaining
-    expect(creditPoolState(1100, 1000, "sdk")).toBe("hard_stop"); // over the cap
-    expect(creditPoolState(5, 0, "sdk")).toBe("hard_stop"); // no/unknown pool
+  it("null_numeric_data_renders_unknown_even_for_non_unavailable_quality", () => {
+    // spec(§11.7 / forbidden #2) — a null numeric field (the daemon didn't report it) renders "unknown",
+    // NEVER a fabricated 0/$0.00 — even when metric_quality is exact (the unavailable guard alone misses
+    // the null-data-with-non-unavailable-quality diagonal).
+    const [vm] = buildUsageRows([
+      row({ metric_quality: "exact", tokens_in: null, tokens_out: null, cost_estimate: null }),
+    ]);
+    expect(vm!.accuracyLabel).toBe("exact");
+    expect(vm!.tokensDisplay).toBe("unknown");
+    expect(vm!.costDisplay).toBe("unknown");
   });
 
-  it("credit_pool_interactive_exhaustion_is_never_hard_stop", () => {
-    // spec(§9.1) — the interactive pool auto-resets (rolling window) → NEVER
-    // hard_stop; exhaustion is the recoverable near_exhaustion signal.
-    expect(creditPoolState(1000, 1000, "interactive")).toBe("near_exhaustion"); // 0 remaining
-    expect(creditPoolState(1100, 1000, "interactive")).toBe("near_exhaustion"); // past the window
-    expect(creditPoolState(5, 0, "interactive")).toBe("near_exhaustion"); // no/unknown limit
-  });
-
-  it("credit_pool_near_exhaustion_both_kinds", () => {
-    // spec(§11.4) — the ≤15%-remaining warning is kind-INDEPENDENT (only hard_stop is kind-gated).
-    for (const kind of ["sdk", "interactive"] as const) {
-      expect(creditPoolState(900, 1000, kind)).toBe("near_exhaustion"); // 10% remaining
-      expect(creditPoolState(850, 1000, kind)).toBe("near_exhaustion"); // 15% boundary
-    }
-  });
-
-  it("credit_pool_normal_both_kinds", () => {
-    // spec(§11.4) — >15% remaining → normal for both kinds.
-    for (const kind of ["sdk", "interactive"] as const) {
-      expect(creditPoolState(100, 1000, kind)).toBe("normal"); // 90% remaining
-      expect(creditPoolState(840, 1000, kind)).toBe("normal"); // 16% remaining
-    }
+  it("credit_pool_state_removed", () => {
+    // spec(the honest-OMIT / §11.4) — the Mock-only, daemon-unobservable, potentially-FALSE
+    // hard_stop display is removed: `creditPoolState`/`CreditPoolKind` no longer exported
+    // (compile-time enforced by tsc; runtime-pinned here so the removal can't silently regress —
+    // `creditPoolState` was a function-valued export, so its absence IS observable at runtime, unlike
+    // the type-only `CreditPoolState`/`CreditPoolKind` which tsc alone enforces).
+    expect("creditPoolState" in model, "creditPoolState must no longer be exported").toBe(false);
   });
 });

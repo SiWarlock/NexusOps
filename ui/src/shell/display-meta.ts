@@ -464,17 +464,19 @@ export const profilesDisplayFixture: ProfileDisplay[] = [
 ];
 
 /**
- * Context-ring input for a session, from the REAL Usage projection (subject_id ↔
- * session_id). Codex / unavailable rows report no context (§9.1) → null — the
+ * Context-ring input for a session, from the REAL Usage projection — matched by the row's
+ * `session_id`. A row with no context metadata (`context_pct_max` null, §9.1) → pct null — the
  * caller renders "unknown", NEVER a fabricated number (forbidden #4).
  */
 export function contextForSession(
   usage: UsageRow[],
   sessionId: string,
-): { pct: number | null; accuracy: UsageRow["metric_quality"] } | null {
-  const row = usage.find((u) => u.subject_id === sessionId);
+): { pct: number | null; accuracy: NonNullable<UsageRow["metric_quality"]> } | null {
+  const row = usage.find((u) => u.session_id === sessionId);
   if (!row) return null;
-  return { pct: row.context_pct ?? null, accuracy: row.metric_quality };
+  // accuracy is Option<MetricQuality> — null coalesces to the honest "unavailable" (§11.7), so the
+  // kit meter always gets a concrete accuracy (never null); context_pct_max null → the caller's "unknown".
+  return { pct: row.context_pct_max ?? null, accuracy: row.metric_quality ?? "unavailable" };
 }
 
 /** Sessions grouped by project_id (tree order helper for the sidebar). */

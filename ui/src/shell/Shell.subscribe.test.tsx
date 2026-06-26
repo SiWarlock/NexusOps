@@ -550,12 +550,17 @@ describe("Shell whole-cockpit-live subscribe (ui-063 — refetch-on-nudge spread
     // row-apply, LESSON §29). UsageLedger is NOT a switcher-counts input → a plain replace, NO recount;
     // the refetch is observable as an incremented usage read (the live telemetry surface stays current).
     const extra: UsageRow = {
-      subject_id: "session_live_usage",
-      harness: "claude",
-      tokens: 5000,
-      cost: 0.1,
+      ledger_id: "ledger_live_usage",
+      project_id: "project_1",
+      session_id: "session_live_usage",
+      execution_profile_id: "ep_1",
+      model: "claude-sonnet-4",
+      bucket_day: "2026-06-26",
+      tokens_in: 3500,
+      tokens_out: 1500,
+      context_pct_max: 10,
+      cost_estimate: 0.1,
       metric_quality: "exact",
-      context_pct: 10,
     };
     const gateway = new GatedUsageRefetchGateway(extra);
     render(<Shell gateway={gateway} />);

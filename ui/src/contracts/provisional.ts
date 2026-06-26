@@ -309,55 +309,47 @@ export const AuditTrailPage = z.object({
 });
 export type AuditTrailPage = z.infer<typeof AuditTrailPage>;
 
-// ─── Usage (PROVISIONAL — 6.4b) ──────────────────────────────────────────────
-// The daemon's usage/telemetry schema is NOT in the frozen contract. UsageRow +
-// metric_quality + Harness are hand-declared provisional shapes (Lesson §2); they
-// (incl. the credit-pool thresholds + enum delegation) reconcile at the daemon
-// usage-schema freeze — tracked in the MVP_TASKS Carry-forward provisional→generated
-// spread. `MetricQuality` IS frozen at 0.23.0 as a `oneOf`-of-`const` (its variants carry
-// doc-comments); since ui-065 the generator emits oneOf-const, so it is a REAL generated enum
-// (exported from `contracts/index`, drift-gate-pinned) — a LOCAL handle here for `UsageRow.metric_quality`.
-// `Harness` has no frozen enum yet, so it stays local.
+// ─── Usage (W2-usage 0.50 — the frozen 11-field UsageRow) ─────────────────────
+// `UsageRow` reconciled provisional→frozen at the daemon W2-usage freeze (the 6th frozen
+// projection-row; see below). `MetricQuality` IS frozen at 0.23.0 as a `oneOf`-of-`const` (its
+// variants carry doc-comments); since ui-065 the generator emits oneOf-const, so it is a REAL
+// generated enum (exported from `contracts/index`, drift-gate-pinned) — a LOCAL handle here for
+// `UsageRow.metric_quality`. (The old provisional `Harness` enum + the faked `CreditPool` are retired.)
 const MetricQuality = bundle.shape.MetricQuality;
 
-/** The agent harness a session runs under. PROVISIONAL (no frozen Harness enum). */
-export const Harness = z.enum(["claude", "codex"]);
-export type Harness = z.infer<typeof Harness>;
-
-/** Per-subject token/cost usage (§11.4). PROVISIONAL. */
-export const UsageRow = z.object({
-  subject_id: z.string(),
-  harness: Harness,
-  tokens: z.number(),
-  cost: z.number(),
-  metric_quality: MetricQuality,
-  // Codex reports no context metadata (§9.1 supportsContextMetadata=false) → null.
-  context_pct: z.number().nullable().optional(),
-});
+// The 6th frozen projection-row (W2-usage, CONTRACT 0.50.0) — reconciled provisional→frozen,
+// field-set drift-pinned to `shared/src/projections.rs` UsageRow ([[24]]). `.strict()` mirrors the
+// daemon `deny_unknown_fields` (the internal `updated_at_seq` is retain-whitelisted out → must NOT
+// appear here). `metric_quality` BINDS the frozen MetricQuality enum (nullable — Option<MetricQuality>
+// → the §11.7 honest degrade); the rest are plain nullable string/number (the daemon SUMs tokens as
+// i64, MAXes context_pct/cost as f64 — direct bind, no coercion). `ledger_id` (PK) is the only required
+// field. Optionals serialize as explicit null (no skip_serializing_if). The old `Harness` enum is
+// retired with `subject_id`/`harness`/`tokens`/`cost`/`context_pct` (no other consumer — SessionRow.harness
+// is a plain string). **NO creditPool** — the daemon has NO credit-balance source (the SDK monthly pool is
+// not telemetry-observable: per-heartbeat token/cost DELTAS + a binary `credit_exhausted` status, never a
+// remaining balance). The faked `CreditPool` + `UsageProjectionPage.creditPool` are REMOVED (honest-omit).
+export const UsageRow = z
+  .object({
+    ledger_id: z.string(),
+    project_id: z.string().nullable(),
+    session_id: z.string().nullable(),
+    execution_profile_id: z.string().nullable(),
+    model: z.string().nullable(),
+    bucket_day: z.string().nullable(),
+    tokens_in: z.number().nullable(),
+    tokens_out: z.number().nullable(),
+    context_pct_max: z.number().nullable(),
+    cost_estimate: z.number().nullable(),
+    metric_quality: MetricQuality.nullable(),
+  })
+  .strict();
 export type UsageRow = z.infer<typeof UsageRow>;
-
-/**
- * A harness billing pool (§11.4/§9.1), distinct from token spend. The `kind`
- * discriminator encodes the confirmed two-pool asymmetry: `"sdk"` is the capped
- * monthly SDK/`-p` pool that HARD-STOPS with no fallback; `"interactive"` is the
- * auto-resetting rolling-window pool that NEVER hard-stops. REQUIRED — every pool
- * declares its kind (no silent default; a future interactive pool can't inherit
- * `"sdk"` and false-alarm a hard-stop, §11 never-a-silent-false-safety-state).
- * PROVISIONAL — the daemon has not frozen a credit-pool schema.
- */
-export const CreditPool = z.object({
-  kind: z.enum(["sdk", "interactive"]),
-  used: z.number(),
-  limit: z.number(),
-});
-export type CreditPool = z.infer<typeof CreditPool>;
 
 export const UsageProjectionPage = z.object({
   // 0.12.0: the frozen ProjectionName enum fixes the canonical name as
   // "UsageLedger" (was provisional "Usage").
   projection: z.literal("UsageLedger"),
   rows: z.array(UsageRow),
-  creditPool: CreditPool.nullable().optional(),
   cursor: z.string().nullable().optional(),
 });
 export type UsageProjectionPage = z.infer<typeof UsageProjectionPage>;

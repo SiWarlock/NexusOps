@@ -100,6 +100,32 @@ describe("gateway-client boundary validator (parse, don't trust)", () => {
       BoundaryValidationError,
     );
   });
+
+  it("usage_ledger_page_accepts_frozen_row_rejects_unknown", () => {
+    // spec(§7.2/§5.0 — W2-usage un-degrade) — the daemon serves UsageLedger as a bare array of the
+    // frozen 11-field UsageRow. The boundary ACCEPTS the real shape (tile stops degrading) + REJECTS
+    // an unknown row key (parse-don't-trust [[22]] + the `.strict()` row shadow).
+    const usageRow = {
+      ledger_id: "ledger_1",
+      project_id: "project_1",
+      session_id: "session_1",
+      execution_profile_id: "ep_1",
+      model: "claude-sonnet-4",
+      bucket_day: "2026-06-26",
+      tokens_in: 100,
+      tokens_out: 40,
+      context_pct_max: 64,
+      cost_estimate: 1.92,
+      metric_quality: "exact",
+    };
+    const page = parseProjectionPage("UsageLedger", [usageRow]);
+    expect(page.projection).toBe("UsageLedger");
+    expect(page.rows).toHaveLength(1);
+    // an unknown row key (e.g. the dropped internal updated_at_seq) → fail closed.
+    expect(() => parseProjectionPage("UsageLedger", [{ ...usageRow, updated_at_seq: 7 }])).toThrow(
+      BoundaryValidationError,
+    );
+  });
 });
 
 describe("parseExecutionProfilesResult (§6.1 W1-prof — read-RPC result boundary)", () => {

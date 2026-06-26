@@ -8,7 +8,6 @@ import type {
   ApprovalQueueRow,
   AuditEventRow,
   Capabilities,
-  CreditPool,
   ProjectActivityRow,
   ProjectionName,
   ProjectionPageByName,
@@ -89,7 +88,6 @@ interface ShellData {
   pullRequests: PullRequestRow[];
   approvals: ApprovalQueueRow[];
   usage: UsageRow[];
-  creditPool: CreditPool | null;
   // The PR-review verticals (ui-064, §11.2) — the Review projection joined to a PR client-side on
   // pr_number (reviewsByPr) for the PR Review Workspace.
   reviews: ReviewRow[];
@@ -274,7 +272,6 @@ export function Shell({
         pullRequests: pullRequests?.rows ?? [],
         approvals: approvals?.rows ?? [],
         usage: usage?.rows ?? [],
-        creditPool: usage?.creditPool ?? null,
         reviews: reviews?.rows ?? [],
         degraded: degradedProjections,
       });
@@ -510,8 +507,8 @@ export function Shell({
     };
   }, [client]);
 
-  // UsageLedger stream — usage is NOT a deriveProjectSwitcherCounts input → a PLAIN REPLACE (usage +
-  // creditPool), NO recount. The live producer (TelemetrySampled ingress) is daemon-P4-dormant, so this
+  // UsageLedger stream — usage is NOT a deriveProjectSwitcherCounts input → a PLAIN REPLACE (usage rows),
+  // NO recount. The live producer (TelemetrySampled ingress) is daemon-P4-dormant, so this
   // stream connects + stays quiet until telemetry flows; the handler is correct + refetches the moment it
   // does (built now, future-proof — identical pattern, harmless while dormant).
   useEffect(() => {
@@ -520,7 +517,7 @@ export function Shell({
       const page = await client.get_projection("UsageLedger");
       if (cancelled) return;
       setData((prev) =>
-        prev ? { ...prev, usage: page.rows, creditPool: page.creditPool ?? null } : prev,
+        prev ? { ...prev, usage: page.rows } : prev,
       );
     };
     const coalescer = createNudgeCoalescer(refetchUsage);
@@ -763,7 +760,6 @@ export function Shell({
               approvals={pending}
               waiting={waitingRows}
               usage={data.usage}
-              creditPool={data.creditPool}
               events={data.events}
               projectName={headerProjectLabel(activeProject)}
               onOpenSession={openSession}
@@ -794,7 +790,7 @@ export function Shell({
           ) : contentView === "settings" ? (
             // Settings folds the Usage dashboard into its Usage tab (§11.2).
             // Reached via the TopBar gear (§11.2 nav model).
-            <Settings usage={data.usage} creditPool={data.creditPool} />
+            <Settings usage={data.usage} />
           ) : contentView === "projects" ? (
             <ProjectsOverviewContainer
               gateway={client}

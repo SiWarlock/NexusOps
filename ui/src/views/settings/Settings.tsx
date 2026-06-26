@@ -36,7 +36,7 @@ function GithubMark({ size = 17 }: { size?: number }) {
     </svg>
   );
 }
-import type { CreditPool, UsageRow } from "../../contracts/index";
+import type { UsageRow } from "../../contracts/index";
 import {
   Badge,
   Button,
@@ -61,7 +61,6 @@ import { isRovingKey, nextTabIndex } from "../../a11y/roving";
 
 interface SettingsProps {
   usage: UsageRow[];
-  creditPool: CreditPool | null;
 }
 
 function Eyebrow({ children, style }: { children: ReactNode; style?: CSSProperties }) {
@@ -387,7 +386,7 @@ function SecurityPanel() {
  * Integrations/Profiles render the prototype treatment over provisional display
  * fixtures (flagged); every mutation affordance is disabled, not faked (§11.6).
  */
-export function Settings({ usage, creditPool }: SettingsProps) {
+export function Settings({ usage }: SettingsProps) {
   const [active, setActive] = useState<SettingsTabKey>(DEFAULT_SETTINGS_TAB);
   const tabs = settingsTabsWithSelection(active);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -476,7 +475,7 @@ export function Settings({ usage, creditPool }: SettingsProps) {
         >
           {tab.selected ? (
             tab.key === "usage" ? (
-              <UsageDashboard rows={usage} creditPool={creditPool} />
+              <UsageDashboard rows={usage} />
             ) : tab.key === "integrations" ? (
               <IntegrationsPanel />
             ) : tab.key === "profiles" ? (

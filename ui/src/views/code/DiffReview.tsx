@@ -65,18 +65,33 @@ type DiffState =
   | { kind: "ready"; diff: DiffResult }
   | { kind: "error"; code?: string };
 
+/** DAEMON-READINESS hold for the destructive Discard hunk action (ui-088). `git.discard_hunk` is still a
+ *  daemon STUB (W1-git-discard pending) → a submit would approve-then-Failed (a dishonest UX for a
+ *  destructive control). So Discard is held disabled until the executor lands. This is NOT a user-go-live
+ *  gate (git mutations' user-gate is the per-action approval modal, lead-confirmed) — it's a readiness
+ *  flag MEANT to flip `true` automatically when the daemon W1-git-discard lands (the flip slice also adds a
+ *  `displayed_hunk_sha256` content-hash input to buildHunkActionRequest for discard — lead-ruled). Stage +
+ *  Unstage are LIVE (daemon 095) + unaffected. */
+const DISCARD_AVAILABLE = false;
+const DISCARD_HELD_TITLE =
+  "Discard is available when the daemon git.discard_hunk executor lands (W1-git-discard); Stage/Unstage are live now";
+
 /** The per-hunk git-action bar (6.3e, cat-1). stage/unstage/discard are PURE SUBMITTERS
  *  over the seam (Q1); disabled when !canSubmitIntent (Q2 fail-safe); discard is the
  *  destructive (risk-3 daemon-side), explicitly labeled + danger-toned. Each button's
- *  accessible name carries the hunk header (unique per hunk; §11.6). */
-function HunkGitActions({
+ *  accessible name carries the hunk header (unique per hunk; §11.6). `discardAvailable` is the
+ *  daemon-readiness hold (default the module const = false; injectable for the flip-true unit test).
+ *  Exported for that unit test — the prod ReviewTab renders it with the default. */
+export function HunkGitActions({
   hunk,
   canSubmit,
   onAction,
+  discardAvailable = DISCARD_AVAILABLE,
 }: {
   hunk: Hunk;
   canSubmit: boolean;
   onAction: (actionType: PerHunkGitActionType, hunk: Hunk) => void;
+  discardAvailable?: boolean;
 }) {
   return (
     <div
@@ -104,16 +119,21 @@ function HunkGitActions({
       >
         Unstage
       </Button>
-      <Button
-        size="sm"
-        variant="danger"
-        icon={<Trash2 size={13} />}
-        disabled={!canSubmit}
-        aria-label={`Discard hunk ${hunk.header}`}
-        onClick={() => onAction("git.discard_hunk", hunk)}
-      >
-        Discard
-      </Button>
+      {/* Discard is HELD until the daemon git.discard_hunk executor lands (ui-088 daemon-readiness flag);
+          the honest tooltip explains why. The wrapping span carries the title so it shows even while the
+          button is disabled (a disabled button suppresses its own tooltip in some browsers). */}
+      <span title={discardAvailable ? undefined : DISCARD_HELD_TITLE}>
+        <Button
+          size="sm"
+          variant="danger"
+          icon={<Trash2 size={13} />}
+          disabled={!canSubmit || !discardAvailable}
+          aria-label={`Discard hunk ${hunk.header}`}
+          onClick={() => onAction("git.discard_hunk", hunk)}
+        >
+          Discard
+        </Button>
+      </span>
     </div>
   );
 }

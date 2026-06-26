@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
 afterEach(cleanup);
-import { DiffReview } from "./DiffReview";
+import { DiffReview, HunkGitActions } from "./DiffReview";
 import { ReadOnlyProvider, type ConnectionStatus } from "../../connection/read-only";
 import { ZodError } from "zod";
 import { MockGatewayPort } from "../../gateway-client/mock";
@@ -160,7 +160,11 @@ describe("DiffReview L2 — per-hunk intent submission (cat-1)", () => {
     expect(req.resource_refs[0]!.type).toBe("file");
   });
 
-  it("discard_hunk_submits_discard_action_type", async () => {
+  // SKIPPED at the ui-088 Discard daemon-readiness hold (git.discard_hunk is a daemon STUB → Discard is
+  // disabled, so the integration click can't fire). RE-ENABLE at the W1-git-discard-UI flip (when
+  // DISCARD_AVAILABLE → true + the displayed_hunk_sha256 input lands). The action-type contract is covered
+  // meanwhile by the HunkGitActions unit `hunk_actions_discard_gated_by_flag_*` (flag-true → onAction discard).
+  it.skip("discard_hunk_submits_discard_action_type", async () => {
     // spec(Q1/§6.3) — Discard submits git.discard_hunk (risk-3 daemon-side) for THIS hunk.
     const { port } = renderReview();
     const submitSpy = vi.spyOn(port, "submit_action");
@@ -177,8 +181,9 @@ describe("DiffReview L2 — per-hunk intent submission (cat-1)", () => {
     // UI-derived risk; the hunk bar shows no risk. With the default mock the freshly-minted
     // approval isn't in the ApprovalQueue snapshot yet (053b absent-row timing) → the honest
     // awaiting placeholder, whose status is still "require_approval".
+    // (Drives via Stage — the live action since 095; action-agnostic for the modal-render flow.)
     renderReview();
-    fireEvent.click(await screen.findByRole("button", { name: /^Discard hunk/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Stage hunk/ }));
     expect(await screen.findByTestId("gateway-modal")).toBeTruthy();
     expect((await screen.findByTestId("policy-status")).textContent).toBe("require_approval");
   });
@@ -199,7 +204,7 @@ describe("DiffReview L2 — per-hunk intent submission (cat-1)", () => {
           risk_level: 4,
           policy_decision: {
             status: "deny",
-            reasons: ["Daemon: discards tracked content outside the worktree."],
+            reasons: ["Daemon: touches tracked content in the worktree."],
             required_approvals: [{ kind: "project_owner" }],
             constraints: [],
             safer_alt: null,
@@ -210,11 +215,11 @@ describe("DiffReview L2 — per-hunk intent submission (cat-1)", () => {
     };
     vi.spyOn(port, "get_projection").mockResolvedValue(realRowPage);
     renderReview({ port });
-    fireEvent.click(await screen.findByRole("button", { name: /^Discard hunk/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Stage hunk/ }));
     await screen.findByTestId("gateway-modal");
     // the modal's policy reasons are the daemon ROW's REAL policy, verbatim (not UI-invented).
     expect((await screen.findByTestId("policy-reasons")).textContent).toMatch(
-      /discards tracked content outside the worktree/i,
+      /touches tracked content in the worktree/i,
     );
   });
 
@@ -228,19 +233,20 @@ describe("DiffReview L2 — per-hunk intent submission (cat-1)", () => {
       new BoundaryValidationError("ApprovalQueue", new ZodError([])),
     );
     renderReview({ port });
-    fireEvent.click(await screen.findByRole("button", { name: /^Discard hunk/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Stage hunk/ }));
     // an honest degraded notice surfaces…
     expect(await screen.findByTestId("enrich-unavailable")).toBeTruthy();
     // …and NO card is opened from un-enriched / un-parsed data.
     expect(screen.queryByTestId("gateway-modal")).toBeNull();
   });
 
-  it("discard_preview_is_daemon_actionpreview_not_fabricated", async () => {
-    // spec(Q5/forbidden#2) — the discard consequence comes from the daemon's ActionPreview
+  it("per_hunk_preview_is_daemon_actionpreview_not_fabricated", async () => {
+    // spec(Q5/forbidden#2) — the hunk-action consequence comes from the daemon's ActionPreview
     // (the modal fetches preview_action via the port); DiffReview never fabricates a preview.
+    // (Drives via the live Stage action; the daemon-preview-not-fabricated property is action-agnostic.)
     const { port } = renderReview();
     const previewSpy = vi.spyOn(port, "preview_action");
-    fireEvent.click(await screen.findByRole("button", { name: /^Discard hunk/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Stage hunk/ }));
     await screen.findByTestId("gateway-modal");
     await waitFor(() => expect(previewSpy).toHaveBeenCalled()); // the daemon's preview, fetched
   });
@@ -271,12 +277,65 @@ describe("DiffReview L2 — per-hunk intent submission (cat-1)", () => {
   });
 
   it("standing_grant_affordance_stays_disabled", async () => {
-    // spec(§11.5/§15) — the "always allow" standing-grant stays DISABLED (its own cat-1
-    // checkpoint; git.discard_hunk is non-standing-grantable daemon-side regardless).
+    // spec(§11.5/§15) — the "always allow" standing-grant stays DISABLED (its own cat-1 checkpoint),
+    // for ANY per-hunk git action. (Drives via the live Stage; the standing-grant-disabled property is
+    // action-agnostic — git mutations are non-standing-grantable daemon-side regardless.)
     renderReview();
-    fireEvent.click(await screen.findByRole("button", { name: /^Discard hunk/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Stage hunk/ }));
     await screen.findByTestId("gateway-modal");
     expect(screen.getByTestId("always-allow")).toHaveProperty("disabled", true);
+  });
+});
+
+// ─── ui-088 W1-git-ui — the Discard daemon-readiness hold ─────────────────────────────────────────────
+describe("DiffReview — Discard daemon-readiness hold (ui-088 / W1-git-ui)", () => {
+  it("discard_held_until_daemon_executor", async () => {
+    // spec(§6.3 honest-degrade) — git.discard_hunk is still a daemon STUB (W1-git-discard pending) → a
+    // submit would approve-then-Failed. The Discard button is DISABLED even when canSubmit (DISCARD_AVAILABLE
+    // false), and clicking it submits NO intent. Stage/Unstage stay live (095) — unaffected by the hold.
+    const { port } = renderReview(); // CONNECTED + mutationsEnabled → canSubmit true
+    const submitSpy = vi.spyOn(port, "submit_action");
+    const discard = await screen.findByRole("button", { name: /^Discard hunk/ });
+    expect(discard).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /^Stage hunk/ })).toHaveProperty("disabled", false);
+    expect(screen.getByRole("button", { name: /^Unstage hunk/ })).toHaveProperty("disabled", false);
+    fireEvent.click(discard); // a disabled button fires no onClick
+    expect(submitSpy).not.toHaveBeenCalled();
+  });
+
+  it("discard_disabled_tooltip_is_honest", async () => {
+    // spec(honest labeling, LESSON 41 spirit) — the held Discard's tooltip explains it's pending the
+    // daemon executor (daemon-READINESS), NEVER a misleading "go-live"/"disabled by policy" framing.
+    renderReview();
+    const discard = await screen.findByRole("button", { name: /^Discard hunk/ });
+    const titled = discard.closest("[title]");
+    expect(titled, "the held Discard must carry an honest tooltip").not.toBeNull();
+    // pin the CAUSAL phrase (not an OR-of-words) so a future weakening of the tooltip is caught.
+    expect(titled?.getAttribute("title") ?? "").toMatch(/executor lands/i);
+  });
+});
+
+describe("HunkGitActions — discard daemon-readiness flag (ui-088 unit)", () => {
+  it("hunk_actions_discard_gated_by_flag_stage_unstage_independent", () => {
+    // spec(§6.3) — at discardAvailable=false: Stage+Unstage ENABLED, Discard DISABLED; clicking Stage fires
+    // onAction("git.stage_hunk"). At discardAvailable=true: Discard ENABLED + a click fires
+    // onAction("git.discard_hunk") — pins the flip's effect (the W1-git-discard-UI follow-on flips the flag).
+    const onAction = vi.fn();
+    const { rerender } = render(
+      <HunkGitActions hunk={HUNK} canSubmit onAction={onAction} discardAvailable={false} />,
+    );
+    expect(screen.getByRole("button", { name: /^Discard hunk/ })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /^Stage hunk/ })).toHaveProperty("disabled", false);
+    expect(screen.getByRole("button", { name: /^Unstage hunk/ })).toHaveProperty("disabled", false);
+    fireEvent.click(screen.getByRole("button", { name: /^Stage hunk/ }));
+    expect(onAction).toHaveBeenCalledWith("git.stage_hunk", HUNK);
+
+    onAction.mockClear();
+    rerender(<HunkGitActions hunk={HUNK} canSubmit onAction={onAction} discardAvailable={true} />);
+    const discard = screen.getByRole("button", { name: /^Discard hunk/ });
+    expect(discard).toHaveProperty("disabled", false);
+    fireEvent.click(discard);
+    expect(onAction).toHaveBeenCalledWith("git.discard_hunk", HUNK);
   });
 });
 

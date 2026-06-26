@@ -12,6 +12,7 @@
 //! - `deny <approval_id> <reason>` → `deny` (the blocked agent tool is denied)
 //! - `kill <session_id>`           → `submit_action` a `session.kill` (stop the supervised session)
 //! - `audit`                       → `get_projection AuditTrail` (the recorded event trail)
+//! - `rescan --path <repo>`        → `submit_action` a risk-0 `project.rescan` (ADD A PROJECT; auto-executes)
 //!
 //! **086 — the 083 live-validation chain** (each a THIN wrapper over an EXISTING audited action via the
 //! same `submit_action`/`connect_via_gh`; NO new mutation surface — the daemon gates + executes unchanged):
@@ -59,6 +60,7 @@ const USAGE: &str = "usage: nexusopsd smoke <sub> [args]\n  \
     deny <approval_id> <reason...>\n  \
     kill <session_id>\n  \
     audit\n  \
+    rescan --path <repo>   (add a project — risk-0, auto-executes, no approve)\n  \
     --- 083 live-validation chain (each SUBMITS; then `smoke approve <id>`) ---\n  \
     connect-gh --provider github --account <acct>\n  \
     connect --provider github --keychain-ref <ref> --account <acct>\n  \
@@ -80,6 +82,8 @@ pub fn run(args: &[String]) -> ExitCode {
         "deny" => cmd_deny(rest),
         "kill" => cmd_kill(rest),
         "audit" => cmd_get_projection("AuditTrail", "audit trail"),
+        // 088 — add a project: submit the EXISTING risk-0 project.rescan (auto-executes, no approve).
+        "rescan" => build_rescan_request(rest).and_then(|r| submit("project.rescan", r)),
         // 086 — the 083 live-validation chain (each a THIN wrapper over an EXISTING audited action).
         "connect-gh" => cmd_connect_gh(rest),
         "connect" => {
@@ -333,6 +337,26 @@ pub fn build_submit_review_request(rest: &[String]) -> Result<ActionRequest, Str
             uri: None,
         }],
         inputs,
+    )
+}
+
+// ---- 088: the add-project driver (a risk-0 `project.rescan` wrapper — distinct from the 086 chain) ----
+
+/// `project.rescan` (risk-0, X::Project, edges-019) — the add-project driver. inputs `{path}` (a local FS
+/// path; `requires_resource_refs=false`). risk-0 → the catalog AUTO-EXECUTES it (no approve step) → the
+/// `ProjectExecutor` detects + emits `ProjectRescanned` → `proj_project`/`proj_repository`. The path is
+/// passed VERBATIM (the daemon owns detection/validation + the LESSON §44 userinfo-strip); the CLI
+/// fail-closes only on a missing/EMPTY `--path` (never a blank-path rescan).
+pub fn build_rescan_request(rest: &[String]) -> Result<ActionRequest, String> {
+    let path = required(rest, "--path")?;
+    if path.trim().is_empty() {
+        return Err("--path must be a non-empty repo path".to_string());
+    }
+    smoke_request(
+        "project.rescan",
+        None,
+        vec![],
+        serde_json::json!({ "path": path }),
     )
 }
 

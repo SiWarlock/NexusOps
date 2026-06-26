@@ -11,7 +11,7 @@
 use nexusops_shared::actions::ResourceType;
 use nexusopsd::smoke::{
     build_create_pr_request, build_integration_connect_request, build_merge_pr_request,
-    build_set_live_writes_request, build_submit_review_request,
+    build_rescan_request, build_set_live_writes_request, build_submit_review_request,
 };
 
 fn args(parts: &[&str]) -> Vec<String> {
@@ -21,6 +21,38 @@ fn args(parts: &[&str]) -> Vec<String> {
 /// the inputs object's string value for `key`.
 fn input_str<'a>(req: &'a nexusops_shared::actions::ActionRequest, key: &str) -> Option<&'a str> {
     req.inputs.get(key).and_then(|v| v.as_str())
+}
+
+// ---- 088. project.rescan (add-project driver — risk-0, path-input-carried, no resource_ref) -----
+
+#[test]
+fn build_rescan_request_shape() {
+    // spec(§6.3 / 088) — project.rescan: action_type="project.rescan", inputs={"path": <repo>}, NO
+    // resource_refs (requires_resource_refs=false; the path is input-carried). risk-0 → auto-executes.
+    let req = build_rescan_request(&args(&["--path", "/Users/x/myrepo"])).expect("builds");
+    assert_eq!(req.action_type, "project.rescan");
+    assert_eq!(input_str(&req, "path"), Some("/Users/x/myrepo"));
+    assert!(
+        req.resource_refs.is_empty(),
+        "no resource_refs (path is input-carried)"
+    );
+}
+
+#[test]
+fn build_rescan_request_missing_path_errors() {
+    // spec(fail-closed CLI parse) — a missing OR empty --path → a typed CLI Err, never a malformed submit.
+    assert!(
+        build_rescan_request(&args(&[])).is_err(),
+        "missing --path → Err"
+    );
+    assert!(
+        build_rescan_request(&args(&["--path", ""])).is_err(),
+        "empty --path → Err (never a blank-path rescan)"
+    );
+    assert!(
+        build_rescan_request(&args(&["--path", "   "])).is_err(),
+        "whitespace-only --path → Err (the trim guard fires)"
+    );
 }
 
 // ---- 1. integration.connect (LESSON 49 registration-only — POINTER, no token) -------------------
